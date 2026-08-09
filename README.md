@@ -56,6 +56,8 @@ Cloudflare Pages is the intended primary host. The current project builds to sta
 
 GitHub Pages remains a fallback. Because this is a GitHub user site repository named `naranerdem.github.io`, the static site is configured for the root path instead of a project subpath.
 
+GitHub Pages deployment is handled by GitHub Actions on every push to `main`, with a manual workflow option also available. In the GitHub repository UI, Settings → Pages must use `GitHub Actions` as the source. Cloudflare remains the intended future host for backend-dependent functionality.
+
 Future backend services should be designed so public pages still work as a static site. Registration, tuition, reminders, reconciliation, and exports may become unavailable in fallback mode, but the public website should not fail to render.
 
 ## Architecture
