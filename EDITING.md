@@ -19,4 +19,4 @@ Two simple GitHub editing methods:
 1. Open the file on GitHub and use the edit/pencil action.
 2. While viewing the repository on GitHub, press `.` to open the GitHub web editor.
 
-Committing to `main` triggers the existing GitHub Actions deployment workflow. After the action succeeds, small manual edits publish automatically to the static GitHub Pages fallback.
+Committing to `main` triggers the existing GitHub Actions deployment workflow. After the action succeeds, small manual edits publish automatically to the static GitHub Pages fallback. The primary `naranerdem.com` deployment uses Cloudflare Workers Static Assets; ordinary public content editing stays the same.
