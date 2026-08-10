@@ -13,5 +13,28 @@
       "pattern": "naranerdem.com",
       "custom_domain": true
     }
-  ]
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "naran-erdem-production",
+      "database_id": "4fe01545-e667-4fbc-8844-3f5d5e950673",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "env": {
+    "staging": {
+      "name": "naran-erdem-staging",
+      "workers_dev": true,
+      "routes": [],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "naran-erdem-staging",
+          "database_id": "53f6f70f-1235-4676-8e15-d72bfeaaa45f",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  }
 }

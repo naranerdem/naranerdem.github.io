@@ -52,7 +52,7 @@ Desktop-enhanced workflows may include:
 
 ### Public/static website
 
-The public website contains general pages, program information, and entry points into registration. It should be able to build to static files and serve correctly on both Cloudflare Pages and GitHub Pages.
+The public website contains general pages, program information, and entry points into registration. It should be able to build to static files and serve correctly on both Cloudflare Workers Static Assets and GitHub Pages.
 
 The public site must not require a production database, authentication service, email provider, or bank integration to render.
 
@@ -153,6 +153,8 @@ Parent-facing milestone emails may include:
 - other material state changes
 
 Do not send redundant emails for every internal technical state transition. No email provider is implemented in this foundation.
+
+Staging must still exercise the real future email generation and provider path. Test/staging status should not suppress milestone emails or skip workflow logic. Instead, staging delivery should preserve both the intended parent-entered recipient and the actual safe test inbox used for delivery override.
 
 ### Payment/reconciliation adapter
 

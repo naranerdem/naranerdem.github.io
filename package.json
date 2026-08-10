@@ -9,7 +9,8 @@
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro check && ASTRO_TELEMETRY_DISABLED=1 astro build",
     "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview",
     "preview:cloudflare": "npm run build && wrangler dev",
-    "deploy:cloudflare": "npm run build && wrangler deploy"
+    "deploy:cloudflare": "npm run build && wrangler deploy",
+    "test:d1:local": "node scripts/d1-local-smoke.mjs"
   },
   "dependencies": {
     "astro": "^7.2.0"
