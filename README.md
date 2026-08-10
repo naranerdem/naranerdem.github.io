@@ -52,13 +52,13 @@ npm run preview
 
 ## Deployment Direction
 
-Cloudflare Workers Static Assets is the intended primary host for `naranerdem.com`. The current project builds to static files in `dist/`, which Wrangler deploys as an asset-only Worker.
+`https://naranerdem.com` is the primary production site. Cloudflare Workers Static Assets hosts the production domain, while the `workers.dev` URL remains useful for development and testing.
 
 GitHub Pages remains a fallback. Because this is a GitHub user site repository named `naranerdem.github.io`, the static site is configured for the root path instead of a project subpath.
 
 GitHub Pages deployment is handled by GitHub Actions on every push to `main`, with a manual workflow option also available. In the GitHub repository UI, Settings → Pages must use `GitHub Actions` as the source. Cloudflare remains the intended future host for backend-dependent functionality.
 
-Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` to build and deploy the static assets to Workers. Do not attach a custom domain until the temporary `workers.dev` deployment has been verified.
+Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` to build and deploy the static assets to Workers.
 
 Future backend services should be designed so public pages still work as a static site. Registration, tuition, reminders, reconciliation, and exports may become unavailable in fallback mode, but the public website should not fail to render.
 
