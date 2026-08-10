@@ -11,7 +11,7 @@ The project uses two Cloudflare D1 databases:
 
 Wrangler remains the source of truth. The top-level Worker configuration binds future production code to `DB -> naran-erdem-production`. The `staging` Wrangler environment binds the same `DB` name to `naran-erdem-staging` and deliberately has no custom domain route.
 
-The current Worker remains asset-only. Wrangler supports `main` being optional for asset-only Workers and supports D1 bindings in `wrangler.jsonc`; the binding is ready for the next API phase, but no Worker script or public API has been introduced yet.
+The Worker serves static Astro assets directly and runs the small API layer only for `/api/*` paths. The production Worker uses `DB -> naran-erdem-production`; the separately deployed `naran-erdem-staging` Worker uses `DB -> naran-erdem-staging`. Both environments currently set `REGISTRATION_WRITE_ENABLED=false`.
 
 ## ID And Timestamp Strategy
 
@@ -75,6 +75,16 @@ Staging naturally contains test data, but test provenance is still useful for cl
 
 A future advanced-admin/dev action such as `Delete all test data` must operate only on explicit test data or staging, require strong admin privilege and confirmation, clean in dependency-safe order, and never become a public endpoint.
 
+## Public API Safety
+
+The public catalog API may return only registration configuration. It must never return guardian, student, application, email, audit, or other private operational records.
+
+An unauthenticated future registration submission must not reveal whether a guardian email already has an account, return existing guardian/student data for a supplied email, overwrite an existing guardian's contact details, or authoritatively link a new child/application to an existing guardian merely because emails match. Existing-account access and linking must wait for the future passwordless email-ownership verification flow, and API responses must not disclose account existence.
+
+## Future Seat Allocation Atomicity
+
+When registration writes are introduced, ranked-preference seat allocation must atomically validate capacity and create the resulting hold. Do not implement it as an unprotected `SELECT` for availability followed later by an `INSERT`; use D1 batch/transaction semantics and database constraints or conditional writes as appropriate.
+
 ## Email Testing Principle
 
 Email delivery is not implemented in this foundation, but `outbound_email` is designed so staging can test the real generation/provider path safely.
@@ -128,3 +138,5 @@ npx wrangler d1 migrations apply DB --remote
 ```
 
 Use staging before production. Before applying production migrations, verify the target production database is the intended empty/new database. Do not use ad hoc destructive SQL against production.
+
+The staging catalog API has a deliberately fake, non-PII fixture set. Apply it only to staging with `npm run seed:catalog:staging`; the SQL uses `INSERT OR IGNORE` and must never be applied to production.

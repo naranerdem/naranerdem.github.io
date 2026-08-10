@@ -58,7 +58,7 @@ GitHub Pages remains a fallback. Because this is a GitHub user site repository n
 
 GitHub Pages deployment is handled by GitHub Actions on every push to `main`, with a manual workflow option also available. In the GitHub repository UI, Settings → Pages must use `GitHub Actions` as the source. Cloudflare remains the intended future host for backend-dependent functionality.
 
-Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` to build and deploy the static assets to Workers.
+Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` for production and `npm run deploy:cloudflare:staging` for the separate staging Worker at `https://naran-erdem-staging.naranerdem-github-io.workers.dev`. Static assets remain asset-first; the Worker currently exposes only read-only health and registration-catalog API endpoints backed by D1. Registration writes remain disabled in both environments.
 
 Future backend services should be designed so public pages still work as a static site. Registration, tuition, reminders, reconciliation, and exports may become unavailable in fallback mode, but the public website should not fail to render.
 

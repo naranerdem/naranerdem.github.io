@@ -1,12 +1,18 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "naran-erdem",
+  "main": "src/worker.ts",
   "compatibility_date": "2026-08-10",
   "workers_dev": true,
+  "vars": {
+    "APP_ENV": "production",
+    "REGISTRATION_WRITE_ENABLED": "false"
+  },
   "assets": {
     "directory": "./dist",
     "html_handling": "auto-trailing-slash",
-    "not_found_handling": "none"
+    "not_found_handling": "none",
+    "run_worker_first": ["/api/*"]
   },
   "routes": [
     {
@@ -27,6 +33,10 @@
       "name": "naran-erdem-staging",
       "workers_dev": true,
       "routes": [],
+      "vars": {
+        "APP_ENV": "staging",
+        "REGISTRATION_WRITE_ENABLED": "false"
+      },
       "d1_databases": [
         {
           "binding": "DB",

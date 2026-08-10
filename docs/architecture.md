@@ -54,6 +54,8 @@ Desktop-enhanced workflows may include:
 
 The public website contains general pages, program information, and entry points into registration. It should be able to build to static files and serve correctly on both Cloudflare Workers Static Assets and GitHub Pages.
 
+On Cloudflare, static assets remain asset-first. A small Worker API runs only for `/api/*`, with D1 access kept in an explicit service layer. The currently deployed API is deliberately read-only (`/api/health` and `/api/registration/catalog`); registration writes remain disabled in production and staging. The separately deployed staging Worker uses the staging D1 database and has no custom domain.
+
 The public site must not require a production database, authentication service, email provider, or bank integration to render.
 
 ### Registration/backend application
@@ -71,6 +73,8 @@ The backend should expose narrow application-level operations instead of letting
 - export operational records
 
 Parent-facing account access should eventually be passwordless, based on verified email magic links or one-time codes. Email links should return the parent to durable server-side registration/account state, not rely on an old browser tab or client session remaining alive.
+
+Before email ownership is verified, a public submission must not discover whether an email belongs to an existing guardian, retrieve existing family data, overwrite an existing guardian profile, or authoritatively link supplied data to an existing account. This preserves safe account linking for the future passwordless flow.
 
 The future parent portal should show children, current registrations, class/time, seat-hold deadline, payment schedule/status, discounts, available credit, referral status/share link, refund options, Facebook class-group link after confirmation, and returning registration.
 
@@ -211,3 +215,5 @@ Teacher exports should reflect the current operational state in a human-readable
 The current Astro configuration uses static output and a root `site` URL appropriate for the GitHub user site `https://naranerdem.github.io`.
 
 Future backend-dependent routes should degrade gracefully. If the app is served from GitHub Pages without backend services, public content should continue to work and dynamic registration tools should show a clear unavailable state or link to an alternative process.
+
+Creating a future temporary seat hold from ranked class preferences must perform capacity validation and hold creation atomically. A separate availability read followed by a later insert is not sufficient.

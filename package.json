@@ -10,7 +10,10 @@
     "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview",
     "preview:cloudflare": "npm run build && wrangler dev",
     "deploy:cloudflare": "npm run build && wrangler deploy",
-    "test:d1:local": "node scripts/d1-local-smoke.mjs"
+    "deploy:cloudflare:staging": "npm run build && wrangler deploy --env staging",
+    "seed:catalog:staging": "node scripts/seed-staging-catalog.mjs",
+    "test:d1:local": "node scripts/d1-local-smoke.mjs",
+    "test:api": "npm run build && node scripts/api-worker-test.mjs"
   },
   "dependencies": {
     "astro": "^7.2.0"
