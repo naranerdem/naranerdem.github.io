@@ -170,6 +170,28 @@ For example, two different Saturday `1-р шат — Анхан шат` time slo
 
 Class/session capacity should be configurable. Historically a class has 10 children.
 
+### Ranked Class Preferences
+
+Public registration should let a parent rank one or more concrete class/time preferences for each child. Each ranked item is a concrete `ClassSession`, not merely a stage:
+
+```text
+1st preference -> stage + weekday + start/end time
+2nd preference -> stage + weekday + start/end time
+3rd preference -> stage + weekday + start/end time
+```
+
+Parents should only rank times they would actually accept. The first preference is the highest priority, but later preferences are also acceptable if earlier choices are unavailable.
+
+Future backend seat-hold semantics:
+
+- when creating a seat hold, try the highest-ranked acceptable class with capacity
+- if the first preference has no capacity but the second does, the second may receive the seat hold
+- if none of the acceptable choices has capacity, preserve waitlist entries/preferences in ranked order
+- when a relevant seat becomes available, offer the best-ranked available choice
+- once one concrete class is paid/confirmed, remove or deactivate the child's other competing waitlist/preferences for that enrollment
+
+Do not add complicated public policies yet, such as asking parents to decide whether they want to wait only for preference #1 even if preference #2 has a seat.
+
 ### Enrollment
 
 An enrollment connects a student to a program/session/academic year.

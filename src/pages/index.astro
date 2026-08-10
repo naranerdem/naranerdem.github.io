@@ -1,6 +1,5 @@
 ---
 import {
-  contact,
   distinctivePoints,
   hero,
   navigation,
@@ -9,6 +8,7 @@ import {
   studyAreas,
   teacherNote,
 } from "../content/homepage";
+import { contact } from "../content/contact";
 import { registrationCopy } from "../content/registration";
 import "../styles/global.css";
 ---
@@ -140,20 +140,20 @@ import "../styles/global.css";
 
       <section id="contact" class="section-shell contact-section" aria-labelledby="contact-title">
         <div class="section-heading">
-          <p class="eyebrow">Холбоо барих</p>
-          <h2 id="contact-title">Асуух зүйл байвал холбогдоорой</h2>
+          <p class="eyebrow">{contact.section.kicker}</p>
+          <h2 id="contact-title">{contact.section.heading}</h2>
         </div>
         <div class="contact-grid">
           <a class="contact-card" href={contact.phone.href}>
-            <span>Утас</span>
+            <span>{contact.section.phoneLabel}</span>
             <strong>{contact.phone.label}</strong>
           </a>
           <a class="contact-card" href={contact.facebook.href} target="_blank" rel="noreferrer">
-            <span>Гол мэдээллийн суваг</span>
+            <span>{contact.section.facebookLabel}</span>
             <strong>{contact.facebook.label}</strong>
           </a>
           <address class="contact-card address-card">
-            <span>Байршил</span>
+            <span>{contact.section.locationLabel}</span>
             {contact.locationLines.map((line) => <strong>{line}</strong>)}
             <em>{contact.locationNote}</em>
           </address>
@@ -163,7 +163,7 @@ import "../styles/global.css";
 
     <footer class="site-footer">
       <p>{siteIdentity.name} · {siteIdentity.programLabel}</p>
-      <a href={contact.facebook.href} target="_blank" rel="noreferrer">Facebook хуудас</a>
+      <a href={contact.facebook.href} target="_blank" rel="noreferrer">{contact.facebook.label}</a>
     </footer>
   </body>
 </html>

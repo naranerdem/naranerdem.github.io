@@ -1,12 +1,3 @@
-export const registrationConfig = {
-  academicYear: null,
-  status: "preparing",
-  registrationUrl: null,
-  deadline: null,
-  schedules: [],
-  prices: [],
-};
-
 export const registrationCopy = {
   heading: "Бүртгэлийн мэдээлэл",
   intro:
@@ -41,70 +32,6 @@ export const placementRules = {
   ],
 };
 
-export const classSessionConfig = {
-  isDevelopmentSample: true,
-  defaultCapacity: 10,
-  sessions: [
-    {
-      id: "dev-stage-1-sat-morning",
-      stageId: "stage-1",
-      stageLabel: "1-р шат — Анхан шат",
-      weekday: "Бямба",
-      startTime: "10:00",
-      endTime: "11:20",
-      availability: "available",
-      note: "Хөгжүүлэлтийн жишээ цаг",
-    },
-    {
-      id: "dev-stage-1-sat-afternoon",
-      stageId: "stage-1",
-      stageLabel: "1-р шат — Анхан шат",
-      weekday: "Бямба",
-      startTime: "14:00",
-      endTime: "15:20",
-      availability: "full",
-      note: "Дүүрсэн төлөвийн жишээ",
-    },
-    {
-      id: "dev-stage-2-sun-morning",
-      stageId: "stage-2",
-      stageLabel: "2-р шат — Дунд түвшин",
-      weekday: "Ням",
-      startTime: "10:00",
-      endTime: "11:20",
-      availability: "available",
-      note: "Хөгжүүлэлтийн жишээ цаг",
-    },
-    {
-      id: "dev-stage-3-sun-afternoon",
-      stageId: "stage-3",
-      stageLabel: "3-р шат — Ахисан түвшин",
-      weekday: "Ням",
-      startTime: "13:00",
-      endTime: "15:00",
-      availability: "unavailable",
-      note: "Одоогоор сонгох боломжгүй төлөвийн жишээ",
-    },
-  ],
-};
-
-export const feeConfig = {
-  currentPricesConfigured: false,
-  standardPaymentPlans: [
-    {
-      id: "full-year",
-      label: "Бүтэн жилээр төлөх",
-      summary: "Нэг удаа төлөх стандарт сонголт. Нийт дүн бага байна.",
-    },
-    {
-      id: "two-part",
-      label: "2 хувааж төлөх",
-      summary: "Жилийн төлбөрийг хоёр хэсэгт хуваах стандарт сонголт.",
-    },
-  ],
-  ancillaryCharges: [],
-};
-
 export const publicDiscountCopy = {
   family:
     "Нэг гэр бүлийн 2 ба түүнээс олон хүүхэд тухайн хичээлийн жилд баталгаажсан тохиолдолд хүүхэд бүрийн сургалтын төлбөрт 10% гэр бүлийн хөнгөлөлт тооцох дүрэмтэй.",
@@ -114,26 +41,121 @@ export const publicDiscountCopy = {
     "Хөнгөлөлт нь зөвхөн сургалтын төлбөрөөс тооцогдоно. Халаад зэрэг нэмэлт төлбөрт тооцохгүй.",
 };
 
-export const rulesContent = {
-  parent: {
-    title: "Эцэг эх, асран хамгаалагчийн журам",
-    summary: [
-      "Хөтөлбөрийн зорилго, хүрээг ойлгож, хичээлийн жилийн турш тогтмол хамрагдахад анхаарна.",
-      "Төлбөр, хуваарь, амралтын өдрүүд, цагийн өөрчлөлтийн мэдээллийг цаг тухайд нь шалгана.",
-      "Ангийн мэдээлэл, зарлал, харилцааг Facebook групп зэрэг албан сувгаар тогтмол хянана.",
-    ],
-    acknowledgement:
-      "Би хүүхэдтэйгээ хамт бүртгэлийн мэдээлэл, журмыг уншиж танилцсан бөгөөд хүүхдээ бүртгүүлэхийг зөвшөөрч байна.",
+export const registrationFormCopy = {
+  requiredExplanation: "* тэмдэгтэй талбарыг бөглөнө үү.",
+  selectPlaceholder: "Сонгоно уу",
+  buttons: {
+    back: "Буцах",
+    next: "Үргэлжлүүлэх",
+    finish: "Туршилтаар дуусгах",
+    addChild: "+ Өөр хүүхэд нэмэх",
+    removeChild: "Хасах",
   },
-  student: {
-    title: "Сурагчийн журам",
-    summary: [
-      "Хүүхэд хичээлд идэвхтэй, дуртай оролцож, багшийн зааврыг дагана.",
-      "Туршилтын аюулгүй байдлыг мөрдөж, бусадтай хүндэтгэлтэй харилцана.",
-      "Тэмдэглэл хөтөлж, багаар хийх туршилтад бусад хүүхдэд оролцох боломж олгоно.",
-      "Цаг баримталж, хэрэглэсэн хэрэгсэл, материалыг цэвэрлэж буцаана.",
+  guardian: {
+    title: "1. Асран хамгаалагчийн мэдээлэл",
+    name: "Эцэг эх, асран хамгаалагчийн овог, нэр",
+    relationship: "Хүүхдийн хэн болох",
+    relationshipHelp:
+      "Хүүхдийг зөвхөн эцэг эх эсвэл бодит асран хамгаалагч бүртгэнэ.",
+    primaryPhone: "Үндсэн утас",
+    secondaryPhone: "Хоёр дахь утас",
+    email: "Имэйл",
+    emailHelp: "Бүртгэл, төлбөр, төлөвийн чухал мэдэгдэл энэ хаягаар ирнэ.",
+    facebook: "Facebook нэр",
+    facebookHelp: "Ангийн Facebook группт нэгдэхэд танихад хэрэгтэй.",
+    homeAddress: "Гэрийн хаягийн товч мэдээлэл",
+    homeAddressHelp:
+      "Дүүргээ заавал бичнэ үү. Хүсвэл хороо, хотхон зэрэг дэлгэрэнгүй мэдээлэл нэмж болно. Байр, тоотыг заавал бичих шаардлагагүй.",
+    relationshipOptions: ["Ээж", "Аав", "Асран хамгаалагч"],
+  },
+  child: {
+    title: "2. Хүүхдийн мэдээлэл",
+    help:
+      "Нэг асран хамгаалагч хэд хэдэн хүүхэд нэмэж болно. Асран хамгаалагчийн мэдээллийг давхардуулж бөглөхгүй.",
+    cardTitle: "Хүүхэд",
+    surname: "Овог",
+    name: "Нэр",
+    gender: "Хүйс",
+    dob: "Төрсөн огноо",
+    grade: "Анги",
+    school: "Сургуулийн нэр",
+    returning: "Өмнө нь Наран Эрдэмд сурч байсан эсэх",
+    previousStage: "Өмнө дүүргэсэн шат",
+    previousStageHelp: "Хэрэв сурч байсан бол сонгоно уу.",
+    referralCode: "Урилгын код",
+    referralCodeHelp: "Хэрэв танд урилгын код байгаа бол оруулна уу.",
+    recommendationUnknown:
+      "Анги болон өмнөх сургалтын мэдээллээс санал болгох шат гарна.",
+    recommendationPrefix: "Санал болгох шат:",
+    recommendationMissing: "Санал болгох шат хараахан тодорхойгүй.",
+    stageLabels: {
+      "stage-1": "1-р шат — Анхан шат",
+      "stage-2": "2-р шат — Дунд түвшин",
+      "stage-3": "3-р шат — Ахисан түвшин",
+    },
+    genderOptions: ["Эмэгтэй", "Эрэгтэй", "Өөрөөр бичих/хэлэх"],
+    gradeOptions: [
+      { value: "4", label: "4-р анги" },
+      { value: "5", label: "5-р анги" },
+      { value: "6", label: "6-р анги" },
+      { value: "7", label: "7-р анги" },
+      { value: "8", label: "8-р анги" },
+      { value: "9", label: "9-р анги" },
+      { value: "10", label: "10-р анги" },
+      { value: "other", label: "Бусад" },
     ],
-    acknowledgement:
-      "Би энэ сургалтад өөрийн хүсэлтээр суралцахыг хүсэж, сурагчийн журамтай танилцлаа.",
+    returningOptions: [
+      { value: "no", label: "Үгүй" },
+      { value: "yes", label: "Тийм" },
+    ],
+    previousStageOptions: [
+      { value: "stage-1", label: "1-р шат — Анхан шат" },
+      { value: "stage-2", label: "2-р шат — Дунд түвшин" },
+      { value: "stage-3", label: "3-р шат — Ахисан түвшин" },
+      { value: "unknown", label: "Сайн мэдэхгүй" },
+    ],
+  },
+  classChoice: {
+    title: "3. Анги, цаг сонгох",
+    help:
+      "Боломжтой цагуудаас хүүхэд бүрийн хүлээн зөвшөөрөх сонголтыг дарааллаар нь сонгоно. 1-р сонголт хамгийн түрүүнд шалгагдана.",
+    preferenceLegend: "Хүлээн зөвшөөрөх анги, цагийн дараалал",
+    preferenceLabels: ["1-р сонголт", "2-р сонголт", "3-р сонголт"],
+    optionalPreferenceHelp:
+      "Дараагийн сонголтуудыг зөвхөн тухайн цаг танд боломжтой бол сонгоно уу.",
+    unavailableTitle: "Одоогоор сонгох боломжгүй жишээ цагууд",
+    availabilityLabels: {
+      available: "Сонгох боломжтой",
+      full: "Дүүрсэн",
+      unavailable: "Одоогоор боломжгүй",
+    },
+  },
+  payment: {
+    title: "5. Стандарт төлбөрийн сонголт",
+    help:
+      "Одоогийн үнийг энэ прототипт оруулаагүй. Тухайн жилийн үнэ, хугацаа, төлбөрийн хүсэлт дараа нь тусдаа тохиргоогоор гарна.",
+    planLegend: "Төлбөрийн хэлбэр",
+    discountSummary: "Хөнгөлөлтийн тухай",
+  },
+  review: {
+    title: "6. Хянах",
+    help: "Доорх нь зөвхөн таны төхөөрөмж дээр үүссэн түр хураангуй. Илгээхгүй, хадгалахгүй.",
+    guardianHeading: "Асран хамгаалагч",
+    addressHeading: "Гэрийн хаягийн товч мэдээлэл",
+    childClassHeading: "Хүүхэд ба анги",
+    paymentHeading: "Төлбөрийн стандарт сонголт",
+    rulesHeading: "Журам",
+    rulesText:
+      "Журамтай танилцсан эсэхийг прототип дотор шалгана. Одоогоор бодит зөвшөөрөл хадгалахгүй.",
+  },
+  messages: {
+    requiredError: "* тэмдэгтэй талбарыг шалгана уу.",
+    prototypeComplete:
+      "Бүртгэлийн шинэ системийг бэлтгэж байна. Энэ үйлдлээр бодит бүртгэл, суудал барилт, төлбөрийн хүсэлт үүсээгүй.",
+    notSelected: "Сонгоогүй",
+    classNotSelected: "Анги, цаг сонгоогүй",
+    genderNotSelected: "Хүйс сонгоогүй",
+    dobNotEntered: "Төрсөн огноо оруулаагүй",
+    unknownAge: "нас тодорхойгүй",
   },
 };

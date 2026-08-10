@@ -90,6 +90,10 @@ The registration domain is documented before implementation so the future app pr
 
 See [docs/registration-model.md](docs/registration-model.md).
 
+## Editing Public Content
+
+For small wording, phone, address, schedule, or future price edits, see [EDITING.md](EDITING.md). Public Mongolian wording is kept in `src/content/`; current academic-year data is kept in `src/config/academic-year.ts`.
+
 ## Privacy
 
 Children's registration records, private exports, bank data, credentials, API keys, authentication secrets, and operational data must never be committed to the public repository.
