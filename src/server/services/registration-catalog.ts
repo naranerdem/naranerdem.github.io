@@ -9,7 +9,11 @@ interface CatalogRow {
   weekday: string;
   startTime: string;
   endTime: string;
-  status: "available" | "full" | "closed";
+  capacity: number;
+  confirmedCount: number;
+  activeHoldCount: number;
+  remainingSeats: number;
+  publicAvailability: "available" | "full" | "unavailable";
 }
 
 export interface RegistrationCatalog {
@@ -23,7 +27,9 @@ export interface RegistrationCatalog {
       weekday: string;
       startTime: string;
       endTime: string;
-      availability: CatalogRow["status"];
+      activeHoldCount: number;
+      remainingSeats: number;
+      availability: CatalogRow["publicAvailability"];
     }>;
   }>;
   paymentPlans: [];
@@ -39,9 +45,40 @@ const stagingCatalogSql = `
     class_session.weekday AS weekday,
     class_session.start_time AS startTime,
     class_session.end_time AS endTime,
-    class_session.status AS status
+    class_session.capacity AS capacity,
+    COALESCE(confirmed.count, 0) AS confirmedCount,
+    COALESCE(active_holds.count, 0) AS activeHoldCount,
+    MAX(class_session.capacity - COALESCE(confirmed.count, 0) - COALESCE(active_holds.count, 0), 0) AS remainingSeats,
+    CASE
+      WHEN class_session.status = 'closed' THEN 'unavailable'
+      WHEN class_session.capacity - COALESCE(confirmed.count, 0) - COALESCE(active_holds.count, 0) > 0 THEN 'available'
+      ELSE 'full'
+    END AS publicAvailability
   FROM academic_year
   INNER JOIN class_session ON class_session.academic_year_id = academic_year.id
+  LEFT JOIN (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'confirmed'
+      AND application_child.status = 'enrolled'
+      AND pre_registration.status IN ('submitted', 'under_review', 'awaiting_assignment', 'completed')
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ) AS confirmed ON confirmed.class_session_id = class_session.id
+  LEFT JOIN (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'awaiting_initial_payment'
+      AND enrollment.effective_hold_deadline_at > ?
+      AND application_child.status = 'hold_created'
+      AND pre_registration.status IN ('submitted', 'under_review', 'awaiting_assignment')
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ) AS active_holds ON active_holds.class_session_id = class_session.id
   WHERE academic_year.registration_status = ?
     AND class_session.status IN ('available', 'full', 'closed')
   ORDER BY academic_year.starts_on, academic_year.public_label, class_session.weekday, class_session.start_time
@@ -57,9 +94,46 @@ const productionCatalogSql = `
     class_session.weekday AS weekday,
     class_session.start_time AS startTime,
     class_session.end_time AS endTime,
-    class_session.status AS status
+    class_session.capacity AS capacity,
+    COALESCE(confirmed.count, 0) AS confirmedCount,
+    COALESCE(active_holds.count, 0) AS activeHoldCount,
+    MAX(class_session.capacity - COALESCE(confirmed.count, 0) - COALESCE(active_holds.count, 0), 0) AS remainingSeats,
+    CASE
+      WHEN class_session.status = 'closed' THEN 'unavailable'
+      WHEN class_session.capacity - COALESCE(confirmed.count, 0) - COALESCE(active_holds.count, 0) > 0 THEN 'available'
+      ELSE 'full'
+    END AS publicAvailability
   FROM academic_year
   INNER JOIN class_session ON class_session.academic_year_id = academic_year.id
+  LEFT JOIN (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'confirmed'
+      AND enrollment.is_test = 0
+      AND application_child.is_test = 0
+      AND pre_registration.is_test = 0
+      AND application_child.status = 'enrolled'
+      AND pre_registration.status IN ('submitted', 'under_review', 'awaiting_assignment', 'completed')
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ) AS confirmed ON confirmed.class_session_id = class_session.id
+  LEFT JOIN (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'awaiting_initial_payment'
+      AND enrollment.effective_hold_deadline_at > ?
+      AND enrollment.is_test = 0
+      AND application_child.is_test = 0
+      AND pre_registration.is_test = 0
+      AND application_child.status = 'hold_created'
+      AND pre_registration.status IN ('submitted', 'under_review', 'awaiting_assignment')
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ) AS active_holds ON active_holds.class_session_id = class_session.id
   WHERE academic_year.registration_status = ?
     AND academic_year.is_test = ?
     AND class_session.is_test = ?
@@ -72,9 +146,10 @@ export async function getRegistrationCatalog(
   database: D1Database,
   environment: AppEnvironment,
 ): Promise<RegistrationCatalog> {
+  const now = new Date().toISOString();
   const statement = environment === "staging"
-    ? database.prepare(stagingCatalogSql).bind("open")
-    : database.prepare(productionCatalogSql).bind("open", 0, 0, 0);
+    ? database.prepare(stagingCatalogSql).bind(now, "open")
+    : database.prepare(productionCatalogSql).bind(now, "open", 0, 0, 0);
   const result = await statement.all<CatalogRow>();
   const years = new Map<string, RegistrationCatalog["academicYears"][number]>();
 
@@ -92,7 +167,9 @@ export async function getRegistrationCatalog(
       weekday: row.weekday,
       startTime: row.startTime,
       endTime: row.endTime,
-      availability: row.status,
+      activeHoldCount: row.activeHoldCount,
+      remainingSeats: row.remainingSeats,
+      availability: row.publicAvailability,
     });
   }
 

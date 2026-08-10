@@ -1,24 +1,12 @@
 ---
-import { classSessionConfig, feeConfig } from "../config/academic-year";
+import { feeConfig } from "../config/academic-year";
 import { contact } from "../content/contact";
 import { siteIdentity } from "../content/homepage";
-import {
-  placementRules,
-  publicDiscountCopy,
-  registrationFormCopy,
-  registrationPrototype,
-} from "../content/registration";
+import { registrationFormCopy, registrationPrototype } from "../content/registration";
 import { rulesContent } from "../content/rules";
 import "../styles/global.css";
 
-const registrationData = {
-  classSessionConfig,
-  feeConfig,
-  placementRules,
-  publicDiscountCopy,
-  registrationFormCopy,
-  rulesContent,
-};
+const registrationData = { feeConfig, registrationFormCopy, rulesContent };
 const formCopy = registrationFormCopy;
 ---
 
@@ -47,34 +35,22 @@ const formCopy = registrationFormCopy;
     <main class="register-shell">
       <section class="prototype-hero" aria-labelledby="register-title">
         <p class="prototype-notice">{registrationPrototype.notice}</p>
-        <h1 id="register-title">Бүртгэл</h1>
+        <div class="register-title-row">
+          <h1 id="register-title">Бүртгэлийн мэдээлэл</h1>
+          <p id="registration-progress" class="registration-progress">1 / 4 · {formCopy.progress.information}</p>
+        </div>
       </section>
 
-      <form id="prototype-form" class="wizard" novalidate>
-        <div class="wizard-status" aria-live="polite">
-          <span id="step-counter">1 / {registrationPrototype.steps.length}</span>
-          <strong id="step-title">{registrationPrototype.steps[0]}</strong>
-        </div>
-        <div
-          class="progress-track"
-          role="progressbar"
-          aria-label="Бүртгэлийн явц"
-          aria-valuemin="1"
-          aria-valuemax={registrationPrototype.steps.length}
-          aria-valuenow="1"
-          aria-valuetext={`1 / ${registrationPrototype.steps.length} ${registrationPrototype.steps[0]}`}
-        >
-          <div id="progress-bar" class="progress-bar"></div>
-        </div>
+      <form id="registration-form" class="registration-form" novalidate>
         <p class="required-explanation">
-          <span class="required-marker" aria-hidden="true">*</span>
-          {formCopy.requiredExplanation.replace("* ", "")}
+          <span class="required-marker" aria-hidden="true">*</span>{formCopy.requiredExplanation.replace("*", "")}
         </p>
+        <p id="information-error" class="form-error" role="alert" hidden>{formCopy.messages.requiredError}</p>
 
-        <section class="wizard-step active" data-step="0" aria-labelledby="guardian-title">
+        <section class="form-section" aria-labelledby="guardian-title">
           <h2 id="guardian-title">{formCopy.guardian.title}</h2>
-          <div class="field-group">
-            <label>
+          <div class="compact-fields guardian-fields">
+            <label class="field-wide">
               <span>{formCopy.guardian.name} <span class="required-marker" aria-hidden="true">*</span></span>
               <input id="guardian-name" name="guardianName" autocomplete="name" required />
             </label>
@@ -87,160 +63,134 @@ const formCopy = registrationFormCopy;
               <small>{formCopy.guardian.relationshipHelp}</small>
             </label>
             <label>
-              <span>{formCopy.guardian.primaryPhone} <span class="required-marker" aria-hidden="true">*</span></span>
-              <input id="primary-phone" name="primaryPhone" type="tel" inputmode="tel" autocomplete="tel" required />
-            </label>
-            <label>
-              <span>{formCopy.guardian.secondaryPhone}</span>
-              <input id="secondary-phone" name="secondaryPhone" type="tel" inputmode="tel" autocomplete="tel" />
-            </label>
-            <label>
               <span>{formCopy.guardian.email} <span class="required-marker" aria-hidden="true">*</span></span>
-              <input id="email" name="email" type="email" inputmode="email" autocomplete="email" required />
+              <input id="guardian-email" name="guardianEmail" type="email" inputmode="email" autocomplete="email" required />
               <small>{formCopy.guardian.emailHelp}</small>
             </label>
             <label>
+              <span>{formCopy.guardian.primaryPhone} <span class="required-marker" aria-hidden="true">*</span></span>
+              <input id="guardian-phone" name="guardianPhone" type="tel" inputmode="tel" autocomplete="tel" required />
+            </label>
+            <label>
+              <span>{formCopy.guardian.secondaryPhone}</span>
+              <input id="guardian-secondary-phone" name="guardianSecondaryPhone" type="tel" inputmode="tel" autocomplete="tel" />
+            </label>
+            <label>
               <span>{formCopy.guardian.facebook}</span>
-              <input id="facebook-profile" name="facebookProfile" autocomplete="off" />
+              <input id="guardian-facebook" name="guardianFacebook" autocomplete="off" />
               <small>{formCopy.guardian.facebookHelp}</small>
             </label>
-            <label class="full-span">
+            <label class="field-wide">
               <span>{formCopy.guardian.homeAddress} <span class="required-marker" aria-hidden="true">*</span></span>
-              <textarea id="home-address" name="homeAddress" rows="4" required></textarea>
+              <textarea id="guardian-address" name="guardianAddress" rows="2" required></textarea>
               <small>{formCopy.guardian.homeAddressHelp}</small>
             </label>
           </div>
         </section>
 
-        <section class="wizard-step" data-step="1" aria-labelledby="children-title">
-          <h2 id="children-title">{formCopy.child.title}</h2>
-          <p class="step-help">{formCopy.child.help}</p>
+        <section class="form-section" aria-labelledby="children-title">
+          <div class="section-title-row">
+            <div>
+              <h2 id="children-title">{formCopy.child.title}</h2>
+              <p>{formCopy.child.help}</p>
+            </div>
+            <button class="text-button add-child-button" type="button" id="add-child">{formCopy.buttons.addChild}</button>
+          </div>
           <div id="children-list" class="children-list"></div>
-          <button class="button secondary add-child-button" type="button" id="add-child">{formCopy.buttons.addChild}</button>
         </section>
 
-        <section class="wizard-step" data-step="2" aria-labelledby="class-title">
-          <h2 id="class-title">{formCopy.classChoice.title}</h2>
-          <p class="step-help">{formCopy.classChoice.help}</p>
-          <div id="class-selection-list" class="class-selection-list"></div>
-        </section>
-
-        <section class="wizard-step" data-step="3" aria-labelledby="rules-title">
-          <h2 id="rules-title">4. Журамтай танилцах</h2>
-          <details class="rule-block" open>
-            <summary>{rulesContent.parent.title}</summary>
-            <ul>
-              {rulesContent.parent.summary.map((item) => <li>{item}</li>)}
-            </ul>
-          </details>
-          <details class="rule-block">
-            <summary>{rulesContent.student.title}</summary>
-            <ul>
-              {rulesContent.student.summary.map((item) => <li>{item}</li>)}
-            </ul>
-          </details>
-          <label class="checkbox-row">
-            <input id="parent-rules" name="parentRules" type="checkbox" required />
-            <span>{rulesContent.parent.acknowledgement} <span class="required-marker" aria-hidden="true">*</span></span>
-          </label>
-          <label class="checkbox-row">
-            <input id="student-rules" name="studentRules" type="checkbox" required />
-            <span>{rulesContent.student.acknowledgement} <span class="required-marker" aria-hidden="true">*</span></span>
-          </label>
-        </section>
-
-        <section class="wizard-step" data-step="4" aria-labelledby="payment-title">
+        <section class="form-section payment-section" aria-labelledby="payment-title">
           <h2 id="payment-title">{formCopy.payment.title}</h2>
-          <p class="step-help">{formCopy.payment.help}</p>
-          <fieldset class="choice-list">
+          <p>{formCopy.payment.help}</p>
+          <fieldset class="payment-options">
             <legend>{formCopy.payment.planLegend} <span class="required-marker" aria-hidden="true">*</span></legend>
             {
               feeConfig.standardPaymentPlans.map((plan) => (
                 <label>
                   <input type="radio" name="paymentPlan" value={plan.id} required />
-                  <span>
-                    <strong>{plan.label}</strong>
-                    <small>{plan.summary}</small>
-                  </span>
+                  <span><strong>{plan.label}</strong><small>{plan.summary}</small></span>
                 </label>
               ))
             }
           </fieldset>
-          <details class="discount-disclosure">
-            <summary>{formCopy.payment.discountSummary}</summary>
-            <p>{publicDiscountCopy.family}</p>
-            <p>{publicDiscountCopy.referral}</p>
-            <p>{publicDiscountCopy.basis}</p>
-          </details>
         </section>
 
-        <section class="wizard-step" data-step="5" aria-labelledby="review-title">
-          <h2 id="review-title">{formCopy.review.title}</h2>
-          <p class="step-help">{formCopy.review.help}</p>
-          <div id="review-summary" class="review-summary"></div>
-          <div id="prototype-complete" class="prototype-complete" hidden>
-            {formCopy.messages.prototypeComplete}
-          </div>
-        </section>
-
-        <p id="wizard-error" class="wizard-error" role="alert" hidden>{formCopy.messages.requiredError}</p>
-
-        <div class="wizard-actions">
-          <button class="button secondary" type="button" id="back-button">{formCopy.buttons.back}</button>
-          <button class="button primary" type="button" id="next-button">{formCopy.buttons.next}</button>
-          <button class="button primary" type="button" id="finish-button" hidden>{formCopy.buttons.finish}</button>
+        <div class="form-actions">
+          <button class="button primary" type="submit">{formCopy.buttons.continueToRules}</button>
         </div>
       </form>
+
+      <section id="review-panel" class="review-panel" aria-labelledby="review-title" hidden>
+        <div class="register-title-row">
+          <div>
+            <h2 id="review-title">{formCopy.review.title}</h2>
+            <p>{formCopy.review.help}</p>
+          </div>
+          <p class="registration-progress">4 / 4 · {formCopy.progress.review}</p>
+        </div>
+        <div id="review-summary" class="review-summary"></div>
+        <div class="form-actions review-actions">
+          <button class="button secondary" type="button" id="edit-information">{formCopy.buttons.edit}</button>
+          <button class="button primary" type="button" id="finish-prototype">{formCopy.buttons.finish}</button>
+        </div>
+        <p id="prototype-complete" class="prototype-complete" role="status" hidden>{formCopy.messages.prototypeComplete}</p>
+      </section>
     </main>
+
+    <dialog id="guardian-rules-dialog" class="rules-dialog" aria-labelledby="guardian-rules-title">
+      <div class="dialog-content">
+        <div class="dialog-header">
+          <h2 id="guardian-rules-title">{rulesContent.parent.title}</h2>
+          <button class="icon-text-button" type="button" data-close-dialog="guardian-rules-dialog">{formCopy.buttons.close}</button>
+        </div>
+        <p>{rulesContent.parent.acknowledgement}</p>
+        <ul>{rulesContent.parent.summary.map((item) => <li>{item}</li>)}</ul>
+        <div class="dialog-actions">
+          <button class="button secondary" type="button" data-close-dialog="guardian-rules-dialog">{formCopy.buttons.close}</button>
+          <button class="button primary" type="button" id="acknowledge-guardian">{formCopy.buttons.acknowledgeGuardian}</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="student-rules-dialog" class="rules-dialog" aria-labelledby="student-rules-title">
+      <div class="dialog-content">
+        <div class="dialog-header">
+          <h2 id="student-rules-title">{rulesContent.student.title}</h2>
+          <button class="icon-text-button" type="button" data-close-dialog="student-rules-dialog">{formCopy.buttons.close}</button>
+        </div>
+        <p>{rulesContent.student.acknowledgement}</p>
+        <ul>{rulesContent.student.summary.map((item) => <li>{item}</li>)}</ul>
+        <div class="dialog-actions">
+          <button class="button secondary" type="button" data-close-dialog="student-rules-dialog">{formCopy.buttons.close}</button>
+          <button class="button primary" type="button" id="acknowledge-student">{formCopy.buttons.acknowledgeStudent}</button>
+        </div>
+      </div>
+    </dialog>
 
     <script id="registration-data" type="application/json" is:inline set:html={JSON.stringify(registrationData)} />
     <script is:inline>
-      const dataEl = document.getElementById("registration-data");
-      const registrationData = JSON.parse(dataEl.textContent);
+      const registrationData = JSON.parse(document.getElementById("registration-data").textContent);
       const formCopy = registrationData.registrationFormCopy;
-      const steps = Array.from(document.querySelectorAll(".wizard-step"));
-      const stepCounter = document.getElementById("step-counter");
-      const stepTitle = document.getElementById("step-title");
-      const progressTrack = document.querySelector(".progress-track");
-      const progressBar = document.getElementById("progress-bar");
-      const backButton = document.getElementById("back-button");
-      const nextButton = document.getElementById("next-button");
-      const finishButton = document.getElementById("finish-button");
-      const errorBox = document.getElementById("wizard-error");
+      const form = document.getElementById("registration-form");
       const childrenList = document.getElementById("children-list");
-      const classSelectionList = document.getElementById("class-selection-list");
+      const addChildButton = document.getElementById("add-child");
+      const errorBox = document.getElementById("information-error");
+      const progress = document.getElementById("registration-progress");
+      const reviewPanel = document.getElementById("review-panel");
       const reviewSummary = document.getElementById("review-summary");
       const completeMessage = document.getElementById("prototype-complete");
-      const stepNames = [
-        "Асран хамгаалагч",
-        "Хүүхэд",
-        "Анги, цаг",
-        "Журам",
-        "Төлбөр",
-        "Хянах",
-      ];
-      let currentStep = 0;
-      let childCount = 0;
-
+      const guardianDialog = document.getElementById("guardian-rules-dialog");
+      const studentDialog = document.getElementById("student-rules-dialog");
       const stageLabels = formCopy.child.stageLabels;
-
-      function requiredMarker() {
-        return '<span class="required-marker" aria-hidden="true">*</span>';
-      }
-
-      function optionHtml(option) {
-        if (typeof option === "string") return `<option>${escapeText(option)}</option>`;
-        return `<option value="${escapeText(option.value)}">${escapeText(option.label)}</option>`;
-      }
-
-      function sessionLabel(session) {
-        return `${session.stageLabel}, ${session.weekday} ${session.startTime}–${session.endTime}`;
-      }
-
-      function textValue(selector) {
-        const field = document.querySelector(selector);
-        return field && field.value ? field.value.trim() : "—";
-      }
+      const stagesFromQuery = { "1": "stage_1", "2": "stage_2", "3": "stage_3" };
+      const queryStage = stagesFromQuery[new URLSearchParams(window.location.search).get("stage")] || "";
+      let childCount = 0;
+      let catalog = null;
+      let catalogAvailable = false;
+      let catalogLoading = true;
+      let parentAcknowledged = false;
+      let studentAcknowledged = false;
+      let returnFocusTo = null;
 
       function escapeText(value) {
         return String(value)
@@ -251,315 +201,280 @@ const formCopy = registrationFormCopy;
           .replaceAll("'", "&#039;");
       }
 
-      function recommendStage(card) {
-        const grade = card.querySelector("[data-child-grade]").value;
-        const returning = card.querySelector("[data-child-returning]").value;
-        const previous = card.querySelector("[data-child-previous-stage]").value;
-
-        if (returning === "yes") {
-          if (previous === "stage-1") return "stage-2";
-          if (previous === "stage-2") return "stage-3";
-          if (previous === "stage-3") return "stage-3";
-        }
-
-        if (["4", "5", "6"].includes(grade)) return "stage-1";
-        if (grade === "7") return "stage-2";
-        if (["8", "9", "10"].includes(grade)) return "stage-3";
-        return "";
-      }
-
-      function updateRecommendation(card) {
-        const output = card.querySelector("[data-child-recommendation]");
-        const recommended = recommendStage(card);
-        output.textContent = recommended
-          ? `${formCopy.child.recommendationPrefix} ${stageLabels[recommended]}`
-          : formCopy.child.recommendationUnknown;
-      }
-
-      function renderChild(index) {
-        const card = document.createElement("article");
-        card.className = "child-card";
-        card.dataset.childIndex = String(index);
-        card.innerHTML = `
-          <div class="child-card-header">
-            <h3>${formCopy.child.cardTitle} ${index + 1}</h3>
-            ${index > 0 ? `<button type="button" class="text-button" data-remove-child>${formCopy.buttons.removeChild}</button>` : ""}
-          </div>
-          <div class="field-group">
-            <label>
-              <span>${formCopy.child.surname} ${requiredMarker()}</span>
-              <input name="child-${index}-surname" data-child-surname required>
-            </label>
-            <label>
-              <span>${formCopy.child.name} ${requiredMarker()}</span>
-              <input name="child-${index}-name" data-child-name required>
-            </label>
-            <label>
-              <span>${formCopy.child.gender} ${requiredMarker()}</span>
-              <select name="child-${index}-gender" data-child-gender required>
-                <option value="">${formCopy.selectPlaceholder}</option>
-                ${formCopy.child.genderOptions.map(optionHtml).join("")}
-              </select>
-            </label>
-            <label>
-              <span>${formCopy.child.dob} ${requiredMarker()}</span>
-              <input name="child-${index}-dob" data-child-dob type="date" required>
-            </label>
-            <label>
-              <span>${formCopy.child.grade} ${requiredMarker()}</span>
-              <select name="child-${index}-grade" data-child-grade required>
-                <option value="">${formCopy.selectPlaceholder}</option>
-                ${formCopy.child.gradeOptions.map(optionHtml).join("")}
-              </select>
-            </label>
-            <label>
-              <span>${formCopy.child.school}</span>
-              <input name="child-${index}-school" data-child-school>
-            </label>
-            <label>
-              <span>${formCopy.child.returning} ${requiredMarker()}</span>
-              <select name="child-${index}-returning" data-child-returning required>
-                <option value="">${formCopy.selectPlaceholder}</option>
-                ${formCopy.child.returningOptions.map(optionHtml).join("")}
-              </select>
-            </label>
-            <label>
-              <span>${formCopy.child.previousStage}</span>
-              <select name="child-${index}-previous-stage" data-child-previous-stage>
-                <option value="">${formCopy.selectPlaceholder}</option>
-                ${formCopy.child.previousStageOptions.map(optionHtml).join("")}
-              </select>
-              <small>${formCopy.child.previousStageHelp}</small>
-            </label>
-            <label class="full-span">
-              <span>${formCopy.child.referralCode}</span>
-              <input name="child-${index}-referral-code" data-child-referral-code autocomplete="off">
-              <small>${formCopy.child.referralCodeHelp}</small>
-            </label>
-          </div>
-          <p class="recommendation" data-child-recommendation>${formCopy.child.recommendationUnknown}</p>
-        `;
-        childrenList.append(card);
-        card.querySelectorAll("select, input").forEach((field) => {
-          field.addEventListener("input", () => updateRecommendation(card));
-          field.addEventListener("change", () => updateRecommendation(card));
-        });
-        const remove = card.querySelector("[data-remove-child]");
-        if (remove) {
-          remove.addEventListener("click", () => {
-            card.remove();
-            renderClassSelections();
-            renderReview();
-          });
-        }
+      function requiredMarker() {
+        return '<span class="required-marker" aria-hidden="true">*</span>';
       }
 
       function childCards() {
-        return Array.from(document.querySelectorAll(".child-card"));
+        return Array.from(childrenList.querySelectorAll("[data-child-card]"));
       }
 
-      function childName(card, fallback) {
-        const surname = card.querySelector("[data-child-surname]").value.trim();
-        const name = card.querySelector("[data-child-name]").value.trim();
-        return `${surname} ${name}`.trim() || fallback;
+      function optionHtml(option) {
+        if (typeof option === "string") return `<option value="${escapeText(option)}">${escapeText(option)}</option>`;
+        return `<option value="${escapeText(option.value)}">${escapeText(option.label)}</option>`;
       }
 
-      function availabilityLabel(value) {
-        return formCopy.classChoice.availabilityLabels[value] || formCopy.classChoice.availabilityLabels.unavailable;
-      }
-
-      function renderClassSelections() {
-        classSelectionList.innerHTML = "";
-        childCards().forEach((card, childIndex) => {
-          const recommended = recommendStage(card);
-          const availableSessions = registrationData.classSessionConfig.sessions.filter((session) => session.availability === "available");
-          const unavailableSessions = registrationData.classSessionConfig.sessions.filter((session) => session.availability !== "available");
-          const fieldset = document.createElement("fieldset");
-          fieldset.className = "class-fieldset";
-          fieldset.innerHTML = `
-            <legend>${escapeText(childName(card, `Хүүхэд ${childIndex + 1}`))}</legend>
-            <p>${recommended ? `${formCopy.child.recommendationPrefix} ${stageLabels[recommended]}` : formCopy.child.recommendationMissing}</p>
-            <div class="preference-list" role="group" aria-label="${formCopy.classChoice.preferenceLegend}">
-              ${formCopy.classChoice.preferenceLabels
-                .map((label, preferenceIndex) => `
-                  <label>
-                    <span>${label}${preferenceIndex === 0 ? ` ${requiredMarker()}` : ""}</span>
-                    <select name="class-child-${childIndex}-preference-${preferenceIndex + 1}" data-class-preference="${childIndex}" ${preferenceIndex === 0 ? "required" : ""}>
-                      <option value="">${preferenceIndex === 0 ? formCopy.selectPlaceholder : formCopy.classChoice.optionalPreferenceHelp}</option>
-                      ${availableSessions.map((session) => `<option value="${session.id}">${escapeText(sessionLabel(session))}</option>`).join("")}
-                    </select>
-                  </label>
-                `)
-                .join("")}
-            </div>
-          `;
-          if (unavailableSessions.length) {
-            const unavailableList = document.createElement("div");
-            unavailableList.className = "unavailable-session-list";
-            unavailableList.innerHTML = `
-              <p>${formCopy.classChoice.unavailableTitle}</p>
-              ${unavailableSessions.map((session) => `
-                <div class="session-option disabled">
-                  <span aria-hidden="true"></span>
-                  <span>
-                    <strong>${session.stageLabel}</strong>
-                    <small>${session.weekday}, ${session.startTime}–${session.endTime}</small>
-                    <small>${availabilityLabel(session.availability)} · ${session.note}</small>
-                  </span>
-                </div>
-              `).join("")}
-            `;
-            fieldset.append(unavailableList);
-          }
-          classSelectionList.append(fieldset);
-          fieldset.querySelectorAll("[data-class-preference]").forEach((select) => {
-            select.addEventListener("change", () => updatePreferenceOptions(fieldset));
-          });
-          updatePreferenceOptions(fieldset);
-        });
-      }
-
-      function updatePreferenceOptions(fieldset) {
-        const selects = Array.from(fieldset.querySelectorAll("[data-class-preference]"));
-        const selectedValues = selects.map((select) => select.value).filter(Boolean);
-        selects.forEach((select) => {
-          Array.from(select.options).forEach((option) => {
-            option.disabled = Boolean(option.value) && option.value !== select.value && selectedValues.includes(option.value);
-          });
-        });
-      }
-
-      function selectedPreferences(childIndex) {
-        return Array.from(document.querySelectorAll(`[data-class-preference="${childIndex}"]`))
-          .map((select, preferenceIndex) => {
-            if (!select.value) return null;
-            const session = registrationData.classSessionConfig.sessions.find((item) => item.id === select.value);
-            if (!session) return null;
-            return {
-              rank: preferenceIndex + 1,
-              session,
-            };
-          })
-          .filter(Boolean);
-      }
-
-      function selectedPreferenceSummary(childIndex) {
-        const preferences = selectedPreferences(childIndex);
-        if (!preferences.length) return formCopy.messages.classNotSelected;
-        return preferences
-          .map(({ rank, session }) => `${rank}-р сонголт: ${sessionLabel(session)}`)
-          .join("<br>");
-      }
-
-      function selectedPaymentPlan() {
-        const selected = document.querySelector('input[name="paymentPlan"]:checked');
-        if (!selected) return null;
-        return registrationData.feeConfig.standardPaymentPlans.find((plan) => plan.id === selected.value);
-      }
-
-      function derivedAgeFromDob(value) {
-        if (!value) return formCopy.messages.unknownAge;
-        const birthDate = new Date(`${value}T00:00:00`);
-        if (Number.isNaN(birthDate.getTime())) return formCopy.messages.unknownAge;
-        const today = new Date();
-        let age = today.getFullYear() - birthDate.getFullYear();
-        const monthDiff = today.getMonth() - birthDate.getMonth();
-        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-          age -= 1;
-        }
-        return `${age} настай`;
-      }
-
-      function renderReview() {
-        const children = childCards();
-        const childItems = children
-          .map((card, index) => {
-            return `
-              <li>
-                <strong>${escapeText(childName(card, `Хүүхэд ${index + 1}`))}</strong>
-                <span>${escapeText(card.querySelector("[data-child-gender]").value || formCopy.messages.genderNotSelected)} · ${escapeText(card.querySelector("[data-child-dob]").value || formCopy.messages.dobNotEntered)} (${escapeText(derivedAgeFromDob(card.querySelector("[data-child-dob]").value))}) · ${escapeText(card.querySelector("[data-child-grade]").value || formCopy.messages.notSelected)}-р анги</span>
-                <span>${selectedPreferenceSummary(index)}</span>
-              </li>
-            `;
-          })
+      function stageOptions() {
+        return Object.entries(stageLabels)
+          .map(([value, label]) => `<option value="${value}">${escapeText(label)}</option>`)
           .join("");
-        const plan = selectedPaymentPlan();
-        reviewSummary.innerHTML = `
-          <section>
-            <h3>${formCopy.review.guardianHeading}</h3>
-            <p>${escapeText(textValue("#guardian-name"))} · ${escapeText(textValue("#primary-phone"))}</p>
-            <p>${escapeText(textValue("#guardian-relationship"))}</p>
-          </section>
-          <section>
-            <h3>${formCopy.review.addressHeading}</h3>
-            <p>${escapeText(textValue("#home-address"))}</p>
-          </section>
-          <section>
-            <h3>${formCopy.review.childClassHeading}</h3>
-            <ul>${childItems}</ul>
-          </section>
-          <section>
-            <h3>${formCopy.review.paymentHeading}</h3>
-            <p>${plan ? escapeText(plan.label) : formCopy.messages.notSelected}</p>
-          </section>
-          <section>
-            <h3>${formCopy.review.rulesHeading}</h3>
-            <p>${formCopy.review.rulesText}</p>
-          </section>
-        `;
       }
 
-      function validateStep() {
-        const fields = Array.from(steps[currentStep].querySelectorAll("input, select, textarea"));
-        const invalid = fields.find((field) => !field.checkValidity());
-        if (invalid) {
-          invalid.reportValidity();
+      function recommendedStage(card) {
+        const returning = card.querySelector("[data-child-returning]").value;
+        const previous = card.querySelector("[data-child-previous-stage]").value;
+        if (returning !== "yes") return "";
+        if (previous === "stage_1") return "stage_2";
+        if (previous === "stage_2") return "stage_3";
+        return "";
+      }
+
+      function updateRecommendation(card, applySuggestion = false) {
+        const suggestion = recommendedStage(card);
+        const stage = card.querySelector("[data-child-stage]");
+        const notice = card.querySelector("[data-child-recommendation]");
+        if (suggestion && applySuggestion) stage.value = suggestion;
+        notice.textContent = suggestion
+          ? formCopy.child.recommendation.replace("{stage}", stageLabels[suggestion])
+          : stage.value ? "" : formCopy.child.recommendationUnknown;
+      }
+
+      function sessionForId(id) {
+        if (!catalog) return null;
+        return catalog.academicYears.flatMap((year) => year.classSessions).find((session) => session.id === id) || null;
+      }
+
+      function classText(session) {
+        return `${session.weekday} ${session.startTime}–${session.endTime}`;
+      }
+
+      function renderClasses(card) {
+        const stage = card.querySelector("[data-child-stage]").value;
+        const target = card.querySelector("[data-class-options]");
+        const status = card.querySelector("[data-catalog-message]");
+        const selected = card.querySelector("[data-child-class]:checked")?.value || "";
+        target.innerHTML = "";
+        status.textContent = "";
+
+        if (!catalog) {
+          status.textContent = catalogLoading ? formCopy.classChoice.loading : formCopy.classChoice.unavailable;
+          return;
+        }
+        if (!stage) {
+          status.textContent = formCopy.classChoice.chooseStage;
+          return;
+        }
+
+        const sessions = catalog.academicYears
+          .flatMap((year) => year.classSessions)
+          .filter((session) => session.stageCode === stage);
+        if (!sessions.length) {
+          status.textContent = formCopy.classChoice.noSessions;
+          return;
+        }
+
+        sessions.forEach((session) => {
+          const option = document.createElement("div");
+          option.className = `class-option ${session.availability}`;
+          if (session.availability === "available") {
+            option.innerHTML = `
+              <label>
+                <input type="radio" name="child-${card.dataset.childIndex}-class" value="${escapeText(session.id)}" data-child-class required ${selected === session.id ? "checked" : ""}>
+                <span><strong>${escapeText(classText(session))}</strong><small>${escapeText(formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats))}</small></span>
+              </label>
+            `;
+          } else if (session.availability === "full") {
+            option.innerHTML = `
+              <strong>${escapeText(classText(session))}</strong>
+              <b>${escapeText(formCopy.classChoice.full)}</b>
+              ${session.activeHoldCount > 0 ? `<small>${escapeText(formCopy.classChoice.activeHolds.replace("{count}", session.activeHoldCount))}</small>` : ""}
+              <button class="waitlist-button" type="button" data-waitlist>${escapeText(formCopy.buttons.joinWaitlist)}</button>
+            `;
+          } else {
+            option.innerHTML = `<strong>${escapeText(classText(session))}</strong><small>${escapeText(formCopy.classChoice.unavailableSession)}</small>`;
+          }
+          target.append(option);
+        });
+
+        target.querySelectorAll("[data-waitlist]").forEach((button) => {
+          button.addEventListener("click", () => {
+            status.textContent = formCopy.classChoice.waitlistPrototype;
+          });
+        });
+      }
+
+      function renderChild(index, surname = "") {
+        const card = document.createElement("article");
+        card.className = "child-entry";
+        card.dataset.childCard = "";
+        card.dataset.childIndex = String(index);
+        card.innerHTML = `
+          <div class="child-entry-heading">
+            <h3>${formCopy.child.cardTitle} ${childCards().length + 1}</h3>
+            ${index > 0 ? `<button class="text-button" type="button" data-remove-child>${formCopy.buttons.removeChild}</button>` : ""}
+          </div>
+          <div class="compact-fields child-fields">
+            <label><span>${formCopy.child.surname} ${requiredMarker()}</span><input name="child-${index}-surname" data-child-surname value="${escapeText(surname)}" required></label>
+            <label><span>${formCopy.child.name} ${requiredMarker()}</span><input name="child-${index}-name" data-child-name required></label>
+            <label><span>${formCopy.child.grade} ${requiredMarker()}</span><select name="child-${index}-grade" data-child-grade required><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.gradeOptions.map(optionHtml).join("")}</select></label>
+            <label><span>${formCopy.child.gender} ${requiredMarker()}</span><select name="child-${index}-gender" data-child-gender required><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.genderOptions.map(optionHtml).join("")}</select></label>
+            <label><span>${formCopy.child.dob} ${requiredMarker()}</span><input name="child-${index}-dob" data-child-dob type="date" required></label>
+            <label><span>${formCopy.child.school}</span><input name="child-${index}-school" data-child-school></label>
+            <label><span>${formCopy.child.returning} ${requiredMarker()}</span><select name="child-${index}-returning" data-child-returning required><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.returningOptions.map(optionHtml).join("")}</select></label>
+            <label><span>${formCopy.child.previousStage}</span><select name="child-${index}-previous-stage" data-child-previous-stage><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.previousStageOptions.map(optionHtml).join("")}</select><small>${formCopy.child.previousStageHelp}</small></label>
+            <label class="field-wide"><span>${formCopy.child.referralCode}</span><input name="child-${index}-referral-code" data-child-referral autocomplete="off"><small>${formCopy.child.referralCodeHelp}</small></label>
+          </div>
+          <div class="class-picker">
+            <label class="stage-field"><span>${formCopy.child.stage} ${requiredMarker()}</span><select name="child-${index}-stage" data-child-stage required><option value="">${formCopy.selectPlaceholder}</option>${stageOptions()}</select><small>${formCopy.child.stageHelp}</small></label>
+            <p class="recommendation" data-child-recommendation>${formCopy.child.recommendationUnknown}</p>
+            <div class="class-options" data-class-options></div>
+            <p class="catalog-message" data-catalog-message aria-live="polite"></p>
+          </div>
+        `;
+        childrenList.append(card);
+        const stage = card.querySelector("[data-child-stage]");
+        if (queryStage) stage.value = queryStage;
+        card.querySelector("[data-child-returning]").addEventListener("change", () => {
+          updateRecommendation(card, true);
+          renderClasses(card);
+        });
+        card.querySelector("[data-child-previous-stage]").addEventListener("change", () => {
+          updateRecommendation(card, true);
+          renderClasses(card);
+        });
+        stage.addEventListener("change", () => renderClasses(card));
+        card.querySelector("[data-remove-child]")?.addEventListener("click", () => card.remove());
+        updateRecommendation(card);
+        renderClasses(card);
+      }
+
+      function validateInformation() {
+        errorBox.hidden = true;
+        if (!form.checkValidity()) {
           errorBox.hidden = false;
+          form.querySelector(":invalid")?.focus();
           return false;
         }
-        errorBox.hidden = true;
+        if (catalogAvailable && catalog) {
+          const incomplete = childCards().find((card) => !card.querySelector("[data-child-class]:checked"));
+          if (incomplete) {
+            errorBox.hidden = false;
+            incomplete.querySelector("[data-child-stage]")?.focus();
+            return false;
+          }
+        }
         return true;
       }
 
-      function showStep(index) {
-        currentStep = index;
-        if (currentStep === 2) renderClassSelections();
-        if (currentStep === 5) renderReview();
-        steps.forEach((step, stepIndex) => step.classList.toggle("active", stepIndex === currentStep));
-        stepCounter.textContent = `${currentStep + 1} / ${steps.length}`;
-        stepTitle.textContent = stepNames[currentStep];
-        progressBar.style.width = `${((currentStep + 1) / steps.length) * 100}%`;
-        progressTrack.setAttribute("aria-valuenow", String(currentStep + 1));
-        progressTrack.setAttribute("aria-valuetext", `${currentStep + 1} / ${steps.length} ${stepNames[currentStep]}`);
-        backButton.disabled = currentStep === 0;
-        nextButton.hidden = currentStep === steps.length - 1;
-        finishButton.hidden = currentStep !== steps.length - 1;
-        errorBox.hidden = true;
+      function value(selector) {
+        return form.querySelector(selector)?.value.trim() || formCopy.messages.notSelected;
       }
 
-      document.getElementById("add-child").addEventListener("click", () => {
+      function selectedPlan() {
+        const id = form.querySelector("[name='paymentPlan']:checked")?.value;
+        return registrationData.feeConfig.standardPaymentPlans.find((plan) => plan.id === id)?.label || formCopy.messages.notSelected;
+      }
+
+      function availabilityText(session) {
+        if (!session) return formCopy.classChoice.unavailable;
+        if (session.availability === "available") return formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats);
+        if (session.availability === "full") return formCopy.classChoice.full;
+        return formCopy.classChoice.unavailableSession;
+      }
+
+      function renderReview() {
+        const children = childCards().map((card, index) => {
+          const classId = card.querySelector("[data-child-class]:checked")?.value;
+          const session = sessionForId(classId);
+          return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span><span>${escapeText(session ? `${classText(session)} · ${availabilityText(session)}` : formCopy.classChoice.unavailable)}</span>${card.querySelector("[data-child-referral]").value.trim() ? `<span>${escapeText(formCopy.review.referralHeading)}: ${escapeText(card.querySelector("[data-child-referral]").value.trim())}</span>` : ""}</li>`;
+        }).join("");
+        reviewSummary.innerHTML = `
+          <section><h3>${escapeText(formCopy.review.guardianHeading)}</h3><p>${escapeText(value("#guardian-name"))} · ${escapeText(value("#guardian-phone"))}<br>${escapeText(value("#guardian-email"))}</p></section>
+          <section><h3>${escapeText(formCopy.review.childHeading)}</h3><ul>${children}</ul></section>
+          <section><h3>${escapeText(formCopy.review.paymentHeading)}</h3><p>${escapeText(selectedPlan())}</p></section>
+          <section><h3>${escapeText(formCopy.review.acknowledgementHeading)}</h3><p>${escapeText(formCopy.review.guardianAcknowledged)}<br>${escapeText(formCopy.review.studentAcknowledged)}</p></section>
+        `;
+      }
+
+      function showDialog(dialog) {
+        returnFocusTo = document.activeElement;
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+      }
+
+      function closeDialog(dialog) {
+        if (typeof dialog.close === "function") dialog.close();
+        else dialog.removeAttribute("open");
+      }
+
+      function showReview() {
+        renderReview();
+        form.hidden = true;
+        reviewPanel.hidden = false;
+        progress.textContent = `4 / 4 · ${formCopy.progress.review}`;
+        reviewPanel.querySelector("h2")?.focus();
+      }
+
+      document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+        button.addEventListener("click", () => closeDialog(document.getElementById(button.dataset.closeDialog)));
+      });
+      [guardianDialog, studentDialog].forEach((dialog) => {
+        dialog.addEventListener("close", () => {
+          if (!guardianDialog.open && !studentDialog.open) returnFocusTo?.focus?.();
+        });
+      });
+      guardianDialog.addEventListener("cancel", () => { parentAcknowledged = parentAcknowledged; });
+      studentDialog.addEventListener("cancel", () => { studentAcknowledged = studentAcknowledged; });
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!validateInformation()) return;
+        progress.textContent = `2 / 4 · ${formCopy.progress.guardianRules}`;
+        showDialog(guardianDialog);
+      });
+      document.getElementById("acknowledge-guardian").addEventListener("click", () => {
+        parentAcknowledged = true;
+        closeDialog(guardianDialog);
+        progress.textContent = `3 / 4 · ${formCopy.progress.studentRules}`;
+        showDialog(studentDialog);
+      });
+      document.getElementById("acknowledge-student").addEventListener("click", () => {
+        studentAcknowledged = true;
+        closeDialog(studentDialog);
+        if (parentAcknowledged && studentAcknowledged) showReview();
+      });
+      document.getElementById("edit-information").addEventListener("click", () => {
+        reviewPanel.hidden = true;
+        form.hidden = false;
+        completeMessage.hidden = true;
+        progress.textContent = `1 / 4 · ${formCopy.progress.information}`;
+        document.getElementById("guardian-name").focus();
+      });
+      document.getElementById("finish-prototype").addEventListener("click", () => { completeMessage.hidden = false; });
+      addChildButton.addEventListener("click", () => {
+        const firstSurname = childCards()[0]?.querySelector("[data-child-surname]")?.value || "";
         childCount += 1;
-        renderChild(childCount - 1);
+        renderChild(childCount, firstSurname);
       });
 
-      backButton.addEventListener("click", () => {
-        if (currentStep > 0) showStep(currentStep - 1);
-      });
+      async function loadCatalog() {
+        try {
+          const response = await fetch("/api/registration/catalog", { headers: { Accept: "application/json" } });
+          if (!response.ok) throw new Error("Catalog unavailable");
+          const payload = await response.json();
+          if (!Array.isArray(payload.academicYears)) throw new Error("Invalid catalog");
+          catalog = payload;
+          catalogAvailable = true;
+        } catch {
+          catalog = null;
+          catalogAvailable = false;
+        }
+        catalogLoading = false;
+        childCards().forEach((card) => renderClasses(card));
+      }
 
-      nextButton.addEventListener("click", () => {
-        if (!validateStep()) return;
-        showStep(Math.min(currentStep + 1, steps.length - 1));
-      });
-
-      finishButton.addEventListener("click", () => {
-        if (!validateStep()) return;
-        completeMessage.hidden = false;
-        finishButton.disabled = true;
-      });
-
-      childCount = 1;
-      renderChild(0);
-      showStep(0);
+      renderChild(childCount, "");
+      loadCatalog();
     </script>
   </body>
 </html>

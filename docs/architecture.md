@@ -72,6 +72,10 @@ The backend should expose narrow application-level operations instead of letting
 - cancel enrollment
 - export operational records
 
+Ordinary registration selects one concrete class per child. Future class availability and seat-hold creation must use that selected class atomically. A full class uses a simple FIFO waitlist for that same class; ranked alternative-class choices are not part of the public model.
+
+Parent and student rule acknowledgements are distinct product events. The current prototype keeps them as separate client-side state only; a real submission must persist versioned acknowledgements with the application.
+
 Parent-facing account access should eventually be passwordless, based on verified email magic links or one-time codes. Email links should return the parent to durable server-side registration/account state, not rely on an old browser tab or client session remaining alive.
 
 Before email ownership is verified, a public submission must not discover whether an email belongs to an existing guardian, retrieve existing family data, overwrite an existing guardian profile, or authoritatively link supplied data to an existing account. This preserves safe account linking for the future passwordless flow.
@@ -216,4 +220,4 @@ The current Astro configuration uses static output and a root `site` URL appropr
 
 Future backend-dependent routes should degrade gracefully. If the app is served from GitHub Pages without backend services, public content should continue to work and dynamic registration tools should show a clear unavailable state or link to an alternative process.
 
-Creating a future temporary seat hold from ranked class preferences must perform capacity validation and hold creation atomically. A separate availability read followed by a later insert is not sufficient.
+Creating a future temporary seat hold for a selected class must perform capacity validation and hold creation atomically. A separate availability read followed by a later insert is not sufficient.

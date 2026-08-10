@@ -39,6 +39,7 @@ export const programStages = [
     audience: "Түүхэн байдлаар 4–6-р ангийн сурагчдад голлон зориулагдсан.",
     lessons: "30 хичээл",
     rhythm: "7 хоногт 1 удаа, 1 цаг 20 минут",
+    registrationHref: "/register/?stage=1",
   },
   {
     title: "2-р шат",
@@ -47,6 +48,7 @@ export const programStages = [
       "1-р шатаас ахисан сурагчид болон түүхэн байдлаар 7-р ангийн шинэ сурагчид.",
     lessons: "30 хичээл",
     rhythm: "7 хоногт 1 удаа, 1 цаг 20 минут",
+    registrationHref: "/register/?stage=2",
   },
   {
     title: "3-р шат",
@@ -55,6 +57,7 @@ export const programStages = [
       "2-р шатаас ахисан сурагчид болон түүхэн байдлаар 8–10-р ангийн шинэ сурагчид.",
     lessons: "23 хичээл",
     rhythm: "7 хоногт 1 удаа, 2 цаг",
+    registrationHref: "/register/?stage=3",
   },
 ];
 

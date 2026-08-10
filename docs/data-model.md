@@ -28,10 +28,9 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `academic_year`: public label and registration status for a year/session without hard-coding unsupplied year details.
 - `class_session`: concrete stage + weekday + start/end time, capacity, availability, optional future Facebook group URL, and test-only marker.
 - `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children.
-- `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional referral input, and selected payment-plan code.
-- `ranked_class_preference`: ranked concrete class-session choices. The schema allows more than three ranks.
+- `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional referral input, payment-plan choice, and one selected concrete `class_session`.
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
-- `waitlist_entry`: ranked class waitlist entry and future offer/expiry fields.
+- `waitlist_entry`: one FIFO queue entry for one concrete class, with future offer/expiry fields.
 - `referral`: explicit referral identity connecting a referring child/enrollment to a referred application child, with pending/qualified state only.
 - `outbound_email`: future milestone email queue/delivery record. It does not send email yet.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.
@@ -43,7 +42,6 @@ Guardian and Student are persistent shared records. Deleting a pre-registration 
 Owned application records use `ON DELETE CASCADE` where the ownership is unambiguous:
 
 - `pre_registration -> application_child`
-- `application_child -> ranked_class_preference`
 - `application_child -> enrollment`
 - `application_child -> waitlist_entry`
 - `application_child -> referral` for the referred side
@@ -83,7 +81,21 @@ An unauthenticated future registration submission must not reveal whether a guar
 
 ## Future Seat Allocation Atomicity
 
-When registration writes are introduced, ranked-preference seat allocation must atomically validate capacity and create the resulting hold. Do not implement it as an unprotected `SELECT` for availability followed later by an `INSERT`; use D1 batch/transaction semantics and database constraints or conditional writes as appropriate.
+When registration writes are introduced, the selected concrete class must be atomically capacity-checked while its hold is created. Do not implement it as an unprotected `SELECT` for availability followed later by an `INSERT`; use D1 batch/transaction semantics and database constraints or conditional writes as appropriate.
+
+## Public Catalog Availability
+
+The public catalog returns only non-sensitive aggregate availability for a concrete class. It uses:
+
+```text
+remaining seats = capacity - confirmed enrollments - active initial-payment holds
+```
+
+Only `enrollment.status = confirmed` counts as confirmed. An active hold means `enrollment.status = awaiting_initial_payment` with an `effective_hold_deadline_at` in the future, and an active underlying application/parent registration. The public value is clamped at zero.
+
+The catalog does not return a pre-registration total. If a future internal surface needs that number, it should count only non-cancelled, non-deleted child applications with the same `selected_class_session_id`; it must not be used for capacity.
+
+For a class with seats, public UI shows only remaining seats. For a full class, it shows `Анги дүүрсэн` and shows the active-hold count only when that count is greater than zero. Production excludes test sessions and test rows from both class listing and aggregate counts. Staging may expose explicit test fixtures so it follows the same code path.
 
 ## Email Testing Principle
 
@@ -101,15 +113,15 @@ No provider credentials, API keys, or full marketing-email system belong in this
 
 ## Constraints And Indexes
 
-The migration adds database-level checks for basic invariants: positive class capacity, valid lifecycle statuses, positive preference rank, current grade range, JSON validity where compact metadata is stored, and test-run consistency.
+The migrations add database-level checks for basic invariants: positive class capacity, valid lifecycle statuses, current grade range, JSON validity where compact metadata is stored, and test-run consistency.
 
 Important uniqueness rules:
 
-- One preference rank per application child.
-- One class session may not be repeated for the same application child.
+- One selected class reference per application child.
+- One FIFO waitlist entry per application child.
 - A concrete class-session time is unique within an academic year/stage/weekday/start/end combination.
 
-Indexes cover expected lookup paths without indexing everything: guardian email/phone lookup, guardian-student relationships, class sessions by year/stage/status, pre-registrations by guardian/year/status, child preferences, enrollment class/status and hold deadline, waitlists by class/status, outbound email queue processing, and audit subject/time lookup.
+Indexes cover expected lookup paths without indexing everything: guardian email/phone lookup, guardian-student relationships, class sessions by year/stage/status, pre-registrations by guardian/year/status, enrollment class/status and hold deadline, FIFO waitlists by class/status/creation order, outbound email queue processing, and audit subject/time lookup.
 
 ## Deferred Finance Concepts
 

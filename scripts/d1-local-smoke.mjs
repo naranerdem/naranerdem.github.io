@@ -139,18 +139,11 @@ try {
     INSERT INTO application_child (
       id, pre_registration_id, student_id, current_school, current_grade,
       returning_status, previous_stage_code, referral_code_input,
-      selected_payment_plan_code, status, is_test, test_run_id,
+      selected_payment_plan_code, selected_class_session_id, status, is_test, test_run_id,
       created_at, updated_at
     ) VALUES
-      ('app-child-local-1', 'prereg-local-1', 'student-local-1', 'Fake School', 5, 'new', NULL, 'REF-FAKE', 'full_year', 'submitted', 1, '${testRunId}', '${now}', '${now}'),
-      ('app-child-local-2', 'prereg-local-1', 'student-local-2', 'Fake School', 4, 'new', NULL, NULL, 'two_part', 'submitted', 1, '${testRunId}', '${now}', '${now}');
-
-    INSERT INTO ranked_class_preference (
-      id, application_child_id, class_session_id, preference_rank, created_at, updated_at
-    ) VALUES
-      ('pref-local-1', 'app-child-local-1', 'class-local-1', 1, '${now}', '${now}'),
-      ('pref-local-2', 'app-child-local-1', 'class-local-2', 2, '${now}', '${now}'),
-      ('pref-local-3', 'app-child-local-2', 'class-local-2', 1, '${now}', '${now}');
+      ('app-child-local-1', 'prereg-local-1', 'student-local-1', 'Fake School', 5, 'new', NULL, 'REF-FAKE', 'full_year', 'class-local-1', 'hold_created', 1, '${testRunId}', '${now}', '${now}'),
+      ('app-child-local-2', 'prereg-local-1', 'student-local-2', 'Fake School', 4, 'new', NULL, NULL, 'two_part', 'class-local-2', 'submitted', 1, '${testRunId}', '${now}', '${now}');
 
     INSERT INTO enrollment (
       id, application_child_id, student_id, academic_year_id, class_session_id,
@@ -163,11 +156,11 @@ try {
     );
 
     INSERT INTO waitlist_entry (
-      id, application_child_id, class_session_id, preference_rank, priority_note,
+      id, application_child_id, class_session_id,
       status, is_test, test_run_id, created_at, updated_at
     ) VALUES (
-      'waitlist-local-1', 'app-child-local-2', 'class-local-2', 1,
-      'local smoke priority', 'active', 1, '${testRunId}', '${now}', '${now}'
+      'waitlist-local-1', 'app-child-local-2', 'class-local-2',
+      'active', 1, '${testRunId}', '${now}', '${now}'
     );
 
     INSERT INTO referral (
@@ -192,7 +185,7 @@ try {
       1, '${testRunId}', '${now}', '${now}'
     );
     `,
-    { label: "sample guardian, children, preferences, hold, waitlist, referral, email inserted" },
+    { label: "sample guardian, children, selected classes, hold, waitlist, referral, email inserted" },
   );
 
   execute(
@@ -211,24 +204,24 @@ try {
 
   execute(
     `
-    INSERT INTO ranked_class_preference (
-      id, application_child_id, class_session_id, preference_rank, created_at, updated_at
-    ) VALUES (
-      'pref-duplicate-rank', 'app-child-local-1', 'class-local-3', 1, '${now}', '${now}'
-    );
+    UPDATE application_child
+    SET selected_class_session_id = 'missing-class'
+    WHERE id = 'app-child-local-2';
     `,
-    { expectFailure: true, label: "duplicate preference rank rejected" },
+    { expectFailure: true, label: "selected class foreign key rejects missing class session" },
   );
 
   execute(
     `
-    INSERT INTO ranked_class_preference (
-      id, application_child_id, class_session_id, preference_rank, created_at, updated_at
+    INSERT INTO waitlist_entry (
+      id, application_child_id, class_session_id, status,
+      is_test, test_run_id, created_at, updated_at
     ) VALUES (
-      'pref-duplicate-class', 'app-child-local-1', 'class-local-2', 3, '${now}', '${now}'
+      'waitlist-duplicate-child', 'app-child-local-2', 'class-local-3', 'active',
+      1, '${testRunId}', '${now}', '${now}'
     );
     `,
-    { expectFailure: true, label: "duplicate class preference rejected" },
+    { expectFailure: true, label: "waitlist allows only one queue entry per application child" },
   );
 
   execute(
@@ -248,7 +241,6 @@ try {
     DROP TABLE IF EXISTS smoke_assertion;
     CREATE TABLE smoke_assertion (ok INTEGER NOT NULL CHECK (ok));
     INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM application_child WHERE pre_registration_id = 'prereg-local-1') = 0 THEN 1 ELSE 0 END;
-    INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM ranked_class_preference) = 0 THEN 1 ELSE 0 END;
     INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM enrollment WHERE id = 'enrollment-local-1') = 0 THEN 1 ELSE 0 END;
     INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM waitlist_entry WHERE id = 'waitlist-local-1') = 0 THEN 1 ELSE 0 END;
     INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM referral WHERE id = 'referral-local-1') = 0 THEN 1 ELSE 0 END;

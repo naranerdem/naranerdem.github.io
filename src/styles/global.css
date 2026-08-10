@@ -929,3 +929,399 @@ textarea:focus {
     width: auto;
   }
 }
+
+.stage-registration-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  margin-top: 0.15rem;
+  border: 1px solid rgba(7, 58, 175, 0.3);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  color: var(--blue-deep);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.registration-form,
+.review-panel {
+  display: grid;
+  gap: 0;
+  background: var(--paper);
+}
+
+.register-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.register-title-row h1,
+.register-title-row h2 {
+  margin-bottom: 0.25rem;
+  font-size: clamp(1.75rem, 8vw, 2.4rem);
+}
+
+.register-title-row p {
+  margin-bottom: 0;
+}
+
+.registration-progress {
+  flex: 0 0 auto;
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.registration-form > .required-explanation,
+.registration-form > .form-error {
+  margin: 0;
+  padding: 0.75rem 0;
+}
+
+.form-error {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding-inline: 0.75rem !important;
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.form-section {
+  border-top: 1px solid var(--line);
+  padding: 1rem 0;
+}
+
+.form-section h2,
+.section-title-row h2 {
+  margin-bottom: 0.3rem;
+  font-size: 1.2rem;
+}
+
+.form-section > p,
+.section-title-row p,
+.payment-section > p {
+  margin-bottom: 0.75rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.section-title-row,
+.child-entry-heading,
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.section-title-row > div,
+.child-entry-heading h3,
+.dialog-header h2 {
+  min-width: 0;
+}
+
+.compact-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem 0.75rem;
+}
+
+.compact-fields label,
+.stage-field {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.compact-fields label > span,
+.stage-field > span,
+.payment-options legend {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
+.compact-fields small,
+.stage-field small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.compact-fields input,
+.compact-fields select,
+.compact-fields textarea,
+.stage-field select {
+  min-height: 42px;
+  padding: 0.52rem 0.6rem;
+  font-size: 0.95rem;
+}
+
+.compact-fields textarea {
+  min-height: 4.8rem;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+.children-list {
+  gap: 0;
+}
+
+.child-entry {
+  border-top: 1px solid var(--line);
+  padding: 1rem 0;
+}
+
+.child-entry:first-child {
+  border-top: 0;
+  padding-top: 0.2rem;
+}
+
+.child-entry-heading {
+  margin-bottom: 0.7rem;
+}
+
+.child-entry-heading h3 {
+  font-size: 1rem;
+}
+
+.text-button,
+.icon-text-button,
+.waitlist-button {
+  min-height: 40px;
+  border: 0;
+  background: transparent;
+  color: var(--blue-deep);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-align: left;
+}
+
+.add-child-button {
+  width: auto;
+  margin: 0;
+  padding: 0.35rem 0.1rem;
+}
+
+.class-picker {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.85rem;
+  border-left: 3px solid rgba(7, 58, 175, 0.28);
+  padding-left: 0.75rem;
+}
+
+.recommendation,
+.catalog-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.recommendation {
+  color: var(--blue-deep);
+  font-weight: 750;
+}
+
+.class-options {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.class-option {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.65rem 0.7rem;
+}
+
+.class-option label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.class-option input,
+.payment-options input {
+  width: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0;
+}
+
+.class-option strong,
+.class-option b {
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.class-option small {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.class-option.full {
+  border-color: rgba(222, 74, 39, 0.38);
+  background: #fff9f6;
+}
+
+.class-option.full b {
+  color: var(--accent);
+}
+
+.class-option.unavailable {
+  background: #f3f5f8;
+}
+
+.payment-options {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.payment-options legend {
+  margin-bottom: 0.35rem;
+}
+
+.payment-options label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+}
+
+.payment-options label span {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.payment-options small {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.form-actions,
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding-top: 1rem;
+}
+
+.form-actions .button,
+.dialog-actions .button {
+  flex: 1 1 12rem;
+}
+
+.review-panel {
+  gap: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.review-panel h2 {
+  font-size: 1.35rem;
+}
+
+.review-summary {
+  gap: 0.65rem;
+}
+
+.review-summary section {
+  border: 0;
+  border-left: 3px solid var(--line);
+  border-radius: 0;
+  padding: 0.15rem 0 0.15rem 0.75rem;
+}
+
+.review-summary h3 {
+  font-size: 0.96rem;
+}
+
+.review-summary ul {
+  gap: 0.65rem;
+}
+
+.rules-dialog {
+  width: min(100% - 1.25rem, 40rem);
+  max-height: min(90vh, 48rem);
+  border: 0;
+  border-radius: 8px;
+  padding: 0;
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.rules-dialog::backdrop {
+  background: rgba(23, 32, 51, 0.5);
+}
+
+.dialog-content {
+  display: grid;
+  gap: 1rem;
+  max-height: min(90vh, 48rem);
+  overflow: auto;
+  padding: 1rem;
+}
+
+.dialog-header {
+  position: sticky;
+  top: -1rem;
+  z-index: 1;
+  background: var(--paper);
+  padding-top: 0.1rem;
+}
+
+.dialog-header h2 {
+  margin-bottom: 0;
+  font-size: 1.3rem;
+}
+
+.dialog-content p,
+.dialog-content ul {
+  margin-bottom: 0;
+}
+
+.dialog-content ul {
+  display: grid;
+  gap: 0.7rem;
+  padding-left: 1.25rem;
+}
+
+@media (max-width: 22rem) {
+  .compact-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 44rem) {
+  .registration-form,
+  .review-panel {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0 1.25rem;
+  }
+
+  .registration-form > .required-explanation,
+  .registration-form > .form-error {
+    margin-inline: 0;
+  }
+
+  .stage-registration-link:hover {
+    background: rgba(7, 58, 175, 0.08);
+  }
+}

@@ -2,7 +2,7 @@
 
 Most small public wording and current-year updates should not require editing `.astro` files.
 
-Public Mongolian wording lives in `src/content/`. Current academic-year data, sample class times, and future prices live in `src/config/academic-year.ts`. Keep unknown future values as `null`, empty arrays, or clearly marked placeholders rather than inventing them.
+Public Mongolian wording lives in `src/content/`. Current academic-year data, sample class times, and future prices live in `src/config/academic-year.ts`. Staging-only catalog fixtures live in `scripts/staging-catalog-fixtures.sql`; never add real schedules, student data, or counts there. Keep unknown future values as `null`, empty arrays, or clearly marked placeholders rather than inventing them.
 
 | Want to change | Edit |
 | --- | --- |

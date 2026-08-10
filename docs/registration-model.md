@@ -170,27 +170,15 @@ For example, two different Saturday `1-р шат — Анхан шат` time slo
 
 Class/session capacity should be configurable. Historically a class has 10 children.
 
-### Ranked Class Preferences
+### Selected Class
 
-Public registration should let a parent rank one or more concrete class/time preferences for each child. Each ranked item is a concrete `ClassSession`, not merely a stage:
+Ordinary registration selects exactly one concrete `ClassSession` for each child:
 
 ```text
-1st preference -> stage + weekday + start/end time
-2nd preference -> stage + weekday + start/end time
-3rd preference -> stage + weekday + start/end time
+stage + weekday + start/end time
 ```
 
-Parents should only rank times they would actually accept. The first preference is the highest priority, but later preferences are also acceptable if earlier choices are unavailable.
-
-Future backend seat-hold semantics:
-
-- when creating a seat hold, try the highest-ranked acceptable class with capacity
-- if the first preference has no capacity but the second does, the second may receive the seat hold
-- if none of the acceptable choices has capacity, preserve waitlist entries/preferences in ranked order
-- when a relevant seat becomes available, offer the best-ranked available choice
-- once one concrete class is paid/confirmed, remove or deactivate the child's other competing waitlist/preferences for that enrollment
-
-Do not add complicated public policies yet, such as asking parents to decide whether they want to wait only for preference #1 even if preference #2 has a seat.
+The selected class is not merely a preferred stage. It is the class to capacity-check before creating a future temporary hold. A stage recommendation may be derived from previous confirmed participation where known, but it remains an editable parent choice. Homepage stage links may preselect a stage in the prototype; they never lock it.
 
 ### Enrollment
 
@@ -206,11 +194,13 @@ Enrollment status should distinguish:
 
 A later overdue installment must not automatically cancel, delete, or hide a confirmed enrollment.
 
+The ordinary public flow creates at most one class choice for an application child. In the rare case that a student should study in two stages/classes at once, a future teacher/admin operation may create the exceptional second enrollment. The current schema does not impose a student-per-year uniqueness rule that would make this permanently impossible.
+
 ### Waitlist Entry
 
-A waitlist entry is separate from an unpaid seat hold. It represents interest when no seat is currently available.
+A waitlist entry is separate from an unpaid seat hold. It represents interest in one specific full class and forms one FIFO queue per concrete `ClassSession`, ordered by entry creation time.
 
-When a seat becomes available, a waitlisted contact or billing group may receive a temporary opportunity with its own payment window. Failure to pay can eventually pass that opportunity to the next waitlisted contact or group.
+When a seat becomes available, the first active entry for that class receives a temporary acceptance/payment opportunity, normally using the same short hold window. If it expires, the offer moves to the next active entry. The public registration and waitlist model has no ranked alternatives.
 
 ## Initial Seat Hold Flow
 
@@ -316,7 +306,7 @@ A referral only financially qualifies when both relevant children have made thei
 
 If B pays before A, B may initially pay full price. When A later pays and the referral becomes qualified, A's 5% can affect A's payment immediately where possible, and B receives equivalent account credit if B already paid too much.
 
-Model referral identity explicitly. Do not infer friendship/referral from school, address, Facebook, names, or payment origin. Future implementation should use a referral code or referral link tied to the referring child/enrollment. The referred child's own parent follows or enters that referral and completes their own registration.
+Model referral identity explicitly. Do not infer friendship/referral from school, address, Facebook, names, or payment origin. A new family may enter a referral code it received. The family's own shareable referral code/link is not generated during registration; it becomes available only after the first required payment confirms enrollment. The referred child's own parent follows or enters that referral and completes their own registration.
 
 ### Private Teacher/Admin Financial Approval
 

@@ -28,6 +28,10 @@ function bundleWorker(name, environment) {
 }
 
 function catalogRow(id, options = {}) {
+  const capacity = options.capacity ?? 10;
+  const confirmedCount = options.confirmedCount ?? 0;
+  const activeHoldCount = options.activeHoldCount ?? 0;
+  const remainingSeats = Math.max(capacity - confirmedCount - activeHoldCount, 0);
   return {
     academicYearId: options.academicYearId ?? "year-test",
     academicYearLabel: options.academicYearLabel ?? "Туршилтын хичээлийн жил",
@@ -37,7 +41,14 @@ function catalogRow(id, options = {}) {
     weekday: "Бямба",
     startTime: "10:00",
     endTime: "11:20",
-    status: "available",
+    capacity,
+    confirmedCount,
+    activeHoldCount,
+    remainingSeats,
+    publicAvailability: options.status === "closed"
+      ? "unavailable"
+      : remainingSeats > 0 ? "available" : "full",
+    status: options.status ?? "available",
     isTest: options.isTest ?? 0,
     isTestOnly: options.isTestOnly ?? 0,
   };
@@ -61,13 +72,19 @@ function createDatabase(rows, options = {}) {
         async all() {
           if (options.catalogError) throw new Error("SQLITE_ERROR: no such table: class_session");
           assert.match(sql, /academic_year\.registration_status = \?/);
+          assert.match(sql, /enrollment\.status = 'confirmed'/);
+          assert.match(sql, /enrollment\.status = 'awaiting_initial_payment'/);
+          assert.match(sql, /enrollment\.effective_hold_deadline_at > \?/);
+          assert.match(sql, /MAX\(class_session\.capacity - COALESCE\(confirmed\.count, 0\) - COALESCE\(active_holds\.count, 0\), 0\)/);
 
           const productionQuery = sql.includes("class_session.is_test_only = ?");
           const filtered = productionQuery
             ? rows.filter((row) => row.isTest === 0 && row.isTestOnly === 0)
             : rows;
 
-          assert.deepEqual(bindings, productionQuery ? ["open", 0, 0, 0] : ["open"]);
+          assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
+          assert.deepEqual(bindings.slice(1), productionQuery ? ["open", 0, 0, 0] : ["open"]);
+          if (productionQuery) assert.match(sql, /enrollment\.is_test = 0/);
           return { success: true, results: filtered };
         },
       };
@@ -92,7 +109,10 @@ try {
     APP_ENV: "staging",
     REGISTRATION_WRITE_ENABLED: "false",
     DB: createDatabase([
-      catalogRow("staging-test-session", { isTest: 1, isTestOnly: 1 }),
+      catalogRow("staging-many-seats", { isTest: 1, isTestOnly: 1, confirmedCount: 2, activeHoldCount: 1 }),
+      catalogRow("staging-nearly-full", { isTest: 1, isTestOnly: 1, confirmedCount: 8, activeHoldCount: 1 }),
+      catalogRow("staging-full-firm", { isTest: 1, isTestOnly: 1, confirmedCount: 10 }),
+      catalogRow("staging-full-limbo", { isTest: 1, isTestOnly: 1, confirmedCount: 8, activeHoldCount: 2 }),
     ]),
   };
   const stagingHealth = await jsonResponse(stagingWorker, "/api/health", stagingEnv);
@@ -101,15 +121,28 @@ try {
 
   const stagingCatalog = await jsonResponse(stagingWorker, "/api/registration/catalog", stagingEnv);
   assert.equal(stagingCatalog.response.status, 200);
-  assert.equal(stagingCatalog.body.academicYears[0].classSessions[0].id, "staging-test-session");
+  assert.deepEqual(
+    stagingCatalog.body.academicYears[0].classSessions.map((session) => [
+      session.id,
+      session.remainingSeats,
+      session.activeHoldCount,
+      session.availability,
+    ]),
+    [
+      ["staging-many-seats", 7, 1, "available"],
+      ["staging-nearly-full", 1, 1, "available"],
+      ["staging-full-firm", 0, 0, "full"],
+      ["staging-full-limbo", 0, 2, "full"],
+    ],
+  );
 
   const productionWorker = (await bundleWorker("production", "production")).default;
   const productionEnv = {
     APP_ENV: "production",
     REGISTRATION_WRITE_ENABLED: "false",
     DB: createDatabase([
-      catalogRow("production-public-session"),
-      catalogRow("production-test-session", { isTest: 1, isTestOnly: 1 }),
+      catalogRow("production-public-session", { confirmedCount: 3, activeHoldCount: 2 }),
+      catalogRow("production-test-session", { isTest: 1, isTestOnly: 1, confirmedCount: 10 }),
     ]),
   };
   const productionHealth = await jsonResponse(productionWorker, "/api/health", productionEnv);
@@ -119,8 +152,8 @@ try {
   const productionCatalog = await jsonResponse(productionWorker, "/api/registration/catalog", productionEnv);
   assert.equal(productionCatalog.response.status, 200);
   assert.deepEqual(
-    productionCatalog.body.academicYears[0].classSessions.map((session) => session.id),
-    ["production-public-session"],
+    productionCatalog.body.academicYears[0].classSessions.map((session) => [session.id, session.remainingSeats, session.activeHoldCount]),
+    [["production-public-session", 5, 2]],
   );
 
   const method = await jsonResponse(productionWorker, "/api/health", productionEnv, { method: "POST" });
