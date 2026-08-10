@@ -4,7 +4,7 @@ Website and future registration application for a small Children's Science Cente
 
 This repository is intentionally named `naranerdem.github.io` so one canonical codebase can support:
 
-- primary deployment through Cloudflare Pages
+- primary deployment through Cloudflare Workers Static Assets
 - a simple static fallback at `https://naranerdem.github.io`
 
 The first version is deliberately small. It contains a static Astro homepage and architecture/domain documentation. It does not implement authentication, payment processing, email sending, bank integrations, or a production database.
