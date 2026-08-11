@@ -21,14 +21,23 @@ export function applyStageRecommendation(selection, recommendation) {
   return selection;
 }
 
-export function classSelectionIssue({ catalogState, stage, sessions, selectedClassId }) {
+export function nextWaitlistSelection(currentId, candidateId, checked) {
+  if (checked) return candidateId;
+  return currentId === candidateId ? "" : currentId;
+}
+
+export function classSelectionIssue({ catalogState, stage, sessions, selectedClassId, selectedWaitlistId }) {
   if (catalogState === "loading") return { code: "catalog_loading", focusTarget: "class-status" };
   if (catalogState !== "available") return { code: "catalog_unavailable", focusTarget: "class-status" };
   if (!stageCodes.has(stage)) return { code: "stage_required", focusTarget: "stage" };
   if (sessions.length === 0) return { code: "no_sessions", focusTarget: "class-status" };
 
   const availableSessions = sessions.filter((session) => session.availability === "available");
-  if (availableSessions.length === 0) return { code: "no_available_class", focusTarget: "class-status" };
+  const fullSessions = sessions.filter((session) => session.availability === "full");
+  if (availableSessions.length === 0) {
+    if (fullSessions.some((session) => session.id === selectedWaitlistId)) return null;
+    return { code: "waitlist_required", focusTarget: "class-options" };
+  }
   if (!availableSessions.some((session) => session.id === selectedClassId)) {
     return { code: "class_required", focusTarget: "class-options" };
   }

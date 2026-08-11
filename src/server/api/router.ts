@@ -102,10 +102,24 @@ export async function handleApiRequest(request: Request, env: WorkerEnv): Promis
 
   if (path === "/api/auth/email/verify") {
     if (!authEmailAvailable(env)) return authNotFound();
-    if (request.method !== "GET") return methodNotAllowed("GET");
+    if (request.method !== "POST") return methodNotAllowed("POST");
+
+    let token = "";
+    try {
+      const payload = await request.json() as { token?: unknown };
+      if (typeof payload.token !== "string") throw new Error("Invalid verification token");
+      token = payload.token;
+    } catch {
+      return error(
+        "verification_failed",
+        "Баталгаажуулах холбоос хүчингүй эсвэл хугацаа нь дууссан байна.",
+        400,
+        { "Cache-Control": "no-store" },
+      );
+    }
 
     try {
-      const result = await verifyEmailToken(env, new URL(request.url).searchParams.get("token") ?? "");
+      const result = await verifyEmailToken(env, token);
       return new Response(null, {
         status: 303,
         headers: {

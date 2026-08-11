@@ -211,6 +211,10 @@ function sha256(value) {
 }
 
 try {
+  const verificationSource = readFileSync("src/server/auth/email-verification.ts", "utf8");
+  assert.match(verificationSource, /REGISTRATION_PROVISIONAL_HOLD_TTL_SECONDS = 20 \* 60/);
+  assert.match(verificationSource, /REGISTRATION_CONFIRMATION_TTL_SECONDS = 24 \* 60 \* 60/);
+  assert.match(verificationSource, /AUTH_MAGIC_LINK_TTL_SECONDS = 15 \* 60/);
   const stagingWorker = (await bundleWorker("staging", "staging")).default;
   const productionWorker = (await bundleWorker("production", "production")).default;
 
@@ -287,21 +291,39 @@ try {
   assert.doesNotMatch(outbound.contextJson, new RegExp(rawToken));
   assert.match(deliveredMessage.subject, /И-мэйл хаягаа баталгаажуулна уу/);
   assert.match(deliveredMessage.html, /И-мэйл хаягаа баталгаажуулах/);
-  assert.match(deliveredMessage.text, /15 минут/);
+  assert.match(deliveredMessage.text, /24 цаг/);
+  assert.match(deliveredMessage.text, /\/verify-email\/#token=/);
   for (const forbidden of ["resend-test-secret", "staging-gate-secret"]) {
     assert.doesNotMatch(deliveredMessage.html, new RegExp(forbidden));
     assert.doesNotMatch(deliveredMessage.text, new RegExp(forbidden));
   }
 
+  const scannerGet = await stagingWorker.fetch(
+    new Request(`https://staging.example.test/api/auth/email/verify?token=${rawToken}`),
+    stagingEnv(successfulDb),
+  );
+  assert.equal(scannerGet.status, 405, "scanner GET cannot consume a registration confirmation");
+  assert.equal(scannerGet.headers.get("allow"), "POST");
+  assert.equal(successfulDb.sessions.size, 0);
+  assert.equal(challenge.status, "pending");
+
   const wrongToken = await stagingWorker.fetch(
-    new Request("https://staging.example.test/api/auth/email/verify?token=wrong-token"),
+    new Request("https://staging.example.test/api/auth/email/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "wrong-token" }),
+    }),
     stagingEnv(successfulDb),
   );
   assert.equal(wrongToken.status, 400);
   assert.equal(successfulDb.sessions.size, 0);
 
   const verified = await stagingWorker.fetch(
-    new Request(`https://staging.example.test/api/auth/email/verify?token=${rawToken}`),
+    new Request("https://staging.example.test/api/auth/email/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: rawToken }),
+    }),
     stagingEnv(successfulDb),
   );
   assert.equal(verified.status, 303);
@@ -318,18 +340,22 @@ try {
   assert.equal([...successfulDb.sessions.values()][0].normalizedEmail, "parent@example.com");
 
   const replay = await stagingWorker.fetch(
-    new Request(`https://staging.example.test/api/auth/email/verify?token=${rawToken}`),
+    new Request("https://staging.example.test/api/auth/email/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: rawToken }),
+    }),
     stagingEnv(successfulDb),
   );
   assert.equal(replay.status, 400);
   assert.equal(successfulDb.sessions.size, 1);
 
   const unsupportedVerify = await stagingWorker.fetch(
-    new Request("https://staging.example.test/api/auth/email/verify", { method: "POST" }),
+    new Request("https://staging.example.test/api/auth/email/verify"),
     stagingEnv(successfulDb),
   );
   assert.equal(unsupportedVerify.status, 405);
-  assert.equal(unsupportedVerify.headers.get("allow"), "GET");
+  assert.equal(unsupportedVerify.headers.get("allow"), "POST");
 
   const expiredDb = new FakeD1();
   const expiredMessages = [];
@@ -341,7 +367,11 @@ try {
   const expiredToken = rawTokenFromMessage(expiredMessages[0]);
   [...expiredDb.challenges.values()][0].expiresAt = "2000-01-01T00:00:00.000Z";
   const expired = await stagingWorker.fetch(
-    new Request(`https://staging.example.test/api/auth/email/verify?token=${expiredToken}`),
+    new Request("https://staging.example.test/api/auth/email/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: expiredToken }),
+    }),
     stagingEnv(expiredDb),
   );
   assert.equal(expired.status, 400);

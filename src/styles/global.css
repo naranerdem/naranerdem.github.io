@@ -987,7 +987,6 @@ textarea:focus {
   text-align: right;
 }
 
-.registration-form > .required-explanation,
 .registration-form > .form-error {
   margin: 0;
   padding: 0.75rem 0;
@@ -1111,8 +1110,7 @@ textarea:focus {
 }
 
 .text-button,
-.icon-text-button,
-.waitlist-button {
+.icon-text-button {
   min-height: 40px;
   border: 0;
   background: transparent;
@@ -1223,6 +1221,58 @@ textarea:focus {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 0.6rem;
   align-items: center;
+}
+
+.class-option .waitlist-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 40px;
+  color: var(--blue-deep);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.waitlist-choice input {
+  width: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0;
+}
+
+.draft-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0.7rem 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem;
+  background: #f7fafc;
+}
+
+.draft-notice strong {
+  font-size: 0.95rem;
+}
+
+.draft-notice p {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.draft-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+}
+
+.draft-actions .button {
+  min-height: 40px;
+  padding: 0.45rem 0.6rem;
+  white-space: nowrap;
 }
 
 .class-option input,
@@ -1392,6 +1442,13 @@ textarea:focus {
   }
 }
 
+@media (max-width: 32rem) {
+  .draft-notice {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 @media (min-width: 44rem) {
   .registration-form,
   .review-panel {
@@ -1400,7 +1457,6 @@ textarea:focus {
     padding: 0 1.25rem;
   }
 
-  .registration-form > .required-explanation,
   .registration-form > .form-error {
     margin-inline: 0;
   }

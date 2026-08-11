@@ -14,7 +14,7 @@ Public Mongolian wording lives in `src/content/`. Current academic-year data, sa
 
 Do not put private student/parent data in these files. Do not put secrets, API keys, bank credentials, or passwords in these files.
 
-Registration wording should stay short and operational on phones. Required public fields use a red `*` with one explanation near the form start; optional fields have no marker or `заавал биш` annotation. Keep conditional fields disabled while hidden, and do not add helper text that merely says an editable choice may be changed later.
+Registration wording should stay short and operational on phones. Required public fields use only a red `*`; optional fields have no marker or `заавал биш` annotation. Do not add a general required-fields warning before validation. Keep conditional fields disabled while hidden, and do not add helper text that merely says an editable choice may be changed later.
 
 Transactional email templates live under `src/server/email/templates/`. Keep them concise and Mongolian. Provider keys, staging inboxes, and test-gate keys are Cloudflare Worker secrets and must never be added to content files, `.env.example`, fixtures, or browser code.
 

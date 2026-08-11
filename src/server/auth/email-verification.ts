@@ -5,7 +5,9 @@ import { EmailConfigurationError, deliverQueuedEmail } from "../email/service";
 import { emailVerificationTemplate } from "../email/templates/email-verification";
 import { randomToken, sha256 } from "./crypto";
 
-export const EMAIL_CHALLENGE_TTL_SECONDS = 15 * 60;
+export const REGISTRATION_PROVISIONAL_HOLD_TTL_SECONDS = 20 * 60;
+export const REGISTRATION_CONFIRMATION_TTL_SECONDS = 24 * 60 * 60;
+export const AUTH_MAGIC_LINK_TTL_SECONDS = 15 * 60;
 export const VERIFIED_EMAIL_SESSION_TTL_SECONDS = 60 * 60;
 export const VERIFIED_EMAIL_COOKIE = "naran_verified_email";
 
@@ -62,7 +64,7 @@ export async function startEmailVerification(env: WorkerEnv, emailInput: string)
 
   const nowDate = new Date();
   const now = nowDate.toISOString();
-  const expiresAt = addSeconds(nowDate, EMAIL_CHALLENGE_TTL_SECONDS);
+  const expiresAt = addSeconds(nowDate, REGISTRATION_CONFIRMATION_TTL_SECONDS);
   const rawToken = randomToken();
   const tokenHash = await sha256(rawToken);
   const challengeId = crypto.randomUUID();
@@ -113,8 +115,8 @@ export async function startEmailVerification(env: WorkerEnv, emailInput: string)
     throw new EmailVerificationError("queue_failed");
   }
 
-  const verificationUrl = new URL("/api/auth/email/verify", env.APP_ORIGIN);
-  verificationUrl.searchParams.set("token", rawToken);
+  const verificationUrl = new URL("/verify-email/", env.APP_ORIGIN);
+  verificationUrl.hash = new URLSearchParams({ token: rawToken }).toString();
   const template = emailVerificationTemplate(verificationUrl.toString());
   const provider = createResendProvider(env.RESEND_API_KEY);
   const providerMessageId = await deliverQueuedEmail(env, provider, {

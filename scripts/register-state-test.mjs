@@ -3,6 +3,7 @@ import {
   applyStageRecommendation,
   classSelectionIssue,
   initialStageSelection,
+  nextWaitlistSelection,
   stageFromSearch,
   userStageSelection,
 } from "../public/scripts/registration-state.js";
@@ -41,6 +42,10 @@ assert.equal(
   null,
 );
 
+assert.equal(nextWaitlistSelection("class-full-a", "class-full-b", true), "class-full-b");
+assert.equal(nextWaitlistSelection("class-full-b", "class-full-b", false), "");
+assert.equal(nextWaitlistSelection("class-full-a", "class-full-b", false), "class-full-a");
+
 assert.deepEqual(
   classSelectionIssue({
     catalogState: "available",
@@ -48,7 +53,29 @@ assert.deepEqual(
     sessions: [{ id: "class-full", availability: "full" }],
     selectedClassId: "",
   }),
-  { code: "no_available_class", focusTarget: "class-status" },
+  { code: "waitlist_required", focusTarget: "class-options" },
+);
+
+assert.equal(
+  classSelectionIssue({
+    catalogState: "available",
+    stage: "stage_1",
+    sessions: [{ id: "class-full", availability: "full" }],
+    selectedClassId: "",
+    selectedWaitlistId: "class-full",
+  }),
+  null,
+);
+
+assert.equal(
+  classSelectionIssue({
+    catalogState: "available",
+    stage: "stage_1",
+    sessions: [openSession, { id: "class-full", availability: "full" }],
+    selectedClassId: "class-open",
+    selectedWaitlistId: "class-full",
+  }),
+  null,
 );
 
 console.log("ok registration state and empty-catalog regression tests");

@@ -72,7 +72,7 @@ The backend should expose narrow application-level operations instead of letting
 - cancel enrollment
 - export operational records
 
-Ordinary registration selects one concrete class per child. Future class availability and seat-hold creation must use that selected class atomically. A full class uses a simple FIFO waitlist for that same class; ranked alternative-class choices are not part of the public model.
+Ordinary registration selects at most one current concrete class per child. Future class availability and seat-hold creation must use that selected class atomically. A full class uses a simple FIFO waitlist for that same class; ranked alternative-class choices are not part of the public model. A parent may pair an available fallback class with one full preferred waitlist target. Confirming the fallback must not silently remove that active preferred waitlist.
 
 The current non-submitting prototype keeps stage selection deterministic: an explicit user choice wins, a valid `?stage=` value is only an initial default, and a previous-stage recommendation is used only when neither is present. Returning-history controls must never overwrite a manual stage choice. Conditional controls are disabled while hidden so native validation cannot target invisible fields.
 
@@ -84,7 +84,9 @@ Parent-facing account access should eventually be passwordless, based on verifie
 
 Before email ownership is verified, a public submission must not discover whether an email belongs to an existing guardian, retrieve existing family data, overwrite an existing guardian profile, or authoritatively link supplied data to an existing account. This preserves safe account linking for the future passwordless flow.
 
-Migration 0003 adds one-time verification challenges and short-lived verified-email sessions only. Challenge and session tokens are generated with Worker Web Crypto; D1 stores SHA-256 hashes, while the raw values exist only in the magic link or secure cookie. Verification links expire after 15 minutes, are consumed once, and create a one-hour `HttpOnly; Secure; SameSite=Lax; Path=/` cookie. This proves recent control of an email address but does not create, look up, or link a `GuardianAccount`.
+Migration 0003 adds one-time verification challenges and short-lived verified-email sessions only; migration 0004 renames the premature referral-only input to generic `code_input`. Challenge and session tokens are generated with Worker Web Crypto; D1 stores SHA-256 hashes, while raw values exist only in the confirmation URL fragment or secure cookie. Registration-confirmation links are planned to expire after about 24 hours, are consumed once by a browser `POST`, and create a one-hour `HttpOnly; Secure; SameSite=Lax; Path=/` cookie. This proves recent control of an email address but does not create, look up, or link a `GuardianAccount`. Scanner GET requests cannot consume a fragment token.
+
+Future registration writes use two distinct temporary timings: a 20-minute provisional hold after the form/review is saved and a fresh 24-hour initial-payment hold after timely email confirmation. Late confirmation re-checks capacity and preserves recoverable registration data. The source seat in a transfer remains confirmed until the target transfer and any required price difference complete; a lower target price produces account credit rather than altering historical payments.
 
 The future parent portal should show children, current registrations, class/time, seat-hold deadline, payment schedule/status, discounts, available credit, referral status/share link, refund options, Facebook class-group link after confirmation, and returning registration.
 
@@ -135,6 +137,10 @@ The admin interface is for the developer/owner and future trusted administrators
 - raw or diagnostic exports
 
 Authentication is not implemented yet, but future routes and modules should preserve this teacher/admin separation. Admin authentication should also prefer strong passkey/passwordless access. Teacher and admin must have different authorization permissions, not merely different visual menus.
+
+### Content And Settings Direction
+
+Before teacher/admin authentication exists, do not build an editor. Later, the Mongolian Content/Settings editor should support quick phone edits but remain desktop-comfortable for long rules, yearly setup, and bulk schedules. Ordinary site copy needs simple revision history and a current published value. Academic-year configuration needs classes, dates, prices, payment-plan settings, registration status, and copy-previous-year to editable draft to publish. Rules/policies need immutable versions, and registrations must retain the exact parent/student versions acknowledged. Important content follows Draft -> Preview -> Publish; this is not a generic heavyweight CMS.
 
 ### Scheduled reminder jobs
 

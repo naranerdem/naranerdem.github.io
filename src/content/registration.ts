@@ -14,7 +14,6 @@ export const registrationPrototype = {
 };
 
 export const registrationFormCopy = {
-  requiredExplanation: "* тэмдэгтэй талбарыг бөглөнө үү.",
   selectPlaceholder: "Сонгоно уу",
   progress: {
     information: "Мэдээлэл",
@@ -59,8 +58,8 @@ export const registrationFormCopy = {
     school: "Сургуулийн нэр",
     returning: "Өмнө нь Наран Эрдэмд сурсан уу?",
     previousStage: "Өмнө дүүргэсэн шат",
-    referralCode: "Урилгын код",
-    referralCodePlaceholder: "Байвал оруулна уу",
+    code: "Код",
+    codePlaceholder: "Байвал оруулна уу",
     stage: "Сургалтын шат",
     stageLabels: {
       stage_1: "1-р шат — Анхан шат",
@@ -98,9 +97,9 @@ export const registrationFormCopy = {
     selectRequired: "Анги, цагаа сонгоно уу.",
     remainingSeats: "Сул суудал: {count}",
     full: "Анги дүүрсэн",
-    activeHolds: "Төлбөр баталгаажихыг хүлээж буй: {count}",
+    activeHolds: "Түр хадгалагдсан: {count}",
     unavailableSession: "Одоогоор сонгох боломжгүй",
-    waitlistPrototype: "Хүлээлгийн жагсаалтын бүртгэл энэ туршилтын хувилбарт нээгдээгүй.",
+    waitlistRequired: "Хүлээлгийн жагсаалтаас нэг анги сонгоно уу.",
   },
   payment: {
     title: "Төлбөрийн сонголт",
@@ -113,15 +112,23 @@ export const registrationFormCopy = {
     guardianHeading: "Асран хамгаалагч",
     childHeading: "Хүүхэд, анги",
     paymentHeading: "Төлбөрийн сонголт",
-    referralHeading: "Урилгын код",
+    codeHeading: "Код",
+    selectedClassHeading: "Одоогийн сонгосон анги",
+    waitlistHeading: "Хүлээлгийн жагсаалт",
     acknowledgementHeading: "Журам",
     guardianAcknowledged: "Асран хамгаалагчийн журамтай танилцсан",
     studentAcknowledged: "Сурагчийн журамтай танилцсан",
   },
   messages: {
-    requiredError: "* тэмдэгтэй талбарыг шалгана уу.",
+    requiredError: "Дутуу эсвэл буруу бөглөсөн талбарыг шалгана уу.",
     prototypeComplete:
       "Бүртгэлийн шинэ системийг бэлтгэж байна. Энэ үйлдлээр бодит бүртгэл, суудал барилт, төлбөрийн хүсэлт үүсэхгүй.",
     notSelected: "Сонгоогүй",
+  },
+  draft: {
+    title: "Хадгалсан ноорог байна",
+    help: "Энэ хөтөч дээр өмнө бөглөсөн мэдээлэл түр хадгалагдсан байна. Энэ нь анги, суудал хадгалахгүй.",
+    restore: "Үргэлжлүүлэн бөглөх",
+    discard: "Устгах",
   },
 };

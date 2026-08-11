@@ -28,12 +28,12 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `academic_year`: public label and registration status for a year/session without hard-coding unsupplied year details.
 - `class_session`: concrete stage + weekday + start/end time, capacity, availability, optional future Facebook group URL, and test-only marker.
 - `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children.
-- `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional referral input, payment-plan choice, and one selected concrete `class_session`.
+- `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional generic `code_input`, payment-plan choice, and one selected concrete `class_session`.
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
 - `waitlist_entry`: one FIFO queue entry for one concrete class, with future offer/expiry fields.
 - `referral`: explicit referral identity connecting a referring child/enrollment to a referred application child, with pending/qualified state only.
 - `outbound_email`: milestone email queue/delivery record, including intended/actual recipients, provider status, provider message ID, stable idempotency key, and compact failure code.
-- `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, 15-minute expiry, linked outbound email, and test provenance. It never stores the raw magic-link token.
+- `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, configurable registration-confirmation expiry (currently 24 hours), linked outbound email, and test provenance. It never stores the raw magic-link token.
 - `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.
 
@@ -95,11 +95,11 @@ The public catalog returns only non-sensitive aggregate availability for a concr
 remaining seats = capacity - confirmed enrollments - active initial-payment holds
 ```
 
-Only `enrollment.status = confirmed` counts as confirmed. An active hold means `enrollment.status = awaiting_initial_payment` with an `effective_hold_deadline_at` in the future, and an active underlying application/parent registration. The public value is clamped at zero.
+Only `enrollment.status = confirmed` counts as confirmed. An active hold currently means `enrollment.status = awaiting_initial_payment` with an `effective_hold_deadline_at` in the future, and an active underlying application/parent registration. The public value is clamped at zero. Future temporary capacity counts must also include active 20-minute email-confirmation provisional holds, but never confirmed enrollments.
 
 The catalog does not return a pre-registration total. If a future internal surface needs that number, it should count only non-cancelled, non-deleted child applications with the same `selected_class_session_id`; it must not be used for capacity.
 
-For a class with seats, public UI shows only remaining seats. For a full class, it shows `Анги дүүрсэн` and shows the active-hold count only when that count is greater than zero. Production excludes test sessions and test rows from both class listing and aggregate counts. Staging may expose explicit test fixtures so it follows the same code path.
+For a class with seats, public UI shows only remaining seats. For a full class, it shows `Анги дүүрсэн` and `Түр хадгалагдсан: N` only when a temporary count is greater than zero. Production excludes test sessions and test rows from both class listing and aggregate counts. Staging may expose explicit test fixtures so it follows the same code path.
 
 ## Email Testing Principle
 
@@ -121,8 +121,9 @@ The migrations add database-level checks for basic invariants: positive class ca
 
 Important uniqueness rules:
 
-- One selected class reference per application child.
-- One FIFO waitlist entry per application child.
+- One selected current class reference per application child.
+- One FIFO waitlist entry per application child; it may coexist with the selected/current class.
+- No student-plus-academic-year uniqueness rule: teacher/admin can create a rare additional enrollment without weakening the public one-current-class rule.
 - A concrete class-session time is unique within an academic year/stage/weekday/start/end combination.
 
 Indexes cover expected lookup paths without indexing everything: guardian email/phone lookup, guardian-student relationships, class sessions by year/stage/status, pre-registrations by guardian/year/status, enrollment class/status and hold deadline, FIFO waitlists by class/status/creation order, outbound email queue processing, and audit subject/time lookup.

@@ -1,0 +1,43 @@
+---
+import { siteIdentity } from "../content/homepage";
+import "../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>И-мэйл баталгаажуулах | {siteIdentity.name}</title>
+  </head>
+  <body class="register-page">
+    <main class="register-shell verification-page">
+      <section class="review-panel" aria-live="polite">
+        <h1>И-мэйл баталгаажуулж байна…</h1>
+        <p id="verification-status">Түр хүлээнэ үү.</p>
+      </section>
+    </main>
+    <script is:inline type="module">
+      const status = document.getElementById("verification-status");
+      const token = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
+      window.history.replaceState(null, "", window.location.pathname);
+
+      if (!token) {
+        status.textContent = "Баталгаажуулах холбоос хүчингүй байна.";
+      } else {
+        try {
+          const response = await fetch("/api/auth/email/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ token }),
+            credentials: "same-origin",
+          });
+          if (!response.ok) throw new Error("Verification failed");
+          window.location.replace(response.url);
+        } catch {
+          status.textContent = "Баталгаажуулах холбоос хүчингүй эсвэл хугацаа нь дууссан байна.";
+        }
+      }
+    </script>
+  </body>
+</html>

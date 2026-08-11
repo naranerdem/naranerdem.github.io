@@ -41,10 +41,18 @@ const formCopy = registrationFormCopy;
         </div>
       </section>
 
+      <aside id="registration-draft-notice" class="draft-notice" hidden aria-live="polite">
+        <div>
+          <strong>{formCopy.draft.title}</strong>
+          <p>{formCopy.draft.help}</p>
+        </div>
+        <div class="draft-actions">
+          <button type="button" class="button secondary" id="restore-registration-draft">{formCopy.draft.restore}</button>
+          <button type="button" class="text-button" id="discard-registration-draft">{formCopy.draft.discard}</button>
+        </div>
+      </aside>
+
       <form id="registration-form" class="registration-form" novalidate>
-        <p class="required-explanation">
-          <span class="required-marker" aria-hidden="true">*</span>{formCopy.requiredExplanation.replace("*", "")}
-        </p>
         <p id="information-error" class="form-error" role="alert" hidden>{formCopy.messages.requiredError}</p>
 
         <section class="form-section" aria-labelledby="guardian-title">
@@ -167,8 +175,14 @@ const formCopy = registrationFormCopy;
         applyStageRecommendation,
         classSelectionIssue,
         initialStageSelection,
+        nextWaitlistSelection,
         userStageSelection,
       } from "/scripts/registration-state.js";
+      import {
+        REGISTRATION_DRAFT_KEY,
+        createRegistrationDraft,
+        readRegistrationDraft,
+      } from "/scripts/registration-draft.js";
 
       const registrationData = JSON.parse(document.getElementById("registration-data").textContent);
       const formCopy = registrationData.registrationFormCopy;
@@ -179,6 +193,9 @@ const formCopy = registrationFormCopy;
       const reviewPanel = document.getElementById("review-panel");
       const reviewSummary = document.getElementById("review-summary");
       const completeMessage = document.getElementById("prototype-complete");
+      const draftNotice = document.getElementById("registration-draft-notice");
+      const restoreDraftButton = document.getElementById("restore-registration-draft");
+      const discardDraftButton = document.getElementById("discard-registration-draft");
       const guardianDialog = document.getElementById("guardian-rules-dialog");
       const studentDialog = document.getElementById("student-rules-dialog");
       const stageLabels = formCopy.child.stageLabels;
@@ -189,6 +206,7 @@ const formCopy = registrationFormCopy;
       let parentAcknowledged = false;
       let studentAcknowledged = false;
       let returnFocusTo = null;
+      let storedDraft = null;
 
       function escapeText(value) {
         return String(value)
@@ -205,6 +223,37 @@ const formCopy = registrationFormCopy;
 
       function childCards() {
         return Array.from(childrenList.querySelectorAll("[data-child-card]"));
+      }
+
+      function readStoredDraft() {
+        try {
+          const draft = readRegistrationDraft(window.localStorage.getItem(REGISTRATION_DRAFT_KEY));
+          if (!draft) window.localStorage.removeItem(REGISTRATION_DRAFT_KEY);
+          return draft;
+        } catch {
+          return null;
+        }
+      }
+
+      function discardStoredDraft() {
+        try {
+          window.localStorage.removeItem(REGISTRATION_DRAFT_KEY);
+        } catch {}
+        storedDraft = null;
+        draftNotice.hidden = true;
+      }
+
+      function saveDraft() {
+        try {
+          const fields = Array.from(form.elements)
+            .filter((control) => control.name && !control.disabled)
+            .filter((control) => !["radio", "checkbox"].includes(control.type) || control.checked)
+            .map((control) => [control.name, control.value]);
+          window.localStorage.setItem(
+            REGISTRATION_DRAFT_KEY,
+            JSON.stringify(createRegistrationDraft(fields, childCards().length)),
+          );
+        } catch {}
       }
 
       function optionHtml(option) {
@@ -264,7 +313,8 @@ const formCopy = registrationFormCopy;
         const stage = card.querySelector("[data-child-stage]").value;
         const target = card.querySelector("[data-class-options]");
         const fieldset = card.querySelector("[data-class-choice]");
-        const selected = card.querySelector("[data-child-class]:checked")?.value || "";
+        const selected = card.querySelector("[data-child-class]:checked")?.value || card.dataset.selectedClassId || "";
+        const selectedWaitlist = card.querySelector("[data-child-waitlist]:checked")?.value || card.dataset.waitlistClassId || "";
         target.innerHTML = "";
         setCatalogMessage(card, "");
 
@@ -299,7 +349,7 @@ const formCopy = registrationFormCopy;
               <strong>${escapeText(classText(session))}</strong>
               <b>${escapeText(formCopy.classChoice.full)}</b>
               ${session.activeHoldCount > 0 ? `<small>${escapeText(formCopy.classChoice.activeHolds.replace("{count}", session.activeHoldCount))}</small>` : ""}
-              <button class="waitlist-button" type="button" data-waitlist>${escapeText(formCopy.buttons.joinWaitlist)}</button>
+              <label class="waitlist-choice"><input type="checkbox" name="child-${card.dataset.childIndex}-waitlist" value="${escapeText(session.id)}" data-child-waitlist ${selectedWaitlist === session.id ? "checked" : ""}><span>${escapeText(formCopy.buttons.joinWaitlist)}</span></label>
             `;
           } else {
             option.innerHTML = `<strong>${escapeText(classText(session))}</strong><small>${escapeText(formCopy.classChoice.unavailableSession)}</small>`;
@@ -307,13 +357,28 @@ const formCopy = registrationFormCopy;
           target.append(option);
         });
 
-        target.querySelectorAll("[data-waitlist]").forEach((button) => {
-          button.addEventListener("click", () => {
-            setCatalogMessage(card, formCopy.classChoice.waitlistPrototype);
+        target.querySelectorAll("[data-child-waitlist]").forEach((input) => {
+          input.addEventListener("change", () => {
+            if (input.checked) {
+              target.querySelectorAll("[data-child-waitlist]").forEach((other) => {
+                if (other !== input) other.checked = false;
+              });
+              card.dataset.waitlistClassId = nextWaitlistSelection(card.dataset.waitlistClassId || "", input.value, true);
+            } else {
+              const next = nextWaitlistSelection(card.dataset.waitlistClassId || "", input.value, false);
+              if (next) card.dataset.waitlistClassId = next;
+              else delete card.dataset.waitlistClassId;
+            }
+            setCatalogMessage(card, "");
+            saveDraft();
           });
         });
         target.querySelectorAll("[data-child-class]").forEach((input) => {
-          input.addEventListener("change", () => setCatalogMessage(card, ""));
+          input.addEventListener("change", () => {
+            card.dataset.selectedClassId = input.value;
+            setCatalogMessage(card, "");
+            saveDraft();
+          });
         });
       }
 
@@ -337,7 +402,6 @@ const formCopy = registrationFormCopy;
       function renderChild(index, surname = "") {
         const card = document.createElement("article");
         card.className = "child-entry";
-        card.dataset.childCard = "";
         card.dataset.childIndex = String(index);
         card.innerHTML = `
           <div class="child-entry-heading">
@@ -360,7 +424,7 @@ const formCopy = registrationFormCopy;
               </div>
             </fieldset>
             <label data-previous-stage-field hidden><span>${formCopy.child.previousStage} ${requiredMarker()}</span><select name="child-${index}-previous-stage" data-child-previous-stage disabled><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.previousStageOptions.map(optionHtml).join("")}</select></label>
-            <label><span>${formCopy.child.referralCode}</span><input name="child-${index}-referral-code" data-child-referral autocomplete="off" placeholder="${formCopy.child.referralCodePlaceholder}"></label>
+            <label><span>${formCopy.child.code}</span><input name="child-${index}-code" data-child-code autocomplete="off" placeholder="${formCopy.child.codePlaceholder}"></label>
           </div>
           <div class="class-picker">
             <label class="stage-field"><span>${formCopy.child.stage} ${requiredMarker()}</span><select name="child-${index}-stage" data-child-stage required><option value="">${formCopy.selectPlaceholder}</option>${stageOptions()}</select></label>
@@ -388,16 +452,20 @@ const formCopy = registrationFormCopy;
           const selection = userStageSelection(stage.value);
           card.dataset.stageSource = selection.source;
           stage.value = selection.value;
+          delete card.dataset.selectedClassId;
+          delete card.dataset.waitlistClassId;
           renderClasses(card);
         });
         card.querySelector("[data-add-child]")?.addEventListener("click", () => {
           const firstSurname = childCards()[0]?.querySelector("[data-child-surname]")?.value || "";
           childCount += 1;
           renderChild(childCount, firstSurname);
+          saveDraft();
         });
         card.querySelector("[data-remove-child]")?.addEventListener("click", () => {
           card.remove();
           refreshChildHeadings();
+          saveDraft();
         });
         updatePreviousStageVisibility(card);
         refreshChildHeadings();
@@ -419,7 +487,7 @@ const formCopy = registrationFormCopy;
         if (issue.code === "catalog_loading") return formCopy.classChoice.loading;
         if (issue.code === "catalog_unavailable") return formCopy.classChoice.unavailable;
         if (issue.code === "no_sessions") return formCopy.classChoice.noSessions;
-        if (issue.code === "no_available_class") return formCopy.classChoice.noAvailableClass;
+        if (issue.code === "waitlist_required") return formCopy.classChoice.waitlistRequired;
         return formCopy.classChoice.selectRequired;
       }
 
@@ -442,6 +510,7 @@ const formCopy = registrationFormCopy;
             stage,
             sessions: sessionsForStage(stage),
             selectedClassId: card.querySelector("[data-child-class]:checked")?.value || "",
+            selectedWaitlistId: card.querySelector("[data-child-waitlist]:checked")?.value || "",
           });
           if (issue) {
             errorBox.hidden = false;
@@ -477,8 +546,11 @@ const formCopy = registrationFormCopy;
       function renderReview() {
         const children = childCards().map((card, index) => {
           const classId = card.querySelector("[data-child-class]:checked")?.value;
+          const waitlistId = card.querySelector("[data-child-waitlist]:checked")?.value;
           const session = sessionForId(classId);
-          return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span><span>${escapeText(session ? `${classText(session)} · ${availabilityText(session)}` : formCopy.classChoice.unavailable)}</span>${card.querySelector("[data-child-referral]").value.trim() ? `<span>${escapeText(formCopy.review.referralHeading)}: ${escapeText(card.querySelector("[data-child-referral]").value.trim())}</span>` : ""}</li>`;
+          const waitlist = sessionForId(waitlistId);
+          const code = card.querySelector("[data-child-code]").value.trim();
+          return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span>${session ? `<span>${escapeText(formCopy.review.selectedClassHeading)}: ${escapeText(`${classText(session)} · ${availabilityText(session)}`)}</span>` : ""}${waitlist ? `<span>${escapeText(formCopy.review.waitlistHeading)}: ${escapeText(classText(waitlist))}</span>` : ""}${code ? `<span>${escapeText(formCopy.review.codeHeading)}: ${escapeText(code)}</span>` : ""}</li>`;
         }).join("");
         reviewSummary.innerHTML = `
           <section><h3>${escapeText(formCopy.review.guardianHeading)}</h3><p>${escapeText(value("#guardian-name"))} · ${escapeText(value("#guardian-phone"))}<br>${escapeText(value("#guardian-email"))}</p></section>
@@ -521,6 +593,7 @@ const formCopy = registrationFormCopy;
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         if (!validateInformation()) return;
+        saveDraft();
         progress.textContent = `2 / 4 · ${formCopy.progress.guardianRules}`;
         showDialog(guardianDialog);
       });
@@ -542,7 +615,41 @@ const formCopy = registrationFormCopy;
         progress.textContent = `1 / 4 · ${formCopy.progress.information}`;
         document.getElementById("guardian-name").focus();
       });
-      document.getElementById("finish-prototype").addEventListener("click", () => { completeMessage.hidden = false; });
+      document.getElementById("finish-prototype").addEventListener("click", () => {
+        completeMessage.hidden = false;
+        discardStoredDraft();
+      });
+      form.addEventListener("input", saveDraft);
+      form.addEventListener("change", saveDraft);
+
+      function restoreDraft(draft) {
+        const values = new Map(draft.fields);
+        childrenList.replaceChildren();
+        childCount = 0;
+        renderChild(0, values.get("child-0-surname") || "");
+        const safeChildCount = Math.min(draft.childCount, 8);
+        for (let index = 1; index < safeChildCount; index += 1) {
+          childCount += 1;
+          renderChild(childCount, values.get(`child-${childCount}-surname`) || "");
+        }
+        for (const [name, savedValue] of values) {
+          Array.from(form.elements).filter((control) => control.name === name).forEach((control) => {
+            if (["radio", "checkbox"].includes(control.type)) control.checked = control.value === savedValue;
+            else control.value = savedValue;
+          });
+        }
+        childCards().forEach((card) => {
+          updatePreviousStageVisibility(card);
+          const stage = card.querySelector("[data-child-stage]");
+          if (stage.value) card.dataset.stageSource = "user";
+          card.dataset.selectedClassId = values.get(`child-${card.dataset.childIndex}-class`) || "";
+          card.dataset.waitlistClassId = values.get(`child-${card.dataset.childIndex}-waitlist`) || "";
+          renderClasses(card);
+        });
+        discardStoredDraft();
+      }
+      restoreDraftButton.addEventListener("click", () => storedDraft && restoreDraft(storedDraft));
+      discardDraftButton.addEventListener("click", discardStoredDraft);
       async function loadCatalog() {
         try {
           const response = await fetch("/api/registration/catalog", { headers: { Accept: "application/json" } });
@@ -559,6 +666,8 @@ const formCopy = registrationFormCopy;
       }
 
       renderChild(childCount, "");
+      storedDraft = readStoredDraft();
+      if (storedDraft) draftNotice.hidden = false;
       loadCatalog();
     </script>
   </body>

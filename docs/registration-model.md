@@ -174,7 +174,7 @@ Class/session capacity should be configurable. Historically a class has 10 child
 
 ### Selected Class
 
-Ordinary registration selects exactly one concrete `ClassSession` for each child:
+Ordinary registration selects at most one current concrete `ClassSession` for each child:
 
 ```text
 stage + weekday + start/end time
@@ -182,7 +182,7 @@ stage + weekday + start/end time
 
 The selected class is not merely a preferred stage. It is the class to capacity-check before creating a future temporary hold. A stage recommendation may be derived from previous confirmed participation where known, but it remains an editable parent choice. Homepage stage links may preselect a stage in the prototype; they never lock it. Selection precedence is explicit user choice, then a valid initial URL stage, then a derived recommendation. Once the parent chooses manually, returning-history changes and catalog refreshes must not overwrite that choice.
 
-The phone-first prototype keeps the child form compact: required fields use only the documented red asterisk, optional fields have no marker, previous-stage selection appears and becomes required only for a returning child, and stage/class controls read as ordinary fields rather than a nested wizard. When a selected stage has no configured classes, the page explains that state at the class field and does not redirect focus to the stage selector.
+The phone-first prototype keeps the child form compact: required fields use only the red asterisk, optional fields have no marker, and missing-field feedback appears only after an attempted continuation. Previous-stage selection appears and becomes required only for a returning child, and stage/class controls read as ordinary fields rather than a nested wizard. When a selected stage has no configured classes, the page explains that state at the class field and does not redirect focus to the stage selector.
 
 ### Enrollment
 
@@ -198,24 +198,48 @@ Enrollment status should distinguish:
 
 A later overdue installment must not automatically cancel, delete, or hide a confirmed enrollment.
 
-The ordinary public flow creates at most one class choice for an application child. In the rare case that a student should study in two stages/classes at once, a future teacher/admin operation may create the exceptional second enrollment. The current schema does not impose a student-per-year uniqueness rule that would make this permanently impossible.
+The ordinary public flow creates at most one current class choice for an application child. In the rare case that a student should study in two stages/classes at once, a future teacher/admin operation may create the exceptional additional enrollment. It is never advertised or requested through parent registration. The current schema does not impose a student-per-year uniqueness rule, so it already permits this exceptional second enrollment with its own class and tuition obligation.
 
 ### Waitlist Entry
 
-A waitlist entry is separate from an unpaid seat hold. It represents interest in one specific full class and forms one FIFO queue per concrete `ClassSession`, ordered by entry creation time.
+A waitlist entry is separate from an unpaid seat hold. It represents interest in one specific full class and forms one FIFO queue per concrete `ClassSession`, ordered by stable entry creation time and opaque ID as a deterministic tie-breaker.
 
-When a seat becomes available, the first active entry for that class receives a temporary acceptance/payment opportunity, normally using the same short hold window. If it expires, the offer moves to the next active entry. The public registration and waitlist model has no ranked alternatives.
+Ordinary parent-facing behavior permits at most one active preferred waitlist target. A parent may choose an available fallback class and one full preferred class at the same time. Once the fallback enrollment is confirmed, its preferred-class waitlist remains active. If every class is full, one waitlist target is enough for the future waitlist-only path; no fake primary class is required. The public registration and waitlist model has no ranked alternatives.
+
+When a seat becomes available, the first eligible active entry for that class receives a temporary transfer or acceptance offer. If it expires, the offer moves to the next entry. A public parent must not be able to join every full class.
+
+### Transfer And Additional Enrollment
+
+A transfer replaces an existing enrollment only after the target has succeeded. If a child confirmed in class B is waiting for class A, an A offer temporarily reserves A while B remains confirmed. Declining, expiry, or an unpaid required difference releases A back to its queue and leaves B untouched. Only a completed transfer releases B, which may then trigger B's FIFO queue.
+
+An exceptional additional enrollment is different: teacher/admin creates another enrollment, the original seat remains, and the second class has its own tuition/pricing obligation and any separately approved adjustment.
+
+Cross-level transfer must use each enrollment's actual pricing snapshot, payment plan, discounts, charges, and already-received payments. A higher target obligation requires the difference before the source seat is released. A lower target obligation creates account credit after transfer; historical received payments are never rewritten. Equal obligations need no financial adjustment.
 
 ## Initial Seat Hold Flow
 
 Intended flow:
 
 ```text
-available seat
--> temporary hold
+finish form + rules + review
+-> save pending registration/draft
+-> atomically capacity-check selected class
+-> 20-minute provisional email-confirmation hold
+-> email confirmation
+-> fresh 24-hour initial-payment hold
 -> first required payment received
 -> confirmed enrollment
 ```
+
+The provisional hold protects a seat while the parent confirms email. It never consumes time from the fresh 24-hour payment window, which starts only after timely email confirmation. Public full-class temporary counts should include capacity-consuming provisional confirmation holds and initial-payment holds, never confirmed enrollments or identities.
+
+The registration confirmation link itself remains usable for a longer configurable lifetime, currently about 24 hours. If confirmation happens after the 20-minute provisional hold expired, atomically re-check capacity. Reacquire the class and start a fresh payment hold if possible; otherwise explain that the temporary guarantee expired and show available classes plus the selected class's FIFO waitlist. Saved registration data remains recoverable.
+
+Email scanners must not consume confirmation links. The future one-click flow places the secret in the URL fragment, then the real browser posts it to the verification endpoint; a scanner's ordinary HTTP GET never receives or consumes it. Ordinary login/auth magic links remain conceptually separate and may have a shorter lifetime.
+
+After future form completion, the parent sees a simple email-status screen with the displayed address, resend and change-address actions, the provisional-hold explanation, Spam/Junk advice, and notice that changing/resending does not restart the provisional clock. The parent must not re-enter the form for a mistyped address.
+
+The prototype now keeps a short browser-local draft for accidental refresh/closure, with explicit restore or discard. A local draft never creates a registration or hold. After email ownership is confirmed, a future server-side draft can recover across devices and support restrained stale-draft reminders.
 
 If initial payment is not received, the system may send reminders and expire the hold. Reminder timing and expiry timing must be configurable, not hard-coded.
 
@@ -310,7 +334,7 @@ A referral only financially qualifies when both relevant children have made thei
 
 If B pays before A, B may initially pay full price. When A later pays and the referral becomes qualified, A's 5% can affect A's payment immediately where possible, and B receives equivalent account credit if B already paid too much.
 
-Model referral identity explicitly. Do not infer friendship/referral from school, address, Facebook, names, or payment origin. A new family may enter a referral code it received. The family's own shareable referral code/link is not generated during registration; it becomes available only after the first required payment confirms enrollment. The referred child's own parent follows or enters that referral and completes their own registration.
+Model referral identity explicitly. Do not infer friendship/referral from school, address, Facebook, names, or payment origin. The optional public `Код` is generic: it may represent a referral, teacher award, one-time benefit, reusable event code, campaign, or another configured benefit. A referral remains a special code type with an explicit relationship because both families may receive reciprocal benefits. The family's own shareable referral code/link is not generated during registration; it becomes available only after the first required payment confirms enrollment.
 
 ### Private Teacher/Admin Financial Approval
 

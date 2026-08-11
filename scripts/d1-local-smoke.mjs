@@ -136,16 +136,20 @@ try {
     ) VALUES (
       'prereg-local-1', 'guardian-local-1', 'year-local-1', 'family-local-1',
       'submitted', '${now}', 1, 1, '${testRunId}', '${now}', '${now}'
+    ), (
+      'prereg-local-2', 'guardian-local-1', 'year-local-1', 'family-local-1',
+      'completed', '${now}', 1, 1, '${testRunId}', '${now}', '${now}'
     );
 
     INSERT INTO application_child (
       id, pre_registration_id, student_id, current_school, current_grade,
-      returning_status, previous_stage_code, referral_code_input,
+      returning_status, previous_stage_code, code_input,
       selected_payment_plan_code, selected_class_session_id, status, is_test, test_run_id,
       created_at, updated_at
     ) VALUES
       ('app-child-local-1', 'prereg-local-1', 'student-local-1', 'Fake School', 5, 'new', NULL, 'REF-FAKE', 'full_year', 'class-local-1', 'hold_created', 1, '${testRunId}', '${now}', '${now}'),
-      ('app-child-local-2', 'prereg-local-1', 'student-local-2', 'Fake School', 4, 'new', NULL, NULL, 'two_part', 'class-local-2', 'submitted', 1, '${testRunId}', '${now}', '${now}');
+      ('app-child-local-2', 'prereg-local-1', 'student-local-2', 'Fake School', 4, 'new', NULL, NULL, 'two_part', 'class-local-2', 'submitted', 1, '${testRunId}', '${now}', '${now}'),
+      ('app-child-local-3', 'prereg-local-2', 'student-local-1', 'Fake School', 5, 'returning', 'stage_1', NULL, 'full_year', 'class-local-3', 'enrolled', 1, '${testRunId}', '${now}', '${now}');
 
     INSERT INTO enrollment (
       id, application_child_id, student_id, academic_year_id, class_session_id,
@@ -154,6 +158,10 @@ try {
     ) VALUES (
       'enrollment-local-1', 'app-child-local-1', 'student-local-1', 'year-local-1',
       'class-local-1', 'awaiting_initial_payment', '${now}', '2026-08-11T00:00:00Z',
+      '2026-08-11T00:00:00Z', 1, '${testRunId}', '${now}', '${now}'
+    ), (
+      'enrollment-local-2', 'app-child-local-3', 'student-local-1', 'year-local-1',
+      'class-local-3', 'confirmed', '${now}', '2026-08-11T00:00:00Z',
       '2026-08-11T00:00:00Z', 1, '${testRunId}', '${now}', '${now}'
     );
 
@@ -209,6 +217,20 @@ try {
     );
     `,
     { label: "sample registration, outbound email, hashed challenge, and verified-email session inserted" },
+  );
+
+  execute(
+    `
+    DROP TABLE IF EXISTS second_enrollment_assertion;
+    CREATE TABLE second_enrollment_assertion (ok INTEGER NOT NULL CHECK (ok));
+    INSERT INTO second_enrollment_assertion
+    SELECT CASE WHEN (
+      SELECT COUNT(*) FROM enrollment
+      WHERE student_id = 'student-local-1' AND academic_year_id = 'year-local-1'
+    ) = 2 THEN 1 ELSE 0 END;
+    DROP TABLE second_enrollment_assertion;
+    `,
+    { label: "schema permits a teacher-created second enrollment for one student in an academic year" },
   );
 
   execute(
