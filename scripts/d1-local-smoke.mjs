@@ -271,6 +271,82 @@ try {
 
   execute(
     `
+    INSERT INTO curriculum_program (
+      id, academic_year_id, stage_code, revision_number, display_name, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'program-local-1', 'year-local-1', 'stage_1', 1, 'Local test program', 'draft',
+      1, '${testRunId}', '${now}', '${now}'
+    );
+    INSERT INTO curriculum_lesson (
+      id, curriculum_program_id, sequence_number, title, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES
+      ('lesson-local-1', 'program-local-1', 1, 'Local lesson one', 'active', 1, '${testRunId}', '${now}', '${now}'),
+      ('lesson-local-2', 'program-local-1', 2, 'Local lesson two', 'active', 1, '${testRunId}', '${now}', '${now}');
+    UPDATE curriculum_program SET status = 'published' WHERE id = 'program-local-1';
+
+    INSERT INTO academic_year_break (
+      id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots,
+      status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'break-local-1', 'year-local-1', 'Local break', '2026-10-18', '2026-10-25', 1,
+      'active', 1, '${testRunId}', '${now}', '${now}'
+    );
+
+    INSERT INTO class_calendar (
+      id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'calendar-local-1', 'class-local-1', 'Asia/Ulaanbaatar', 'active', 1, '${testRunId}', '${now}', '${now}'
+    );
+    INSERT INTO class_calendar_revision (
+      id, class_calendar_id, curriculum_program_id, revision_number, status,
+      first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'calendar-revision-local-1', 'calendar-local-1', 'program-local-1', 1, 'draft',
+      '2026-10-03', 0, 1, '${testRunId}', '${now}', '${now}'
+    );
+    INSERT INTO class_calendar_slot (
+      id, class_calendar_revision_id, local_date, start_time, end_time, slot_source,
+      status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'calendar-slot-local-1', 'calendar-revision-local-1', '2026-10-03', '10:00', '11:20',
+      'generated', 'scheduled', 'lesson-local-1', 1, '${testRunId}', '${now}', '${now}'
+    );
+    UPDATE class_calendar_revision
+    SET status = 'published', published_at = '${now}'
+    WHERE id = 'calendar-revision-local-1';
+
+    DROP TABLE IF EXISTS calendar_smoke_assertion;
+    CREATE TABLE calendar_smoke_assertion (ok INTEGER NOT NULL CHECK (ok));
+    INSERT INTO calendar_smoke_assertion SELECT CASE WHEN (
+      SELECT COUNT(*) FROM class_calendar_slot
+      WHERE class_calendar_revision_id = 'calendar-revision-local-1'
+        AND curriculum_lesson_id = 'lesson-local-1'
+    ) = 1 THEN 1 ELSE 0 END;
+    DROP TABLE calendar_smoke_assertion;
+    `,
+    { label: "program, break, and published explicit calendar foundation inserted" },
+  );
+
+  execute(
+    `UPDATE curriculum_lesson SET title = 'Changed after publish' WHERE id = 'lesson-local-1';`,
+    { expectFailure: true, label: "published program lessons are immutable" },
+  );
+
+  execute(
+    `INSERT INTO class_calendar_slot (
+      id, class_calendar_revision_id, local_date, start_time, end_time, slot_source,
+      status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'calendar-slot-late-edit', 'calendar-revision-local-1', '2026-10-10', '10:00', '11:20',
+      'generated', 'scheduled', 'lesson-local-2', 1, '${testRunId}', '${now}', '${now}'
+    );`,
+    { expectFailure: true, label: "published calendar revisions are immutable" },
+  );
+
+  execute(
+    `
     PRAGMA foreign_keys = ON;
     INSERT INTO audit_event (
       id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,

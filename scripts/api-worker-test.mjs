@@ -36,7 +36,7 @@ function catalogRow(id, options = {}) {
     academicYearId: options.academicYearId ?? "year-test",
     academicYearLabel: options.academicYearLabel ?? "Туршилтын хичээлийн жил",
     classSessionId: id,
-    stageCode: "stage_1",
+    stageCode: options.stageCode ?? "stage_1",
     displayLabel: options.displayLabel ?? id,
     weekday: "Бямба",
     startTime: "10:00",
@@ -70,6 +70,22 @@ function createDatabase(rows, options = {}) {
           return { ok: 1 };
         },
         async all() {
+          if (sql.includes("FROM class_calendar")) {
+            if (options.calendarError) throw new Error("SQLITE_ERROR: no such table: class_calendar");
+            assert.match(sql, /class_calendar_revision\.status = 'published'/);
+            assert.match(sql, /class_calendar_slot\.class_calendar_revision_id/);
+            const productionQuery = sql.includes("class_calendar\.is_test = 0");
+            const calendarRows = options.calendarRows ?? [];
+            const filtered = productionQuery
+              ? calendarRows.filter((row) => row.isTest === 0)
+              : calendarRows;
+            if (productionQuery) {
+              assert.match(sql, /class_session\.is_test_only = 0/);
+              assert.match(sql, /curriculum_lesson\.is_test = 0/);
+            }
+            assert.deepEqual(bindings, []);
+            return { success: true, results: filtered };
+          }
           if (options.catalogError) throw new Error("SQLITE_ERROR: no such table: class_session");
           assert.match(sql, /academic_year\.registration_status = \?/);
           assert.match(sql, /enrollment\.status = 'confirmed'/);
@@ -95,6 +111,34 @@ function createDatabase(rows, options = {}) {
   };
 }
 
+function calendarRow(id, options = {}) {
+  return {
+    academicYearId: "calendar-year",
+    academicYearLabel: "Туршилтын хичээлийн жил",
+    calendarId: options.calendarId ?? "calendar-stage-2-sunday",
+    classSessionId: options.classSessionId ?? "calendar-class-sunday",
+    classLabel: "Ням гараг 10:00",
+    stageCode: "stage_2",
+    weekday: "Ням",
+    startTime: "10:00",
+    endTime: "11:20",
+    timezone: "Asia/Ulaanbaatar",
+    revisionNumber: 1,
+    slotId: id,
+    localDate: options.localDate ?? "2026-10-04",
+    slotStartTime: options.slotStartTime ?? "10:00",
+    slotEndTime: options.slotEndTime ?? "11:20",
+    slotStatus: options.slotStatus ?? "scheduled",
+    lessonSequence: Object.hasOwn(options, "lessonSequence") ? options.lessonSequence : 1,
+    lessonTitle: Object.hasOwn(options, "lessonTitle") ? options.lessonTitle : "Туршилтын хичээл 01",
+    cancelledLessonSequence: options.cancelledLessonSequence ?? null,
+    cancelledLessonTitle: options.cancelledLessonTitle ?? null,
+    reasonLabel: options.reasonLabel ?? null,
+    isTest: options.isTest ?? 1,
+    internalNote: "must never be selected by the API",
+  };
+}
+
 async function jsonResponse(handler, path, env, init) {
   const response = await handler.fetch(new Request(`https://example.test${path}`, init), env);
   assert.match(response.headers.get("content-type") ?? "", /^application\/json/);
@@ -115,7 +159,18 @@ try {
       catalogRow("staging-nearly-full", { isTest: 1, isTestOnly: 1, confirmedCount: 8, activeHoldCount: 1 }),
       catalogRow("staging-full-firm", { isTest: 1, isTestOnly: 1, confirmedCount: 10 }),
       catalogRow("staging-full-limbo", { isTest: 1, isTestOnly: 1, confirmedCount: 8, activeHoldCount: 2 }),
-    ]),
+    ], {
+      calendarRows: [
+        calendarRow("calendar-staging-lesson-1"),
+        calendarRow("calendar-staging-no-class", {
+          localDate: "2026-10-11",
+          slotStatus: "no_class",
+          lessonSequence: null,
+          lessonTitle: null,
+          reasonLabel: "Туршилтын завсарлага",
+        }),
+      ],
+    }),
   };
   const stagingHealth = await jsonResponse(stagingWorker, "/api/health", stagingEnv);
   assert.equal(stagingHealth.response.status, 200);
@@ -138,6 +193,15 @@ try {
     ],
   );
 
+  const stagingCalendar = await jsonResponse(stagingWorker, "/api/calendar/published", stagingEnv);
+  assert.equal(stagingCalendar.response.status, 200);
+  assert.equal(stagingCalendar.body.calendars.length, 1);
+  assert.deepEqual(stagingCalendar.body.calendars[0].entries.map((entry) => [entry.status, entry.lessonNumber, entry.reasonLabel]), [
+    ["scheduled", 1, null],
+    ["no_class", null, "Туршилтын завсарлага"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(stagingCalendar.body), /internalNote|must never/i, "calendar API does not expose private fields");
+
   const productionWorker = (await bundleWorker("production", "production")).default;
   const productionEnv = {
     APP_ENV: "production",
@@ -145,7 +209,9 @@ try {
     DB: createDatabase([
       catalogRow("production-public-session", { confirmedCount: 3, activeHoldCount: 2 }),
       catalogRow("production-test-session", { isTest: 1, isTestOnly: 1, confirmedCount: 10 }),
-    ]),
+    ], {
+      calendarRows: [calendarRow("production-test-calendar", { isTest: 1 })],
+    }),
   };
   const productionHealth = await jsonResponse(productionWorker, "/api/health", productionEnv);
   assert.equal(productionHealth.response.status, 200);
@@ -157,6 +223,13 @@ try {
     productionCatalog.body.academicYears[0].classSessions.map((session) => [session.id, session.remainingSeats, session.activeHoldCount]),
     [["production-public-session", 5, 2]],
   );
+
+  const productionCalendar = await jsonResponse(productionWorker, "/api/calendar/published", productionEnv);
+  assert.deepEqual(productionCalendar.body, { calendars: [] }, "production safely returns an empty unconfigured schedule");
+
+  const calendarMethod = await jsonResponse(productionWorker, "/api/calendar/published", productionEnv, { method: "POST" });
+  assert.equal(calendarMethod.response.status, 405);
+  assert.equal(calendarMethod.response.headers.get("allow"), "GET");
 
   const method = await jsonResponse(productionWorker, "/api/health", productionEnv, { method: "POST" });
   assert.equal(method.response.status, 405);
@@ -193,6 +266,15 @@ try {
   assert.equal(failedCatalog.response.status, 500);
   assert.equal(failedCatalog.body.error.code, "internal_error");
   assert.doesNotMatch(JSON.stringify(failedCatalog.body), /SQLITE|class_session|no such table/i);
+
+  const failedCalendar = await jsonResponse(
+    productionWorker,
+    "/api/calendar/published",
+    { ...productionEnv, DB: createDatabase([], { calendarError: true }) },
+  );
+  assert.equal(failedCalendar.response.status, 500);
+  assert.equal(failedCalendar.body.error.code, "internal_error");
+  assert.doesNotMatch(JSON.stringify(failedCalendar.body), /SQLITE|class_calendar|no such table/i);
 
   console.log("ok Worker API bundle tests");
 } finally {

@@ -96,6 +96,8 @@ The registration domain is documented before implementation so the future app pr
 
 See [docs/registration-model.md](docs/registration-model.md).
 
+The program/calendar foundation keeps what is taught, a class's habitual cohort slot, and its published dated schedule separate. Its staging data is deliberately fake; production has no curriculum or calendar configuration yet. See [docs/program-calendar-model.md](docs/program-calendar-model.md).
+
 ## Editing Public Content
 
 For small wording, phone, address, schedule, or future price edits, see [EDITING.md](EDITING.md). Public Mongolian wording is kept in `src/content/`; current academic-year data is kept in `src/config/academic-year.ts`.

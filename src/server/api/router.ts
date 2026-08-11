@@ -4,6 +4,7 @@ import { EmailVerificationError, startEmailVerification, verifyEmailToken } from
 import { VERIFIED_EMAIL_COOKIE } from "../auth/email-verification";
 import { EmailConfigurationError, EmailDeliveryError } from "../email/service";
 import { getRegistrationCatalog } from "../services/registration-catalog";
+import { getPublishedCalendars } from "../services/published-calendar";
 import {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -110,6 +111,15 @@ export async function handleApiRequest(request: Request, env: WorkerEnv): Promis
       return json(await getRegistrationCatalog(env.DB, env.APP_ENV), 200, { "Cache-Control": "no-store" });
     } catch {
       return error("internal_error", "Бүртгэлийн мэдээллийг одоогоор авч чадсангүй.", 500);
+    }
+  }
+
+  if (path === "/api/calendar/published") {
+    if (request.method !== "GET") return methodNotAllowed();
+    try {
+      return json(await getPublishedCalendars(env.DB, env.APP_ENV), 200, { "Cache-Control": "no-store" });
+    } catch {
+      return error("internal_error", "Хуваарийг одоогоор авч чадсангүй.", 500);
     }
   }
 

@@ -246,6 +246,90 @@ h3 {
   object-fit: contain;
 }
 
+.schedule-preview {
+  display: grid;
+  gap: 1.35rem;
+}
+
+.schedule-preview h1 {
+  max-width: none;
+  font-size: clamp(2rem, 10vw, 3.25rem);
+}
+
+.schedule-preview-note,
+.schedule-state,
+.next-class p,
+.schedule-entry p {
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+.schedule-state {
+  min-height: 3rem;
+}
+
+.schedule-selector {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 28rem;
+  font-weight: 750;
+}
+
+.schedule-selector select {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.5rem 0.65rem;
+}
+
+.next-class {
+  border-left: 4px solid var(--accent);
+  background: var(--paper);
+  padding: 1rem;
+}
+
+.next-class h2 {
+  margin-bottom: 0.55rem;
+  font-size: 1.35rem;
+}
+
+.schedule-list-section {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.schedule-list-section h2 {
+  margin-bottom: 0;
+  font-size: 1.5rem;
+}
+
+.schedule-list {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+
+.schedule-entry {
+  display: grid;
+  gap: 0.18rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.9rem 0;
+}
+
+.schedule-entry h3 {
+  margin: 0.1rem 0;
+  font-size: 1rem;
+}
+
+.schedule-entry-no_class h3,
+.schedule-entry-cancelled h3 {
+  color: var(--muted);
+}
+
 .section-heading {
   max-width: 44rem;
   margin-bottom: 1.35rem;

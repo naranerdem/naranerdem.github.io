@@ -144,15 +144,13 @@ Authentication is not implemented yet, but future routes and modules should pres
 
 Before teacher/admin authentication exists, do not build an editor. Later, the Mongolian Content/Settings editor should support quick phone edits but remain desktop-comfortable for long rules, yearly setup, and bulk schedules. Ordinary site copy needs simple revision history and a current published value. Academic-year configuration needs classes, dates, prices, payment-plan settings, registration status, and copy-previous-year to editable draft to publish. Rules/policies need immutable versions, and registrations must retain the exact parent/student versions acknowledged. Important content follows Draft -> Preview -> Publish; this is not a generic heavyweight CMS.
 
-### Future lesson calendar and attendance domain
+### Program and academic-year calendar domain
 
-This is **future planned domain**, not current schema or functionality. `ClassSession` remains useful as a concrete enrolled cohort and habitual slot, for example `Level 2 — Sunday 10:00–11:20`. It supports registration, cohort membership, and the reasonable expectation that a family may think of Sunday as its usual class time. It is not a curriculum lesson and must not mechanically generate a weekly calendar.
+The implemented calendar foundation keeps three concepts separate: `curriculum_program` is the ordered named lesson content for one stage/year; `ClassSession` is the registered cohort and habitual time; and a published `class_calendar_revision` is the explicit operational schedule. Weekly recurrence only generates draft candidates. It is never the source of truth after publication.
 
-Future academic-year configuration should publish the actual dated lesson calendar with draft, preview, and publish semantics. A `CurriculumLesson` identifies content within a stage, such as `Level 2, Lesson 7`. A `LessonOccurrence` is one dated delivery of that lesson for a `ClassSession` cohort, or an extra teacher-created make-up occurrence. The calendar may contain holidays, gaps, cancellations, rescheduling, and different dates for different cohorts. It must never infer dates from a weekly rule, seven-day spacing, a Monday-Sunday lesson sequence, or a shared weekday progression.
+Published program and calendar revisions are immutable. Global academic-year breaks, class-specific exclusions/restores, and manual extra slots form draft planning inputs. A published calendar stores explicit `scheduled`, `no_class`, and `cancelled` dated entries, so an absent row never has to stand for a holiday, cancellation, or incomplete configuration. Every class calendar remains independent even where cohorts share the same program lesson.
 
-For example, Level 2 Lesson 7 may have a Sunday occurrence for one cohort and the following Tuesday occurrence for another, while another lesson crosses a different week boundary. Those can be the only normal occurrences. A child absent from Lesson 7 cannot make it up by attending Lesson 8 just because another class has space.
-
-The published calendar also needs explicit typed entries beyond lesson delivery. The absence of a `LessonOccurrence` is ambiguous: it might be an intentional holiday, an unscheduled gap, a cancellation, or simply configuration not yet entered. A future `CalendarException`/typed calendar entry should represent scheduled lesson occurrence, planned no-class/holiday for a habitual `ClassSession`, cancellation, rescheduling, long break/holiday period, and extra/make-up occurrence. A planned no-class entry matters because a family might otherwise arrive at its habitual time.
+Future cancellation/reflow is limited by a manual locked/delivered lesson prefix rather than wall-clock inference. Cancelling one future active slot retains cancellation history and either extends the habitual tail or lets a chronological replacement slot absorb the lesson. See [program-calendar-model.md](program-calendar-model.md) for the exact invariants and generator semantics.
 
 Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
 
@@ -170,7 +168,7 @@ For an irregular cancellation/reschedule, teacher/admin may send immediate email
 
 Make-up invitations keep their existing teacher-mediated path: the system may suggest, the teacher approves, then email and/or Messenger-copy text can be produced.
 
-Once calendar schema exists, a realistic staging fixture should include at least two cohorts per stage; repeated occurrences of the same curriculum lesson across cohorts; intentionally irregular Sunday-to-following-Tuesday ordering; holiday/no-class and long winter-break entries; the first lesson after break; cancellation and reschedule examples; absences with and without remaining same-lesson occurrences; and an extra teacher-created make-up occurrence.
+The implemented staging fixtures are explicitly fake: two cohorts per stage share a 30-lesson fake program, include short and winter breaks, a class exclusion, a break restore, and a manual extra slot. They deliberately show a Stage 2 lesson on Sunday and the following Tuesday for the other cohort. Attendance, absence, make-up, and parent notification workflows remain separate future work.
 
 ### Scheduled reminder jobs
 

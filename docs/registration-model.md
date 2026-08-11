@@ -172,13 +172,13 @@ For example, two different Saturday `1-р шат — Анхан шат` time slo
 
 Class/session capacity should be configurable. Historically a class has 10 children.
 
-### Future CurriculumLesson and LessonOccurrence
+### Program And Published Calendar
 
-This is **future planned domain**, not implemented schema. `ClassSession` describes a concrete enrolled cohort and habitual time slot, such as `Level 2 — Sunday 10:00–11:20`; it supports registration and family expectations but is not the identity of curriculum content and must not imply a weekly recurrence rule.
+`ClassSession` remains a concrete enrolled cohort and habitual time slot, such as `2-р шат — Ням 10:00–11:20`. It supports registration and family expectations but is not curriculum content and does not mechanically define a weekly lesson calendar.
 
-A future `CurriculumLesson` belongs to one stage and identifies actual content, for example `Level 2 — Lesson 7`. A future `LessonOccurrence` is one dated delivery of that same lesson for a cohort or an extra teacher-created make-up occurrence. The academic-year calendar is globally configured and published with exact dates/times, cancellations, rescheduling, holidays/gaps, and multiple occurrences of one lesson for different cohorts. The system must not infer occurrences from a constant seven-day interval, a single weekday, a Monday-Sunday sequence, or one lesson per week. Level 2 Lesson 7 may occur Sunday for one cohort and the following Tuesday for another, while another lesson crosses a different week boundary.
+The implemented program/calendar foundation separates an academic-year, stage-specific ordered `CurriculumProgram` from the explicit dated calendar for each `ClassSession`. A weekly pattern is only a draft candidate generator. Published `scheduled`, `no_class`, and `cancelled` rows are the operational truth, which lets one cohort teach Lesson 7 on Sunday and another on the following Tuesday. Global breaks normally exclude habitual candidates; a class can exclude another date or restore a date within a break; a manual extra slot participates in the same chronological lesson order.
 
-The future published calendar needs explicit typed non-class entries because a missing occurrence is ambiguous. Names and schema remain open, but it must represent scheduled lesson, planned no-class/holiday for a habitual `ClassSession`, cancellation, rescheduling, long break/holiday period, and extra/make-up occurrence. A planned no-class entry can drive a reminder so children do not arrive at their usual time.
+After publication, cancellation preserves the original dated entry and only reflows lessons after an explicit manually locked prefix. Without a replacement, the tail extends; with a timely replacement, it absorbs the missed lesson. Read-only class schedules expose no registration data. Details are in [program-calendar-model.md](program-calendar-model.md).
 
 A missed Lesson 7 can be made up only through another suitable occurrence of Lesson 7, not by joining Lesson 8 because it has space. Future make-up suggestions require the same curriculum lesson, a suitable future occurrence with capacity, an unresolved absence, and teacher consideration. Suggestions never automatically invite parents; the teacher approves/rejects and can override them. A teacher may create one extra non-standard occurrence when normal occurrences are unavailable.
 
@@ -194,7 +194,7 @@ Schedule communication is future planned and separate from payment-reminder esca
 
 Communication needs event/idempotency semantics: avoid duplicate sends for one published change, do not notify on unrelated metadata edits, group siblings where clearer, and allow a materially changed reschedule to create a new notice. Make-up messages remain teacher-approved before they are generated or sent.
 
-Future staging calendar fixtures should deliberately include repeated same-lesson occurrences across cohorts, cross-week irregularity, no-class/holiday and long-break entries, cancellation/reschedule examples, make-up-eligible and no-standard-make-up absences, plus an extra teacher-created make-up occurrence. No such calendar rows exist yet.
+Current staging calendar fixtures are deliberately fake and carry test provenance. They exercise independent cross-week cohort progress, no-class/holiday rows, a long break, class restoration/exclusion, and an extra slot. They are not Naran Erdem's real curriculum or public schedule.
 
 ### Selected Class
 

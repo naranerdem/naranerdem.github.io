@@ -1,0 +1,138 @@
+---
+import { siteIdentity } from "../content/homepage";
+import "../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Хуваарийн туршилтын харагдац | {siteIdentity.name}</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand-link" href="/" aria-label="Нүүр хуудас">
+        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
+        <span>
+          <strong>{siteIdentity.name}</strong>
+          <span>{siteIdentity.shortProgramLabel}</span>
+        </span>
+      </a>
+    </header>
+
+    <main class="section-shell schedule-preview" aria-labelledby="schedule-title">
+      <p class="eyebrow">Туршилтын харагдац</p>
+      <h1 id="schedule-title">Хичээлийн хуваарь</h1>
+      <p class="schedule-preview-note">Энд зөвхөн туршилтын хуваарийн өгөгдөл харагдана.</p>
+      <section id="schedule-state" class="schedule-state" role="status" aria-live="polite">Хуваарийг ачаалж байна.</section>
+      <section id="schedule-content" hidden>
+        <label class="schedule-selector">
+          <span>Туршилтын анги</span>
+          <select id="schedule-class-select" aria-label="Туршилтын анги"></select>
+        </label>
+        <article class="next-class" aria-labelledby="next-class-title">
+          <p class="eyebrow">Дараагийн хичээл</p>
+          <h2 id="next-class-title"></h2>
+          <p id="next-class-details"></p>
+        </article>
+        <section class="schedule-list-section" aria-labelledby="schedule-list-title">
+          <h2 id="schedule-list-title">Бүх хуваарь</h2>
+          <div id="schedule-list" class="schedule-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script is:inline>
+      const state = document.getElementById("schedule-state");
+      const content = document.getElementById("schedule-content");
+      const list = document.getElementById("schedule-list");
+      const nextTitle = document.getElementById("next-class-title");
+      const nextDetails = document.getElementById("next-class-details");
+      const classSelect = document.getElementById("schedule-class-select");
+      const weekdayNames = ["Ням гараг", "Даваа гараг", "Мягмар гараг", "Лхагва гараг", "Пүрэв гараг", "Баасан гараг", "Бямба гараг"];
+      const monthNames = ["1-р сарын", "2-р сарын", "3-р сарын", "4-р сарын", "5-р сарын", "6-р сарын", "7-р сарын", "8-р сарын", "9-р сарын", "10-р сарын", "11-р сарын", "12-р сарын"];
+
+      function localToday() {
+        const parts = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Ulaanbaatar",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(new Date());
+        const field = (type) => parts.find((part) => part.type === type)?.value;
+        return `${field("year")}-${field("month")}-${field("day")}`;
+      }
+
+      function formatDate(date) {
+        const localDate = new Date(`${date}T00:00:00Z`);
+        return `${weekdayNames[localDate.getUTCDay()]}, ${monthNames[localDate.getUTCMonth()]} ${localDate.getUTCDate()}`;
+      }
+
+      function statusLabel(entry) {
+        if (entry.status === "no_class") return entry.reasonLabel || "Хичээлгүй";
+        if (entry.status === "cancelled") return entry.reasonLabel || "Цуцлагдсан";
+        return `Хичээл ${entry.lessonNumber}: ${entry.lessonTitle}`;
+      }
+
+      function entryElement(calendar, entry) {
+        const lesson = entry.status === "scheduled" && entry.lessonNumber
+          ? `Хичээл ${entry.lessonNumber}: ${entry.lessonTitle}`
+          : statusLabel(entry);
+        const article = document.createElement("article");
+        article.className = `schedule-entry schedule-entry-${entry.status}`;
+        const addText = (tagName, text) => {
+          const element = document.createElement(tagName);
+          element.textContent = text;
+          article.append(element);
+        };
+        addText("p", formatDate(entry.localDate));
+        addText("h3", calendar.classSession.label);
+        addText("p", `${entry.startTime}–${entry.endTime}`);
+        addText("p", lesson);
+        return article;
+      }
+
+      function renderCalendar(calendar) {
+        const upcoming = calendar.entries.filter((entry) => entry.localDate >= localToday());
+        const next = upcoming.find((entry) => entry.status === "scheduled");
+        if (!next) {
+          nextTitle.textContent = calendar.classSession.label;
+          nextDetails.textContent = "Энэ туршилтын ангид цаашдын хичээл одоогоор алга байна.";
+          list.replaceChildren();
+          return;
+        }
+        nextTitle.textContent = calendar.classSession.label;
+        nextDetails.textContent = `${formatDate(next.localDate)} · ${next.startTime}–${next.endTime} · Хичээл ${next.lessonNumber}: ${next.lessonTitle}`;
+        list.replaceChildren(...upcoming.map((entry) => entryElement(calendar, entry)));
+      }
+
+      fetch("/api/calendar/published", { headers: { Accept: "application/json" } })
+        .then((response) => response.ok ? response.json() : Promise.reject(new Error("schedule unavailable")))
+        .then((payload) => {
+          const calendars = payload.calendars || [];
+          if (calendars.length === 0) {
+            state.textContent = "Нийтлэгдсэн туршилтын хуваарь одоогоор алга байна.";
+            return;
+          }
+          const options = calendars.map((calendar) => {
+            const option = document.createElement("option");
+            option.value = calendar.id;
+            option.textContent = calendar.classSession.label;
+            return option;
+          });
+          classSelect.replaceChildren(...options);
+          classSelect.addEventListener("change", () => {
+            const selected = calendars.find((calendar) => calendar.id === classSelect.value);
+            if (selected) renderCalendar(selected);
+          });
+          renderCalendar(calendars[0]);
+          state.hidden = true;
+          content.hidden = false;
+        })
+        .catch(() => {
+          state.textContent = "Хуваарийг одоогоор авч чадсангүй.";
+        });
+    </script>
+  </body>
+</html>

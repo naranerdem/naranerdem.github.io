@@ -146,15 +146,21 @@ This migration deliberately does not implement:
 
 `application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Complete tuition, payment, discount, credit, refund, and reconciliation tables should come in a later finance migration.
 
-## Future Planned Lesson, Attendance, And Operations Concepts
+## Program And Calendar Foundation
 
-No attendance, lesson-calendar, make-up, staff, accountant, payment-reminder, or settlement tables are implemented by the current migrations.
+Migration `0006_program_and_calendar_foundation.sql` implements class-level program/calendar data without attendance or make-up records:
 
-Future schema design should keep these distinctions explicit:
+- `curriculum_program` is a versioned parent for one academic year and stage; its child `curriculum_lesson` rows have explicit positive, unique sequence numbers, titles, optional internal notes, and test provenance.
+- `academic_year_break` stores named inclusive planning periods. It is an input to generation, not an occurrence.
+- `class_calendar` belongs one-to-one to a `class_session` and fixes `Asia/Ulaanbaatar` as its teaching-time timezone.
+- `class_calendar_revision` is a draft/publish snapshot associated with the matching stage/year program. Only one published revision exists per calendar. `locked_through_sequence` protects delivered history from future reflow.
+- `class_calendar_revision_override` gives one class a dated `exclude` or `restore` planning decision.
+- `class_calendar_slot` is the explicit dated result. It has a unique class/date/time, permits each lesson at most once per revision, and distinguishes `scheduled`, `no_class`, and `cancelled`. Cancellations retain a lesson number/title snapshot rather than deleting the public history.
 
-- `CurriculumLesson`: stable stage/content identity, such as Level 2 Lesson 7.
-- `LessonOccurrence`: one published dated delivery of a curriculum lesson for a `ClassSession` cohort or a teacher-created extra make-up. Occurrences come from the academic-year calendar, never a presumed weekly recurrence.
-- typed published calendar entry: future schema must distinguish scheduled occurrence, planned no-class/holiday for a habitual class slot, cancellation, rescheduling, long break/holiday period, and extra/make-up. Missing occurrence rows are not enough to express this safely.
+Database triggers allow lessons, overrides, and entries only while their parent is a draft, require program/year/stage compatibility, and prevent deletion or identity edits of published program/calendar history. Production has the empty schema only; all current programs/calendars are clearly marked staging fixtures.
+
+Attendance, absence notice, make-up, staff, accountant, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
+
 - attendance bookkeeping and prior absence notice: editable operational records attached to a concrete occurrence, with auditable correction history.
 - make-up consideration/invitation/agreement: teacher-mediated records attached to the same curriculum lesson, not automatic credits or generic free-class access.
 - approved payment obligation and effective due date: later finance concepts that may feed a derived accountant call queue without erasing original deadlines, payments, or contact history.
@@ -162,7 +168,7 @@ Future schema design should keep these distinctions explicit:
 
 The eventual staff model starts with server-authorized `admin`, `teacher`, and `accountant` roles. It should leave room for future scoped roles without prematurely defining an `assistant_teacher` role or exposing authorization through menus alone.
 
-Future schedule communications should reuse provider/audit infrastructure with event/idempotency semantics but remain separate from payment-reminder policy. Calendar changes may drive immediate cancellation/reschedule notices, planned no-class reminders before a habitual slot, return-from-break reminders, and teacher-approved make-up invitations. The eventual staging calendar fixture should exercise those irregular cases without treating habitual `ClassSession` rows as recurring lesson generators.
+Future schedule communications should reuse provider/audit infrastructure with event/idempotency semantics but remain separate from payment-reminder policy. A published cancellation/reschedule is one meaningful event even when it reassigns many later lessons. Later additions may include planned no-class reminders, return-from-break reminders, and teacher-approved make-up invitations; none are sent by this foundation.
 
 ## Migration Workflow
 
