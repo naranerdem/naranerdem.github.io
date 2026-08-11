@@ -1,0 +1,182 @@
+---
+import { siteIdentity } from "../content/homepage";
+import "../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Ажилтны хэсэг | {siteIdentity.name}</title>
+  </head>
+  <body class="staff-page" data-staff-surface="booting">
+    <header class="site-header">
+      <a class="brand-link" href="/" aria-label="Нүүр хуудас">
+        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
+        <span>
+          <strong>{siteIdentity.name}</strong>
+          <span>Ажилтны хэсэг</span>
+        </span>
+      </a>
+    </header>
+
+    <main class="staff-shell" aria-live="polite">
+      <section id="staff-booting" class="staff-state">
+        <p class="eyebrow">Ажилтны хэсэг</p>
+        <h1>Түр хүлээнэ үү</h1>
+        <p class="staff-muted">Нэвтрэх төлөвийг шалгаж байна.</p>
+      </section>
+
+      <section id="staff-login" class="staff-state" hidden aria-labelledby="staff-login-title">
+        <p class="eyebrow">Ажилтны хэсэг</p>
+        <h1 id="staff-login-title">Нэвтрэх</h1>
+        <p class="staff-muted">Бүртгэлтэй и-мэйл хаягаар нэг удаагийн нэвтрэх холбоос авна.</p>
+        <form id="staff-login-form" class="staff-login-form">
+          <label for="staff-email">И-мэйл хаяг</label>
+          <input id="staff-email" name="email" type="email" inputmode="email" autocomplete="email" required />
+          <p id="staff-form-error" class="staff-error" role="alert" hidden></p>
+          <button class="button primary" type="submit">Нэвтрэх холбоос авах</button>
+        </form>
+      </section>
+
+      <section id="staff-email-sent" class="staff-state" hidden aria-labelledby="staff-email-sent-title">
+        <p class="eyebrow">Ажилтны хэсэг</p>
+        <h1 id="staff-email-sent-title">И-мэйлээ шалгана уу</h1>
+        <p class="staff-muted">Хэрэв энэ хаяг идэвхтэй ажилтны бүртгэлтэй бол нэвтрэх холбоос илгээгдэнэ.</p>
+        <button id="staff-try-again" class="button secondary" type="button">Дахин оролдох</button>
+      </section>
+
+      <section id="staff-link-error" class="staff-state" hidden aria-labelledby="staff-link-error-title">
+        <p class="eyebrow">Ажилтны хэсэг</p>
+        <h1 id="staff-link-error-title">Холбоос хүчингүй байна</h1>
+        <p class="staff-muted">Холбоос ашиглагдсан эсвэл хугацаа нь дууссан байна.</p>
+        <button id="staff-new-link" class="button primary" type="button">Шинэ холбоос авах</button>
+      </section>
+
+      <section id="staff-home" class="staff-state" hidden aria-labelledby="staff-home-title">
+        <p class="eyebrow">Ажилтны хэсэг</p>
+        <h1 id="staff-home-title">Сайн байна уу</h1>
+        <p id="staff-welcome" class="staff-muted"></p>
+        <div class="staff-access-summary" aria-labelledby="staff-access-title">
+          <h2 id="staff-access-title">Таны ажиллах хэсэг</h2>
+          <ul id="staff-capability-list"></ul>
+        </div>
+        <form id="staff-logout-form">
+          <button class="button secondary" type="submit">Гарах</button>
+        </form>
+      </section>
+    </main>
+
+    <script is:inline type="module">
+      const states = [...document.querySelectorAll(".staff-state")];
+      const loginForm = document.getElementById("staff-login-form");
+      const emailInput = document.getElementById("staff-email");
+      const formError = document.getElementById("staff-form-error");
+      const welcome = document.getElementById("staff-welcome");
+      const capabilityList = document.getElementById("staff-capability-list");
+
+      function show(id) {
+        for (const state of states) state.hidden = state.id !== id;
+        document.body.dataset.staffSurface = id.replace("staff-", "");
+      }
+
+      function accessLabels(capabilities) {
+        const labels = [];
+        if (capabilities.includes("calendar.view") || capabilities.includes("program.view")) labels.push("Хөтөлбөр ба хуваарь");
+        if (capabilities.includes("registration.view")) labels.push("Бүртгэл");
+        if (capabilities.includes("payment.view")) labels.push("Төлбөрийн мэдээлэл");
+        if (capabilities.includes("accountant.call_queue.view")) labels.push("Залгах шаардлагатай");
+        if (capabilities.includes("admin.staff.manage")) labels.push("Ажилтны эрх");
+        if (capabilities.includes("admin.settings.manage")) labels.push("Тохиргоо");
+        return [...new Set(labels)];
+      }
+
+      function showAuthenticated(session) {
+        welcome.textContent = `${session.displayName}, таны нэвтрэх эрх баталгаажлаа.`;
+        const labels = accessLabels(session.capabilities || []);
+        capabilityList.replaceChildren(...labels.map((label) => {
+          const item = document.createElement("li");
+          item.textContent = label;
+          return item;
+        }));
+        show("staff-home");
+      }
+
+      async function readSession() {
+        const response = await fetch("/api/staff/session", {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error("session unavailable");
+        return response.json();
+      }
+
+      async function bootstrap() {
+        const token = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
+        window.history.replaceState(null, "", window.location.pathname);
+        if (token) {
+          try {
+            const response = await fetch("/api/staff/auth/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ token }),
+            });
+            if (!response.ok) throw new Error("verification failed");
+          } catch {
+            show("staff-link-error");
+            return;
+          }
+        }
+        try {
+          const session = await readSession();
+          if (session.authenticated) showAuthenticated(session);
+          else show("staff-login");
+        } catch {
+          show("staff-login");
+          formError.textContent = "Нэвтрэх хэсгийг одоогоор нээж чадсангүй. Дахин оролдоно уу.";
+          formError.hidden = false;
+        }
+      }
+
+      loginForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!loginForm.reportValidity()) return;
+        formError.hidden = true;
+        const button = loginForm.querySelector("button[type='submit']");
+        button.disabled = true;
+        try {
+          await fetch("/api/staff/auth/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ email: emailInput.value }),
+          });
+          show("staff-email-sent");
+        } catch {
+          formError.textContent = "Хүсэлтийг одоогоор илгээж чадсангүй. Дахин оролдоно уу.";
+          formError.hidden = false;
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      document.getElementById("staff-try-again").addEventListener("click", () => show("staff-login"));
+      document.getElementById("staff-new-link").addEventListener("click", () => show("staff-login"));
+      document.getElementById("staff-logout-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          await fetch("/api/staff/logout", { method: "POST", credentials: "same-origin" });
+        } finally {
+          capabilityList.replaceChildren();
+          welcome.textContent = "";
+          show("staff-login");
+        }
+      });
+
+      window.addEventListener("hashchange", bootstrap);
+      bootstrap();
+    </script>
+  </body>
+</html>

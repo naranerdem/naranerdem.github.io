@@ -1571,6 +1571,92 @@ textarea:focus {
   margin-bottom: 0;
 }
 
+.staff-shell {
+  width: min(100%, 34rem);
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.staff-state {
+  display: grid;
+  gap: 1rem;
+}
+
+.staff-state h1 {
+  max-width: none;
+  font-size: 2rem;
+  line-height: 1.1;
+}
+
+.staff-muted,
+.staff-error {
+  margin-bottom: 0;
+}
+
+.staff-muted {
+  color: var(--muted);
+}
+
+.staff-error {
+  color: #a12f18;
+  font-size: 0.9rem;
+}
+
+.staff-login-form {
+  display: grid;
+  gap: 0.45rem;
+  padding-top: 0.4rem;
+}
+
+.staff-login-form label {
+  font-weight: 750;
+}
+
+.staff-login-form input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.6rem 0.7rem;
+}
+
+.staff-login-form input:focus-visible {
+  border-color: var(--blue);
+  outline: 3px solid rgba(7, 58, 175, 0.2);
+  outline-offset: 1px;
+}
+
+.staff-login-form .button,
+.staff-state > .button,
+.staff-state > form > .button {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.staff-access-summary {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 1rem 0;
+}
+
+.staff-access-summary h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.staff-access-summary ul {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
 .review-summary {
   gap: 0.65rem;
 }

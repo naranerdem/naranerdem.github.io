@@ -7,7 +7,7 @@ This repository is intentionally named `naranerdem.github.io` so one canonical c
 - primary deployment through Cloudflare Workers Static Assets
 - a simple static fallback at `https://naranerdem.github.io`
 
-The project remains deliberately small. It contains a static Astro site, a D1-backed catalog, and a staging-only test registration flow with email confirmation. Production still does not submit registrations, create parent accounts, process payments, send email, or integrate with a bank.
+The project remains deliberately small. It contains a static Astro site, a D1-backed catalog, a staging-only test registration flow with email confirmation, and a separate staff passwordless-authentication foundation. Production still does not submit registrations, create parent accounts, process payments, send email, or integrate with a bank.
 
 ## Tech Stack
 
@@ -58,11 +58,13 @@ GitHub Pages remains a fallback. Because this is a GitHub user site repository n
 
 GitHub Pages deployment is handled by GitHub Actions on every push to `main`, with a manual workflow option also available. In the GitHub repository UI, Settings → Pages must use `GitHub Actions` as the source. Cloudflare remains the intended future host for backend-dependent functionality.
 
-Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` for production and `npm run deploy:cloudflare:staging` for the separate staging Worker at `https://naran-erdem-staging.naranerdem-github-io.workers.dev`. Static assets remain asset-first. Staging enables explicitly test-marked registration drafts, Turnstile test validation, and safe-recipient email confirmation. Production keeps registration writes and email/auth sending disabled.
+Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` for production and `npm run deploy:cloudflare:staging` for the separate staging Worker at `https://naran-erdem-staging.naranerdem-github-io.workers.dev`. Static assets remain asset-first. Staging enables explicitly test-marked registration drafts, Turnstile test validation, safe-recipient email confirmation, and staff-login testing. Production keeps registration writes and parent/staff email sending disabled with `REGISTRATION_WRITE_ENABLED=false`, `AUTH_EMAIL_ENABLED=false`, and `STAFF_AUTH_EMAIL_ENABLED=false`.
 
 Sensitive runtime values belong in Cloudflare Worker secrets, never source control: `RESEND_API_KEY`, `STAGING_EMAIL_OVERRIDE_TO`, `STAGING_AUTH_TEST_KEY`, and any future production `TURNSTILE_SECRET_KEY`. Staging uses Cloudflare's published Turnstile test credentials; the browser receives only the site key. The sending domain is `mail.naranerdem.com`; keep existing root-domain MX/TXT forwarding records unchanged and do not enable Resend inbound receiving.
 
 Staging test registrations can be inspected or removed by exact test-run ID with `npm run cleanup:registration:staging -- --test-run-id=registration:<draft-uuid>`. Cleanup is a dry run unless `--confirm` is added and refuses production.
+
+Staff accounts are separate from parent accounts. Provision one only through the explicit command, for example `npm run staff:create -- --env=staging --email=teacher@example.invalid --name="Тест Багш" --role=teacher`. Staging refuses non-`example.invalid` intended identities; production requires `--confirm-production`. See [docs/staff-authentication.md](docs/staff-authentication.md) for the security model and capability matrix.
 
 Future backend services should be designed so public pages still work as a static site. Registration, tuition, reminders, reconciliation, and exports may become unavailable in fallback mode, but the public website should not fail to render.
 
@@ -75,6 +77,7 @@ The planned system has separate boundaries for:
 - persistence/data store
 - teacher interface
 - admin interface
+- staff authentication and capability authorization
 - scheduled reminder jobs
 - email provider
 - payment/reconciliation adapter

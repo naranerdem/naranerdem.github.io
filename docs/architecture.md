@@ -120,7 +120,7 @@ When incoming payment evidence has a strong possible match, a routine phone flow
 
 Complicated cases should naturally move to a desktop reconciliation view instead of forcing a dense accounting interface onto the teacher's phone.
 
-Teacher authentication should eventually be strong and phone-friendly, preferably passkey/device-biometric or similarly passwordless. Teacher authorization must be genuinely limited to operational actions such as confirming payment, granting short extensions, marking refunds sent, searching students, inspecting straightforward payment state, and exporting records.
+Staff authentication is now passwordless and phone-friendly through short-lived email magic links. The schema and service boundaries remain passkey-ready, but passkeys are not implemented yet. Teacher authorization is genuinely limited through server-checked capabilities for operational actions such as confirming payment, granting short extensions, marking refunds sent, searching students, inspecting straightforward payment state, and exporting records.
 
 ### Admin interface
 
@@ -138,7 +138,7 @@ The admin interface is for the developer/owner and future trusted administrators
 - integrations
 - raw or diagnostic exports
 
-Authentication is not implemented yet, but future routes and modules should preserve this teacher/admin separation. Admin authentication should also prefer strong passkey/passwordless access. Teacher and admin must have different authorization permissions, not merely different visual menus.
+Migration 0007 and the staff service layer preserve this teacher/admin separation. `admin`, `teacher`, and `accountant` are normalized roles mapped to compact capabilities; every protected request reloads the active account and current role assignments. Authorization is enforced by the Worker, not merely by different visual menus.
 
 ### Content And Settings Direction
 
@@ -180,9 +180,13 @@ Later-installment reminder policy is also **future planned**. One-time payment i
 
 The future copyable Messenger payment message should contain only appropriate parent/child context, amount, due date, and a first-party opaque status/payment link such as `naranerdem.com/p/<opaque-token>`. No PII or amount belongs directly in the URL, and no third-party URL shortener is needed.
 
-### Future staff authorization and accountant queue
+### Staff authorization and future accountant queue
 
-This is **future planned domain**, not a current staff schema or authentication implementation. Known roles are `admin`, `teacher`, and `accountant`; future scoped roles should remain possible, but `assistant_teacher` is not a current planned role. Authentication should be strong passwordless/passkey-oriented, and authorization must be server-enforced least privilege rather than different menus.
+Migration 0007 implements a separate staff identity, role, challenge, and session foundation. Known roles are `admin`, `teacher`, and `accountant`; future scoped roles remain possible, but `assistant_teacher` is not a current role. Staff and guardian challenges, sessions, and cookies are deliberately non-interchangeable. Email links carry a random token in the URL fragment, D1 stores only its SHA-256 hash, browser `GET` requests never consume it, and verification requires a same-origin `POST`. Challenges last 15 minutes and are one-time; staff sessions last 10 hours and use a distinct `HttpOnly; Secure; SameSite=Lax; Path=/` cookie.
+
+Public login-start responses are generic for active, unknown, guardian-only, and disabled addresses. Only an active staff account can queue email. Per-email and per-IP hourly limits plus a resend cooldown provide a basic abuse boundary; a future production rollout should add Cloudflare Turnstile and stronger edge rate limiting before enabling `STAFF_AUTH_EMAIL_ENABLED`. Staging reuses the mandatory safe-recipient override, keeping the fake intended staff identity separate from the actual test inbox. Production staff email remains disabled.
+
+Protected requests reload current staff status and role assignments, so disabling an account or replacing its roles takes effect without waiting for session expiry. Role/status administration, successful login, and logout/revocation create audit events without raw tokens or provider secrets. Privileged mutations must use non-GET methods, server-side session and capability checks, and same-origin `Origin`/`Referer` validation or a future explicit CSRF token.
 
 The first accountant surface should be intentionally narrow: `Залгах шаардлагатай`. It is a derived live queue of overdue, teacher-approved receivables showing only the guardian, phone, relevant child/children, approved amount, effective due date/days overdue, and recent contact/reminder status. It disappears when its reason disappears, such as reconciliation, approved extension, cancellation/removal, or other approved resolution; underlying history remains.
 

@@ -10,6 +10,7 @@
     "APP_ORIGIN": "https://naranerdem.com",
     "EMAIL_ENABLED": "false",
     "AUTH_EMAIL_ENABLED": "false",
+    "STAFF_AUTH_EMAIL_ENABLED": "false",
     "EMAIL_FROM": "Наран Эрдэм <burtgel@mail.naranerdem.com>"
   },
   "assets": {
@@ -43,6 +44,7 @@
         "APP_ORIGIN": "https://naran-erdem-staging.naranerdem-github-io.workers.dev",
         "EMAIL_ENABLED": "true",
         "AUTH_EMAIL_ENABLED": "true",
+        "STAFF_AUTH_EMAIL_ENABLED": "true",
         "EMAIL_FROM": "Наран Эрдэм <burtgel@mail.naranerdem.com>",
         "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
         "TURNSTILE_SECRET_KEY": "1x0000000000000000000000000000000AA"

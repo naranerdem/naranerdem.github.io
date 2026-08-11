@@ -1,4 +1,4 @@
-import type { WorkerEnv } from "../env";
+import type { WorkerEnv, WorkerExecutionContext } from "../env";
 import { secureEqual } from "../auth/crypto";
 import { EmailVerificationError, startEmailVerification, verifyEmailToken } from "../auth/email-verification";
 import { VERIFIED_EMAIL_COOKIE } from "../auth/email-verification";
@@ -21,6 +21,15 @@ import {
   type RegistrationSubmissionInput,
 } from "../services/registration-submission";
 import { TurnstileError, verifyTurnstile } from "../security/turnstile";
+import { hasStaffCapability, resolveStaffPrincipal, type StaffCapability } from "../staff/authorization";
+import {
+  clearStaffSessionCookie,
+  readStaffCookie,
+  revokeStaffSession,
+  startStaffLogin,
+  verifyStaffLogin,
+} from "../staff/auth";
+import { requireSameOrigin, StaffRequestSecurityError } from "../staff/request-security";
 
 type ErrorCode =
   | "configuration_error"
@@ -29,15 +38,18 @@ type ErrorCode =
   | "method_not_allowed"
   | "not_found"
   | "registration_unavailable"
+  | "forbidden"
+  | "unauthorized"
   | "verification_failed";
 
 function json(body: unknown, status = 200, headers?: HeadersInit): Response {
+  const responseHeaders = new Headers({ "Content-Type": "application/json; charset=utf-8" });
+  if (headers) {
+    new Headers(headers).forEach((value, key) => responseHeaders.set(key, value));
+  }
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...headers,
-    },
+    headers: responseHeaders,
   });
 }
 
@@ -55,6 +67,37 @@ function authEmailAvailable(env: WorkerEnv): boolean {
 
 function authNotFound(): Response {
   return error("not_found", "Хүссэн API зам олдсонгүй.", 404);
+}
+
+function staffLoginAccepted(): Response {
+  return json({
+    ok: true,
+    message: "Хэрэв энэ хаяг идэвхтэй ажилтны бүртгэлтэй бол нэвтрэх холбоос илгээгдэнэ.",
+  }, 202, { "Cache-Control": "no-store" });
+}
+
+function staffSecurityError(caught: unknown): Response | null {
+  if (!(caught instanceof StaffRequestSecurityError)) return null;
+  return error("forbidden", "Хүсэлтийн эх сурвалжийг шалгаж чадсангүй.", 403, { "Cache-Control": "no-store" });
+}
+
+async function staffPrincipalForRequest(request: Request, env: WorkerEnv) {
+  return resolveStaffPrincipal(env, readStaffCookie(request));
+}
+
+async function requireStaffCapability(
+  request: Request,
+  env: WorkerEnv,
+  capability: StaffCapability,
+): Promise<Response | null> {
+  const principal = await staffPrincipalForRequest(request, env);
+  if (!principal) {
+    return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+  }
+  if (!hasStaffCapability(principal, capability)) {
+    return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  }
+  return null;
 }
 
 function registrationWritesAvailable(env: WorkerEnv): boolean {
@@ -89,7 +132,11 @@ function registrationError(caught: unknown): Response {
   return error("internal_error", "Бүртгэлийг одоогоор үргэлжлүүлж чадсангүй.", 500);
 }
 
-export async function handleApiRequest(request: Request, env: WorkerEnv): Promise<Response> {
+export async function handleApiRequest(
+  request: Request,
+  env: WorkerEnv,
+  context?: WorkerExecutionContext,
+): Promise<Response> {
   const path = new URL(request.url).pathname;
 
   if (path === "/api/health") {
@@ -350,6 +397,108 @@ export async function handleApiRequest(request: Request, env: WorkerEnv): Promis
         { "Cache-Control": "no-store" },
       );
     }
+  }
+
+  if (path === "/api/staff/auth/start") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    let email = "";
+    try {
+      requireSameOrigin(request, env);
+      const payload = await request.json() as { email?: unknown };
+      if (typeof payload.email === "string") email = payload.email;
+    } catch (caught) {
+      const securityResponse = staffSecurityError(caught);
+      if (securityResponse) return securityResponse;
+      return staffLoginAccepted();
+    }
+
+    const work = startStaffLogin(env, email, {
+      clientIp: request.headers.get("CF-Connecting-IP") ?? undefined,
+    }).catch(() => undefined);
+    if (context) context.waitUntil(work);
+    else await work;
+    return staffLoginAccepted();
+  }
+
+  if (path === "/api/staff/auth/verify") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    let token = "";
+    try {
+      requireSameOrigin(request, env);
+      const payload = await request.json() as { token?: unknown };
+      if (typeof payload.token !== "string") throw new Error("invalid token payload");
+      token = payload.token;
+    } catch (caught) {
+      const securityResponse = staffSecurityError(caught);
+      if (securityResponse) return securityResponse;
+      return error("verification_failed", "Холбоос ашиглагдсан эсвэл хугацаа нь дууссан байна.", 400, {
+        "Cache-Control": "no-store",
+      });
+    }
+    try {
+      const result = await verifyStaffLogin(env, token, readStaffCookie(request));
+      const headers = new Headers({ "Cache-Control": "no-store" });
+      if (result.cookie) headers.append("Set-Cookie", result.cookie);
+      return json({ ok: true, alreadySignedIn: result.alreadySignedIn }, 200, headers);
+    } catch {
+      return error("verification_failed", "Холбоос ашиглагдсан эсвэл хугацаа нь дууссан байна.", 400, {
+        "Cache-Control": "no-store",
+      });
+    }
+  }
+
+  if (path === "/api/staff/session") {
+    if (request.method !== "GET") return methodNotAllowed();
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return json({ authenticated: false }, 200, { "Cache-Control": "no-store" });
+    return json({
+      authenticated: true,
+      displayName: principal.displayName,
+      capabilities: principal.capabilities,
+      expiresAt: principal.sessionExpiresAt,
+    }, 200, { "Cache-Control": "no-store" });
+  }
+
+  if (path === "/api/staff/logout") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    await revokeStaffSession(env, readStaffCookie(request));
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Cache-Control": "no-store",
+        "Set-Cookie": clearStaffSessionCookie(true),
+      },
+    });
+  }
+
+  if (path === "/api/staff/proof/calendar") {
+    if (request.method !== "GET") return methodNotAllowed();
+    const denied = await requireStaffCapability(request, env, "calendar.view");
+    return denied ?? json({ ok: true, capability: "calendar.view" }, 200, { "Cache-Control": "no-store" });
+  }
+
+  if (path === "/api/staff/proof/calendar-mutation") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const denied = await requireStaffCapability(request, env, "calendar.manage");
+    return denied ?? json({ ok: true, capability: "calendar.manage", changed: false }, 200, {
+      "Cache-Control": "no-store",
+    });
+  }
+
+  if (path === "/api/staff/proof/admin") {
+    if (request.method !== "GET") return methodNotAllowed();
+    const denied = await requireStaffCapability(request, env, "admin.staff.manage");
+    return denied ?? json({ ok: true, capability: "admin.staff.manage" }, 200, { "Cache-Control": "no-store" });
   }
 
   return authNotFound();

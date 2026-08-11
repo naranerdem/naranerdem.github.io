@@ -159,14 +159,16 @@ Migration `0006_program_and_calendar_foundation.sql` implements class-level prog
 
 Database triggers allow lessons, overrides, and entries only while their parent is a draft, require program/year/stage compatibility, and prevent deletion or identity edits of published program/calendar history. Production has the empty schema only; all current programs/calendars are clearly marked staging fixtures.
 
-Attendance, absence notice, make-up, staff, accountant, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
+Attendance, absence notice, make-up, accountant workflow, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
 
 - attendance bookkeeping and prior absence notice: editable operational records attached to a concrete occurrence, with auditable correction history.
 - make-up consideration/invitation/agreement: teacher-mediated records attached to the same curriculum lesson, not automatic credits or generic free-class access.
 - approved payment obligation and effective due date: later finance concepts that may feed a derived accountant call queue without erasing original deadlines, payments, or contact history.
 - settlement review: teacher-approved operational receivable supported by transparent advisory calculations; it must not be a silently authoritative attendance-derived debt.
 
-The eventual staff model starts with server-authorized `admin`, `teacher`, and `accountant` roles. It should leave room for future scoped roles without prematurely defining an `assistant_teacher` role or exposing authorization through menus alone.
+Migration `0007_staff_authentication_foundation.sql` adds `staff_account`, normalized `staff_role` and `staff_account_role`, separate `staff_login_challenge` and `staff_session` tables, and coarse login throttling. The only roles are `admin`, `teacher`, and `accountant`; `assistant_teacher` is intentionally absent. Capabilities are mapped in the server authorization layer so later scopes do not require replacing the identity/session model. `outbound_email.staff_account_id` connects staff login delivery to the existing auditable queue. The audit actor vocabulary now includes `staff`.
+
+Raw staff magic-link and session tokens are never persisted. D1 stores 64-character SHA-256 hashes. Challenges record one-time lifecycle state and expiry; sessions record expiry/revocation and always join back to an active staff account. Roles are not copied into a session, so changes apply on the next protected request. Staff records remain wholly separate from `guardian_account` and `verified_email_session`.
 
 Future schedule communications should reuse provider/audit infrastructure with event/idempotency semantics but remain separate from payment-reminder policy. A published cancellation/reschedule is one meaningful event even when it reassigns many later lessons. Later additions may include planned no-class reminders, return-from-break reminders, and teacher-approved make-up invitations; none are sent by this foundation.
 

@@ -26,6 +26,7 @@ export interface WorkerEnv {
   APP_ORIGIN: string;
   EMAIL_ENABLED: "true" | "false";
   AUTH_EMAIL_ENABLED: "true" | "false";
+  STAFF_AUTH_EMAIL_ENABLED: "true" | "false";
   EMAIL_FROM: string;
   RESEND_API_KEY?: string;
   STAGING_EMAIL_OVERRIDE_TO?: string;
@@ -33,4 +34,8 @@ export interface WorkerEnv {
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   DB: D1Database;
+}
+
+export interface WorkerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
 }
