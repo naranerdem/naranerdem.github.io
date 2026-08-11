@@ -41,8 +41,8 @@
         "APP_ENV": "staging",
         "REGISTRATION_WRITE_ENABLED": "false",
         "APP_ORIGIN": "https://naran-erdem-staging.naranerdem-github-io.workers.dev",
-        "EMAIL_ENABLED": "false",
-        "AUTH_EMAIL_ENABLED": "false",
+        "EMAIL_ENABLED": "true",
+        "AUTH_EMAIL_ENABLED": "true",
         "EMAIL_FROM": "Наран Эрдэм <burtgel@mail.naranerdem.com>"
       },
       "d1_databases": [
