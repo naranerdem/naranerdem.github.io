@@ -18,6 +18,8 @@ Registration wording should stay short and operational on phones. Required publi
 
 Transactional email templates live under `src/server/email/templates/`. Keep them concise and Mongolian. Provider keys, staging inboxes, and test-gate keys are Cloudflare Worker secrets and must never be added to content files, `.env.example`, fixtures, or browser code.
 
+Parent and student rule version IDs live beside the rule text in `src/content/rules.ts`. A substantive published rule change must receive a new stable version ID so saved registrations continue to identify the exact rules acknowledged; do not generate versions from the current date at runtime.
+
 Two simple GitHub editing methods:
 
 1. Open the file on GitHub and use the edit/pencil action.

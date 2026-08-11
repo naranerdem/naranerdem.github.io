@@ -1,5 +1,5 @@
 export const REGISTRATION_DRAFT_KEY = "naran-erdem-registration-draft-v1";
-export const REGISTRATION_DRAFT_TTL_MS = 6 * 60 * 60 * 1000;
+export const REGISTRATION_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export function createRegistrationDraft(fields, childCount, now = Date.now()) {
   return {

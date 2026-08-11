@@ -231,15 +231,17 @@ finish form + rules + review
 -> confirmed enrollment
 ```
 
-The provisional hold protects a seat while the parent confirms email. It never consumes time from the fresh 24-hour payment window, which starts only after timely email confirmation. Public full-class temporary counts should include capacity-consuming provisional confirmation holds and initial-payment holds, never confirmed enrollments or identities.
+The staging implementation now follows this flow. The provisional hold protects a seat while the parent confirms email. It never consumes time from the fresh 24-hour payment window, which starts only after timely email confirmation. Public full-class temporary counts include capacity-consuming provisional confirmation holds and initial-payment holds, never confirmed enrollments or identities.
 
 The registration confirmation link itself remains usable for a longer configurable lifetime, currently about 24 hours. If confirmation happens after the 20-minute provisional hold expired, atomically re-check capacity. Reacquire the class and start a fresh payment hold if possible; otherwise explain that the temporary guarantee expired and show available classes plus the selected class's FIFO waitlist. Saved registration data remains recoverable.
 
 Email scanners must not consume confirmation links. The future one-click flow places the secret in the URL fragment, then the real browser posts it to the verification endpoint; a scanner's ordinary HTTP GET never receives or consumes it. Ordinary login/auth magic links remain conceptually separate and may have a shorter lifetime.
 
-After future form completion, the parent sees a simple email-status screen with the displayed address, resend and change-address actions, the provisional-hold explanation, Spam/Junk advice, and notice that changing/resending does not restart the provisional clock. The parent must not re-enter the form for a mistyped address.
+After staging form completion, the parent sees a simple email-status screen with the displayed address, resend and change-address actions, the provisional-hold explanation, and Spam/Junk advice. Resend has a 60-second cooldown; resend and change-address invalidate superseded links but never restart the provisional clock. An HttpOnly draft-access cookie restores this status without refilling the form.
 
-The prototype now keeps a short browser-local draft for accidental refresh/closure, with explicit restore or discard. A local draft never creates a registration or hold. After email ownership is confirmed, a future server-side draft can recover across devices and support restrained stale-draft reminders.
+The browser-local pre-submission draft lasts 24 hours for accidental refresh or overnight closure and never creates a registration or hold. An accepted server draft has a separate seven-day retention deadline. Retention does not extend the 20-minute seat guarantee, 24-hour confirmation link, or 24-hour payment hold; deadline-aware capacity queries remain correct without Cron.
+
+Before verification, preferred waitlist intent stays only on the server draft. Verification materializes one FIFO entry per child. Waitlist-only creates no seat hold; fallback plus preferred waitlist converts the fallback to a payment hold and creates the preferred entry. Canonical guardian/student creation and returning-family reconciliation remain deliberately deferred, as do payment confirmation and enrollment promotion.
 
 If initial payment is not received, the system may send reminders and expire the hold. Reminder timing and expiry timing must be configurable, not hard-coded.
 

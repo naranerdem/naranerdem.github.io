@@ -34,7 +34,7 @@ const formCopy = registrationFormCopy;
 
     <main class="register-shell">
       <section class="prototype-hero" aria-labelledby="register-title">
-        <p class="prototype-notice">{registrationPrototype.notice}</p>
+        <p id="registration-environment-notice" class="prototype-notice">{registrationPrototype.notice}</p>
         <div class="register-title-row">
           <h1 id="register-title">Бүртгэлийн мэдээлэл</h1>
           <p id="registration-progress" class="registration-progress">1 / 4 · {formCopy.progress.information}</p>
@@ -126,16 +126,25 @@ const formCopy = registrationFormCopy;
         <div class="register-title-row">
           <div>
             <h2 id="review-title">{formCopy.review.title}</h2>
-            <p>{formCopy.review.help}</p>
+            <p id="review-help">{formCopy.review.help}</p>
           </div>
           <p class="registration-progress">4 / 4 · {formCopy.progress.review}</p>
         </div>
         <div id="review-summary" class="review-summary"></div>
+        <div id="registration-turnstile" class="turnstile-area" hidden>
+          <div id="turnstile-widget"></div>
+          <p id="turnstile-message" class="catalog-message" role="status"></p>
+        </div>
         <div class="form-actions review-actions">
           <button class="button secondary" type="button" id="edit-information">{formCopy.buttons.edit}</button>
           <button class="button primary" type="button" id="finish-prototype">{formCopy.buttons.finish}</button>
         </div>
         <p id="prototype-complete" class="prototype-complete" role="status" hidden>{formCopy.messages.prototypeComplete}</p>
+      </section>
+
+      <section id="registration-result" class="registration-result" aria-live="polite" hidden>
+        <h2 id="registration-result-title"></h2>
+        <div id="registration-result-body"></div>
       </section>
     </main>
 
@@ -193,6 +202,14 @@ const formCopy = registrationFormCopy;
       const reviewPanel = document.getElementById("review-panel");
       const reviewSummary = document.getElementById("review-summary");
       const completeMessage = document.getElementById("prototype-complete");
+      const finishButton = document.getElementById("finish-prototype");
+      const environmentNotice = document.getElementById("registration-environment-notice");
+      const turnstileArea = document.getElementById("registration-turnstile");
+      const turnstileWidget = document.getElementById("turnstile-widget");
+      const turnstileMessage = document.getElementById("turnstile-message");
+      const resultPanel = document.getElementById("registration-result");
+      const resultTitle = document.getElementById("registration-result-title");
+      const resultBody = document.getElementById("registration-result-body");
       const draftNotice = document.getElementById("registration-draft-notice");
       const restoreDraftButton = document.getElementById("restore-registration-draft");
       const discardDraftButton = document.getElementById("discard-registration-draft");
@@ -207,6 +224,10 @@ const formCopy = registrationFormCopy;
       let studentAcknowledged = false;
       let returnFocusTo = null;
       let storedDraft = null;
+      let runtimeConfig = { environment: "production", writeEnabled: false, turnstileSiteKey: null };
+      let turnstileToken = "";
+      let turnstileWidgetId = null;
+      let changeEmailWidgetId = null;
 
       function escapeText(value) {
         return String(value)
@@ -340,7 +361,7 @@ const formCopy = registrationFormCopy;
           if (session.availability === "available") {
             option.innerHTML = `
               <label>
-                <input type="radio" name="child-${card.dataset.childIndex}-class" value="${escapeText(session.id)}" data-child-class required ${selected === session.id ? "checked" : ""}>
+                <input type="radio" name="child-${card.dataset.childIndex}-class" value="${escapeText(session.id)}" data-child-class ${selected === session.id ? "checked" : ""}>
                 <span><strong>${escapeText(classText(session))}</strong><small>${escapeText(formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats))}</small></span>
               </label>
             `;
@@ -357,6 +378,23 @@ const formCopy = registrationFormCopy;
           target.append(option);
         });
 
+        const waitlistOnlyButton = document.createElement("button");
+        waitlistOnlyButton.type = "button";
+        waitlistOnlyButton.className = "text-button waitlist-only-button";
+        waitlistOnlyButton.textContent = formCopy.buttons.waitlistOnly;
+        waitlistOnlyButton.hidden = !(target.querySelector("[data-child-class]:checked") && target.querySelector("[data-child-waitlist]:checked"));
+        target.append(waitlistOnlyButton);
+        const updateWaitlistOnlyButton = () => {
+          waitlistOnlyButton.hidden = !(target.querySelector("[data-child-class]:checked") && target.querySelector("[data-child-waitlist]:checked"));
+        };
+        waitlistOnlyButton.addEventListener("click", () => {
+          target.querySelectorAll("[data-child-class]").forEach((input) => { input.checked = false; });
+          delete card.dataset.selectedClassId;
+          updateWaitlistOnlyButton();
+          setCatalogMessage(card, "");
+          saveDraft();
+        });
+
         target.querySelectorAll("[data-child-waitlist]").forEach((input) => {
           input.addEventListener("change", () => {
             if (input.checked) {
@@ -369,6 +407,7 @@ const formCopy = registrationFormCopy;
               if (next) card.dataset.waitlistClassId = next;
               else delete card.dataset.waitlistClassId;
             }
+            updateWaitlistOnlyButton();
             setCatalogMessage(card, "");
             saveDraft();
           });
@@ -376,6 +415,7 @@ const formCopy = registrationFormCopy;
         target.querySelectorAll("[data-child-class]").forEach((input) => {
           input.addEventListener("change", () => {
             card.dataset.selectedClassId = input.value;
+            updateWaitlistOnlyButton();
             setCatalogMessage(card, "");
             saveDraft();
           });
@@ -402,6 +442,7 @@ const formCopy = registrationFormCopy;
       function renderChild(index, surname = "") {
         const card = document.createElement("article");
         card.className = "child-entry";
+        card.dataset.childCard = "";
         card.dataset.childIndex = String(index);
         card.innerHTML = `
           <div class="child-entry-heading">
@@ -560,6 +601,245 @@ const formCopy = registrationFormCopy;
         `;
       }
 
+      function loadTurnstileScript() {
+        if (window.turnstile) return Promise.resolve(window.turnstile);
+        return new Promise((resolve, reject) => {
+          const existing = document.querySelector("script[data-turnstile-script]");
+          if (existing) {
+            existing.addEventListener("load", () => resolve(window.turnstile), { once: true });
+            existing.addEventListener("error", reject, { once: true });
+            return;
+          }
+          const script = document.createElement("script");
+          script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+          script.async = true;
+          script.defer = true;
+          script.dataset.turnstileScript = "true";
+          script.addEventListener("load", () => resolve(window.turnstile), { once: true });
+          script.addEventListener("error", reject, { once: true });
+          document.head.append(script);
+        });
+      }
+
+      async function renderTurnstile() {
+        if (!runtimeConfig.writeEnabled || !runtimeConfig.turnstileSiteKey) return;
+        turnstileArea.hidden = false;
+        try {
+          const turnstile = await loadTurnstileScript();
+          if (turnstileWidgetId !== null) {
+            turnstile.reset(turnstileWidgetId);
+            return;
+          }
+          turnstileWidgetId = turnstile.render(turnstileWidget, {
+            sitekey: runtimeConfig.turnstileSiteKey,
+            action: "registration_submit",
+            callback(token) {
+              turnstileToken = token;
+              turnstileMessage.textContent = "";
+            },
+            "expired-callback"() {
+              turnstileToken = "";
+              turnstileMessage.textContent = formCopy.messages.turnstileRequired;
+            },
+            "error-callback"() {
+              turnstileToken = "";
+              turnstileMessage.textContent = formCopy.messages.turnstileRequired;
+            },
+          });
+        } catch {
+          turnstileMessage.textContent = formCopy.messages.turnstileRequired;
+        }
+      }
+
+      function registrationPayload() {
+        const genderValue = (value) => value === "Эмэгтэй" ? "female" : value === "Эрэгтэй" ? "male" : "not_specified";
+        return {
+          guardian: {
+            fullName: value("#guardian-name"),
+            relationship: value("#guardian-relationship"),
+            primaryPhone: value("#guardian-phone"),
+            secondaryPhone: form.querySelector("#guardian-secondary-phone").value.trim(),
+            email: value("#guardian-email"),
+            facebookName: form.querySelector("#guardian-facebook").value.trim(),
+            homeAddress: value("#guardian-address"),
+          },
+          children: childCards().map((card) => ({
+            surname: card.querySelector("[data-child-surname]").value.trim(),
+            givenName: card.querySelector("[data-child-name]").value.trim(),
+            gender: genderValue(card.querySelector("[data-child-gender]").value),
+            dateOfBirth: card.querySelector("[data-child-dob]").value,
+            currentGrade: card.querySelector("[data-child-grade]").value,
+            currentSchool: card.querySelector("[data-child-school]").value.trim(),
+            returningStatus: card.querySelector("[data-child-returning]:checked")?.value === "yes" ? "returning" : "new",
+            previousStageCode: card.querySelector("[data-child-previous-stage]").value || undefined,
+            selectedStageCode: card.querySelector("[data-child-stage]").value,
+            selectedClassSessionId: card.querySelector("[data-child-class]:checked")?.value || undefined,
+            preferredWaitlistClassSessionId: card.querySelector("[data-child-waitlist]:checked")?.value || undefined,
+            codeInput: card.querySelector("[data-child-code]").value.trim(),
+          })),
+          paymentPlanCode: form.querySelector("[name='paymentPlan']:checked")?.value || "",
+          parentRulesAcknowledged: parentAcknowledged,
+          studentRulesAcknowledged: studentAcknowledged,
+          turnstileToken,
+        };
+      }
+
+      function formatDeadline(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        const hour = String(date.getHours()).padStart(2, "0");
+        const minute = String(date.getMinutes()).padStart(2, "0");
+        return `${date.getMonth() + 1}-р сарын ${date.getDate()}, ${hour}:${minute}`;
+      }
+
+      function showResult(title, bodyHtml) {
+        form.hidden = true;
+        reviewPanel.hidden = true;
+        draftNotice.hidden = true;
+        resultTitle.textContent = title;
+        resultBody.innerHTML = bodyHtml;
+        resultPanel.hidden = false;
+        progress.textContent = runtimeConfig.writeEnabled ? "Бүртгэлийн төлөв" : progress.textContent;
+        resultTitle.focus?.();
+        resultPanel.scrollIntoView({ block: "start" });
+      }
+
+      function showEmailStatus(payload) {
+        const holdText = payload.hasProvisionalHold
+          ? `<p>${escapeText(formCopy.messages.emailStatusHold)}</p>${payload.provisionalDeadlineAt ? `<p><strong>Түр хадгалах хугацаа:</strong> ${escapeText(formatDeadline(payload.provisionalDeadlineAt))}</p>` : ""}`
+          : `<p>${escapeText(formCopy.messages.emailStatusWaitlist)}</p>`;
+        showResult(formCopy.messages.emailStatusTitle, `
+          <p class="status-email">${escapeText(payload.email)}</p>
+          ${holdText}
+          ${payload.emailSent === false || payload.emailDeliveryFailed ? `<p class="form-error">Баталгаажуулах и-мэйл илгээгдсэнгүй. Доорх товчоор дахин оролдоно уу.</p>` : ""}
+          <p>${escapeText(formCopy.messages.emailStatusHelp)}</p>
+          <p id="registration-result-message" class="catalog-message" role="status"></p>
+          <div class="status-actions">
+            <button class="button secondary" type="button" id="resend-registration-email">${escapeText(formCopy.buttons.resendEmail)}</button>
+            <button class="text-button" type="button" id="show-change-email">${escapeText(formCopy.buttons.changeEmail)}</button>
+          </div>
+          <form id="change-registration-email" class="change-email-form" hidden>
+            <label><span>${escapeText(formCopy.guardian.email)}</span><input type="email" name="email" value="${escapeText(payload.email)}" required></label>
+            <div id="change-email-turnstile"></div>
+            <button class="button primary" type="submit">${escapeText(formCopy.buttons.changeEmail)}</button>
+          </form>
+        `);
+        const message = document.getElementById("registration-result-message");
+        document.getElementById("resend-registration-email").addEventListener("click", async (event) => {
+          const button = event.currentTarget;
+          button.disabled = true;
+          message.textContent = "";
+          try {
+            const response = await fetch("/api/registration/email/resend", { method: "POST", credentials: "same-origin" });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
+            message.textContent = formCopy.messages.emailResent;
+          } catch (caught) {
+            message.textContent = caught.message || formCopy.messages.submitFailed;
+          } finally {
+            window.setTimeout(() => { button.disabled = false; }, 60_000);
+          }
+        });
+        document.getElementById("show-change-email").addEventListener("click", async () => {
+          const changeForm = document.getElementById("change-registration-email");
+          changeForm.hidden = false;
+          try {
+            const turnstile = await loadTurnstileScript();
+            if (changeEmailWidgetId === null) {
+              changeEmailWidgetId = turnstile.render("#change-email-turnstile", {
+                sitekey: runtimeConfig.turnstileSiteKey,
+                action: "registration_submit",
+              });
+            }
+          } catch {
+            message.textContent = formCopy.messages.turnstileRequired;
+          }
+        });
+        document.getElementById("change-registration-email").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const changeForm = event.currentTarget;
+          const token = window.turnstile?.getResponse(changeEmailWidgetId) || "";
+          if (!token) {
+            message.textContent = formCopy.messages.turnstileRequired;
+            return;
+          }
+          const button = changeForm.querySelector("button[type='submit']");
+          button.disabled = true;
+          try {
+            const response = await fetch("/api/registration/email/change", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ email: changeForm.elements.email.value, turnstileToken: token }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
+            showEmailStatus({ ...payload, email: result.email });
+          } catch (caught) {
+            message.textContent = caught.message || formCopy.messages.submitFailed;
+            window.turnstile?.reset(changeEmailWidgetId);
+          } finally {
+            button.disabled = false;
+          }
+        });
+      }
+
+      function classStatusText(child) {
+        const parts = [];
+        if (child.selectedClassLabel) {
+          parts.push(`<strong>${escapeText(child.selectedClassLabel)}</strong> · ${escapeText(`${child.selectedClassWeekday} ${child.selectedClassStartTime}–${child.selectedClassEndTime}`)}`);
+        }
+        if (child.waitlistClassLabel && child.waitlistStatus) {
+          parts.push(`Хүлээлгийн жагсаалт: <strong>${escapeText(child.waitlistClassLabel)}</strong> · ${escapeText(`${child.waitlistClassWeekday} ${child.waitlistClassStartTime}–${child.waitlistClassEndTime}`)}`);
+        }
+        return parts.join("<br>");
+      }
+
+      async function showVerifiedStatus(alreadyVerified = false) {
+        try {
+          const response = await fetch("/api/registration/status", { headers: { Accept: "application/json" }, credentials: "same-origin" });
+          if (!response.ok) throw new Error("status unavailable");
+          const status = await response.json();
+          if (!catalog) await loadCatalog();
+          const hasPaymentHold = status.children.some((child) => child.holdType === "initial_payment" && child.holdStatus === "active" && child.holdDeadlineAt > status.now);
+          const seatUnavailable = status.status === "seat_unavailable" || status.children.some((child) => child.status === "seat_unavailable");
+          const children = status.children.map((child) => {
+            const alternatives = child.status === "seat_unavailable"
+              ? sessionsForStage(child.selectedStageCode).filter((session) => session.availability === "available")
+              : [];
+            return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.holdDeadlineAt > status.now ? `<span>Хадгалах хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
+          }).join("");
+          showResult(alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `
+            ${hasPaymentHold ? `<p class="status-emphasis">${escapeText(formCopy.messages.paymentHold)}</p>` : ""}
+            ${seatUnavailable ? `<p class="form-error">${escapeText(formCopy.messages.seatLost)}</p>` : ""}
+            <ul class="status-children">${children}</ul>
+            <p>${escapeText(formCopy.messages.paymentDeferred)}</p>
+          `);
+          resultBody.querySelectorAll(".join-original-waitlist").forEach((button) => {
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              try {
+                const response = await fetch("/api/registration/status/waitlist", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", Accept: "application/json" },
+                  credentials: "same-origin",
+                  body: JSON.stringify({ childId: button.dataset.childId }),
+                });
+                if (!response.ok) throw new Error("waitlist unavailable");
+                await showVerifiedStatus(true);
+              } catch {
+                button.textContent = formCopy.messages.submitFailed;
+              } finally {
+                button.disabled = false;
+              }
+            });
+          });
+          discardStoredDraft();
+        } catch {
+          showResult(alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `<p>${escapeText(formCopy.messages.submitFailed)}</p>`);
+        }
+      }
+
       function showDialog(dialog) {
         returnFocusTo = document.activeElement;
         if (typeof dialog.showModal === "function") dialog.showModal();
@@ -577,6 +857,7 @@ const formCopy = registrationFormCopy;
         reviewPanel.hidden = false;
         progress.textContent = `4 / 4 · ${formCopy.progress.review}`;
         reviewPanel.querySelector("h2")?.focus();
+        renderTurnstile();
       }
 
       document.querySelectorAll("[data-close-dialog]").forEach((button) => {
@@ -613,11 +894,42 @@ const formCopy = registrationFormCopy;
         form.hidden = false;
         completeMessage.hidden = true;
         progress.textContent = `1 / 4 · ${formCopy.progress.information}`;
+        turnstileToken = "";
         document.getElementById("guardian-name").focus();
       });
-      document.getElementById("finish-prototype").addEventListener("click", () => {
-        completeMessage.hidden = false;
-        discardStoredDraft();
+      finishButton.addEventListener("click", async () => {
+        if (!runtimeConfig.writeEnabled) {
+          completeMessage.hidden = false;
+          discardStoredDraft();
+          return;
+        }
+        if (!turnstileToken) {
+          turnstileMessage.textContent = formCopy.messages.turnstileRequired;
+          turnstileArea.scrollIntoView({ block: "center" });
+          return;
+        }
+        finishButton.disabled = true;
+        finishButton.textContent = formCopy.messages.submitting;
+        turnstileMessage.textContent = "";
+        try {
+          const response = await fetch("/api/registration/submit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify(registrationPayload()),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
+          discardStoredDraft();
+          showEmailStatus(result);
+        } catch (caught) {
+          turnstileMessage.textContent = caught.message || formCopy.messages.submitFailed;
+          turnstileToken = "";
+          window.turnstile?.reset(turnstileWidgetId);
+        } finally {
+          finishButton.disabled = false;
+          finishButton.textContent = formCopy.buttons.submitRegistration;
+        }
       });
       form.addEventListener("input", saveDraft);
       form.addEventListener("change", saveDraft);
@@ -665,10 +977,42 @@ const formCopy = registrationFormCopy;
         childCards().forEach((card) => renderClasses(card));
       }
 
+      async function loadBootstrap() {
+        try {
+          const response = await fetch("/api/registration/bootstrap", { headers: { Accept: "application/json" } });
+          if (!response.ok) throw new Error("Bootstrap unavailable");
+          const payload = await response.json();
+          if (!Array.isArray(payload?.catalog?.academicYears)) throw new Error("Invalid bootstrap");
+          runtimeConfig = payload.config;
+          catalog = payload.catalog;
+          catalogState = "available";
+          if (runtimeConfig.writeEnabled) {
+            environmentNotice.textContent = formCopy.messages.stagingNotice;
+            environmentNotice.classList.add("staging-notice");
+            finishButton.textContent = formCopy.buttons.submitRegistration;
+            document.getElementById("review-help").textContent = formCopy.review.stagingHelp;
+          }
+        } catch {
+          catalog = null;
+          catalogState = "unavailable";
+        }
+        childCards().forEach((card) => renderClasses(card));
+      }
+
       renderChild(childCount, "");
       storedDraft = readStoredDraft();
       if (storedDraft) draftNotice.hidden = false;
-      loadCatalog();
+      loadBootstrap().then(async () => {
+        const status = new URLSearchParams(window.location.search).get("status");
+        if (runtimeConfig.writeEnabled && (status === "confirmed" || status === "already-verified")) {
+          showVerifiedStatus(status === "already-verified");
+        } else if (runtimeConfig.writeEnabled) {
+          fetch("/api/registration/pending", { headers: { Accept: "application/json" }, credentials: "same-origin" })
+            .then((response) => response.ok ? response.json() : null)
+            .then((pending) => { if (pending) showEmailStatus(pending); })
+            .catch(() => {});
+        }
+      });
     </script>
   </body>
 </html>

@@ -42,6 +42,17 @@ assert.equal(
   null,
 );
 
+assert.equal(
+  classSelectionIssue({
+    catalogState: "available",
+    stage: "stage_1",
+    sessions: [openSession, { id: "class-full", availability: "full" }],
+    selectedClassId: "",
+    selectedWaitlistId: "class-full",
+  }),
+  null,
+);
+
 assert.equal(nextWaitlistSelection("class-full-a", "class-full-b", true), "class-full-b");
 assert.equal(nextWaitlistSelection("class-full-b", "class-full-b", false), "");
 assert.equal(nextWaitlistSelection("class-full-a", "class-full-b", false), "class-full-a");

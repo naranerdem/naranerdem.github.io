@@ -34,13 +34,10 @@ export function classSelectionIssue({ catalogState, stage, sessions, selectedCla
 
   const availableSessions = sessions.filter((session) => session.availability === "available");
   const fullSessions = sessions.filter((session) => session.availability === "full");
+  if (availableSessions.some((session) => session.id === selectedClassId)) return null;
+  if (!selectedClassId && fullSessions.some((session) => session.id === selectedWaitlistId)) return null;
   if (availableSessions.length === 0) {
-    if (fullSessions.some((session) => session.id === selectedWaitlistId)) return null;
     return { code: "waitlist_required", focusTarget: "class-options" };
   }
-  if (!availableSessions.some((session) => session.id === selectedClassId)) {
-    return { code: "class_required", focusTarget: "class-options" };
-  }
-
-  return null;
+  return { code: "class_required", focusTarget: "class-options" };
 }
