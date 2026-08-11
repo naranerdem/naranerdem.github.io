@@ -1,0 +1,808 @@
+import { feeConfig } from "../../config/academic-year";
+import { rulesContent } from "../../content/rules";
+import { normalizeEmail, validEmail } from "../auth/email-address";
+import { randomToken, sha256 } from "../auth/crypto";
+import type { D1Database, D1Result, WorkerEnv } from "../env";
+
+export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
+export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
+export const REGISTRATION_DRAFT_COOKIE = "naran_registration_draft";
+
+type StageCode = "stage_1" | "stage_2" | "stage_3";
+
+export interface RegistrationSubmissionInput {
+  guardian: {
+    fullName: string;
+    relationship: string;
+    primaryPhone: string;
+    secondaryPhone?: string;
+    email: string;
+    facebookName?: string;
+    homeAddress: string;
+  };
+  children: Array<{
+    surname: string;
+    givenName: string;
+    gender: "female" | "male" | "not_specified";
+    dateOfBirth: string;
+    currentGrade: string;
+    currentSchool?: string;
+    returningStatus: "new" | "returning";
+    previousStageCode?: StageCode | "unknown";
+    selectedStageCode: StageCode;
+    selectedClassSessionId?: string;
+    preferredWaitlistClassSessionId?: string;
+    codeInput?: string;
+  }>;
+  paymentPlanCode: string;
+  parentRulesAcknowledged: boolean;
+  studentRulesAcknowledged: boolean;
+  turnstileToken: string;
+}
+
+interface ClassRow {
+  id: string;
+  academicYearId: string;
+  stageCode: StageCode;
+  status: string;
+  registrationStatus: string;
+}
+
+interface ChallengeRow {
+  id: string;
+  normalizedEmail: string;
+  status: "pending" | "used" | "expired" | "invalidated";
+  expiresAt: string;
+  invalidatedAt: string | null;
+  registrationDraftId: string | null;
+  isTest: number;
+  testRunId: string | null;
+}
+
+interface DraftAccessRow {
+  id: string;
+  normalizedEmail: string;
+  email: string;
+  status: string;
+  emailLastSentAt: string | null;
+  expiresAt: string;
+}
+
+export class RegistrationSubmissionError extends Error {
+  constructor(public readonly code: string) {
+    super("Registration submission failed.");
+    this.name = "RegistrationSubmissionError";
+  }
+}
+
+function addSeconds(date: Date, seconds: number): string {
+  return new Date(date.getTime() + seconds * 1000).toISOString();
+}
+
+function changeCount(result: D1Result<unknown> | undefined): number {
+  return result?.meta?.changes ?? 0;
+}
+
+function clean(value: unknown, max: number): string {
+  return typeof value === "string" ? value.normalize("NFKC").trim().slice(0, max) : "";
+}
+
+function validDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+}
+
+function registrationWritesAvailable(env: WorkerEnv): boolean {
+  return env.APP_ENV === "staging"
+    && env.REGISTRATION_WRITE_ENABLED === "true"
+    && env.EMAIL_ENABLED === "true"
+    && env.AUTH_EMAIL_ENABLED === "true";
+}
+
+export function registrationDraftCookie(token: string, secure = true): string {
+  const parts = [
+    `${REGISTRATION_DRAFT_COOKIE}=${encodeURIComponent(token)}`,
+    `Max-Age=${REGISTRATION_DRAFT_TTL_SECONDS}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function readCookie(request: Request, name: string): string {
+  const cookie = request.headers.get("Cookie") ?? "";
+  for (const part of cookie.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return "";
+}
+
+function validateSubmission(input: RegistrationSubmissionInput): RegistrationSubmissionInput {
+  const guardian = {
+    fullName: clean(input?.guardian?.fullName, 160),
+    relationship: clean(input?.guardian?.relationship, 80),
+    primaryPhone: clean(input?.guardian?.primaryPhone, 40),
+    secondaryPhone: clean(input?.guardian?.secondaryPhone, 40),
+    email: clean(input?.guardian?.email, 254),
+    facebookName: clean(input?.guardian?.facebookName, 160),
+    homeAddress: clean(input?.guardian?.homeAddress, 500),
+  };
+  if (!guardian.fullName || !guardian.relationship || !guardian.primaryPhone || !guardian.homeAddress) {
+    throw new RegistrationSubmissionError("invalid_guardian");
+  }
+  if (!validEmail(normalizeEmail(guardian.email))) throw new RegistrationSubmissionError("invalid_email");
+  if (!Array.isArray(input.children) || input.children.length < 1 || input.children.length > 8) {
+    throw new RegistrationSubmissionError("invalid_children");
+  }
+
+  const stages = new Set<StageCode>(["stage_1", "stage_2", "stage_3"]);
+  const genders = new Set(["female", "male", "not_specified"]);
+  const children = input.children.map((source) => {
+    const child = {
+      surname: clean(source.surname, 100),
+      givenName: clean(source.givenName, 100),
+      gender: source.gender,
+      dateOfBirth: clean(source.dateOfBirth, 10),
+      currentGrade: clean(source.currentGrade, 20),
+      currentSchool: clean(source.currentSchool, 160),
+      returningStatus: source.returningStatus,
+      previousStageCode: source.previousStageCode,
+      selectedStageCode: source.selectedStageCode,
+      selectedClassSessionId: clean(source.selectedClassSessionId, 100),
+      preferredWaitlistClassSessionId: clean(source.preferredWaitlistClassSessionId, 100),
+      codeInput: clean(source.codeInput, 120),
+    };
+    if (!child.surname || !child.givenName || !genders.has(child.gender) || !validDate(child.dateOfBirth)) {
+      throw new RegistrationSubmissionError("invalid_child");
+    }
+    if (!child.currentGrade || !stages.has(child.selectedStageCode)) {
+      throw new RegistrationSubmissionError("invalid_child");
+    }
+    if (!new Set(["new", "returning"]).has(child.returningStatus)) {
+      throw new RegistrationSubmissionError("invalid_child");
+    }
+    if (child.returningStatus === "returning" && !child.previousStageCode) {
+      throw new RegistrationSubmissionError("invalid_previous_stage");
+    }
+    if (!child.selectedClassSessionId && !child.preferredWaitlistClassSessionId) {
+      throw new RegistrationSubmissionError("class_choice_required");
+    }
+    if (child.selectedClassSessionId && child.selectedClassSessionId === child.preferredWaitlistClassSessionId) {
+      throw new RegistrationSubmissionError("duplicate_class_choice");
+    }
+    return child;
+  });
+
+  if (!feeConfig.standardPaymentPlans.some((plan) => plan.id === input.paymentPlanCode)) {
+    throw new RegistrationSubmissionError("invalid_payment_plan");
+  }
+  if (!input.parentRulesAcknowledged || !input.studentRulesAcknowledged) {
+    throw new RegistrationSubmissionError("rules_not_acknowledged");
+  }
+  return { ...input, guardian, children };
+}
+
+async function loadChosenClasses(database: D1Database, ids: string[]): Promise<ClassRow[]> {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return [];
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  const result = await database.prepare(`
+    SELECT class_session.id AS id,
+      class_session.academic_year_id AS academicYearId,
+      class_session.stage_code AS stageCode,
+      class_session.status AS status,
+      academic_year.registration_status AS registrationStatus
+    FROM class_session
+    INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
+    WHERE class_session.id IN (${placeholders})
+      AND class_session.is_test = 1
+      AND class_session.is_test_only = 1
+  `).bind(...uniqueIds).all<ClassRow>();
+  if (result.results.length !== uniqueIds.length) throw new RegistrationSubmissionError("invalid_class");
+  return result.results;
+}
+
+export const acquireAllRequestedSeatsSql = `
+  WITH requested AS MATERIALIZED (
+    SELECT selected_class_session_id AS class_session_id, COUNT(*) AS requested_count
+    FROM registration_draft_child
+    WHERE registration_draft_id = ? AND selected_class_session_id IS NOT NULL
+    GROUP BY selected_class_session_id
+  ),
+  confirmed AS MATERIALIZED (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'confirmed'
+      AND application_child.status = 'enrolled'
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ),
+  legacy_holds AS MATERIALIZED (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'awaiting_initial_payment'
+      AND enrollment.effective_hold_deadline_at > ?
+      AND application_child.status = 'hold_created'
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ),
+  draft_holds AS MATERIALIZED (
+    SELECT registration_capacity_hold.class_session_id, COUNT(*) AS count
+    FROM registration_capacity_hold
+    WHERE registration_capacity_hold.status = 'active'
+      AND registration_capacity_hold.deadline_at > ?
+    GROUP BY registration_capacity_hold.class_session_id
+  ),
+  capacity_ok AS MATERIALIZED (
+    SELECT CASE WHEN EXISTS (
+      SELECT 1
+      FROM requested
+      INNER JOIN class_session ON class_session.id = requested.class_session_id
+      LEFT JOIN confirmed ON confirmed.class_session_id = requested.class_session_id
+      LEFT JOIN legacy_holds ON legacy_holds.class_session_id = requested.class_session_id
+      LEFT JOIN draft_holds ON draft_holds.class_session_id = requested.class_session_id
+      WHERE class_session.status NOT IN ('available', 'full')
+        OR class_session.capacity - COALESCE(confirmed.count, 0)
+          - COALESCE(legacy_holds.count, 0) - COALESCE(draft_holds.count, 0)
+          < requested.requested_count
+    ) THEN 0 ELSE 1 END AS ok
+  )
+  INSERT INTO registration_capacity_hold (
+    id, registration_draft_child_id, class_session_id, hold_type, status,
+    deadline_at, is_test, test_run_id, created_at, updated_at
+  )
+  SELECT registration_draft_child.id || ':hold', registration_draft_child.id,
+    registration_draft_child.selected_class_session_id,
+    'provisional_email_confirmation', 'active', ?, 1,
+    registration_draft_child.test_run_id, ?, ?
+  FROM registration_draft_child
+  WHERE registration_draft_child.registration_draft_id = ?
+    AND registration_draft_child.selected_class_session_id IS NOT NULL
+    AND (SELECT ok FROM capacity_ok) = 1
+`;
+
+export async function createRegistrationDraft(
+  env: WorkerEnv,
+  rawInput: RegistrationSubmissionInput,
+  nowDate = new Date(),
+) {
+  if (!registrationWritesAvailable(env)) throw new RegistrationSubmissionError("disabled");
+  const input = validateSubmission(rawInput);
+  const classIds = input.children.flatMap((child) => [
+    child.selectedClassSessionId ?? "",
+    child.preferredWaitlistClassSessionId ?? "",
+  ]);
+  const classes = await loadChosenClasses(env.DB, classIds);
+  const classById = new Map(classes.map((item) => [item.id, item]));
+  const yearIds = new Set(classes.map((item) => item.academicYearId));
+  if (yearIds.size !== 1 || classes.some((item) => item.registrationStatus !== "open" || item.status === "closed" || item.status === "cancelled")) {
+    throw new RegistrationSubmissionError("invalid_class");
+  }
+  for (const child of input.children) {
+    for (const id of [child.selectedClassSessionId, child.preferredWaitlistClassSessionId]) {
+      if (id && classById.get(id)?.stageCode !== child.selectedStageCode) {
+        throw new RegistrationSubmissionError("invalid_class_stage");
+      }
+    }
+  }
+
+  const now = nowDate.toISOString();
+  const provisionalDeadlineAt = addSeconds(nowDate, 20 * 60);
+  const expiresAt = addSeconds(nowDate, REGISTRATION_DRAFT_TTL_SECONDS);
+  const draftId = crypto.randomUUID();
+  const testRunId = `registration:${draftId}`;
+  const rawAccessToken = randomToken();
+  const accessTokenHash = await sha256(rawAccessToken);
+  const normalizedEmail = normalizeEmail(input.guardian.email);
+  const childIds = input.children.map(() => crypto.randomUUID());
+  const selectedSeatCount = input.children.filter((child) => child.selectedClassSessionId).length;
+
+  const statements = [env.DB.prepare(`
+    INSERT INTO registration_draft (
+      id, access_token_hash, academic_year_id, guardian_full_name,
+      guardian_relationship, primary_phone, secondary_phone, email,
+      normalized_email, facebook_name, home_address, payment_plan_code,
+      parent_rules_version, student_rules_version, status, expires_at,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_email', ?, 1, ?, ?, ?)
+  `).bind(
+    draftId, accessTokenHash, [...yearIds][0], input.guardian.fullName,
+    input.guardian.relationship, input.guardian.primaryPhone, input.guardian.secondaryPhone || null,
+    input.guardian.email, normalizedEmail, input.guardian.facebookName || null,
+    input.guardian.homeAddress, input.paymentPlanCode, rulesContent.parent.version,
+    rulesContent.student.version, expiresAt, testRunId, now, now,
+  )];
+
+  input.children.forEach((child, index) => {
+    statements.push(env.DB.prepare(`
+      INSERT INTO registration_draft_child (
+        id, registration_draft_id, position, surname, given_name, gender,
+        date_of_birth, current_grade, current_school, returning_status,
+        previous_stage_code, selected_stage_code, selected_class_session_id,
+        preferred_waitlist_class_session_id, code_input, status, is_test,
+        test_run_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
+    `).bind(
+      childIds[index], draftId, index, child.surname, child.givenName, child.gender,
+      child.dateOfBirth, child.currentGrade, child.currentSchool || null,
+      child.returningStatus, child.previousStageCode || null, child.selectedStageCode,
+      child.selectedClassSessionId || null, child.preferredWaitlistClassSessionId || null,
+      child.codeInput || null, testRunId, now, now,
+    ));
+  });
+
+  statements.push(env.DB.prepare(acquireAllRequestedSeatsSql).bind(
+    draftId, now, now, provisionalDeadlineAt, now, now, draftId,
+  ));
+  statements.push(env.DB.prepare(`
+    UPDATE registration_draft_child
+    SET status = 'provisional_hold', updated_at = ?
+    WHERE registration_draft_id = ?
+      AND EXISTS (
+        SELECT 1 FROM registration_capacity_hold
+        WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+          AND registration_capacity_hold.status = 'active'
+      )
+  `).bind(now, draftId));
+
+  const results = await env.DB.batch(statements);
+  const holdResult = results[results.length - 2];
+  const heldSeatCount = changeCount(holdResult);
+  if (selectedSeatCount > 0 && heldSeatCount !== selectedSeatCount) {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE registration_draft SET status = 'seat_unavailable', updated_at = ? WHERE id = ?").bind(now, draftId),
+      env.DB.prepare("UPDATE registration_draft_child SET status = 'seat_unavailable', updated_at = ? WHERE registration_draft_id = ? AND selected_class_session_id IS NOT NULL").bind(now, draftId),
+    ]);
+    throw new RegistrationSubmissionError("capacity_changed");
+  }
+
+  return {
+    draftId,
+    email: input.guardian.email,
+    normalizedEmail,
+    hasProvisionalHold: heldSeatCount > 0,
+    provisionalDeadlineAt: heldSeatCount > 0 ? provisionalDeadlineAt : null,
+    accessCookie: registrationDraftCookie(rawAccessToken, true),
+  };
+}
+
+export async function markRegistrationEmailSent(database: D1Database, draftId: string, nowDate = new Date()) {
+  const now = nowDate.toISOString();
+  await database.prepare(`
+    UPDATE registration_draft
+    SET status = 'pending_email', email_last_sent_at = ?, updated_at = ?
+    WHERE id = ? AND status IN ('pending_email', 'email_delivery_failed')
+  `).bind(now, now, draftId).run();
+}
+
+export async function markRegistrationEmailFailed(database: D1Database, draftId: string, nowDate = new Date()) {
+  const now = nowDate.toISOString();
+  await database.prepare(`
+    UPDATE registration_draft
+    SET status = 'email_delivery_failed', updated_at = ?
+    WHERE id = ? AND status = 'pending_email'
+  `).bind(now, draftId).run();
+}
+
+export async function draftForAccessToken(database: D1Database, rawToken: string, nowDate = new Date()) {
+  if (!rawToken || rawToken.length > 256) throw new RegistrationSubmissionError("draft_access_denied");
+  const tokenHash = await sha256(rawToken);
+  const row = await database.prepare(`
+    SELECT id, normalized_email AS normalizedEmail, email, status,
+      email_last_sent_at AS emailLastSentAt, expires_at AS expiresAt
+    FROM registration_draft
+    WHERE access_token_hash = ? AND expires_at > ? AND is_test = 1
+  `).bind(tokenHash, nowDate.toISOString()).first<DraftAccessRow>();
+  if (!row) throw new RegistrationSubmissionError("draft_access_denied");
+  return row;
+}
+
+export async function pendingRegistrationForAccess(
+  database: D1Database,
+  rawToken: string,
+  nowDate = new Date(),
+) {
+  const draft = await draftForAccessToken(database, rawToken, nowDate);
+  if (!new Set(["pending_email", "email_delivery_failed"]).has(draft.status)) {
+    throw new RegistrationSubmissionError("draft_not_editable");
+  }
+  const summary = await database.prepare(`
+    SELECT
+      MAX(CASE WHEN registration_capacity_hold.status = 'active'
+        AND registration_capacity_hold.hold_type = 'provisional_email_confirmation'
+        AND registration_capacity_hold.deadline_at > ?
+        THEN registration_capacity_hold.deadline_at ELSE NULL END) AS provisionalDeadlineAt,
+      SUM(CASE WHEN registration_draft_child.selected_class_session_id IS NOT NULL THEN 1 ELSE 0 END) AS selectedCount
+    FROM registration_draft_child
+    LEFT JOIN registration_capacity_hold
+      ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+    WHERE registration_draft_child.registration_draft_id = ?
+  `).bind(nowDate.toISOString(), draft.id).first<{ provisionalDeadlineAt: string | null; selectedCount: number }>();
+  return {
+    email: draft.email,
+    hasProvisionalHold: Boolean(summary?.provisionalDeadlineAt),
+    provisionalDeadlineAt: summary?.provisionalDeadlineAt ?? null,
+    waitlistOnly: Number(summary?.selectedCount ?? 0) === 0,
+    emailDeliveryFailed: draft.status === "email_delivery_failed",
+  };
+}
+
+export function enforceResendCooldown(draft: DraftAccessRow, nowDate = new Date()) {
+  if (!draft.emailLastSentAt) return;
+  const nextAllowed = new Date(draft.emailLastSentAt).getTime() + REGISTRATION_RESEND_COOLDOWN_SECONDS * 1000;
+  if (nextAllowed > nowDate.getTime()) throw new RegistrationSubmissionError("resend_cooldown");
+}
+
+export async function claimRegistrationEmailSend(
+  database: D1Database,
+  draft: DraftAccessRow,
+  nowDate = new Date(),
+) {
+  const now = nowDate.toISOString();
+  const cutoff = addSeconds(nowDate, -REGISTRATION_RESEND_COOLDOWN_SECONDS);
+  const result = await database.prepare(`
+    UPDATE registration_draft
+    SET email_last_sent_at = ?, updated_at = ?
+    WHERE id = ?
+      AND status IN ('pending_email', 'email_delivery_failed')
+      AND (email_last_sent_at IS NULL OR email_last_sent_at <= ?)
+  `).bind(now, now, draft.id, cutoff).run();
+  if (changeCount(result) !== 1) throw new RegistrationSubmissionError("resend_cooldown");
+}
+
+export async function changeDraftEmail(
+  database: D1Database,
+  draft: DraftAccessRow,
+  emailInput: string,
+  nowDate = new Date(),
+) {
+  const email = clean(emailInput, 254);
+  const normalizedEmail = normalizeEmail(email);
+  if (!validEmail(normalizedEmail)) throw new RegistrationSubmissionError("invalid_email");
+  const now = nowDate.toISOString();
+  const cutoff = addSeconds(nowDate, -REGISTRATION_RESEND_COOLDOWN_SECONDS);
+  const results = await database.batch([
+    database.prepare(`
+      UPDATE registration_draft
+      SET email = ?, normalized_email = ?, status = 'pending_email',
+        email_last_sent_at = ?, updated_at = ?
+      WHERE id = ? AND status IN ('pending_email', 'email_delivery_failed')
+        AND (email_last_sent_at IS NULL OR email_last_sent_at <= ?)
+    `).bind(email, normalizedEmail, now, now, draft.id, cutoff),
+    database.prepare(`
+      UPDATE email_verification_challenge
+      SET status = 'invalidated', invalidated_at = ?, updated_at = ?
+      WHERE registration_draft_id = ? AND status = 'pending'
+    `).bind(now, now, draft.id),
+  ]);
+  if (changeCount(results[0]) !== 1) throw new RegistrationSubmissionError("draft_not_editable");
+  return { ...draft, email, normalizedEmail, emailLastSentAt: now };
+}
+
+export async function challengeForTokenHash(database: D1Database, tokenHash: string) {
+  return database.prepare(`
+    SELECT id, normalized_email AS normalizedEmail, status, expires_at AS expiresAt,
+      invalidated_at AS invalidatedAt, registration_draft_id AS registrationDraftId,
+      is_test AS isTest, test_run_id AS testRunId
+    FROM email_verification_challenge
+    WHERE token_hash = ?
+  `).bind(tokenHash).first<ChallengeRow>();
+}
+
+export const reacquireAllRequestedSeatsSql = `
+  WITH requested AS MATERIALIZED (
+    SELECT selected_class_session_id AS class_session_id, COUNT(*) AS requested_count
+    FROM registration_draft_child
+    WHERE registration_draft_id = ? AND selected_class_session_id IS NOT NULL
+    GROUP BY selected_class_session_id
+  ),
+  confirmed AS MATERIALIZED (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'confirmed' AND application_child.status = 'enrolled'
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ),
+  legacy_holds AS MATERIALIZED (
+    SELECT enrollment.class_session_id, COUNT(*) AS count
+    FROM enrollment
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE enrollment.status = 'awaiting_initial_payment'
+      AND enrollment.effective_hold_deadline_at > ?
+      AND application_child.status = 'hold_created'
+      AND pre_registration.deleted_at IS NULL
+    GROUP BY enrollment.class_session_id
+  ),
+  other_draft_holds AS MATERIALIZED (
+    SELECT registration_capacity_hold.class_session_id, COUNT(*) AS count
+    FROM registration_capacity_hold
+    INNER JOIN registration_draft_child
+      ON registration_draft_child.id = registration_capacity_hold.registration_draft_child_id
+    WHERE registration_capacity_hold.status = 'active'
+      AND registration_capacity_hold.deadline_at > ?
+      AND registration_draft_child.registration_draft_id != ?
+    GROUP BY registration_capacity_hold.class_session_id
+  ),
+  capacity_ok AS MATERIALIZED (
+    SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM requested
+      INNER JOIN class_session ON class_session.id = requested.class_session_id
+      LEFT JOIN confirmed ON confirmed.class_session_id = requested.class_session_id
+      LEFT JOIN legacy_holds ON legacy_holds.class_session_id = requested.class_session_id
+      LEFT JOIN other_draft_holds ON other_draft_holds.class_session_id = requested.class_session_id
+      WHERE class_session.status NOT IN ('available', 'full')
+        OR class_session.capacity - COALESCE(confirmed.count, 0)
+          - COALESCE(legacy_holds.count, 0) - COALESCE(other_draft_holds.count, 0)
+          < requested.requested_count
+    ) THEN 0 ELSE 1 END AS ok
+  )
+  UPDATE registration_capacity_hold
+  SET hold_type = 'initial_payment', status = 'active', deadline_at = ?,
+    converted_at = ?, updated_at = ?
+  WHERE registration_draft_child_id IN (
+    SELECT id FROM registration_draft_child
+    WHERE registration_draft_id = ? AND selected_class_session_id IS NOT NULL
+  ) AND (SELECT ok FROM capacity_ok) = 1
+`;
+
+export async function confirmRegistrationChallenge(
+  env: WorkerEnv,
+  challenge: ChallengeRow,
+  session: { id: string; tokenHash: string; createdAt: string; expiresAt: string },
+  nowDate = new Date(),
+) {
+  if (!challenge.registrationDraftId) throw new RegistrationSubmissionError("challenge_not_registration");
+  const draftId = challenge.registrationDraftId;
+  const now = nowDate.toISOString();
+  const paymentDeadlineAt = addSeconds(nowDate, 24 * 60 * 60);
+  const counts = await env.DB.prepare(`
+    SELECT
+      SUM(CASE WHEN selected_class_session_id IS NOT NULL THEN 1 ELSE 0 END) AS selectedCount,
+      SUM(CASE WHEN preferred_waitlist_class_session_id IS NOT NULL THEN 1 ELSE 0 END) AS waitlistCount,
+      SUM(CASE WHEN selected_class_session_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM registration_capacity_hold
+        WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+          AND registration_capacity_hold.status = 'active'
+          AND registration_capacity_hold.hold_type = 'provisional_email_confirmation'
+          AND registration_capacity_hold.deadline_at > ?
+      ) THEN 1 ELSE 0 END) AS timelyCount
+    FROM registration_draft_child
+    WHERE registration_draft_id = ?
+  `).bind(now, draftId).first<{ selectedCount: number; waitlistCount: number; timelyCount: number }>();
+  if (!counts) throw new RegistrationSubmissionError("draft_not_found");
+  const selectedCount = Number(counts.selectedCount || 0);
+  const timely = selectedCount > 0 && Number(counts.timelyCount || 0) === selectedCount;
+
+  const sessionInsert = env.DB.prepare(`
+    INSERT INTO verified_email_session (
+      id, normalized_email, session_token_hash, created_at, expires_at,
+      revoked_at, is_test, test_run_id, registration_draft_id
+    ) SELECT ?, normalized_email, ?, ?, ?, NULL, is_test, test_run_id, registration_draft_id
+      FROM email_verification_challenge
+      WHERE id = ? AND status = 'pending' AND expires_at > ? AND invalidated_at IS NULL
+  `).bind(session.id, session.tokenHash, session.createdAt, session.expiresAt, challenge.id, now);
+  const challengeUpdate = env.DB.prepare(`
+    UPDATE email_verification_challenge
+    SET status = 'used', used_at = ?, updated_at = ?
+    WHERE id = ? AND status = 'pending' AND expires_at > ? AND invalidated_at IS NULL
+  `).bind(now, now, challenge.id, now);
+  const holdUpdate = timely
+    ? env.DB.prepare(`
+        UPDATE registration_capacity_hold
+        SET hold_type = 'initial_payment', deadline_at = ?, converted_at = ?, updated_at = ?
+        WHERE registration_draft_child_id IN (
+          SELECT id FROM registration_draft_child WHERE registration_draft_id = ?
+            AND selected_class_session_id IS NOT NULL
+        ) AND status = 'active' AND hold_type = 'provisional_email_confirmation' AND deadline_at > ?
+      `).bind(paymentDeadlineAt, now, now, draftId, now)
+    : env.DB.prepare(reacquireAllRequestedSeatsSql).bind(
+        draftId, now, now, draftId, paymentDeadlineAt, now, now, draftId,
+      );
+  const waitlistInsert = env.DB.prepare(`
+    INSERT OR IGNORE INTO registration_draft_waitlist_entry (
+      id, registration_draft_child_id, class_session_id, status, is_test,
+      test_run_id, created_at, updated_at
+    )
+    SELECT registration_draft_child.id || ':waitlist', registration_draft_child.id,
+      registration_draft_child.preferred_waitlist_class_session_id, 'active', 1,
+      registration_draft_child.test_run_id, ?, ?
+    FROM registration_draft_child
+    INNER JOIN class_session
+      ON class_session.id = registration_draft_child.preferred_waitlist_class_session_id
+    INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
+    WHERE registration_draft_child.registration_draft_id = ?
+      AND registration_draft_child.preferred_waitlist_class_session_id IS NOT NULL
+      AND class_session.status IN ('available', 'full')
+      AND academic_year.registration_status = 'open'
+  `).bind(now, now, draftId);
+  const draftVerified = env.DB.prepare(`
+    UPDATE registration_draft
+    SET status = 'email_verified', verified_at = ?, updated_at = ?
+    WHERE id = ? AND status IN ('pending_email', 'email_delivery_failed')
+  `).bind(now, now, draftId);
+
+  const results = await env.DB.batch([sessionInsert, challengeUpdate, holdUpdate, waitlistInsert, draftVerified]);
+  if (changeCount(results[0]) !== 1 || changeCount(results[1]) !== 1 || changeCount(results[4]) !== 1) {
+    throw new RegistrationSubmissionError("invalid_or_expired_token");
+  }
+  const heldSeatCount = changeCount(results[2]);
+  const waitlistCount = changeCount(results[3]);
+  const allSeatsHeld = selectedCount === 0 || heldSeatCount === selectedCount;
+  const draftStatus = selectedCount > 0 && allSeatsHeld
+    ? "awaiting_initial_payment"
+    : selectedCount === 0 && waitlistCount > 0
+      ? "waitlisted"
+      : "seat_unavailable";
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE registration_draft SET status = ?, updated_at = ? WHERE id = ?").bind(draftStatus, now, draftId),
+    env.DB.prepare(`
+      UPDATE registration_draft_child SET status = 'awaiting_initial_payment', updated_at = ?
+      WHERE registration_draft_id = ? AND EXISTS (
+        SELECT 1 FROM registration_capacity_hold
+        WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+          AND registration_capacity_hold.status = 'active'
+          AND registration_capacity_hold.hold_type = 'initial_payment'
+          AND registration_capacity_hold.deadline_at > ?
+      )
+    `).bind(now, draftId, now),
+    env.DB.prepare(`
+      UPDATE registration_draft_child SET status = 'waitlisted', updated_at = ?
+      WHERE registration_draft_id = ? AND selected_class_session_id IS NULL AND EXISTS (
+        SELECT 1 FROM registration_draft_waitlist_entry
+        WHERE registration_draft_waitlist_entry.registration_draft_child_id = registration_draft_child.id
+          AND registration_draft_waitlist_entry.status = 'active'
+      )
+    `).bind(now, draftId),
+    env.DB.prepare(`
+      UPDATE registration_draft_child SET status = 'seat_unavailable', updated_at = ?
+      WHERE registration_draft_id = ? AND selected_class_session_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM registration_capacity_hold
+          WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+            AND registration_capacity_hold.status = 'active'
+            AND registration_capacity_hold.hold_type = 'initial_payment'
+            AND registration_capacity_hold.deadline_at > ?
+        )
+    `).bind(now, draftId, now),
+    env.DB.prepare(`
+      UPDATE registration_capacity_hold SET status = 'expired', updated_at = ?
+      WHERE registration_draft_child_id IN (
+        SELECT id FROM registration_draft_child WHERE registration_draft_id = ?
+      ) AND status = 'active' AND deadline_at <= ?
+    `).bind(now, draftId, now),
+  ]);
+
+  return {
+    draftId,
+    status: draftStatus,
+    hasPaymentHold: selectedCount > 0 && allSeatsHeld,
+    paymentDeadlineAt: selectedCount > 0 && allSeatsHeld ? paymentDeadlineAt : null,
+    lateReacquired: selectedCount > 0 && !timely && allSeatsHeld,
+  };
+}
+
+export async function sessionOwnsDraft(
+  database: D1Database,
+  rawSessionToken: string,
+  draftId: string,
+  nowDate = new Date(),
+) {
+  if (!rawSessionToken || rawSessionToken.length > 256) return false;
+  const tokenHash = await sha256(rawSessionToken);
+  const row = await database.prepare(`
+    SELECT id FROM verified_email_session
+    WHERE session_token_hash = ? AND registration_draft_id = ?
+      AND expires_at > ? AND revoked_at IS NULL
+  `).bind(tokenHash, draftId, nowDate.toISOString()).first<{ id: string }>();
+  return Boolean(row);
+}
+
+export async function registrationStatusForSession(
+  database: D1Database,
+  rawSessionToken: string,
+  nowDate = new Date(),
+) {
+  if (!rawSessionToken || rawSessionToken.length > 256) throw new RegistrationSubmissionError("session_required");
+  const tokenHash = await sha256(rawSessionToken);
+  const draft = await database.prepare(`
+    SELECT registration_draft.id, registration_draft.email, registration_draft.status,
+      registration_draft.verified_at AS verifiedAt
+    FROM verified_email_session
+    INNER JOIN registration_draft ON registration_draft.id = verified_email_session.registration_draft_id
+    WHERE verified_email_session.session_token_hash = ?
+      AND verified_email_session.expires_at > ?
+      AND verified_email_session.revoked_at IS NULL
+      AND registration_draft.is_test = 1
+  `).bind(tokenHash, nowDate.toISOString()).first<{ id: string; email: string; status: string; verifiedAt: string | null }>();
+  if (!draft) throw new RegistrationSubmissionError("session_required");
+  const children = await database.prepare(`
+    SELECT registration_draft_child.id,
+      registration_draft_child.surname,
+      registration_draft_child.given_name AS givenName,
+      registration_draft_child.status,
+      registration_draft_child.selected_stage_code AS selectedStageCode,
+      selected_class.display_label AS selectedClassLabel,
+      selected_class.weekday AS selectedClassWeekday,
+      selected_class.start_time AS selectedClassStartTime,
+      selected_class.end_time AS selectedClassEndTime,
+      preferred_class.display_label AS waitlistClassLabel,
+      preferred_class.weekday AS waitlistClassWeekday,
+      preferred_class.start_time AS waitlistClassStartTime,
+      preferred_class.end_time AS waitlistClassEndTime,
+      registration_capacity_hold.hold_type AS holdType,
+      registration_capacity_hold.deadline_at AS holdDeadlineAt,
+      registration_capacity_hold.status AS holdStatus,
+      registration_draft_waitlist_entry.status AS waitlistStatus
+    FROM registration_draft_child
+    LEFT JOIN class_session AS selected_class ON selected_class.id = registration_draft_child.selected_class_session_id
+    LEFT JOIN registration_draft_waitlist_entry ON registration_draft_waitlist_entry.registration_draft_child_id = registration_draft_child.id
+    LEFT JOIN class_session AS preferred_class ON preferred_class.id = COALESCE(
+      registration_draft_waitlist_entry.class_session_id,
+      registration_draft_child.preferred_waitlist_class_session_id
+    )
+    LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+    WHERE registration_draft_child.registration_draft_id = ?
+    ORDER BY registration_draft_child.position
+  `).bind(draft.id).all<Record<string, unknown>>();
+  return { ...draft, children: children.results, now: nowDate.toISOString() };
+}
+
+export async function joinOriginalClassWaitlist(
+  database: D1Database,
+  rawSessionToken: string,
+  childId: string,
+  nowDate = new Date(),
+) {
+  if (!rawSessionToken || rawSessionToken.length > 256 || !childId) {
+    throw new RegistrationSubmissionError("session_required");
+  }
+  const tokenHash = await sha256(rawSessionToken);
+  const now = nowDate.toISOString();
+  const result = await database.prepare(`
+    INSERT OR IGNORE INTO registration_draft_waitlist_entry (
+      id, registration_draft_child_id, class_session_id, status, is_test,
+      test_run_id, created_at, updated_at
+    )
+    SELECT registration_draft_child.id || ':waitlist', registration_draft_child.id,
+      registration_draft_child.selected_class_session_id, 'active', 1,
+      registration_draft_child.test_run_id, ?, ?
+    FROM verified_email_session
+    INNER JOIN registration_draft
+      ON registration_draft.id = verified_email_session.registration_draft_id
+    INNER JOIN registration_draft_child
+      ON registration_draft_child.registration_draft_id = registration_draft.id
+    INNER JOIN class_session
+      ON class_session.id = registration_draft_child.selected_class_session_id
+    WHERE verified_email_session.session_token_hash = ?
+      AND verified_email_session.expires_at > ?
+      AND verified_email_session.revoked_at IS NULL
+      AND registration_draft_child.id = ?
+      AND registration_draft_child.status = 'seat_unavailable'
+      AND registration_draft_child.preferred_waitlist_class_session_id IS NULL
+      AND class_session.status IN ('available', 'full')
+  `).bind(now, now, tokenHash, now, childId).run();
+  if (changeCount(result) !== 1) throw new RegistrationSubmissionError("waitlist_unavailable");
+  await database.prepare(`
+    UPDATE registration_draft_child SET status = 'waitlisted', updated_at = ? WHERE id = ?
+  `).bind(now, childId).run();
+  await database.prepare(`
+    UPDATE registration_draft
+    SET status = CASE WHEN EXISTS (
+      SELECT 1 FROM registration_draft_child
+      WHERE registration_draft_child.registration_draft_id = registration_draft.id
+        AND registration_draft_child.status = 'seat_unavailable'
+    ) THEN 'seat_unavailable' ELSE 'waitlisted' END,
+    updated_at = ?
+    WHERE id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ?)
+  `).bind(now, childId).run();
+}

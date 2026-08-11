@@ -11,7 +11,7 @@ The project uses two Cloudflare D1 databases:
 
 Wrangler remains the source of truth. The top-level Worker configuration binds future production code to `DB -> naran-erdem-production`. The `staging` Wrangler environment binds the same `DB` name to `naran-erdem-staging` and deliberately has no custom domain route.
 
-The Worker serves static Astro assets directly and runs the small API layer only for `/api/*` paths. The production Worker uses `DB -> naran-erdem-production`; the separately deployed `naran-erdem-staging` Worker uses `DB -> naran-erdem-staging`. Both environments currently set `REGISTRATION_WRITE_ENABLED=false`.
+The Worker serves static Astro assets directly and runs the small API layer only for `/api/*` paths. Production uses `DB -> naran-erdem-production` and keeps `REGISTRATION_WRITE_ENABLED=false`. The separately deployed staging Worker uses `DB -> naran-erdem-staging` and sets the flag true only for explicitly test-marked registrations.
 
 ## ID And Timestamp Strategy
 
@@ -35,6 +35,10 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `outbound_email`: milestone email queue/delivery record, including intended/actual recipients, provider status, provider message ID, stable idempotency key, and compact failure code.
 - `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, configurable registration-confirmation expiry (currently 24 hours), linked outbound email, and test provenance. It never stores the raw magic-link token.
 - `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
+- `registration_draft`: seven-day server-side guardian/contact snapshot, rule versions, payment-plan/code input, hashed draft-access token, and registration lifecycle. Staging rows are explicitly test-marked.
+- `registration_draft_child`: per-child snapshot with one nullable current/fallback class and one nullable preferred FIFO target. It is deliberately separate from canonical `student` identity.
+- `registration_capacity_hold`: one per draft child, moving from a 20-minute `provisional_email_confirmation` deadline to a fresh 24-hour `initial_payment` deadline after verification.
+- `registration_draft_waitlist_entry`: one verified FIFO entry per draft child. Unverified waitlist intent remains only on `registration_draft_child`.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.
 
 ## Ownership And Deletes
@@ -83,19 +87,19 @@ An unauthenticated future registration submission must not reveal whether a guar
 
 Successful magic-link verification creates only a short-lived verified-email session. Challenge consumption and session creation execute in one D1 batch so replay cannot create another session. No authentication query reads `guardian_account`, and no guardian row is created or linked by this foundation.
 
-## Future Seat Allocation Atomicity
+## Seat Allocation Atomicity
 
-When registration writes are introduced, the selected concrete class must be atomically capacity-checked while its hold is created. Do not implement it as an unprotected `SELECT` for availability followed later by an `INSERT`; use D1 batch/transaction semantics and database constraints or conditional writes as appropriate.
+Migration 0005 implements staging allocation with one conditional `INSERT ... SELECT`. It groups requested seats by class, subtracts confirmed enrollments plus active legacy and draft holds, and inserts all requested child holds only if no class is short. D1 executes the surrounding batch transactionally and serializes its statements; a capacity-race loser inserts zero holds and receives current availability instead of an email. Late confirmation uses the same all-or-none grouped check when reacquisition is needed. Multiple children therefore never receive accidental partial seat protection.
 
 ## Public Catalog Availability
 
 The public catalog returns only non-sensitive aggregate availability for a concrete class. It uses:
 
 ```text
-remaining seats = capacity - confirmed enrollments - active initial-payment holds
+remaining seats = capacity - confirmed enrollments - active provisional holds - active initial-payment holds
 ```
 
-Only `enrollment.status = confirmed` counts as confirmed. An active hold currently means `enrollment.status = awaiting_initial_payment` with an `effective_hold_deadline_at` in the future, and an active underlying application/parent registration. The public value is clamped at zero. Future temporary capacity counts must also include active 20-minute email-confirmation provisional holds, but never confirmed enrollments.
+Only `enrollment.status = confirmed` counts as confirmed. Active temporary counts include legacy `enrollment.status = awaiting_initial_payment` rows with a future effective deadline and migration-0005 capacity holds with `status = active` and a future deadline. This includes both 20-minute provisional and 24-hour initial-payment holds, but not confirmed enrollments. Expired rows stop counting immediately even before cleanup, and the public value is clamped at zero.
 
 The catalog does not return a pre-registration total. If a future internal surface needs that number, it should count only non-cancelled, non-deleted child applications with the same `selected_class_session_id`; it must not be used for capacity.
 
@@ -103,7 +107,7 @@ For a class with seats, public UI shows only remaining seats. For a full class, 
 
 ## Email Testing Principle
 
-The Resend adapter and verification-email path are implemented but disabled by configuration. `outbound_email` remains the audit source for queue, attempt, sent, and failed state.
+The Resend adapter and verification-email path are enabled only in staging with a mandatory safe-recipient override. Production remains disabled. `outbound_email` remains the audit source for queue, attempt, sent, and failed state and links registration confirmation mail back to its server draft.
 
 The table distinguishes:
 

@@ -3,7 +3,14 @@ import { resolveDeliveryAddress } from "../email/delivery-policy";
 import { createResendProvider } from "../email/resend";
 import { EmailConfigurationError, deliverQueuedEmail } from "../email/service";
 import { emailVerificationTemplate } from "../email/templates/email-verification";
+import { registrationConfirmationTemplate } from "../email/templates/registration-confirmation";
+import {
+  challengeForTokenHash,
+  confirmRegistrationChallenge,
+  sessionOwnsDraft,
+} from "../services/registration-submission";
 import { randomToken, sha256 } from "./crypto";
+import { normalizeEmail, validEmail } from "./email-address";
 
 export const REGISTRATION_PROVISIONAL_HOLD_TTL_SECONDS = 20 * 60;
 export const REGISTRATION_CONFIRMATION_TTL_SECONDS = 24 * 60 * 60;
@@ -16,14 +23,6 @@ export class EmailVerificationError extends Error {
     super("Email verification failed.");
     this.name = "EmailVerificationError";
   }
-}
-
-function normalizeEmail(email: string): string {
-  return email.normalize("NFKC").trim().toLowerCase();
-}
-
-function validEmail(email: string): boolean {
-  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function addSeconds(date: Date, seconds: number): string {
@@ -46,7 +45,16 @@ export function verifiedEmailCookie(token: string, secure = true): string {
   return parts.join("; ");
 }
 
-export async function startEmailVerification(env: WorkerEnv, emailInput: string) {
+interface StartEmailVerificationOptions {
+  registrationDraftId?: string;
+  invalidatePrevious?: boolean;
+}
+
+export async function startEmailVerification(
+  env: WorkerEnv,
+  emailInput: string,
+  options: StartEmailVerificationOptions = {},
+) {
   if (env.EMAIL_ENABLED !== "true" || env.AUTH_EMAIL_ENABLED !== "true") {
     throw new EmailConfigurationError("auth_email_disabled");
   }
@@ -71,17 +79,21 @@ export async function startEmailVerification(env: WorkerEnv, emailInput: string)
   const outboundEmailId = crypto.randomUUID();
   const idempotencyKey = `email-verification/${outboundEmailId}`;
   const isTest = env.APP_ENV === "staging" ? 1 : 0;
-  const testRunId = isTest ? `email-verification:${challengeId}` : null;
+  const testRunId = isTest
+    ? options.registrationDraftId ? `registration:${options.registrationDraftId}` : `email-verification:${challengeId}`
+    : null;
 
   const outboundInsert = env.DB.prepare(`
     INSERT INTO outbound_email (
       id, event_type, template_key, intended_to_email, actual_delivery_email,
       delivery_mode, status, attempt_count, queued_at, context_json,
-      idempotency_key, is_test, test_run_id, created_at, updated_at
-    ) VALUES (?, 'email_verification_requested', 'email_verification_v1', ?, ?, ?,
-      'queued', 0, ?, ?, ?, ?, ?, ?, ?)
+      idempotency_key, is_test, test_run_id, created_at, updated_at,
+      registration_draft_id
+    ) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     outboundEmailId,
+    options.registrationDraftId ? "registration_confirmation_requested" : "email_verification_requested",
+    options.registrationDraftId ? "registration_confirmation_v1" : "email_verification_v1",
     normalizedEmail,
     delivery.actualEmail,
     delivery.deliveryMode,
@@ -92,12 +104,14 @@ export async function startEmailVerification(env: WorkerEnv, emailInput: string)
     testRunId,
     now,
     now,
+    options.registrationDraftId ?? null,
   );
   const challengeInsert = env.DB.prepare(`
     INSERT INTO email_verification_challenge (
       id, normalized_email, token_hash, purpose, status, outbound_email_id,
-      created_at, expires_at, is_test, test_run_id, updated_at
-    ) VALUES (?, ?, ?, 'registration_email', 'pending', ?, ?, ?, ?, ?, ?)
+      created_at, expires_at, is_test, test_run_id, updated_at,
+      registration_draft_id
+    ) VALUES (?, ?, ?, 'registration_email', 'pending', ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     challengeId,
     normalizedEmail,
@@ -108,16 +122,30 @@ export async function startEmailVerification(env: WorkerEnv, emailInput: string)
     isTest,
     testRunId,
     now,
+    options.registrationDraftId ?? null,
   );
 
-  const queued = await env.DB.batch([outboundInsert, challengeInsert]);
-  if (changeCount(queued[0]) !== 1 || changeCount(queued[1]) !== 1) {
+  const statements = [];
+  if (options.registrationDraftId && options.invalidatePrevious) {
+    statements.push(env.DB.prepare(`
+      UPDATE email_verification_challenge
+      SET status = 'invalidated', invalidated_at = ?, updated_at = ?
+      WHERE registration_draft_id = ? AND status = 'pending'
+    `).bind(now, now, options.registrationDraftId));
+  }
+  statements.push(outboundInsert, challengeInsert);
+  const queued = await env.DB.batch(statements);
+  const outboundResult = queued[queued.length - 2];
+  const challengeResult = queued[queued.length - 1];
+  if (changeCount(outboundResult) !== 1 || changeCount(challengeResult) !== 1) {
     throw new EmailVerificationError("queue_failed");
   }
 
   const verificationUrl = new URL("/verify-email/", env.APP_ORIGIN);
   verificationUrl.hash = new URLSearchParams({ token: rawToken }).toString();
-  const template = emailVerificationTemplate(verificationUrl.toString());
+  const template = options.registrationDraftId
+    ? registrationConfirmationTemplate(verificationUrl.toString())
+    : emailVerificationTemplate(verificationUrl.toString());
   const provider = createResendProvider(env.RESEND_API_KEY);
   const providerMessageId = await deliverQueuedEmail(env, provider, {
     id: outboundEmailId,
@@ -134,16 +162,47 @@ export async function startEmailVerification(env: WorkerEnv, emailInput: string)
   return { challengeId, outboundEmailId, providerMessageId };
 }
 
-export async function verifyEmailToken(env: WorkerEnv, rawToken: string) {
+export async function verifyEmailToken(env: WorkerEnv, rawToken: string, existingSessionToken = "") {
   if (!rawToken || rawToken.length > 256) throw new EmailVerificationError("invalid_or_expired_token");
 
   const tokenHash = await sha256(rawToken);
+  const challenge = await challengeForTokenHash(env.DB, tokenHash);
+  if (!challenge) throw new EmailVerificationError("invalid_or_expired_token");
+  if (challenge.status !== "pending" || challenge.expiresAt <= new Date().toISOString() || challenge.invalidatedAt) {
+    if (
+      challenge.status === "used"
+      && challenge.registrationDraftId
+      && await sessionOwnsDraft(env.DB, existingSessionToken, challenge.registrationDraftId)
+    ) {
+      return {
+        sessionId: null,
+        cookie: null,
+        redirectUrl: new URL("/register/?status=already-verified", env.APP_ORIGIN).toString(),
+      };
+    }
+    throw new EmailVerificationError("invalid_or_expired_token");
+  }
+
   const rawSessionToken = randomToken();
   const sessionTokenHash = await sha256(rawSessionToken);
   const sessionId = crypto.randomUUID();
   const nowDate = new Date();
   const now = nowDate.toISOString();
   const expiresAt = addSeconds(nowDate, VERIFIED_EMAIL_SESSION_TTL_SECONDS);
+
+  if (challenge.registrationDraftId) {
+    await confirmRegistrationChallenge(env, challenge, {
+      id: sessionId,
+      tokenHash: sessionTokenHash,
+      createdAt: now,
+      expiresAt,
+    }, nowDate);
+    return {
+      sessionId,
+      cookie: verifiedEmailCookie(rawSessionToken, true),
+      redirectUrl: new URL("/register/?status=confirmed", env.APP_ORIGIN).toString(),
+    };
+  }
 
   const sessionInsert = env.DB.prepare(`
     INSERT INTO verified_email_session (

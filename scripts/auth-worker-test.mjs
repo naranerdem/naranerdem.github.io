@@ -40,7 +40,7 @@ class FakeStatement {
   }
 
   first() {
-    throw new Error("Unexpected first() in auth test");
+    return Promise.resolve(this.database.first(this));
   }
 
   all() {
@@ -74,16 +74,16 @@ class FakeD1 {
     if (sql.startsWith("INSERT INTO outbound_email")) {
       const row = {
         id: values[0],
-        intendedEmail: values[1],
-        actualEmail: values[2],
-        deliveryMode: values[3],
+        intendedEmail: values[3],
+        actualEmail: values[4],
+        deliveryMode: values[5],
         status: "queued",
         attemptCount: 0,
-        queuedAt: values[4],
-        contextJson: values[5],
-        idempotencyKey: values[6],
-        isTest: values[7],
-        testRunId: values[8],
+        queuedAt: values[6],
+        contextJson: values[7],
+        idempotencyKey: values[8],
+        isTest: values[9],
+        testRunId: values[10],
         providerMessageId: null,
         failureCode: null,
       };
@@ -102,6 +102,7 @@ class FakeD1 {
         expiresAt: values[5],
         isTest: values[6],
         testRunId: values[7],
+        registrationDraftId: values[9],
         status: "pending",
         usedAt: null,
         invalidatedAt: null,
@@ -156,6 +157,26 @@ class FakeD1 {
     }
 
     throw new Error(`Unexpected SQL in auth test: ${sql}`);
+  }
+
+  first(statement) {
+    const sql = statement.sql.replace(/\s+/g, " ").trim();
+    const values = statement.bindings;
+    if (sql.includes("FROM email_verification_challenge") && sql.includes("WHERE token_hash = ?")) {
+      const challenge = [...this.challenges.values()].find((item) => item.tokenHash === values[0]);
+      if (!challenge) return null;
+      return {
+        id: challenge.id,
+        normalizedEmail: challenge.normalizedEmail,
+        status: challenge.status,
+        expiresAt: challenge.expiresAt,
+        invalidatedAt: challenge.invalidatedAt,
+        registrationDraftId: challenge.registrationDraftId,
+        isTest: challenge.isTest,
+        testRunId: challenge.testRunId,
+      };
+    }
+    throw new Error(`Unexpected first() SQL in auth test: ${sql}`);
   }
 
   result(changes) {

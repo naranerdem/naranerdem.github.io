@@ -22,7 +22,7 @@ export interface D1Database {
 
 export interface WorkerEnv {
   APP_ENV: AppEnvironment;
-  REGISTRATION_WRITE_ENABLED: "false";
+  REGISTRATION_WRITE_ENABLED: "true" | "false";
   APP_ORIGIN: string;
   EMAIL_ENABLED: "true" | "false";
   AUTH_EMAIL_ENABLED: "true" | "false";
@@ -30,5 +30,7 @@ export interface WorkerEnv {
   RESEND_API_KEY?: string;
   STAGING_EMAIL_OVERRIDE_TO?: string;
   STAGING_AUTH_TEST_KEY?: string;
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
   DB: D1Database;
 }

@@ -75,7 +75,8 @@ function createDatabase(rows, options = {}) {
           assert.match(sql, /enrollment\.status = 'confirmed'/);
           assert.match(sql, /enrollment\.status = 'awaiting_initial_payment'/);
           assert.match(sql, /enrollment\.effective_hold_deadline_at > \?/);
-          assert.match(sql, /MAX\(class_session\.capacity - COALESCE\(confirmed\.count, 0\) - COALESCE\(active_holds\.count, 0\), 0\)/);
+          assert.match(sql, /registration_capacity_hold/);
+          assert.match(sql, /COALESCE\(draft_holds\.count, 0\)/);
 
           const productionQuery = sql.includes("class_session.is_test_only = ?");
           const filtered = productionQuery
@@ -83,7 +84,8 @@ function createDatabase(rows, options = {}) {
             : rows;
 
           assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
-          assert.deepEqual(bindings.slice(1), productionQuery ? ["open", 0, 0, 0] : ["open"]);
+          assert.match(bindings[1], /^\d{4}-\d{2}-\d{2}T/);
+          assert.deepEqual(bindings.slice(2), productionQuery ? ["open", 0, 0, 0] : ["open"]);
           if (productionQuery) assert.match(sql, /enrollment\.is_test = 0/);
           return { success: true, results: filtered };
         },
@@ -168,6 +170,20 @@ try {
   const write = await jsonResponse(productionWorker, "/api/pre-registrations", productionEnv, { method: "POST" });
   assert.equal(write.response.status, 404);
   assert.equal(write.body.error.code, "not_found");
+
+  const productionRegistrationWrite = await jsonResponse(
+    productionWorker,
+    "/api/registration/submit",
+    productionEnv,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+  );
+  assert.equal(productionRegistrationWrite.response.status, 404);
+  const productionConfig = await jsonResponse(productionWorker, "/api/registration/config", productionEnv);
+  assert.deepEqual(productionConfig.body, {
+    environment: "production",
+    writeEnabled: false,
+    turnstileSiteKey: null,
+  });
 
   const failedCatalog = await jsonResponse(
     productionWorker,
