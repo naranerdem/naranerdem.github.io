@@ -174,9 +174,11 @@ Class/session capacity should be configurable. Historically a class has 10 child
 
 ### Future CurriculumLesson and LessonOccurrence
 
-This is **future planned domain**, not implemented schema. `ClassSession` describes a concrete enrolled cohort/time slot; it is not the identity of curriculum content and it must not imply a weekly recurrence rule.
+This is **future planned domain**, not implemented schema. `ClassSession` describes a concrete enrolled cohort and habitual time slot, such as `Level 2 — Sunday 10:00–11:20`; it supports registration and family expectations but is not the identity of curriculum content and must not imply a weekly recurrence rule.
 
-A future `CurriculumLesson` belongs to one stage and identifies actual content, for example `Level 2 — Lesson 7`. A future `LessonOccurrence` is one dated delivery of that same lesson for a cohort or an extra teacher-created make-up occurrence. The academic-year calendar is globally configured and published with exact dates/times, cancellations, rescheduling, holidays/gaps, and multiple occurrences of one lesson for different cohorts. The system must not infer occurrences from a constant seven-day interval, a single weekday, or one lesson per week.
+A future `CurriculumLesson` belongs to one stage and identifies actual content, for example `Level 2 — Lesson 7`. A future `LessonOccurrence` is one dated delivery of that same lesson for a cohort or an extra teacher-created make-up occurrence. The academic-year calendar is globally configured and published with exact dates/times, cancellations, rescheduling, holidays/gaps, and multiple occurrences of one lesson for different cohorts. The system must not infer occurrences from a constant seven-day interval, a single weekday, a Monday-Sunday sequence, or one lesson per week. Level 2 Lesson 7 may occur Sunday for one cohort and the following Tuesday for another, while another lesson crosses a different week boundary.
+
+The future published calendar needs explicit typed non-class entries because a missing occurrence is ambiguous. Names and schema remain open, but it must represent scheduled lesson, planned no-class/holiday for a habitual `ClassSession`, cancellation, rescheduling, long break/holiday period, and extra/make-up occurrence. A planned no-class entry can drive a reminder so children do not arrive at their usual time.
 
 A missed Lesson 7 can be made up only through another suitable occurrence of Lesson 7, not by joining Lesson 8 because it has space. Future make-up suggestions require the same curriculum lesson, a suitable future occurrence with capacity, an unresolved absence, and teacher consideration. Suggestions never automatically invite parents; the teacher approves/rejects and can override them. A teacher may create one extra non-standard occurrence when normal occurrences are unavailable.
 
@@ -185,6 +187,14 @@ A missed Lesson 7 can be made up only through another suitable occurrence of Les
 Attendance is future editable operational bookkeeping for a `LessonOccurrence`, with simple concepts such as present, late, absent, and a separate advance-absence notice. The teacher needs a phone-first roster and can correct an earlier entry later; material corrections require audit/history rather than silently erasing the original state.
 
 The future parent action `Хичээлд ирж чадахгүйгээ мэдэгдэх` selects one upcoming occurrence and may include a short note. Advance notice may favor make-up consideration but guarantees nothing. An uninformed absence gives no automatic make-up entitlement or credit.
+
+### Future Schedule Communication
+
+Schedule communication is future planned and separate from payment-reminder escalation. Irregular cancellation/rescheduling may send immediate email and generate optional teacher copy/paste Messenger text, including a replacement date/time only when known. A published planned no-class/holiday can send a configurable reminder about one or two days before the habitual slot. A concise return reminder may be sent around one day before the first lesson after a configured long break, including exact class/date/time.
+
+Communication needs event/idempotency semantics: avoid duplicate sends for one published change, do not notify on unrelated metadata edits, group siblings where clearer, and allow a materially changed reschedule to create a new notice. Make-up messages remain teacher-approved before they are generated or sent.
+
+Future staging calendar fixtures should deliberately include repeated same-lesson occurrences across cohorts, cross-week irregularity, no-class/holiday and long-break entries, cancellation/reschedule examples, make-up-eligible and no-standard-make-up absences, plus an extra teacher-created make-up occurrence. No such calendar rows exist yet.
 
 ### Selected Class
 

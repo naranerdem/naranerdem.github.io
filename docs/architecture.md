@@ -146,11 +146,13 @@ Before teacher/admin authentication exists, do not build an editor. Later, the M
 
 ### Future lesson calendar and attendance domain
 
-This is **future planned domain**, not current schema or functionality. `ClassSession` remains useful as a concrete enrolled cohort/time slot, but it is not a curriculum lesson and must not imply a mechanically recurring weekly calendar.
+This is **future planned domain**, not current schema or functionality. `ClassSession` remains useful as a concrete enrolled cohort and habitual slot, for example `Level 2 — Sunday 10:00–11:20`. It supports registration, cohort membership, and the reasonable expectation that a family may think of Sunday as its usual class time. It is not a curriculum lesson and must not mechanically generate a weekly calendar.
 
-Future academic-year configuration should publish the actual dated lesson calendar with draft, preview, and publish semantics. A `CurriculumLesson` identifies content within a stage, such as `Level 2, Lesson 7`. A `LessonOccurrence` is one dated delivery of that lesson for a `ClassSession` cohort, or an extra teacher-created make-up occurrence. The calendar may contain holidays, gaps, cancellations, rescheduling, and different dates for different cohorts. It must never infer dates from a weekly rule, seven-day spacing, or a shared weekday progression.
+Future academic-year configuration should publish the actual dated lesson calendar with draft, preview, and publish semantics. A `CurriculumLesson` identifies content within a stage, such as `Level 2, Lesson 7`. A `LessonOccurrence` is one dated delivery of that lesson for a `ClassSession` cohort, or an extra teacher-created make-up occurrence. The calendar may contain holidays, gaps, cancellations, rescheduling, and different dates for different cohorts. It must never infer dates from a weekly rule, seven-day spacing, a Monday-Sunday lesson sequence, or a shared weekday progression.
 
-For example, Level 2 Lesson 7 may have a Sunday occurrence for one cohort and the following Tuesday occurrence for another. Those can be the only normal occurrences. A child absent from Lesson 7 cannot make it up by attending Lesson 8 just because another class has space.
+For example, Level 2 Lesson 7 may have a Sunday occurrence for one cohort and the following Tuesday occurrence for another, while another lesson crosses a different week boundary. Those can be the only normal occurrences. A child absent from Lesson 7 cannot make it up by attending Lesson 8 just because another class has space.
+
+The published calendar also needs explicit typed entries beyond lesson delivery. The absence of a `LessonOccurrence` is ambiguous: it might be an intentional holiday, an unscheduled gap, a cancellation, or simply configuration not yet entered. A future `CalendarException`/typed calendar entry should represent scheduled lesson occurrence, planned no-class/holiday for a habitual `ClassSession`, cancellation, rescheduling, long break/holiday period, and extra/make-up occurrence. A planned no-class entry matters because a family might otherwise arrive at its habitual time.
 
 Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
 
@@ -159,6 +161,16 @@ Parents may later use a simple action such as `Хичээлд ирж чадах�
 The system may suggest a make-up only for a suitable future occurrence of the **same** `CurriculumLesson`, with capacity, unresolved absence, and teacher policy all considered. The teacher approves or rejects every suggestion and can override it. After approval, a later communication can be emailed, generated as concise `Messenger мессеж хуулах` text for human copy/paste, or recorded as a phone agreement. No Facebook API automation is planned. History should eventually distinguish emailed, manually Messenger-sent, phone-agreed, accepted, declined, and no-response states.
 
 When no standard occurrence remains, the teacher may create an extra non-standard occurrence of the same lesson and see an aggregate such as `Level 2 — Lesson 7: 5 unresolved absences`. Availability coordination remains a small teacher-led phone/Messenger process, not an automated polling system.
+
+### Future schedule communication policy
+
+This is **future planned domain**, separate from payment reminders even if both eventually reuse the outbound-email and communication-audit foundations. Schedule notices must be event/idempotency based: one cancellation must not repeatedly email the same guardian, unrelated metadata edits must not resend notices, siblings may be grouped into one clear guardian message, and a material reschedule can create a new notice when necessary.
+
+For an irregular cancellation/reschedule, teacher/admin may send immediate email to affected guardians and optionally generate concise Messenger copy for human sending. A replacement date/time is included only when actually known. A planned no-class/holiday entry may produce a configurable reminder roughly one or two days before the habitual class time, specifically to prevent children arriving from habit. About one day before the first lesson after a long break, a concise return reminder may include exact date/time/class. These notifications come from explicit published calendar/break policy; long-gap inference may later suggest a reminder but is not authoritative.
+
+Make-up invitations keep their existing teacher-mediated path: the system may suggest, the teacher approves, then email and/or Messenger-copy text can be produced.
+
+Once calendar schema exists, a realistic staging fixture should include at least two cohorts per stage; repeated occurrences of the same curriculum lesson across cohorts; intentionally irregular Sunday-to-following-Tuesday ordering; holiday/no-class and long winter-break entries; the first lesson after break; cancellation and reschedule examples; absences with and without remaining same-lesson occurrences; and an extra teacher-created make-up occurrence.
 
 ### Scheduled reminder jobs
 

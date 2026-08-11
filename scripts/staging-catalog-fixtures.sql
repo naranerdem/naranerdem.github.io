@@ -34,15 +34,31 @@ INSERT OR IGNORE INTO class_session (
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
   ),
   (
+    'staging-fixture-stage-2-tuesday', 'staging-fixture-2026-27', 'stage_2',
+    'Туршилтын 2-р шат, Мягмар 16:00', 'Мягмар', '16:00', '17:20', 8,
+    'available', 1, 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+  ),
+  (
     'staging-fixture-stage-3-sunday', 'staging-fixture-2026-27', 'stage_3',
     'Туршилтын 3-р шат, Ням 13:00', 'Ням', '13:00', '15:00', 10,
     'full', 1, 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+  ),
+  (
+    'staging-fixture-stage-3-tuesday', 'staging-fixture-2026-27', 'stage_3',
+    'Туршилтын 3-р шат, Мягмар 18:00', 'Мягмар', '18:00', '19:20', 6,
+    'available', 1, 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
   );
 
 UPDATE class_session
 SET
-  capacity = 10,
+  capacity = CASE
+    WHEN id = 'staging-fixture-stage-2-tuesday' THEN 8
+    WHEN id = 'staging-fixture-stage-3-tuesday' THEN 6
+    ELSE 10
+  END,
   status = CASE
     WHEN id IN ('staging-fixture-stage-1-afternoon', 'staging-fixture-stage-3-sunday') THEN 'full'
     ELSE 'available'
@@ -55,7 +71,24 @@ WHERE id IN (
   'staging-fixture-stage-1-saturday',
   'staging-fixture-stage-1-afternoon',
   'staging-fixture-stage-2-sunday',
-  'staging-fixture-stage-3-sunday'
+  'staging-fixture-stage-2-tuesday',
+  'staging-fixture-stage-3-sunday',
+  'staging-fixture-stage-3-tuesday'
+)
+AND (
+  capacity != CASE
+    WHEN id = 'staging-fixture-stage-2-tuesday' THEN 8
+    WHEN id = 'staging-fixture-stage-3-tuesday' THEN 6
+    ELSE 10
+  END
+  OR status != CASE
+    WHEN id IN ('staging-fixture-stage-1-afternoon', 'staging-fixture-stage-3-sunday') THEN 'full'
+    ELSE 'available'
+  END
+  OR is_test_only != 1
+  OR is_test != 1
+  OR test_run_id != 'staging-catalog-fixture'
+  OR updated_at != '2026-08-10T00:00:00Z'
 );
 
 INSERT OR IGNORE INTO guardian_account (
