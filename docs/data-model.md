@@ -146,6 +146,21 @@ This migration deliberately does not implement:
 
 `application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Complete tuition, payment, discount, credit, refund, and reconciliation tables should come in a later finance migration.
 
+## Future Planned Lesson, Attendance, And Operations Concepts
+
+No attendance, lesson-calendar, make-up, staff, accountant, payment-reminder, or settlement tables are implemented by the current migrations.
+
+Future schema design should keep these distinctions explicit:
+
+- `CurriculumLesson`: stable stage/content identity, such as Level 2 Lesson 7.
+- `LessonOccurrence`: one published dated delivery of a curriculum lesson for a `ClassSession` cohort or a teacher-created extra make-up. Occurrences come from the academic-year calendar, never a presumed weekly recurrence.
+- attendance bookkeeping and prior absence notice: editable operational records attached to a concrete occurrence, with auditable correction history.
+- make-up consideration/invitation/agreement: teacher-mediated records attached to the same curriculum lesson, not automatic credits or generic free-class access.
+- approved payment obligation and effective due date: later finance concepts that may feed a derived accountant call queue without erasing original deadlines, payments, or contact history.
+- settlement review: teacher-approved operational receivable supported by transparent advisory calculations; it must not be a silently authoritative attendance-derived debt.
+
+The eventual staff model starts with server-authorized `admin`, `teacher`, and `accountant` roles. It should leave room for future scoped roles without prematurely defining an `assistant_teacher` role or exposing authorization through menus alone.
+
 ## Migration Workflow
 
 Use Cloudflare D1 versioned migrations in `migrations/`.

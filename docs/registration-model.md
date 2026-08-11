@@ -172,6 +172,20 @@ For example, two different Saturday `1-р шат — Анхан шат` time slo
 
 Class/session capacity should be configurable. Historically a class has 10 children.
 
+### Future CurriculumLesson and LessonOccurrence
+
+This is **future planned domain**, not implemented schema. `ClassSession` describes a concrete enrolled cohort/time slot; it is not the identity of curriculum content and it must not imply a weekly recurrence rule.
+
+A future `CurriculumLesson` belongs to one stage and identifies actual content, for example `Level 2 — Lesson 7`. A future `LessonOccurrence` is one dated delivery of that same lesson for a cohort or an extra teacher-created make-up occurrence. The academic-year calendar is globally configured and published with exact dates/times, cancellations, rescheduling, holidays/gaps, and multiple occurrences of one lesson for different cohorts. The system must not infer occurrences from a constant seven-day interval, a single weekday, or one lesson per week.
+
+A missed Lesson 7 can be made up only through another suitable occurrence of Lesson 7, not by joining Lesson 8 because it has space. Future make-up suggestions require the same curriculum lesson, a suitable future occurrence with capacity, an unresolved absence, and teacher consideration. Suggestions never automatically invite parents; the teacher approves/rejects and can override them. A teacher may create one extra non-standard occurrence when normal occurrences are unavailable.
+
+### Future Attendance and Absence Notice
+
+Attendance is future editable operational bookkeeping for a `LessonOccurrence`, with simple concepts such as present, late, absent, and a separate advance-absence notice. The teacher needs a phone-first roster and can correct an earlier entry later; material corrections require audit/history rather than silently erasing the original state.
+
+The future parent action `Хичээлд ирж чадахгүйгээ мэдэгдэх` selects one upcoming occurrence and may include a short note. Advance notice may favor make-up consideration but guarantees nothing. An uninformed absence gives no automatic make-up entitlement or credit.
+
 ### Selected Class
 
 Ordinary registration selects at most one current concrete `ClassSession` for each child:
@@ -248,6 +262,14 @@ If initial payment is not received, the system may send reminders and expire the
 An approved short extension can move the effective deadline without erasing the original deadline.
 
 ## Tuition
+
+### Future Reminder, Accountant, and Settlement Direction
+
+This section is **future planned domain**, not implemented payment/accountant functionality. Standard plans remain one-time or two-installment; exceptional arrangements are private and teacher/admin-approved. Later-installment reminders should use effective due dates while preserving original dates, with restrained email, copyable Messenger text for a teacher, then a narrow accountant call queue after configurable overdue timing. Initial registration/payment holds remain a distinct time-sensitive process.
+
+The first accountant view should be `Залгах шаардлагатай`: a derived queue of unresolved teacher-approved receivables. Contact outcomes and promise dates may be recorded, but a parent promise is not an official extension. Only teacher/admin approval changes an effective deadline.
+
+When a student stops after partial attendance/payment, settlement should normally consider lessons delivered during the active period, not simply lessons attended. The system may provide advisory elapsed-lesson and attendance-based comparisons with payment, adjustment, absence, and make-up context. The teacher approves or edits the final operational amount; no formula is legally authoritative by itself, and historical received payments remain immutable.
 
 An enrollment conceptually has:
 

@@ -144,11 +144,41 @@ Authentication is not implemented yet, but future routes and modules should pres
 
 Before teacher/admin authentication exists, do not build an editor. Later, the Mongolian Content/Settings editor should support quick phone edits but remain desktop-comfortable for long rules, yearly setup, and bulk schedules. Ordinary site copy needs simple revision history and a current published value. Academic-year configuration needs classes, dates, prices, payment-plan settings, registration status, and copy-previous-year to editable draft to publish. Rules/policies need immutable versions, and registrations must retain the exact parent/student versions acknowledged. Important content follows Draft -> Preview -> Publish; this is not a generic heavyweight CMS.
 
+### Future lesson calendar and attendance domain
+
+This is **future planned domain**, not current schema or functionality. `ClassSession` remains useful as a concrete enrolled cohort/time slot, but it is not a curriculum lesson and must not imply a mechanically recurring weekly calendar.
+
+Future academic-year configuration should publish the actual dated lesson calendar with draft, preview, and publish semantics. A `CurriculumLesson` identifies content within a stage, such as `Level 2, Lesson 7`. A `LessonOccurrence` is one dated delivery of that lesson for a `ClassSession` cohort, or an extra teacher-created make-up occurrence. The calendar may contain holidays, gaps, cancellations, rescheduling, and different dates for different cohorts. It must never infer dates from a weekly rule, seven-day spacing, or a shared weekday progression.
+
+For example, Level 2 Lesson 7 may have a Sunday occurrence for one cohort and the following Tuesday occurrence for another. Those can be the only normal occurrences. A child absent from Lesson 7 cannot make it up by attending Lesson 8 just because another class has space.
+
+Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
+
+Parents may later use a simple action such as `Хичээлд ирж чадахгүйгээ мэдэгдэх` for one specific upcoming occurrence and an optional short note. Advance notice may favor teacher consideration of a make-up, but guarantees neither a make-up nor an automatic credit. An uninformed absence creates no automatic entitlement.
+
+The system may suggest a make-up only for a suitable future occurrence of the **same** `CurriculumLesson`, with capacity, unresolved absence, and teacher policy all considered. The teacher approves or rejects every suggestion and can override it. After approval, a later communication can be emailed, generated as concise `Messenger мессеж хуулах` text for human copy/paste, or recorded as a phone agreement. No Facebook API automation is planned. History should eventually distinguish emailed, manually Messenger-sent, phone-agreed, accepted, declined, and no-response states.
+
+When no standard occurrence remains, the teacher may create an extra non-standard occurrence of the same lesson and see an aggregate such as `Level 2 — Lesson 7: 5 unresolved absences`. Availability coordination remains a small teacher-led phone/Messenger process, not an automated polling system.
+
 ### Scheduled reminder jobs
 
 Reminder jobs should be configurable and should operate on effective deadlines rather than only original due dates.
 
 Initial payment reminders and later installment reminders may share scheduling machinery, but their consequences differ. An expired initial hold can release a seat. A late installment must not automatically delete or cancel a confirmed enrollment.
+
+Later-installment reminder policy is also **future planned**. One-time payment is simplest; two installments are expected to be common; exceptional private schedules should not become normal public choices. For ordinary installments, configurable escalation should support one restrained email before the effective deadline, a teacher task that produces copyable Messenger text, and an accountant call queue after an overdue threshold. Reminder timing uses effective due dates while retaining original due dates. The initial 24-hour registration/payment hold is a different, more time-sensitive workflow.
+
+The future copyable Messenger payment message should contain only appropriate parent/child context, amount, due date, and a first-party opaque status/payment link such as `naranerdem.com/p/<opaque-token>`. No PII or amount belongs directly in the URL, and no third-party URL shortener is needed.
+
+### Future staff authorization and accountant queue
+
+This is **future planned domain**, not a current staff schema or authentication implementation. Known roles are `admin`, `teacher`, and `accountant`; future scoped roles should remain possible, but `assistant_teacher` is not a current planned role. Authentication should be strong passwordless/passkey-oriented, and authorization must be server-enforced least privilege rather than different menus.
+
+The first accountant surface should be intentionally narrow: `Залгах шаардлагатай`. It is a derived live queue of overdue, teacher-approved receivables showing only the guardian, phone, relevant child/children, approved amount, effective due date/days overdue, and recent contact/reminder status. It disappears when its reason disappears, such as reconciliation, approved extension, cancellation/removal, or other approved resolution; underlying history remains.
+
+Future accountant actions may record `Ярьсан`, `Холбогдоогүй`, a promised follow-up/payment date, or `Багштай ярилцана`. A parent's informal promise date is contact follow-up only. It does not change the effective payment deadline without teacher/admin approval.
+
+For later withdrawal/unpaid-balance settlement, the system must not produce a legally final debt automatically from attendance. It may present clearly labeled advisory comparisons, normally centered on lessons elapsed/delivered during the active period and optionally attendance-based context. The teacher reviews tuition/pricing snapshots, adjustments, delivered/attended lessons, noticed and uninformed absences, make-ups, and received payments, then approves or edits the operational receivable. Historical received payments are never rewritten.
 
 ### Email provider
 

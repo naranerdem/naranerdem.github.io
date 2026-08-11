@@ -961,6 +961,27 @@ textarea:focus {
   background: var(--paper);
 }
 
+.registration-booting[hidden],
+.registration-form[hidden],
+.review-panel[hidden],
+.registration-result[hidden] {
+  display: none;
+}
+
+.registration-booting {
+  display: grid;
+  min-height: 7rem;
+  place-items: center;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  text-align: center;
+}
+
+.registration-booting p {
+  margin: 0;
+  font-weight: 750;
+}
+
 .register-title-row {
   display: flex;
   align-items: flex-start;

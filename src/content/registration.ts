@@ -13,6 +13,15 @@ export const registrationPrototype = {
   notice: "Туршилтын хувилбар — энд бөглөсөн мэдээлэл хадгалагдахгүй, бүртгэл үүсэхгүй.",
 };
 
+export const emailVerificationCopy = {
+  processingTitle: "И-мэйл баталгаажуулж байна…",
+  processingStatus: "Түр хүлээнэ үү.",
+  invalidTitle: "Холбоос хүчинтэй биш байна",
+  invalidStatus: "Энэ холбоос ашиглагдсан эсвэл хүчинтэй хугацаа нь дууссан байна.",
+  invalidResendHint: "Хэрэв и-мэйлийг дахин илгээсэн бол хамгийн сүүлд ирсэн холбоосыг ашиглана уу.",
+  returnToRegistration: "Бүртгэл рүү буцах",
+};
+
 export const registrationFormCopy = {
   selectPlaceholder: "Сонгоно уу",
   progress: {
@@ -125,6 +134,7 @@ export const registrationFormCopy = {
     studentAcknowledged: "Сурагчийн журамтай танилцсан",
   },
   messages: {
+    booting: "Бүртгэлийн төлөвийг нээж байна…",
     requiredError: "Дутуу эсвэл буруу бөглөсөн талбарыг шалгана уу.",
     prototypeComplete:
       "Бүртгэлийн шинэ системийг бэлтгэж байна. Энэ үйлдлээр бодит бүртгэл, суудал барилт, төлбөрийн хүсэлт үүсэхгүй.",
@@ -137,7 +147,7 @@ export const registrationFormCopy = {
     emailStatusHold: "Суудлыг 20 минут түр хадгаллаа. И-мэйл дэх холбоосыг нээхэд төлбөр хүлээх 24 цагийн хугацаа шинээр эхэлнэ.",
     emailStatusWaitlist: "И-мэйл дэх холбоосыг нээсний дараа хүлээлгийн жагсаалтын хүсэлт баталгаажна.",
     emailStatusHelp: "Хаягаа зөв эсэхийг шалгаад, и-мэйл харагдахгүй бол Spam/Junk хавтсаа үзнэ үү.",
-    emailResent: "Баталгаажуулах и-мэйлийг дахин илгээлээ.",
+    emailResent: "Шинэ баталгаажуулах и-мэйл илгээлээ. Хамгийн сүүлд ирсэн холбоосыг ашиглана уу.",
     verifiedTitle: "И-мэйл баталгаажлаа",
     alreadyVerifiedTitle: "И-мэйл аль хэдийн баталгаажсан байна",
     paymentHold: "Суудлыг 24 цаг хадгаллаа.",

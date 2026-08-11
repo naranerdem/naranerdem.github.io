@@ -1,5 +1,6 @@
 ---
 import { siteIdentity } from "../content/homepage";
+import { emailVerificationCopy } from "../content/registration";
 import "../styles/global.css";
 ---
 
@@ -13,22 +14,32 @@ import "../styles/global.css";
   <body class="register-page">
     <main class="register-shell verification-page">
       <section class="verification-card" aria-live="polite">
-        <h1 id="verification-title">И-мэйл баталгаажуулж байна…</h1>
-        <p id="verification-status">Түр хүлээнэ үү.</p>
-        <p id="verification-return" hidden><a class="button secondary" href="/register/">Бүртгэл рүү буцах</a></p>
+        <h1 id="verification-title">{emailVerificationCopy.processingTitle}</h1>
+        <p id="verification-status">{emailVerificationCopy.processingStatus}</p>
+        <p id="verification-hint" hidden></p>
+        <p id="verification-return" hidden><a class="button secondary" href="/register/">{emailVerificationCopy.returnToRegistration}</a></p>
       </section>
     </main>
+    <script id="verification-copy" type="application/json" is:inline set:html={JSON.stringify(emailVerificationCopy)} />
     <script is:inline type="module">
+      const copy = JSON.parse(document.getElementById("verification-copy").textContent);
       const status = document.getElementById("verification-status");
       const title = document.getElementById("verification-title");
+      const hint = document.getElementById("verification-hint");
       const returnLink = document.getElementById("verification-return");
       const token = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
       window.history.replaceState(null, "", window.location.pathname);
 
-      if (!token) {
-        title.textContent = "Холбоос хүчинтэй биш байна";
-        status.textContent = "Энэ холбоос ашиглагдсан эсвэл хүчинтэй хугацаа нь дууссан байна.";
+      function showInvalidLink() {
+        title.textContent = copy.invalidTitle;
+        status.textContent = copy.invalidStatus;
+        hint.textContent = copy.invalidResendHint;
+        hint.hidden = false;
         returnLink.hidden = false;
+      }
+
+      if (!token) {
+        showInvalidLink();
       } else {
         try {
           const response = await fetch("/api/auth/email/verify", {
@@ -40,9 +51,7 @@ import "../styles/global.css";
           if (!response.ok) throw new Error("Verification failed");
           window.location.replace(response.url);
         } catch {
-          title.textContent = "Холбоос хүчинтэй биш байна";
-          status.textContent = "Энэ холбоос ашиглагдсан эсвэл хүчинтэй хугацаа нь дууссан байна.";
-          returnLink.hidden = false;
+          showInvalidLink();
         }
       }
     </script>

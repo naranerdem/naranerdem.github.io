@@ -17,7 +17,7 @@ const formCopy = registrationFormCopy;
     <meta name="description" content={registrationPrototype.description} />
     <title>{registrationPrototype.title} | {siteIdentity.name}</title>
   </head>
-  <body class="register-page">
+  <body class="register-page" data-registration-surface="booting">
     <header class="site-header">
       <a class="brand-link" href="/" aria-label="Нүүр хуудас">
         <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
@@ -52,7 +52,11 @@ const formCopy = registrationFormCopy;
         </div>
       </aside>
 
-      <form id="registration-form" class="registration-form" novalidate>
+      <section id="registration-booting" class="registration-booting" role="status" aria-live="polite">
+        <p>{formCopy.messages.booting}</p>
+      </section>
+
+      <form id="registration-form" class="registration-form" novalidate hidden>
         <p id="information-error" class="form-error" role="alert" hidden>{formCopy.messages.requiredError}</p>
 
         <section class="form-section" aria-labelledby="guardian-title">
@@ -211,6 +215,7 @@ const formCopy = registrationFormCopy;
       const resultTitle = document.getElementById("registration-result-title");
       const resultBody = document.getElementById("registration-result-body");
       const draftNotice = document.getElementById("registration-draft-notice");
+      const bootingPanel = document.getElementById("registration-booting");
       const restoreDraftButton = document.getElementById("restore-registration-draft");
       const discardDraftButton = document.getElementById("discard-registration-draft");
       const guardianDialog = document.getElementById("guardian-rules-dialog");
@@ -693,6 +698,7 @@ const formCopy = registrationFormCopy;
       }
 
       function showResult(title, bodyHtml) {
+        bootingPanel.hidden = true;
         form.hidden = true;
         reviewPanel.hidden = true;
         draftNotice.hidden = true;
@@ -853,6 +859,7 @@ const formCopy = registrationFormCopy;
 
       function showReview() {
         renderReview();
+        bootingPanel.hidden = true;
         form.hidden = true;
         reviewPanel.hidden = false;
         progress.textContent = `4 / 4 · ${formCopy.progress.review}`;
@@ -960,6 +967,15 @@ const formCopy = registrationFormCopy;
         });
         discardStoredDraft();
       }
+
+      function showRegistrationForm() {
+        bootingPanel.hidden = true;
+        resultPanel.hidden = true;
+        reviewPanel.hidden = true;
+        form.hidden = false;
+        document.body.dataset.registrationSurface = "form";
+        if (storedDraft) draftNotice.hidden = false;
+      }
       restoreDraftButton.addEventListener("click", () => storedDraft && restoreDraft(storedDraft));
       discardDraftButton.addEventListener("click", discardStoredDraft);
       async function loadCatalog() {
@@ -1001,18 +1017,29 @@ const formCopy = registrationFormCopy;
 
       renderChild(childCount, "");
       storedDraft = readStoredDraft();
-      if (storedDraft) draftNotice.hidden = false;
-      loadBootstrap().then(async () => {
+      async function settleInitialSurface() {
+        await loadBootstrap();
         const status = new URLSearchParams(window.location.search).get("status");
         if (runtimeConfig.writeEnabled && (status === "confirmed" || status === "already-verified")) {
-          showVerifiedStatus(status === "already-verified");
+          document.body.dataset.registrationSurface = "verified";
+          await showVerifiedStatus(status === "already-verified");
+          return;
         } else if (runtimeConfig.writeEnabled) {
-          fetch("/api/registration/pending", { headers: { Accept: "application/json" }, credentials: "same-origin" })
-            .then((response) => response.ok ? response.json() : null)
-            .then((pending) => { if (pending) showEmailStatus(pending); })
-            .catch(() => {});
+          try {
+            const response = await fetch("/api/registration/pending", { headers: { Accept: "application/json" }, credentials: "same-origin" });
+            const pending = response.ok ? await response.json() : null;
+            if (pending) {
+              document.body.dataset.registrationSurface = "email-status";
+              showEmailStatus(pending);
+              return;
+            }
+          } catch {
+            // A temporary status lookup failure must still let a parent use the form.
+          }
         }
-      });
+        showRegistrationForm();
+      }
+      settleInitialSurface();
     </script>
   </body>
 </html>
