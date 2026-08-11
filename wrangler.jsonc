@@ -6,7 +6,11 @@
   "workers_dev": true,
   "vars": {
     "APP_ENV": "production",
-    "REGISTRATION_WRITE_ENABLED": "false"
+    "REGISTRATION_WRITE_ENABLED": "false",
+    "APP_ORIGIN": "https://naranerdem.com",
+    "EMAIL_ENABLED": "false",
+    "AUTH_EMAIL_ENABLED": "false",
+    "EMAIL_FROM": "Наран Эрдэм <burtgel@mail.naranerdem.com>"
   },
   "assets": {
     "directory": "./dist",
@@ -35,7 +39,11 @@
       "routes": [],
       "vars": {
         "APP_ENV": "staging",
-        "REGISTRATION_WRITE_ENABLED": "false"
+        "REGISTRATION_WRITE_ENABLED": "false",
+        "APP_ORIGIN": "https://naran-erdem-staging.naranerdem-github-io.workers.dev",
+        "EMAIL_ENABLED": "false",
+        "AUTH_EMAIL_ENABLED": "false",
+        "EMAIL_FROM": "Наран Эрдэм <burtgel@mail.naranerdem.com>"
       },
       "d1_databases": [
         {

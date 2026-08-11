@@ -54,7 +54,7 @@ Desktop-enhanced workflows may include:
 
 The public website contains general pages, program information, and entry points into registration. It should be able to build to static files and serve correctly on both Cloudflare Workers Static Assets and GitHub Pages.
 
-On Cloudflare, static assets remain asset-first. A small Worker API runs only for `/api/*`, with D1 access kept in an explicit service layer. The currently deployed API is deliberately read-only (`/api/health` and `/api/registration/catalog`); registration writes remain disabled in production and staging. The separately deployed staging Worker uses the staging D1 database and has no custom domain.
+On Cloudflare, static assets remain asset-first. A small Worker API runs only for `/api/*`, with D1 access kept in explicit service layers. The public API remains read-only (`/api/health` and `/api/registration/catalog`); registration writes remain disabled in production and staging. Email-verification routes exist as a disabled foundation, and the email-start route can only be enabled in staging behind its secret test gate. The separately deployed staging Worker uses the staging D1 database and has no custom domain.
 
 The public site must not require a production database, authentication service, email provider, or bank integration to render.
 
@@ -83,6 +83,8 @@ Parent and student rule acknowledgements are distinct product events. The curren
 Parent-facing account access should eventually be passwordless, based on verified email magic links or one-time codes. Email links should return the parent to durable server-side registration/account state, not rely on an old browser tab or client session remaining alive.
 
 Before email ownership is verified, a public submission must not discover whether an email belongs to an existing guardian, retrieve existing family data, overwrite an existing guardian profile, or authoritatively link supplied data to an existing account. This preserves safe account linking for the future passwordless flow.
+
+Migration 0003 adds one-time verification challenges and short-lived verified-email sessions only. Challenge and session tokens are generated with Worker Web Crypto; D1 stores SHA-256 hashes, while the raw values exist only in the magic link or secure cookie. Verification links expire after 15 minutes, are consumed once, and create a one-hour `HttpOnly; Secure; SameSite=Lax; Path=/` cookie. This proves recent control of an email address but does not create, look up, or link a `GuardianAccount`.
 
 The future parent portal should show children, current registrations, class/time, seat-hold deadline, payment schedule/status, discounts, available credit, referral status/share link, refund options, Facebook class-group link after confirmation, and returning registration.
 
@@ -142,7 +144,9 @@ Initial payment reminders and later installment reminders may share scheduling m
 
 ### Email provider
 
-Email sending should be abstracted behind an application service. Registration logic can ask for a reminder or notification to be sent without depending directly on a specific provider.
+Email sending is abstracted behind an application service and a small provider interface. The initial adapter calls Resend's HTTPS API; authentication and registration code do not depend on Resend response details. Provider sends use a stable outbound-email ID to create a Resend idempotency key, and `outbound_email` is marked sent only after provider success or failed after an auditable final failure.
+
+The planned send-only domain is `mail.naranerdem.com`, with a sender such as `Наран Эрдэм <burtgel@mail.naranerdem.com>`. It is intentionally separate from root-domain email forwarding. Do not enable Resend inbound receiving or alter the root-domain Porkbun MX/TXT forwarding records.
 
 Email is a core parent-facing record and return path, not merely an optional notification channel. The application database remains authoritative, but milestone emails should help parents understand current status, exactly what action is needed, any relevant deadline, and a secure link back to current registration/account state.
 
@@ -164,9 +168,11 @@ Parent-facing milestone emails may include:
 - refund requested/completed
 - other material state changes
 
-Do not send redundant emails for every internal technical state transition. No email provider is implemented in this foundation.
+Do not send redundant emails for every internal technical state transition. Production keeps `EMAIL_ENABLED=false` and `AUTH_EMAIL_ENABLED=false`; registration writes also remain disabled.
 
-Staging must still exercise the real future email generation and provider path. Test/staging status should not suppress milestone emails or skip workflow logic. Instead, staging delivery should preserve both the intended parent-entered recipient and the actual safe test inbox used for delivery override.
+Staging tests must exercise the real challenge, Mongolian template, outbound-email, provider, verification, and session path. `STAGING_EMAIL_OVERRIDE_TO` is mandatory whenever staging sending is enabled: `intended_to_email` preserves the entered address and `actual_delivery_email` is always the controlled inbox. Missing override configuration fails closed. The staging start route also requires `STAGING_AUTH_TEST_KEY` in the `X-Naran-Test-Key` header; the key is never placed in browser JavaScript or URLs, and the bypass does not exist in production.
+
+Before email-start becomes a public endpoint, add Cloudflare Turnstile and validate its token server-side, plus resend cooldowns/rate limits and generic non-enumerating responses. A client-only bot check is not sufficient.
 
 ### Payment/reconciliation adapter
 

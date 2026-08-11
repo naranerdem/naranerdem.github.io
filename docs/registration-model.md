@@ -85,6 +85,8 @@ A child may only be registered by their parent or actual guardian. Public regist
 
 Returning parent/student pairs should not need to fill everything again each year.
 
+Email verification is a prerequisite for future safe returning-account lookup and linking. A successful magic link currently proves only that the browser recently controlled the normalized email address; it must not by itself create or attach a `GuardianAccount`, reveal whether one exists, or expose children or prior registrations.
+
 Do not collect Mongolian government registration/ID numbers. Do not collect unnecessary government identifiers.
 
 Home address should be one free-text field, not district/khoroo/street/building/apartment fields. At minimum, ask for district-level information; parents may add khoroo, town/complex, or other detail if they choose. Exact apartment/unit information should not be required. The main purpose is to understand roughly how far the child's home is from the center.

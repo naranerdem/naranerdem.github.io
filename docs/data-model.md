@@ -32,7 +32,9 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
 - `waitlist_entry`: one FIFO queue entry for one concrete class, with future offer/expiry fields.
 - `referral`: explicit referral identity connecting a referring child/enrollment to a referred application child, with pending/qualified state only.
-- `outbound_email`: future milestone email queue/delivery record. It does not send email yet.
+- `outbound_email`: milestone email queue/delivery record, including intended/actual recipients, provider status, provider message ID, stable idempotency key, and compact failure code.
+- `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, 15-minute expiry, linked outbound email, and test provenance. It never stores the raw magic-link token.
+- `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.
 
 ## Ownership And Deletes
@@ -79,6 +81,8 @@ The public catalog API may return only registration configuration. It must never
 
 An unauthenticated future registration submission must not reveal whether a guardian email already has an account, return existing guardian/student data for a supplied email, overwrite an existing guardian's contact details, or authoritatively link a new child/application to an existing guardian merely because emails match. Existing-account access and linking must wait for the future passwordless email-ownership verification flow, and API responses must not disclose account existence.
 
+Successful magic-link verification creates only a short-lived verified-email session. Challenge consumption and session creation execute in one D1 batch so replay cannot create another session. No authentication query reads `guardian_account`, and no guardian row is created or linked by this foundation.
+
 ## Future Seat Allocation Atomicity
 
 When registration writes are introduced, the selected concrete class must be atomically capacity-checked while its hold is created. Do not implement it as an unprotected `SELECT` for availability followed later by an `INSERT`; use D1 batch/transaction semantics and database constraints or conditional writes as appropriate.
@@ -99,7 +103,7 @@ For a class with seats, public UI shows only remaining seats. For a full class, 
 
 ## Email Testing Principle
 
-Email delivery is not implemented in this foundation, but `outbound_email` is designed so staging can test the real generation/provider path safely.
+The Resend adapter and verification-email path are implemented but disabled by configuration. `outbound_email` remains the audit source for queue, attempt, sent, and failed state.
 
 The table distinguishes:
 
@@ -109,7 +113,7 @@ The table distinguishes:
 
 For example, staging may record `intended_to_email = fake-parent@example.com` and `actual_delivery_email = gantimur-controlled-test-address@example.com`. This preserves what would have happened without sending arbitrary email to fake or mistyped addresses.
 
-No provider credentials, API keys, or full marketing-email system belong in this schema.
+No provider credentials, API keys, raw magic-link tokens, session tokens, or full marketing-email system belong in this schema.
 
 ## Constraints And Indexes
 

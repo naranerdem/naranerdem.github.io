@@ -16,6 +16,8 @@ Do not put private student/parent data in these files. Do not put secrets, API k
 
 Registration wording should stay short and operational on phones. Required public fields use a red `*` with one explanation near the form start; optional fields have no marker or `заавал биш` annotation. Keep conditional fields disabled while hidden, and do not add helper text that merely says an editable choice may be changed later.
 
+Transactional email templates live under `src/server/email/templates/`. Keep them concise and Mongolian. Provider keys, staging inboxes, and test-gate keys are Cloudflare Worker secrets and must never be added to content files, `.env.example`, fixtures, or browser code.
+
 Two simple GitHub editing methods:
 
 1. Open the file on GitHub and use the edit/pencil action.

@@ -7,7 +7,7 @@ This repository is intentionally named `naranerdem.github.io` so one canonical c
 - primary deployment through Cloudflare Workers Static Assets
 - a simple static fallback at `https://naranerdem.github.io`
 
-The first version is deliberately small. It contains a static Astro homepage and architecture/domain documentation. It does not implement authentication, payment processing, email sending, bank integrations, or a production database.
+The project remains deliberately small. It contains a static Astro site, a D1-backed read-only catalog, and disabled-by-default email-verification plumbing. It does not yet submit registrations, create parent accounts, process payments, send production email, or integrate with a bank.
 
 ## Tech Stack
 
@@ -58,7 +58,9 @@ GitHub Pages remains a fallback. Because this is a GitHub user site repository n
 
 GitHub Pages deployment is handled by GitHub Actions on every push to `main`, with a manual workflow option also available. In the GitHub repository UI, Settings → Pages must use `GitHub Actions` as the source. Cloudflare remains the intended future host for backend-dependent functionality.
 
-Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` for production and `npm run deploy:cloudflare:staging` for the separate staging Worker at `https://naran-erdem-staging.naranerdem-github-io.workers.dev`. Static assets remain asset-first; the Worker currently exposes only read-only health and registration-catalog API endpoints backed by D1. Registration writes remain disabled in both environments.
+Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare` for production and `npm run deploy:cloudflare:staging` for the separate staging Worker at `https://naran-erdem-staging.naranerdem-github-io.workers.dev`. Static assets remain asset-first. Registration writes remain disabled in both environments, and email/auth sending remains disabled until the documented secrets, safe staging override, and feature flags are deliberately configured.
+
+Sensitive runtime values belong in Cloudflare Worker secrets, never source control: `RESEND_API_KEY`, `STAGING_EMAIL_OVERRIDE_TO`, and `STAGING_AUTH_TEST_KEY`. The planned sending domain is `mail.naranerdem.com`; keep existing root-domain MX/TXT forwarding records unchanged and do not enable Resend inbound receiving.
 
 Future backend services should be designed so public pages still work as a static site. Registration, tuition, reminders, reconciliation, and exports may become unavailable in fallback mode, but the public website should not fail to render.
 

@@ -52,6 +52,8 @@ function execute(sql, options = {}) {
 
 const now = "2026-08-10T00:00:00Z";
 const testRunId = "local-d1-smoke";
+const challengeHash = "a".repeat(64);
+const sessionHash = "b".repeat(64);
 
 try {
   wrangler(
@@ -184,8 +186,29 @@ try {
       'staging_override', 'queued', 0, '${now}', '{"child_count":2}',
       1, '${testRunId}', '${now}', '${now}'
     );
+
+    UPDATE outbound_email
+    SET idempotency_key = 'email-verification/email-local-1'
+    WHERE id = 'email-local-1';
+
+    INSERT INTO email_verification_challenge (
+      id, normalized_email, token_hash, purpose, status, outbound_email_id,
+      created_at, expires_at, is_test, test_run_id, updated_at
+    ) VALUES (
+      'challenge-local-1', 'fake-parent@example.com', '${challengeHash}',
+      'registration_email', 'pending', 'email-local-1', '${now}',
+      '2026-08-10T00:15:00Z', 1, '${testRunId}', '${now}'
+    );
+
+    INSERT INTO verified_email_session (
+      id, normalized_email, session_token_hash, created_at, expires_at,
+      is_test, test_run_id
+    ) VALUES (
+      'verified-session-local-1', 'fake-parent@example.com', '${sessionHash}',
+      '${now}', '2026-08-10T01:00:00Z', 1, '${testRunId}'
+    );
     `,
-    { label: "sample guardian, children, selected classes, hold, waitlist, referral, email inserted" },
+    { label: "sample registration, outbound email, hashed challenge, and verified-email session inserted" },
   );
 
   execute(
@@ -248,6 +271,8 @@ try {
     INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM student WHERE id IN ('student-local-1', 'student-local-2')) = 2 THEN 1 ELSE 0 END;
     INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM audit_event WHERE id = 'audit-local-delete-1' AND metadata_json NOT LIKE '%Local Test Guardian%' AND metadata_json NOT LIKE '%ChildOne%') = 1 THEN 1 ELSE 0 END;
     INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM outbound_email WHERE id = 'email-local-1' AND intended_to_email = 'fake-parent@example.com' AND actual_delivery_email = 'gantimur-controlled-test-address@example.com' AND pre_registration_id IS NULL AND enrollment_id IS NULL) = 1 THEN 1 ELSE 0 END;
+    INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM email_verification_challenge WHERE id = 'challenge-local-1' AND token_hash = '${challengeHash}' AND length(token_hash) = 64 AND outbound_email_id = 'email-local-1') = 1 THEN 1 ELSE 0 END;
+    INSERT INTO smoke_assertion SELECT CASE WHEN (SELECT COUNT(*) FROM verified_email_session WHERE id = 'verified-session-local-1' AND session_token_hash = '${sessionHash}' AND length(session_token_hash) = 64) = 1 THEN 1 ELSE 0 END;
     SELECT 'local_d1_smoke_passed' AS result;
     DROP TABLE smoke_assertion;
     `,

@@ -3,20 +3,32 @@ export type AppEnvironment = "production" | "staging";
 export interface D1Result<T> {
   results: T[];
   success: boolean;
+  meta?: {
+    changes?: number;
+  };
 }
 
 export interface D1PreparedStatement {
   bind(...values: unknown[]): D1PreparedStatement;
   first<T>(): Promise<T | null>;
   all<T>(): Promise<D1Result<T>>;
+  run<T = unknown>(): Promise<D1Result<T>>;
 }
 
 export interface D1Database {
   prepare(query: string): D1PreparedStatement;
+  batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
 }
 
 export interface WorkerEnv {
   APP_ENV: AppEnvironment;
   REGISTRATION_WRITE_ENABLED: "false";
+  APP_ORIGIN: string;
+  EMAIL_ENABLED: "true" | "false";
+  AUTH_EMAIL_ENABLED: "true" | "false";
+  EMAIL_FROM: string;
+  RESEND_API_KEY?: string;
+  STAGING_EMAIL_OVERRIDE_TO?: string;
+  STAGING_AUTH_TEST_KEY?: string;
   DB: D1Database;
 }

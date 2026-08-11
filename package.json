@@ -14,6 +14,7 @@
     "seed:catalog:staging": "node scripts/seed-staging-catalog.mjs",
     "test:d1:local": "node scripts/d1-local-smoke.mjs",
     "test:api": "npm run build && node scripts/api-worker-test.mjs",
+    "test:auth": "npm run build && node scripts/auth-worker-test.mjs",
     "test:register:prototype": "npm run build && node scripts/register-prototype-test.mjs && node scripts/register-state-test.mjs"
   },
   "dependencies": {
