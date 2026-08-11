@@ -1,0 +1,19 @@
+{
+  "name": "Наран Эрдэм",
+  "short_name": "Наран Эрдэм",
+  "description": "Наран Эрдэмийн ажилтны хэсэг",
+  "lang": "mn",
+  "start_url": "/staff/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fbfbf7",
+  "theme_color": "#073aaf",
+  "icons": [
+    {
+      "src": "/images/naran-erdem-logo.jpg",
+      "sizes": "1100x1100",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}

@@ -8,6 +8,11 @@ import "../styles/global.css";
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#073aaf" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Наран Эрдэм" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/images/naran-erdem-logo.jpg" />
     <title>Ажилтны хэсэг | {siteIdentity.name}</title>
   </head>
   <body class="staff-page" data-staff-surface="booting">
@@ -31,7 +36,7 @@ import "../styles/global.css";
       <section id="staff-login" class="staff-state" hidden aria-labelledby="staff-login-title">
         <p class="eyebrow">Ажилтны хэсэг</p>
         <h1 id="staff-login-title">Нэвтрэх</h1>
-        <p class="staff-muted">Бүртгэлтэй и-мэйл хаягаар нэг удаагийн нэвтрэх холбоос авна.</p>
+        <p class="staff-muted">Бүртгэлтэй и-мэйл хаягаар нэг удаагийн баталгаажуулах холбоос авна.</p>
         <form id="staff-login-form" class="staff-login-form">
           <label for="staff-email">И-мэйл хаяг</label>
           <input id="staff-email" name="email" type="email" inputmode="email" autocomplete="email" required />
@@ -40,11 +45,26 @@ import "../styles/global.css";
         </form>
       </section>
 
-      <section id="staff-email-sent" class="staff-state" hidden aria-labelledby="staff-email-sent-title">
+      <section id="staff-waiting" class="staff-state" hidden aria-labelledby="staff-waiting-title">
         <p class="eyebrow">Ажилтны хэсэг</p>
-        <h1 id="staff-email-sent-title">И-мэйлээ шалгана уу</h1>
-        <p class="staff-muted">Хэрэв энэ хаяг идэвхтэй ажилтны бүртгэлтэй бол нэвтрэх холбоос илгээгдэнэ.</p>
-        <button id="staff-try-again" class="button secondary" type="button">Дахин оролдох</button>
+        <h1 id="staff-waiting-title">И-мэйлээ шалгана уу</h1>
+        <p class="staff-muted">Хэрэв энэ хаяг идэвхтэй ажилтны бүртгэлтэй бол баталгаажуулах холбоос илгээгдэнэ.</p>
+        <p class="staff-wait-note">Холбоосоо нээсний дараа энэ цонх автоматаар нэвтэрнэ.</p>
+        <button id="staff-try-again" class="button secondary" type="button">Өөр хаягаар оролдох</button>
+      </section>
+
+      <section id="staff-approved" class="staff-state" hidden aria-labelledby="staff-approved-title">
+        <p class="eyebrow">Ажилтны хэсэг</p>
+        <h1 id="staff-approved-title">Нэвтрэх хүсэлт баталгаажлаа.</h1>
+        <p class="staff-muted">Нэвтрэх гэж байсан цонх эсвэл Наран Эрдэм апп руугаа буцна уу.</p>
+        <a class="button primary" href="/staff/">Наран Эрдэм рүү очих</a>
+      </section>
+
+      <section id="staff-attempt-expired" class="staff-state" hidden aria-labelledby="staff-attempt-expired-title">
+        <p class="eyebrow">Ажилтны хэсэг</p>
+        <h1 id="staff-attempt-expired-title">Нэвтрэх хүсэлтийн хугацаа дууссан байна</h1>
+        <p class="staff-muted">Шинэ нэвтрэх холбоос авна уу.</p>
+        <button id="staff-restart" class="button primary" type="button">Дахин эхлэх</button>
       </section>
 
       <section id="staff-link-error" class="staff-state" hidden aria-labelledby="staff-link-error-title">
@@ -62,9 +82,9 @@ import "../styles/global.css";
           <h2 id="staff-access-title">Таны ажиллах хэсэг</h2>
           <ul id="staff-capability-list"></ul>
         </div>
-        <form id="staff-logout-form">
-          <button class="button secondary" type="submit">Гарах</button>
-        </form>
+        <a id="staff-auth-settings-link" class="staff-settings-link" href="/staff/settings/auth/" hidden>
+          Нэвтрэх хугацааны тохиргоо
+        </a>
       </section>
     </main>
 
@@ -75,10 +95,20 @@ import "../styles/global.css";
       const formError = document.getElementById("staff-form-error");
       const welcome = document.getElementById("staff-welcome");
       const capabilityList = document.getElementById("staff-capability-list");
+      const settingsLink = document.getElementById("staff-auth-settings-link");
+      let pollTimer = 0;
+      let polling = false;
+
+      function stopPolling() {
+        window.clearTimeout(pollTimer);
+        pollTimer = 0;
+        polling = false;
+      }
 
       function show(id) {
         for (const state of states) state.hidden = state.id !== id;
         document.body.dataset.staffSurface = id.replace("staff-", "");
+        if (id !== "staff-waiting") stopPolling();
       }
 
       function accessLabels(capabilities) {
@@ -88,18 +118,19 @@ import "../styles/global.css";
         if (capabilities.includes("payment.view")) labels.push("Төлбөрийн мэдээлэл");
         if (capabilities.includes("accountant.call_queue.view")) labels.push("Залгах шаардлагатай");
         if (capabilities.includes("admin.staff.manage")) labels.push("Ажилтны эрх");
-        if (capabilities.includes("admin.settings.manage")) labels.push("Тохиргоо");
         return [...new Set(labels)];
       }
 
       function showAuthenticated(session) {
         welcome.textContent = `${session.displayName}, таны нэвтрэх эрх баталгаажлаа.`;
-        const labels = accessLabels(session.capabilities || []);
+        const capabilities = session.capabilities || [];
+        const labels = accessLabels(capabilities);
         capabilityList.replaceChildren(...labels.map((label) => {
           const item = document.createElement("li");
           item.textContent = label;
           return item;
         }));
+        settingsLink.hidden = !capabilities.includes("admin.settings.manage");
         show("staff-home");
       }
 
@@ -110,6 +141,54 @@ import "../styles/global.css";
         });
         if (!response.ok) throw new Error("session unavailable");
         return response.json();
+      }
+
+      async function claimAttempt() {
+        const response = await fetch("/api/staff/auth/attempt/claim", {
+          method: "POST",
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error("attempt unavailable");
+        return response.json();
+      }
+
+      function schedulePoll() {
+        if (document.visibilityState !== "visible" || document.body.dataset.staffSurface !== "waiting") return;
+        window.clearTimeout(pollTimer);
+        pollTimer = window.setTimeout(pollAttempt, 4000);
+      }
+
+      async function pollAttempt() {
+        if (polling || document.visibilityState !== "visible" || document.body.dataset.staffSurface !== "waiting") return;
+        polling = true;
+        try {
+          const attempt = await claimAttempt();
+          if (attempt.state === "authenticated") {
+            const session = await readSession();
+            if (session.authenticated) showAuthenticated(session);
+            else show("staff-login");
+            return;
+          }
+          if (attempt.state === "expired" || attempt.state === "claimed") {
+            show("staff-attempt-expired");
+            return;
+          }
+          if (attempt.state === "none") {
+            show("staff-login");
+            return;
+          }
+        } catch {
+          // A short network failure should not discard the pending request.
+        } finally {
+          polling = false;
+        }
+        schedulePoll();
+      }
+
+      function waitForApproval() {
+        show("staff-waiting");
+        schedulePoll();
       }
 
       async function bootstrap() {
@@ -124,6 +203,11 @@ import "../styles/global.css";
               body: JSON.stringify({ token }),
             });
             if (!response.ok) throw new Error("verification failed");
+            const result = await response.json();
+            if (!result.claimed) {
+              show("staff-approved");
+              return;
+            }
           } catch {
             show("staff-link-error");
             return;
@@ -131,7 +215,13 @@ import "../styles/global.css";
         }
         try {
           const session = await readSession();
-          if (session.authenticated) showAuthenticated(session);
+          if (session.authenticated) {
+            showAuthenticated(session);
+            return;
+          }
+          const attempt = await claimAttempt();
+          if (attempt.state === "pending") waitForApproval();
+          else if (attempt.state === "expired" || attempt.state === "claimed") show("staff-attempt-expired");
           else show("staff-login");
         } catch {
           show("staff-login");
@@ -147,13 +237,14 @@ import "../styles/global.css";
         const button = loginForm.querySelector("button[type='submit']");
         button.disabled = true;
         try {
-          await fetch("/api/staff/auth/start", {
+          const response = await fetch("/api/staff/auth/start", {
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/json" },
             credentials: "same-origin",
             body: JSON.stringify({ email: emailInput.value }),
           });
-          show("staff-email-sent");
+          if (!response.ok) throw new Error("start failed");
+          waitForApproval();
         } catch {
           formError.textContent = "Хүсэлтийг одоогоор илгээж чадсангүй. Дахин оролдоно уу.";
           formError.hidden = false;
@@ -164,17 +255,14 @@ import "../styles/global.css";
 
       document.getElementById("staff-try-again").addEventListener("click", () => show("staff-login"));
       document.getElementById("staff-new-link").addEventListener("click", () => show("staff-login"));
-      document.getElementById("staff-logout-form").addEventListener("submit", async (event) => {
-        event.preventDefault();
-        try {
-          await fetch("/api/staff/logout", { method: "POST", credentials: "same-origin" });
-        } finally {
-          capabilityList.replaceChildren();
-          welcome.textContent = "";
-          show("staff-login");
+      document.getElementById("staff-restart").addEventListener("click", () => show("staff-login"));
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && document.body.dataset.staffSurface === "waiting") {
+          pollAttempt();
+        } else {
+          window.clearTimeout(pollTimer);
         }
       });
-
       window.addEventListener("hashchange", bootstrap);
       bootstrap();
     </script>

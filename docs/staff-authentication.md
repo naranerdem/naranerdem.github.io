@@ -21,15 +21,35 @@ Protected Worker routes resolve the staff session and then reload the account's 
 ## Magic Links And Sessions
 
 - Staff login challenges and sessions use their own tables and cookie.
-- Raw 32-byte random tokens exist only in the email link fragment or browser cookie.
+- Raw 32-byte random tokens exist only in the email link fragment or browser cookies.
 - D1 stores SHA-256 hashes, never raw tokens.
-- A link lasts 15 minutes, is consumed once by `POST`, and is superseded by a later successful resend.
+- Migration 0008 separates email approval from session claiming. The initiating browser receives an opaque claim secret in a short-lived `HttpOnly` cookie; the email challenge approves that server-side attempt, and only a browser with the matching claim cookie can create the staff session.
+- A link and its fixed login attempt last 15 minutes. Resending may reuse the same pending attempt but never extends its original expiry.
 - A scanner or browser `GET` cannot consume the fragment token.
-- Reopening a used link in the same browser is friendly only when that browser still has the matching active staff session. Otherwise the page gives a generic used/expired state.
-- Staff sessions last 10 hours and use `HttpOnly; Secure; SameSite=Lax; Path=/`.
-- Logout revokes the session. Disabling staff invalidates access immediately through the live account join.
+- Opening the link in the initiating browser approves and claims in one step. Opening it in another browser or mail app only shows `Нэвтрэх хүсэлт баталгаажлаа.` and tells the person to return to the original window or installed Naran Erdem app. It does not transfer authentication to the email-reading browser.
+- The initiating page checks the claim endpoint every four seconds only while visible. This narrow endpoint accepts no attempt ID and does not refresh an existing staff session.
+- Unknown, guardian-only, and disabled addresses can receive an indistinguishable non-authenticating waiting attempt, but no email or claimable staff identity.
+- Staff session cookies are persistent and use `HttpOnly; Secure; SameSite=Lax; Path=/`. D1 remains authoritative, so copying, lengthening, or retaining a cookie cannot bypass expiry or revocation.
 
-This is intentionally a finite session, not a refresh-token architecture. The schema can later add passkey credentials without changing staff identity, roles, or capability checks.
+## Session Policies
+
+Session policy is stored per role and has both inactivity and absolute limits. Defaults are:
+
+| Role | Inactivity | Absolute maximum |
+| --- | ---: | ---: |
+| `teacher` | 30 days | 90 days |
+| `accountant` | 14 days | 60 days |
+| `admin` | 7 days | 30 days |
+
+A multi-role staff member receives the shortest limit in each column. The absolute deadline never slides. Meaningful protected use may advance `last_seen_at`, with writes throttled to once every six hours; login-attempt polling is not meaningful activity. The protected `/staff/settings/auth/` page lets an administrator update all three policies within server-enforced bounds. Shortening applies to existing sessions immediately and permanently marks already-over-limit sessions expired, so later lengthening cannot resurrect them.
+
+Multiple devices may keep independent sessions. Backend operations can revoke one session or all sessions for an account; disabling an account revokes all active sessions and cancels pending login attempts. Routine visible logout is intentionally omitted from the phone-first staff home because these are trusted-device sessions, while revocation remains available to administration and future device-management UI.
+
+This is still a finite server-side session model, not a refresh-token architecture. The schema can later add passkey credentials without changing staff identity, roles, or capability checks.
+
+## Home Screen App
+
+The static manifest names the optional app `Наран Эрдэм`, starts at `/staff/`, and uses standalone display with the existing logo and palette. Installation is entirely optional: there are no install prompts, custom URL schemes, or claims that the site can open an installed app. Browser, standalone PWA, and mail-app contexts retain independent cookie stores and therefore follow the same approval/claim rules.
 
 ## Email Safety
 
@@ -41,7 +61,7 @@ Production keeps `STAFF_AUTH_EMAIL_ENABLED=false`. Before enabling a public prod
 
 Use `npm run staff:create` with explicit `--env`, `--email`, `--name`, and `--role`. Staging permits only `@example.invalid` intended identities. Production additionally requires `--confirm-production`. The command is idempotent for an existing email/role, writes no credentials, and records account-creation and role-assignment audit events.
 
-Future staff-management routes must call the administration service so role replacement and enable/disable actions are capability checked and audited. Successful login and logout/revocation are also audited. Raw tokens, API keys, and noisy failed-login details are excluded.
+Future staff-management routes must call the administration service so role replacement and enable/disable actions are capability checked and audited. Successful login, policy changes, and revocation are also audited. Raw tokens, API keys, and noisy failed-login details are excluded.
 
 ## Mutation Safety
 

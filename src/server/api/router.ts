@@ -23,13 +23,22 @@ import {
 import { TurnstileError, verifyTurnstile } from "../security/turnstile";
 import { hasStaffCapability, resolveStaffPrincipal, type StaffCapability } from "../staff/authorization";
 import {
+  claimStaffLoginAttempt,
+  clearStaffAttemptCookie,
   clearStaffSessionCookie,
+  readStaffAttemptCookie,
   readStaffCookie,
   revokeStaffSession,
   startStaffLogin,
   verifyStaffLogin,
 } from "../staff/auth";
 import { requireSameOrigin, StaffRequestSecurityError } from "../staff/request-security";
+import {
+  listStaffSessionPolicies,
+  StaffSessionPolicyError,
+  updateStaffSessionPolicies,
+  type StaffSessionPolicyInput,
+} from "../staff/session-policy";
 
 type ErrorCode =
   | "configuration_error"
@@ -45,7 +54,14 @@ type ErrorCode =
 function json(body: unknown, status = 200, headers?: HeadersInit): Response {
   const responseHeaders = new Headers({ "Content-Type": "application/json; charset=utf-8" });
   if (headers) {
-    new Headers(headers).forEach((value, key) => responseHeaders.set(key, value));
+    const source = new Headers(headers);
+    source.forEach((value, key) => {
+      if (key !== "set-cookie") responseHeaders.set(key, value);
+    });
+    const cookieHeaders = typeof source.getSetCookie === "function"
+      ? source.getSetCookie()
+      : source.get("Set-Cookie") ? [source.get("Set-Cookie") as string] : [];
+    for (const value of cookieHeaders) responseHeaders.append("Set-Cookie", value);
   }
   return new Response(JSON.stringify(body), {
     status,
@@ -69,11 +85,13 @@ function authNotFound(): Response {
   return error("not_found", "Хүссэн API зам олдсонгүй.", 404);
 }
 
-function staffLoginAccepted(): Response {
+function staffLoginAccepted(attemptCookie?: string): Response {
   return json({
     ok: true,
     message: "Хэрэв энэ хаяг идэвхтэй ажилтны бүртгэлтэй бол нэвтрэх холбоос илгээгдэнэ.",
-  }, 202, { "Cache-Control": "no-store" });
+  }, 202, attemptCookie
+    ? { "Cache-Control": "no-store", "Set-Cookie": attemptCookie }
+    : { "Cache-Control": "no-store" });
 }
 
 function staffSecurityError(caught: unknown): Response | null {
@@ -412,12 +430,20 @@ export async function handleApiRequest(
       return staffLoginAccepted();
     }
 
-    const work = startStaffLogin(env, email, {
-      clientIp: request.headers.get("CF-Connecting-IP") ?? undefined,
-    }).catch(() => undefined);
-    if (context) context.waitUntil(work);
-    else await work;
-    return staffLoginAccepted();
+    try {
+      const result = await startStaffLogin(env, email, {
+        clientIp: request.headers.get("CF-Connecting-IP") ?? undefined,
+        existingAttemptSecret: readStaffAttemptCookie(request),
+      });
+      if (result.delivery) {
+        const work = result.delivery.catch(() => undefined);
+        if (context) context.waitUntil(work);
+        else await work;
+      }
+      return staffLoginAccepted(result.attemptCookie ?? undefined);
+    } catch {
+      return staffLoginAccepted();
+    }
   }
 
   if (path === "/api/staff/auth/verify") {
@@ -436,15 +462,46 @@ export async function handleApiRequest(
       });
     }
     try {
-      const result = await verifyStaffLogin(env, token, readStaffCookie(request));
+      const result = await verifyStaffLogin(
+        env,
+        token,
+        readStaffAttemptCookie(request),
+        readStaffCookie(request),
+      );
       const headers = new Headers({ "Cache-Control": "no-store" });
       if (result.cookie) headers.append("Set-Cookie", result.cookie);
-      return json({ ok: true, alreadySignedIn: result.alreadySignedIn }, 200, headers);
+      if (result.claimed) headers.append("Set-Cookie", clearStaffAttemptCookie(true));
+      return json({
+        ok: true,
+        approved: result.approved,
+        claimed: result.claimed,
+        alreadySignedIn: result.alreadySignedIn,
+      }, 200, headers);
     } catch {
       return error("verification_failed", "Холбоос ашиглагдсан эсвэл хугацаа нь дууссан байна.", 400, {
         "Cache-Control": "no-store",
       });
     }
+  }
+
+  if (path === "/api/staff/auth/attempt/claim") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const result = await claimStaffLoginAttempt(env, readStaffAttemptCookie(request));
+    const headers = new Headers({ "Cache-Control": "no-store" });
+    if (result.state === "authenticated") {
+      headers.append("Set-Cookie", result.cookie);
+      headers.append("Set-Cookie", clearStaffAttemptCookie(true));
+      return json({ state: "authenticated" }, 200, headers);
+    }
+    if (["expired", "claimed"].includes(result.state)) {
+      headers.append("Set-Cookie", clearStaffAttemptCookie(true));
+    }
+    return json({ state: result.state }, 200, headers);
   }
 
   if (path === "/api/staff/session") {
@@ -456,7 +513,57 @@ export async function handleApiRequest(
       displayName: principal.displayName,
       capabilities: principal.capabilities,
       expiresAt: principal.sessionExpiresAt,
+      absoluteExpiresAt: principal.sessionAbsoluteExpiresAt,
     }, 200, { "Cache-Control": "no-store" });
+  }
+
+  if (path === "/api/staff/settings/auth") {
+    if (request.method === "GET") {
+      const principal = await staffPrincipalForRequest(request, env);
+      if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+      if (!hasStaffCapability(principal, "admin.settings.manage")) {
+        return error("forbidden", "Энэ тохиргоог харах эрх алга.", 403, { "Cache-Control": "no-store" });
+      }
+      return json({ policies: await listStaffSessionPolicies(env) }, 200, { "Cache-Control": "no-store" });
+    }
+    if (request.method !== "PUT") return methodNotAllowed("GET, PUT");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const rawSessionToken = readStaffCookie(request);
+    const principal = await resolveStaffPrincipal(env, rawSessionToken);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    if (!hasStaffCapability(principal, "admin.settings.manage")) {
+      return error("forbidden", "Энэ тохиргоог өөрчлөх эрх алга.", 403, { "Cache-Control": "no-store" });
+    }
+    try {
+      const payload = await request.json() as { policies?: unknown };
+      if (!Array.isArray(payload.policies)) throw new StaffSessionPolicyError("invalid_policy");
+      const policies = await updateStaffSessionPolicies(
+        env,
+        principal,
+        payload.policies as StaffSessionPolicyInput[],
+      );
+      const currentPrincipal = await resolveStaffPrincipal(env, rawSessionToken, new Date(), "passive");
+      const headers = new Headers({ "Cache-Control": "no-store" });
+      if (!currentPrincipal) headers.append("Set-Cookie", clearStaffSessionCookie(true));
+      return json({ policies, reauthenticationRequired: !currentPrincipal }, 200, headers);
+    } catch (caught) {
+      if (caught instanceof StaffSessionPolicyError) {
+        const status = caught.code === "forbidden" ? 403 : 400;
+        return error(
+          caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden"
+            ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : "Хугацааны утгыг шалгана уу.",
+          status,
+          { "Cache-Control": "no-store" },
+        );
+      }
+      return error("invalid_request", "Хугацааны утгыг шалгана уу.", 400, { "Cache-Control": "no-store" });
+    }
   }
 
   if (path === "/api/staff/logout") {

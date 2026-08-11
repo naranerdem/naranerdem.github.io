@@ -104,6 +104,16 @@ export async function setStaffAccountStatus(
     SET status = ?, disabled_at = ?, updated_at = ?
     WHERE id = ?
   `).bind(status, status === "disabled" ? now : null, now, staffAccountId);
+  const revokeSessions = env.DB.prepare(`
+    UPDATE staff_session
+    SET revoked_at = ?
+    WHERE staff_account_id = ? AND revoked_at IS NULL AND expired_at IS NULL
+  `).bind(now, staffAccountId);
+  const cancelAttempts = env.DB.prepare(`
+    UPDATE staff_login_attempt
+    SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+    WHERE staff_account_id = ? AND status IN ('pending', 'approved')
+  `).bind(now, now, staffAccountId);
   const audit = auditStatement(
     env,
     actor,
@@ -112,5 +122,7 @@ export async function setStaffAccountStatus(
     { status },
     now,
   );
-  await env.DB.batch([update, audit]);
+  await env.DB.batch(status === "disabled"
+    ? [update, revokeSessions, cancelAttempts, audit]
+    : [update, audit]);
 }

@@ -18,20 +18,28 @@ function bundle(source, output) {
 const authBundle = path.join(tempDir, "staff-auth.mjs");
 const authorizationBundle = path.join(tempDir, "staff-authorization.mjs");
 const administrationBundle = path.join(tempDir, "staff-administration.mjs");
+const policyBundle = path.join(tempDir, "staff-policy.mjs");
 const routerBundle = path.join(tempDir, "router.mjs");
 bundle("src/server/staff/auth.ts", authBundle);
 bundle("src/server/staff/authorization.ts", authorizationBundle);
 bundle("src/server/staff/administration.ts", administrationBundle);
+bundle("src/server/staff/session-policy.ts", policyBundle);
 bundle("src/server/api/router.ts", routerBundle);
 const {
+  STAFF_LOGIN_ATTEMPT_COOKIE,
   STAFF_SESSION_COOKIE,
+  claimStaffLoginAttempt,
+  readStaffAttemptCookie,
   readStaffCookie,
+  revokeAllStaffSessions,
   revokeStaffSession,
+  revokeStaffSessionById,
   startStaffLogin,
   verifyStaffLogin,
 } = await import(pathToFileURL(authBundle).href);
 const { hasStaffCapability, resolveStaffPrincipal } = await import(pathToFileURL(authorizationBundle).href);
 const { replaceStaffRoles, setStaffAccountStatus } = await import(pathToFileURL(administrationBundle).href);
+const { listStaffSessionPolicies, updateStaffSessionPolicies } = await import(pathToFileURL(policyBundle).href);
 const { handleApiRequest } = await import(pathToFileURL(routerBundle).href);
 
 function sqlValue(value) {
@@ -146,7 +154,7 @@ function rawCookieToken(setCookie) {
   return decodeURIComponent(cookiePair(setCookie).split("=")[1]);
 }
 
-function staff(database, id, email, name, role, status = "active") {
+function staff(database, id, email, name, roles, status = "active") {
   const now = "2026-08-11T08:00:00.000Z";
   database.query(`
     INSERT INTO staff_account (
@@ -154,10 +162,12 @@ function staff(database, id, email, name, role, status = "active") {
       is_test, test_run_id, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, 1, 'staff-auth-test', ?, ?)
   `, [id, email, name, status, status === "disabled" ? now : null, now, now]);
-  database.query(`
-    INSERT INTO staff_account_role (staff_account_id, role_code, assigned_at)
-    VALUES (?, ?, ?)
-  `, [id, role, now]);
+  for (const role of Array.isArray(roles) ? roles : [roles]) {
+    database.query(`
+      INSERT INTO staff_account_role (staff_account_id, role_code, assigned_at)
+      VALUES (?, ?, ?)
+    `, [id, role, now]);
+  }
 }
 
 async function api(env, pathname, options = {}) {
@@ -173,22 +183,59 @@ async function api(env, pathname, options = {}) {
   return response;
 }
 
-async function createLogin(env, email, rawToken, now, fakeProvider) {
-  await startStaffLogin(env, email, { rawToken, now, clientIp: `192.0.2.${rawToken.length}`, provider: fakeProvider });
-  return verifyStaffLogin(env, rawToken, "", new Date(now.getTime() + 1000));
+async function begin(env, email, options) {
+  const result = await startStaffLogin(env, email, options);
+  if (result.delivery) await result.delivery;
+  return result;
+}
+
+async function sameContextLogin(env, email, label, now, fakeProvider = provider()) {
+  const magic = `${label}-magic`;
+  const claim = `${label}-claim`;
+  const session = `${label}-session`;
+  const started = await begin(env, email, {
+    rawToken: magic,
+    rawClaimSecret: claim,
+    rawSessionToken: session,
+    now,
+    clientIp: `192.0.2.${label.length + 30}`,
+    provider: fakeProvider,
+  });
+  const verified = await verifyStaffLogin(
+    env,
+    magic,
+    claim,
+    "",
+    new Date(now.getTime() + 1000),
+    session,
+  );
+  return { started, verified, rawSession: session, provider: fakeProvider };
+}
+
+function policy(role, inactivityDays, absoluteDays) {
+  const day = 24 * 60 * 60;
+  return { role, inactivitySeconds: inactivityDays * day, absoluteSeconds: absoluteDays * day };
 }
 
 try {
   const staffPage = readFileSync(path.resolve("dist/staff/index.html"), "utf8");
+  const settingsPage = readFileSync(path.resolve("dist/staff/settings/auth/index.html"), "utf8");
+  const manifest = JSON.parse(readFileSync(path.resolve("dist/manifest.webmanifest"), "utf8"));
   assert.match(staffPage, /<html lang="mn">/);
   assert.match(staffPage, /data-staff-surface="booting"/);
-  assert.match(staffPage, /\/api\/staff\/session/);
-  assert.match(staffPage, /\/api\/staff\/auth\/verify/);
-  assert.match(staffPage, /method:\s*"POST"/);
-  assert.match(staffPage, /history\.replaceState/);
-  assert.match(staffPage, /addEventListener\("hashchange",\s*bootstrap\)/);
-  assert.match(staffPage, /welcome\.textContent\s*=\s*""/);
-  assert.ok(!staffPage.includes("@example.invalid"), "staff fixture identities are not shipped to the browser");
+  assert.match(staffPage, /Нэвтрэх хүсэлт баталгаажлаа/);
+  assert.match(staffPage, /Нэвтрэх гэж байсан цонх эсвэл Наран Эрдэм апп руугаа буцна уу/);
+  assert.match(staffPage, /\/api\/staff\/auth\/attempt\/claim/);
+  assert.match(staffPage, /visibilitychange/);
+  assert.match(staffPage, /setTimeout\(pollAttempt, 4000\)/);
+  assert.doesNotMatch(staffPage, />Гарах</);
+  assert.doesNotMatch(staffPage, /Апп нээх/);
+  assert.ok(!staffPage.includes("@example.invalid"), "staff fixtures are not shipped to the browser");
+  assert.match(settingsPage, /data-staff-settings-surface="booting"/);
+  assert.match(settingsPage, /\/api\/staff\/settings\/auth/);
+  assert.equal(manifest.start_url, "/staff/");
+  assert.equal(manifest.display, "standalone");
+  assert.equal(manifest.name, "Наран Эрдэм");
 
   const migrations = readdirSync(path.resolve("migrations"))
     .filter((name) => /^\d{4}_.+\.sql$/.test(name))
@@ -199,6 +246,13 @@ try {
   const database = new SqliteD1();
   const env = testEnv(database);
   const baseTime = new Date();
+
+  const defaults = await listStaffSessionPolicies(env);
+  assert.deepEqual(defaults.map(({ role, inactivitySeconds, absoluteSeconds }) => [role, inactivitySeconds, absoluteSeconds]), [
+    ["teacher", 30 * 86400, 90 * 86400],
+    ["accountant", 14 * 86400, 60 * 86400],
+    ["admin", 7 * 86400, 30 * 86400],
+  ]);
 
   for (const invalidArgs of [
     [],
@@ -216,7 +270,10 @@ try {
   staff(database, "staff-disabled", "disabled@example.invalid", "Идэвхгүй Тест", "teacher", "disabled");
   staff(database, "staff-expired", "expired@example.invalid", "Хугацаа Тест", "teacher");
   staff(database, "staff-failure", "failure@example.invalid", "Алдаа Тест", "teacher");
-  staff(database, "staff-scanner", "scanner@example.invalid", "Скан Тест", "teacher");
+  staff(database, "staff-race", "race@example.invalid", "Уралдаан Тест", "teacher");
+  staff(database, "staff-multirole", "multi@example.invalid", "Олон эрх Тест", ["teacher", "admin"]);
+  staff(database, "staff-policy", "policy@example.invalid", "Бодлого Тест", "teacher");
+  staff(database, "staff-disable-after", "disable-after@example.invalid", "Дараа идэвхгүй", "teacher");
   database.query(`
     INSERT INTO guardian_account (
       id, full_name, primary_phone, primary_phone_normalized, email, email_normalized,
@@ -227,193 +284,292 @@ try {
   `, [baseTime.toISOString(), baseTime.toISOString()]);
 
   const teacherProvider = provider();
-  const rawTeacherToken = "raw-teacher-magic-token";
-  await startStaffLogin(env, " Teacher@Example.Invalid ", {
-    rawToken: rawTeacherToken,
+  const teacherStart = await begin(env, " Teacher@Example.Invalid ", {
+    rawToken: "teacher-magic",
+    rawClaimSecret: "teacher-claim",
     now: baseTime,
     clientIp: "192.0.2.10",
     provider: teacherProvider,
   });
+  assert.match(teacherStart.attemptCookie, new RegExp(`^${STAFF_LOGIN_ATTEMPT_COOKIE}=`));
+  assert.match(teacherStart.attemptCookie, /HttpOnly/);
+  assert.match(teacherStart.attemptCookie, /Secure/);
+  assert.match(teacherStart.attemptCookie, /SameSite=Lax/);
+  assert.match(teacherStart.attemptCookie, /Max-Age=900/);
   assert.equal(teacherProvider.sent.length, 1);
   assert.equal(teacherProvider.sent[0].message.to, "safe-inbox@example.test");
-  assert.match(teacherProvider.sent[0].message.subject, /Ажилтны нэвтрэх холбоос/);
-  assert.ok(teacherProvider.sent[0].message.html.includes(rawTeacherToken));
-  assert.ok(teacherProvider.sent[0].message.text.includes(rawTeacherToken));
+  assert.ok(teacherProvider.sent[0].message.html.includes("teacher-magic"));
   assert.ok(!teacherProvider.sent[0].message.html.includes(env.RESEND_API_KEY));
   assert.ok(!teacherProvider.sent[0].message.text.includes(env.STAGING_AUTH_TEST_KEY));
   const teacherChallenge = database.query("SELECT * FROM staff_login_challenge WHERE staff_account_id = 'staff-teacher'")[0];
-  assert.equal(teacherChallenge.token_hash, createHash("sha256").update(rawTeacherToken).digest("hex"));
-  assert.ok(!sqlite(".dump").includes(rawTeacherToken), "raw magic token is never stored");
+  assert.equal(teacherChallenge.token_hash, createHash("sha256").update("teacher-magic").digest("hex"));
+  const teacherAttempt = database.query("SELECT * FROM staff_login_attempt WHERE staff_account_id = 'staff-teacher'")[0];
+  assert.equal(teacherAttempt.claim_secret_hash, createHash("sha256").update("teacher-claim").digest("hex"));
+  assert.ok(!sqlite(".dump").includes("teacher-magic"), "raw magic token is never stored");
+  assert.ok(!sqlite(".dump").includes("teacher-claim"), "raw claim secret is never stored");
   const teacherOutbound = database.query("SELECT * FROM outbound_email WHERE staff_account_id = 'staff-teacher'")[0];
   assert.equal(teacherOutbound.intended_to_email, "teacher@example.invalid");
   assert.equal(teacherOutbound.actual_delivery_email, "safe-inbox@example.test");
-  assert.equal(teacherOutbound.delivery_mode, "staging_override");
   assert.equal(teacherOutbound.status, "sent");
-  assert.match(teacherProvider.sent[0].options.idempotencyKey, /^staff-login\//);
 
-  await assert.rejects(verifyStaffLogin(env, "wrong-token", "", new Date(baseTime.getTime() + 1000)));
-  const teacherLogin = await verifyStaffLogin(env, rawTeacherToken, "", new Date(baseTime.getTime() + 1000));
-  assert.match(teacherLogin.cookie, new RegExp(`^${STAFF_SESSION_COOKIE}=`));
-  assert.match(teacherLogin.cookie, /HttpOnly/);
-  assert.match(teacherLogin.cookie, /Secure/);
-  assert.match(teacherLogin.cookie, /SameSite=Lax/);
-  assert.match(teacherLogin.cookie, /Path=\//);
-  assert.match(teacherLogin.cookie, /Max-Age=36000/);
-  const teacherRawSession = rawCookieToken(teacherLogin.cookie);
-  assert.ok(!sqlite(".dump").includes(teacherRawSession), "raw staff session token is never stored");
-  assert.equal(teacherLogin.principal.displayName, "Тест Багш");
-  assert.ok(hasStaffCapability(teacherLogin.principal, "calendar.manage"));
-  assert.ok(!hasStaffCapability(teacherLogin.principal, "admin.staff.manage"));
-  const sameBrowserReplay = await verifyStaffLogin(env, rawTeacherToken, teacherRawSession, new Date(baseTime.getTime() + 2000));
-  assert.equal(sameBrowserReplay.alreadySignedIn, true);
-  assert.equal(sameBrowserReplay.cookie, null);
-  await assert.rejects(verifyStaffLogin(env, rawTeacherToken, "", new Date(baseTime.getTime() + 2000)));
+  await assert.rejects(verifyStaffLogin(env, "wrong-token", "teacher-claim", "", new Date(baseTime.getTime() + 1000)));
+  assert.equal((await claimStaffLoginAttempt(env, "teacher-claim", new Date(baseTime.getTime() + 500))).state, "pending", "claim secret alone cannot authenticate");
+
+  // Context B consumes the email; context A alone owns the claim cookie.
+  const approvedInB = await verifyStaffLogin(env, "teacher-magic", "", "", new Date(baseTime.getTime() + 1000));
+  assert.equal(approvedInB.approved, true);
+  assert.equal(approvedInB.claimed, false);
+  assert.equal(approvedInB.cookie, null);
+  assert.equal(count(database, "staff_session", "staff_account_id = 'staff-teacher'"), 0);
+  const claimedInA = await claimStaffLoginAttempt(env, "teacher-claim", new Date(baseTime.getTime() + 2000), "teacher-session");
+  assert.equal(claimedInA.state, "authenticated");
+  assert.match(claimedInA.cookie, new RegExp(`^${STAFF_SESSION_COOKIE}=`));
+  assert.match(claimedInA.cookie, /HttpOnly/);
+  assert.match(claimedInA.cookie, /Secure/);
+  assert.match(claimedInA.cookie, /SameSite=Lax/);
+  assert.match(claimedInA.cookie, /Path=\//);
+  assert.match(claimedInA.cookie, /Max-Age=31536000/);
+  assert.ok(!sqlite(".dump").includes("teacher-session"), "raw staff session token is never stored");
+  assert.ok(hasStaffCapability(claimedInA.principal, "calendar.manage"));
+  await assert.rejects(verifyStaffLogin(env, "teacher-magic", "teacher-claim", "teacher-session", new Date(baseTime.getTime() + 3000)), "used challenge cannot mint another session");
+  assert.equal((await claimStaffLoginAttempt(env, "teacher-claim", new Date(baseTime.getTime() + 3000))).state, "claimed");
   assert.equal(count(database, "staff_session", "staff_account_id = 'staff-teacher'"), 1);
-  assert.equal(count(database, "audit_event", "action = 'staff_login_succeeded' AND actor_ref = 'staff-teacher'"), 1);
 
-  const expiredProvider = provider();
-  await startStaffLogin(env, "expired@example.invalid", {
-    rawToken: "expired-raw-token",
-    now: baseTime,
-    clientIp: "192.0.2.11",
-    provider: expiredProvider,
+  // Same-context fast path approves and claims in one request.
+  const adminLogin = await sameContextLogin(env, "admin@example.invalid", "admin", new Date(baseTime.getTime() + 60_000));
+  assert.equal(adminLogin.verified.claimed, true);
+  assert.equal(adminLogin.verified.principal.displayName, "Тест Админ");
+  assert.ok(hasStaffCapability(adminLogin.verified.principal, "admin.settings.manage"));
+
+  const expiredStart = await begin(env, "expired@example.invalid", {
+    rawToken: "expired-magic", rawClaimSecret: "expired-claim", now: baseTime,
+    clientIp: "192.0.2.11", provider: provider(),
   });
-  await assert.rejects(verifyStaffLogin(env, "expired-raw-token", "", new Date(baseTime.getTime() + 16 * 60 * 1000)));
-  assert.equal(database.query("SELECT status FROM staff_login_challenge WHERE staff_account_id = 'staff-expired'")[0].status, "expired");
+  assert.ok(expiredStart.attemptCookie);
+  await assert.rejects(verifyStaffLogin(env, "expired-magic", "expired-claim", "", new Date(baseTime.getTime() + 16 * 60 * 1000)));
+  assert.equal((await claimStaffLoginAttempt(env, "expired-claim", new Date(baseTime.getTime() + 16 * 60 * 1000))).state, "expired");
 
-  const beforeUnknown = count(database, "outbound_email");
-  const unknownProvider = provider();
-  await startStaffLogin(env, "guardian-only@example.invalid", { now: baseTime, clientIp: "192.0.2.12", provider: unknownProvider });
-  await startStaffLogin(env, "nobody@example.invalid", { now: baseTime, clientIp: "192.0.2.13", provider: unknownProvider });
-  await startStaffLogin(env, "disabled@example.invalid", { now: baseTime, clientIp: "192.0.2.14", provider: unknownProvider });
-  assert.equal(unknownProvider.sent.length, 0);
-  assert.equal(count(database, "outbound_email"), beforeUnknown, "guardian, unknown, and disabled identities receive no staff email");
+  const beforeUnknownEmails = count(database, "outbound_email");
+  for (const email of ["guardian-only@example.invalid", "nobody@example.invalid", "disabled@example.invalid"]) {
+    const unknownProvider = provider();
+    const unknown = await begin(env, email, {
+      now: baseTime,
+      rawClaimSecret: `${email}-claim`,
+      clientIp: `192.0.2.${email.length}`,
+      provider: unknownProvider,
+    });
+    assert.ok(unknown.attemptCookie, "unknown and disabled addresses receive an indistinguishable waiting attempt");
+    assert.equal(unknownProvider.sent.length, 0);
+    assert.equal((await claimStaffLoginAttempt(env, `${email}-claim`, new Date(baseTime.getTime() + 1000))).state, "pending");
+  }
+  assert.equal(count(database, "outbound_email"), beforeUnknownEmails, "unknown identities queue no email");
 
-  await assert.rejects(startStaffLogin(testEnv(database, { STAGING_EMAIL_OVERRIDE_TO: undefined }), "admin@example.invalid", {
-    now: baseTime,
-    clientIp: "192.0.2.15",
-    provider: provider(),
+  await assert.rejects(begin(testEnv(database, { STAGING_EMAIL_OVERRIDE_TO: undefined }), "accountant@example.invalid", {
+    now: baseTime, rawClaimSecret: "missing-override-claim", clientIp: "192.0.2.15", provider: provider(),
   }));
-  const disabledEnvProvider = provider();
-  await startStaffLogin(testEnv(database, { STAFF_AUTH_EMAIL_ENABLED: "false" }), "admin@example.invalid", {
-    now: baseTime,
-    clientIp: "192.0.2.16",
-    provider: disabledEnvProvider,
+  const disabledGateProvider = provider();
+  const disabledGate = await begin(testEnv(database, { STAFF_AUTH_EMAIL_ENABLED: "false" }), "accountant@example.invalid", {
+    now: baseTime, clientIp: "192.0.2.16", provider: disabledGateProvider,
   });
-  assert.equal(disabledEnvProvider.sent.length, 0, "production-style gate prevents sending");
+  assert.equal(disabledGate.attemptCookie, null);
+  assert.equal(disabledGateProvider.sent.length, 0);
 
-  staff(database, "staff-production", "future-production@example.invalid", "Future Production", "admin");
-  const productionProvider = provider();
-  await startStaffLogin(testEnv(database, {
-    APP_ENV: "production",
-    APP_ORIGIN: "https://naranerdem.com",
-    STAGING_EMAIL_OVERRIDE_TO: undefined,
-  }), "future-production@example.invalid", {
-    now: baseTime,
-    clientIp: "192.0.2.17",
-    rawToken: "production-delivery-token",
-    provider: productionProvider,
+  const failureProvider = provider({ fail: true });
+  const failed = await startStaffLogin(env, "failure@example.invalid", {
+    now: baseTime, clientIp: "192.0.2.18", rawToken: "failure-magic",
+    rawClaimSecret: "failure-claim", provider: failureProvider,
   });
-  assert.equal(productionProvider.sent[0].message.to, "future-production@example.invalid");
-  const productionOutbound = database.query("SELECT intended_to_email, actual_delivery_email FROM outbound_email WHERE staff_account_id = 'staff-production'")[0];
-  assert.equal(productionOutbound.actual_delivery_email, productionOutbound.intended_to_email);
-
-  const failedProvider = provider({ fail: true });
-  await assert.rejects(startStaffLogin(env, "failure@example.invalid", {
-    now: baseTime,
-    clientIp: "192.0.2.18",
-    rawToken: "provider-failure-token",
-    provider: failedProvider,
-  }));
+  await assert.rejects(failed.delivery);
   assert.equal(database.query("SELECT status FROM outbound_email WHERE staff_account_id = 'staff-failure'")[0].status, "failed");
   assert.equal(database.query("SELECT status FROM staff_login_challenge WHERE staff_account_id = 'staff-failure'")[0].status, "delivery_failed");
 
   const cooldownProvider = provider();
-  await startStaffLogin(env, "accountant@example.invalid", { now: baseTime, clientIp: "192.0.2.19", rawToken: "accountant-token", provider: cooldownProvider });
-  await startStaffLogin(env, "accountant@example.invalid", { now: new Date(baseTime.getTime() + 5000), clientIp: "192.0.2.19", rawToken: "duplicate-token", provider: cooldownProvider });
+  const firstCooldown = await begin(env, "accountant@example.invalid", {
+    now: baseTime, clientIp: "192.0.2.19", rawToken: "accountant-magic",
+    rawClaimSecret: "accountant-claim", provider: cooldownProvider,
+  });
+  const secondCooldown = await begin(env, "accountant@example.invalid", {
+    now: new Date(baseTime.getTime() + 5000), clientIp: "192.0.2.19",
+    rawToken: "duplicate-magic", existingAttemptSecret: "accountant-claim", provider: cooldownProvider,
+  });
   assert.equal(cooldownProvider.sent.length, 1);
-  assert.equal(count(database, "outbound_email", "staff_account_id = 'staff-accountant'"), 1, "cooldown prevents duplicate logical send");
+  assert.equal(rawCookieToken(firstCooldown.attemptCookie), rawCookieToken(secondCooldown.attemptCookie));
+  assert.equal(count(database, "staff_login_attempt", "staff_account_id = 'staff-accountant'"), 1);
 
-  const scannerProvider = provider();
-  await startStaffLogin(env, "scanner@example.invalid", { now: baseTime, clientIp: "192.0.2.20", rawToken: "scanner-token", provider: scannerProvider });
   const scannerGet = await api(env, "/api/staff/auth/verify", { method: "GET" });
   assert.equal(scannerGet.status, 405);
-  assert.equal(database.query("SELECT status FROM staff_login_challenge WHERE staff_account_id = 'staff-scanner'")[0].status, "pending");
-  const scannerPost = await api(env, "/api/staff/auth/verify", {
+  assert.equal(database.query("SELECT status FROM staff_login_challenge WHERE staff_account_id = 'staff-accountant'")[0].status, "pending");
+
+  // API context B has no claim cookie; context A later claims with its own jar.
+  const verifyB = await api(env, "/api/staff/auth/verify", {
     method: "POST",
     headers: { Origin: env.APP_ORIGIN },
-    body: { token: "scanner-token" },
+    body: { token: "accountant-magic" },
   });
-  assert.equal(scannerPost.status, 200);
-  assert.match(scannerPost.headers.get("set-cookie") ?? "", /HttpOnly/);
-
-  const adminProvider = provider();
-  const adminLogin = await createLogin(env, "admin@example.invalid", "admin-token", baseTime, adminProvider);
-  const adminCookie = cookiePair(adminLogin.cookie);
-  const accountantLogin = await verifyStaffLogin(env, "accountant-token", "", new Date(baseTime.getTime() + 1000));
-  const accountantCookie = cookiePair(accountantLogin.cookie);
-  const teacherCookie = cookiePair(teacherLogin.cookie);
-
-  assert.equal((await api(env, "/api/staff/proof/calendar")).status, 401);
-  assert.equal((await api(env, "/api/staff/proof/calendar", { headers: { Cookie: teacherCookie } })).status, 200);
-  assert.equal((await api(env, "/api/staff/proof/calendar-mutation", {
+  assert.equal(verifyB.status, 200);
+  assert.equal((await verifyB.json()).claimed, false);
+  assert.equal(verifyB.headers.get("set-cookie"), null);
+  const claimA = await api(env, "/api/staff/auth/attempt/claim", {
     method: "POST",
-    headers: { Cookie: teacherCookie, Origin: env.APP_ORIGIN },
-  })).status, 200);
-  assert.equal((await api(env, "/api/staff/proof/calendar", { headers: { Cookie: accountantCookie } })).status, 403);
-  assert.equal((await api(env, "/api/staff/proof/admin", { headers: { Cookie: accountantCookie } })).status, 403);
-  assert.equal((await api(env, "/api/staff/proof/admin", { headers: { Cookie: adminCookie } })).status, 200);
+    headers: { Origin: env.APP_ORIGIN, Cookie: cookiePair(firstCooldown.attemptCookie) },
+  });
+  assert.equal(claimA.status, 200);
+  assert.deepEqual(await claimA.json(), { state: "authenticated" });
+  const claimCookies = typeof claimA.headers.getSetCookie === "function"
+    ? claimA.headers.getSetCookie().join("\n")
+    : claimA.headers.get("set-cookie") ?? "";
+  assert.match(claimCookies, new RegExp(STAFF_SESSION_COOKIE));
+  assert.match(claimCookies, new RegExp(STAFF_LOGIN_ATTEMPT_COOKIE));
+  assert.equal((await api(env, "/api/staff/auth/attempt/claim", {
+    method: "POST", headers: { Origin: env.APP_ORIGIN }, body: { attemptId: teacherAttempt.id },
+  }).then((response) => response.json())).state, "none", "attempt ID alone is ignored");
+  assert.equal((await api(env, "/api/staff/auth/attempt/claim", { method: "GET" })).status, 405);
 
-  await assert.rejects(
-    replaceStaffRoles(env, teacherLogin.principal, "staff-accountant", ["teacher"], baseTime),
-    (error) => error.code === "forbidden",
-  );
-  await assert.rejects(
-    replaceStaffRoles(env, adminLogin.principal, "staff-teacher", ["assistant_teacher"], baseTime),
-    (error) => error.code === "invalid_role",
-  );
-  await replaceStaffRoles(env, adminLogin.principal, "staff-teacher", ["accountant"], baseTime);
-  const changedPrincipal = await resolveStaffPrincipal(env, teacherRawSession, new Date(baseTime.getTime() + 3000));
+  // A claim race creates exactly one logical session.
+  const raceProvider = provider();
+  await begin(env, "race@example.invalid", {
+    now: baseTime, rawToken: "race-magic", rawClaimSecret: "race-claim",
+    clientIp: "192.0.2.50", provider: raceProvider,
+  });
+  await verifyStaffLogin(env, "race-magic", "", "", new Date(baseTime.getTime() + 1000));
+  const raceResults = await Promise.all([
+    claimStaffLoginAttempt(env, "race-claim", new Date(baseTime.getTime() + 2000), "race-session-a"),
+    claimStaffLoginAttempt(env, "race-claim", new Date(baseTime.getTime() + 2000), "race-session-b"),
+  ]);
+  assert.equal(raceResults.filter((result) => result.state === "authenticated").length, 1);
+  assert.equal(count(database, "staff_session", "staff_account_id = 'staff-race'"), 1);
+  assert.equal(count(database, "audit_event", "action = 'staff_login_succeeded' AND actor_ref = 'staff-race'"), 1);
+
+  // Approval becomes unusable if the staff account is disabled before claim.
+  const disableAfter = await begin(env, "disable-after@example.invalid", {
+    now: new Date(baseTime.getTime() + 120_000), rawToken: "disable-after-magic",
+    rawClaimSecret: "disable-after-claim", clientIp: "192.0.2.51", provider: provider(),
+  });
+  assert.ok(disableAfter.attemptCookie);
+  await verifyStaffLogin(env, "disable-after-magic", "", "", new Date(baseTime.getTime() + 121_000));
+  await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-disable-after", "disabled", new Date(baseTime.getTime() + 122_000));
+  assert.equal((await claimStaffLoginAttempt(env, "disable-after-claim", new Date(baseTime.getTime() + 123_000))).state, "expired");
+
+  // Sliding inactivity updates are throttled; attempt polling never touches last_seen_at.
+  const teacherSessionRow = database.query("SELECT id, last_seen_at FROM staff_session WHERE staff_account_id = 'staff-teacher'")[0];
+  const sevenHours = new Date(baseTime.getTime() + 7 * 60 * 60 * 1000);
+  assert.ok(await resolveStaffPrincipal(env, "teacher-session", sevenHours));
+  const refreshedLastSeen = database.query("SELECT last_seen_at FROM staff_session WHERE id = ?", [teacherSessionRow.id])[0].last_seen_at;
+  assert.equal(refreshedLastSeen, sevenHours.toISOString());
+  await api(env, "/api/staff/auth/attempt/claim", {
+    method: "POST",
+    headers: { Origin: env.APP_ORIGIN, Cookie: `${STAFF_SESSION_COOKIE}=teacher-session` },
+  });
+  assert.equal(database.query("SELECT last_seen_at FROM staff_session WHERE id = ?", [teacherSessionRow.id])[0].last_seen_at, refreshedLastSeen);
+  assert.ok(await resolveStaffPrincipal(env, "teacher-session", new Date(sevenHours.getTime() + 29 * 86400_000)));
+  assert.equal(await resolveStaffPrincipal(env, "teacher-session", new Date(baseTime.getTime() + 91 * 86400_000)), null, "absolute limit never slides");
+
+  const multiLogin = await sameContextLogin(env, "multi@example.invalid", "multi", new Date(baseTime.getTime() + 180_000));
+  assert.equal(await resolveStaffPrincipal(env, multiLogin.rawSession, new Date(baseTime.getTime() + 8 * 86400_000)), null, "multi-role session uses shortest inactivity limit");
+
+  // Two devices coexist and admin revocation can target one or all.
+  const firstPolicyLogin = await sameContextLogin(env, "policy@example.invalid", "policy-one", new Date(baseTime.getTime() + 240_000));
+  const secondPolicyLogin = await sameContextLogin(env, "policy@example.invalid", "policy-two", new Date(baseTime.getTime() + 305_000));
+  assert.equal(count(database, "staff_session", "staff_account_id = 'staff-policy' AND revoked_at IS NULL"), 2);
+  await revokeStaffSessionById(env, adminLogin.verified.principal, firstPolicyLogin.verified.principal.sessionId, new Date(baseTime.getTime() + 310_000));
+  assert.equal(await resolveStaffPrincipal(env, firstPolicyLogin.rawSession, new Date(baseTime.getTime() + 311_000)), null);
+  assert.ok(await resolveStaffPrincipal(env, secondPolicyLogin.rawSession, new Date(baseTime.getTime() + 311_000)));
+  await revokeAllStaffSessions(env, adminLogin.verified.principal, "staff-policy", new Date(baseTime.getTime() + 312_000));
+  assert.equal(await resolveStaffPrincipal(env, secondPolicyLogin.rawSession, new Date(baseTime.getTime() + 313_000)), null);
+  assert.equal(count(database, "audit_event", "action = 'staff_session_revoked_by_admin'"), 1);
+  assert.equal(count(database, "audit_event", "action = 'staff_sessions_revoked_by_admin'"), 1);
+
+  // Admin policy edits are bounded and shortening permanently expires old sessions.
+  const policyTargetLogin = await sameContextLogin(env, "policy@example.invalid", "policy-three", new Date(baseTime.getTime() + 370_000));
+  await assert.rejects(updateStaffSessionPolicies(env, claimedInA.principal, [
+    policy("teacher", 30, 90), policy("accountant", 14, 60), policy("admin", 7, 30),
+  ]), (error) => error.code === "forbidden");
+  await assert.rejects(updateStaffSessionPolicies(env, adminLogin.verified.principal, [
+    policy("teacher", 0, 90), policy("accountant", 14, 60), policy("admin", 7, 30),
+  ]), (error) => error.code === "invalid_policy");
+  const shortenAt = new Date(baseTime.getTime() + 2 * 86400_000);
+  await updateStaffSessionPolicies(env, adminLogin.verified.principal, [
+    policy("teacher", 1, 90), policy("accountant", 14, 60), policy("admin", 7, 30),
+  ], shortenAt);
+  assert.equal(await resolveStaffPrincipal(env, policyTargetLogin.rawSession, new Date(shortenAt.getTime() + 1000)), null);
+  await updateStaffSessionPolicies(env, adminLogin.verified.principal, [
+    policy("teacher", 30, 90), policy("accountant", 14, 60), policy("admin", 7, 30),
+  ], new Date(shortenAt.getTime() + 2000));
+  assert.equal(await resolveStaffPrincipal(env, policyTargetLogin.rawSession, new Date(shortenAt.getTime() + 3000)), null, "lengthening does not resurrect an expired session");
+
+  const adminCookie = `${STAFF_SESSION_COOKIE}=${adminLogin.rawSession}`;
+  const settingsGet = await api(env, "/api/staff/settings/auth", { headers: { Cookie: adminCookie } });
+  assert.equal(settingsGet.status, 200);
+  assert.equal((await settingsGet.json()).policies.length, 3);
+  const settingsPut = await api(env, "/api/staff/settings/auth", {
+    method: "PUT",
+    headers: { Cookie: adminCookie, Origin: env.APP_ORIGIN },
+    body: { policies: [policy("teacher", 30, 90), policy("accountant", 14, 60), policy("admin", 7, 30)] },
+  });
+  assert.equal(settingsPut.status, 200);
+  assert.equal((await settingsPut.json()).reauthenticationRequired, false);
+  const teacherSettings = await api(env, "/api/staff/settings/auth", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=teacher-session` } });
+  assert.notEqual(teacherSettings.status, 200);
+  assert.equal((await api(env, "/api/staff/settings/auth", { method: "POST" })).status, 405);
+
+  // Current roles and disabled status remain live authorization inputs.
+  staff(database, "staff-role-change", "role-change@example.invalid", "Эрх Солих", "teacher");
+  const roleLogin = await sameContextLogin(env, "role-change@example.invalid", "role-change", new Date(baseTime.getTime() + 430_000));
+  await replaceStaffRoles(env, adminLogin.verified.principal, "staff-role-change", ["accountant"], new Date(baseTime.getTime() + 431_000));
+  const changedPrincipal = await resolveStaffPrincipal(env, roleLogin.rawSession, new Date(baseTime.getTime() + 432_000));
   assert.ok(hasStaffCapability(changedPrincipal, "accountant.call_queue.view"));
-  assert.ok(!hasStaffCapability(changedPrincipal, "calendar.view"), "role changes take effect without a new session");
-  assert.equal((await api(env, "/api/staff/proof/calendar", { headers: { Cookie: teacherCookie } })).status, 403);
-  assert.equal(count(database, "audit_event", "action = 'staff_roles_changed' AND actor_ref = 'staff-admin'"), 1);
-
-  await setStaffAccountStatus(env, adminLogin.principal, "staff-teacher", "disabled", baseTime);
-  assert.equal(await resolveStaffPrincipal(env, teacherRawSession, new Date(baseTime.getTime() + 4000)), null, "disabled staff immediately loses session access");
-  const disabledSession = await api(env, "/api/staff/session", { headers: { Cookie: teacherCookie } });
-  assert.deepEqual(await disabledSession.json(), { authenticated: false });
-  assert.equal(count(database, "audit_event", "action = 'staff_account_disabled' AND actor_ref = 'staff-admin'"), 1);
+  assert.ok(!hasStaffCapability(changedPrincipal, "calendar.view"));
+  await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "disabled", new Date(baseTime.getTime() + 433_000));
+  assert.equal(await resolveStaffPrincipal(env, roleLogin.rawSession, new Date(baseTime.getTime() + 434_000)), null);
+  await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "active", new Date(baseTime.getTime() + 435_000));
+  assert.equal(await resolveStaffPrincipal(env, roleLogin.rawSession, new Date(baseTime.getTime() + 436_000)), null, "re-enabling does not resurrect revoked sessions");
 
   const parentCookieRequest = new Request(`${env.APP_ORIGIN}/api/staff/session`, { headers: { Cookie: "naran_verified_email=parent-session-token" } });
   assert.equal(readStaffCookie(parentCookieRequest), "");
+  assert.equal(readStaffAttemptCookie(parentCookieRequest), "");
   assert.deepEqual(await (await handleApiRequest(parentCookieRequest, env)).json(), { authenticated: false });
-  const parentStatusWithStaffCookie = await api(env, "/api/registration/status", { headers: { Cookie: accountantCookie } });
-  assert.equal(parentStatusWithStaffCookie.status, 404, "staff session cannot authorize a parent registration route");
 
-  await revokeStaffSession(env, rawCookieToken(accountantLogin.cookie), new Date(baseTime.getTime() + 5000));
-  assert.equal(await resolveStaffPrincipal(env, rawCookieToken(accountantLogin.cookie), new Date(baseTime.getTime() + 6000)), null);
-  assert.equal(count(database, "audit_event", "action = 'staff_logout' AND actor_ref = 'staff-accountant'"), 1);
-  database.query("UPDATE staff_session SET expires_at = ? WHERE id = ?", [new Date(baseTime.getTime() + 2000).toISOString(), adminLogin.principal.sessionId]);
-  assert.equal(await resolveStaffPrincipal(env, rawCookieToken(adminLogin.cookie), new Date(baseTime.getTime() + 7000)), null);
-
+  const apiActiveProvider = provider();
+  staff(database, "staff-api", "api@example.invalid", "API Тест", "teacher");
+  const apiPrepared = await begin(env, "api@example.invalid", {
+    now: baseTime, rawToken: "api-magic", rawClaimSecret: "api-claim",
+    clientIp: "192.0.2.80", provider: apiActiveProvider,
+  });
   const activeResponse = await api(env, "/api/staff/auth/start", {
     method: "POST",
-    headers: { Origin: env.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.30" },
-    body: { email: "admin@example.invalid" },
+    headers: { Origin: env.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.80", Cookie: cookiePair(apiPrepared.attemptCookie) },
+    body: { email: "api@example.invalid" },
   });
   const unknownResponse = await api(env, "/api/staff/auth/start", {
     method: "POST",
-    headers: { Origin: env.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.31" },
-    body: { email: "unknown-person@example.invalid" },
+    headers: { Origin: env.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.81" },
+    body: { email: "unknown-api@example.invalid" },
   });
   assert.equal(activeResponse.status, 202);
   assert.equal(unknownResponse.status, 202);
-  assert.equal(await activeResponse.text(), await unknownResponse.text(), "public login start does not enumerate staff identity");
+  assert.equal(await activeResponse.text(), await unknownResponse.text(), "public start does not enumerate staff identity");
+  assert.match(activeResponse.headers.get("set-cookie") ?? "", new RegExp(STAFF_LOGIN_ATTEMPT_COOKIE));
+  assert.match(unknownResponse.headers.get("set-cookie") ?? "", new RegExp(STAFF_LOGIN_ATTEMPT_COOKIE));
   assert.equal((await api(env, "/api/staff/auth/start", { method: "GET" })).status, 405);
-  assert.equal((await api(env, "/api/staff/auth/start", { method: "POST", body: { email: "admin@example.invalid" } })).status, 403);
+  assert.equal((await api(env, "/api/staff/auth/start", { method: "POST", body: { email: "api@example.invalid" } })).status, 403);
 
-  console.log("ok staff authentication, authorization, isolation, and email safety tests");
+  const productionEnv = testEnv(database, {
+    APP_ENV: "production",
+    APP_ORIGIN: "https://naranerdem.com",
+    EMAIL_ENABLED: "false",
+    AUTH_EMAIL_ENABLED: "false",
+    STAFF_AUTH_EMAIL_ENABLED: "false",
+    STAGING_EMAIL_OVERRIDE_TO: undefined,
+  });
+  assert.equal((await api(productionEnv, "/api/staff/auth/start", {
+    method: "POST", headers: { Origin: productionEnv.APP_ORIGIN }, body: { email: "admin@example.invalid" },
+  })).headers.get("set-cookie"), null, "production-disabled start creates no claim state");
+  assert.equal(count(database, "audit_event", "metadata_json LIKE '%teacher-magic%' OR metadata_json LIKE '%teacher-claim%'"), 0, "audit logs contain no raw auth token");
+
+  await revokeStaffSession(env, adminLogin.rawSession, new Date(baseTime.getTime() + 3 * 86400_000));
+  assert.equal(await resolveStaffPrincipal(env, adminLogin.rawSession, new Date(baseTime.getTime() + 3 * 86400_000 + 1000)), null);
+
+  console.log("ok persistent cross-context staff auth, policy, revocation, and UI security tests");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

@@ -1,0 +1,148 @@
+---
+import { siteIdentity } from "../../../content/homepage";
+import "../../../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#073aaf" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Наран Эрдэм" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/images/naran-erdem-logo.jpg" />
+    <title>Нэвтрэх хугацаа | {siteIdentity.name}</title>
+  </head>
+  <body class="staff-page" data-staff-settings-surface="booting">
+    <header class="site-header">
+      <a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг">
+        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
+        <span>
+          <strong>{siteIdentity.name}</strong>
+          <span>Ажилтны хэсэг</span>
+        </span>
+      </a>
+    </header>
+
+    <main class="staff-shell staff-settings-shell" aria-live="polite">
+      <section id="staff-settings-booting" class="staff-state">
+        <p class="eyebrow">Тохиргоо</p>
+        <h1>Түр хүлээнэ үү</h1>
+        <p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p>
+      </section>
+
+      <section id="staff-settings-denied" class="staff-state" hidden>
+        <p class="eyebrow">Тохиргоо</p>
+        <h1>Энэ хэсгийг нээх эрх алга</h1>
+        <a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a>
+      </section>
+
+      <section id="staff-settings-form-state" class="staff-state" hidden>
+        <p class="eyebrow">Тохиргоо</p>
+        <h1>Нэвтрэх хугацаа</h1>
+        <p class="staff-muted">Ажилтны хэсэг идэвхгүй байж болох болон нийт нэвтэрсэн хэвээр байх хугацааг дүр тус бүрээр тохируулна.</p>
+        <form id="staff-policy-form" class="staff-policy-form">
+          <div class="staff-policy-row" data-role="teacher">
+            <h2>Багш</h2>
+            <label>Идэвхгүй хугацаа, хоног <input name="teacher-inactivity" type="number" min="1" max="180" required /></label>
+            <label>Нийт хугацаа, хоног <input name="teacher-absolute" type="number" min="1" max="365" required /></label>
+          </div>
+          <div class="staff-policy-row" data-role="accountant">
+            <h2>Нягтлан</h2>
+            <label>Идэвхгүй хугацаа, хоног <input name="accountant-inactivity" type="number" min="1" max="180" required /></label>
+            <label>Нийт хугацаа, хоног <input name="accountant-absolute" type="number" min="1" max="365" required /></label>
+          </div>
+          <div class="staff-policy-row" data-role="admin">
+            <h2>Админ</h2>
+            <label>Идэвхгүй хугацаа, хоног <input name="admin-inactivity" type="number" min="1" max="180" required /></label>
+            <label>Нийт хугацаа, хоног <input name="admin-absolute" type="number" min="1" max="365" required /></label>
+          </div>
+          <p id="staff-policy-message" class="staff-error" role="status" hidden></p>
+          <div class="staff-form-actions">
+            <a class="button secondary" href="/staff/">Буцах</a>
+            <button class="button primary" type="submit">Хадгалах</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script is:inline type="module">
+      const day = 24 * 60 * 60;
+      const states = [...document.querySelectorAll(".staff-state")];
+      const form = document.getElementById("staff-policy-form");
+      const message = document.getElementById("staff-policy-message");
+      const roles = ["teacher", "accountant", "admin"];
+
+      function show(id) {
+        for (const state of states) state.hidden = state.id !== id;
+        document.body.dataset.staffSettingsSurface = id.replace("staff-settings-", "");
+      }
+
+      function fill(policies) {
+        for (const policy of policies) {
+          form.elements[`${policy.role}-inactivity`].value = String(policy.inactivitySeconds / day);
+          form.elements[`${policy.role}-absolute`].value = String(policy.absoluteSeconds / day);
+        }
+      }
+
+      async function bootstrap() {
+        try {
+          const sessionResponse = await fetch("/api/staff/session", { credentials: "same-origin" });
+          const session = await sessionResponse.json();
+          if (!session.authenticated || !(session.capabilities || []).includes("admin.settings.manage")) {
+            show("staff-settings-denied");
+            return;
+          }
+          const response = await fetch("/api/staff/settings/auth", { credentials: "same-origin" });
+          if (!response.ok) throw new Error("settings unavailable");
+          const result = await response.json();
+          fill(result.policies);
+          show("staff-settings-form-state");
+        } catch {
+          show("staff-settings-denied");
+        }
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        message.hidden = true;
+        const button = form.querySelector("button[type='submit']");
+        button.disabled = true;
+        try {
+          const policies = roles.map((role) => ({
+            role,
+            inactivitySeconds: Number(form.elements[`${role}-inactivity`].value) * day,
+            absoluteSeconds: Number(form.elements[`${role}-absolute`].value) * day,
+          }));
+          const response = await fetch("/api/staff/settings/auth", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ policies }),
+          });
+          if (!response.ok) throw new Error("save failed");
+          const result = await response.json();
+          if (result.reauthenticationRequired) {
+            window.location.assign("/staff/");
+            return;
+          }
+          fill(result.policies);
+          message.textContent = "Тохиргоог хадгаллаа.";
+          message.classList.add("staff-success");
+          message.hidden = false;
+        } catch {
+          message.classList.remove("staff-success");
+          message.textContent = "Хугацааны утгыг шалгаад дахин оролдоно уу.";
+          message.hidden = false;
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      bootstrap();
+    </script>
+  </body>
+</html>
