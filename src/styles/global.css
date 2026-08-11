@@ -20,6 +20,16 @@
   display: none !important;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -531,7 +541,7 @@ h3 {
 .register-shell {
   width: min(100%, 48rem);
   margin: 0 auto;
-  padding: 1.5rem 1rem 3rem;
+  padding: 0 1rem 3rem;
 }
 
 .prototype-hero {
@@ -993,7 +1003,7 @@ textarea:focus {
 
 .form-section {
   border-top: 1px solid var(--line);
-  padding: 1rem 0;
+  padding: 0.85rem 0;
 }
 
 .form-section h2,
@@ -1028,7 +1038,7 @@ textarea:focus {
 .compact-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.65rem 0.75rem;
+  gap: 0.55rem 0.7rem;
 }
 
 .compact-fields label,
@@ -1057,8 +1067,8 @@ textarea:focus {
 .compact-fields select,
 .compact-fields textarea,
 .stage-field select {
-  min-height: 42px;
-  padding: 0.52rem 0.6rem;
+  min-height: 44px;
+  padding: 0.5rem 0.6rem;
   font-size: 0.95rem;
 }
 
@@ -1076,7 +1086,7 @@ textarea:focus {
 
 .child-entry {
   border-top: 1px solid var(--line);
-  padding: 1rem 0;
+  padding: 0.85rem 0;
 }
 
 .child-entry:first-child {
@@ -1085,11 +1095,19 @@ textarea:focus {
 }
 
 .child-entry-heading {
-  margin-bottom: 0.7rem;
+  margin-bottom: 0.55rem;
 }
 
 .child-entry-heading h3 {
+  margin-bottom: 0;
   font-size: 1rem;
+}
+
+.child-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
 }
 
 .text-button,
@@ -1109,26 +1127,82 @@ textarea:focus {
   width: auto;
   margin: 0;
   padding: 0.35rem 0.1rem;
+  white-space: nowrap;
 }
 
 .class-picker {
   display: grid;
-  gap: 0.65rem;
-  margin-top: 0.85rem;
-  border-left: 3px solid rgba(7, 58, 175, 0.28);
-  padding-left: 0.75rem;
+  gap: 0.55rem;
+  margin-top: 0.7rem;
 }
 
-.recommendation,
 .catalog-message {
   margin: 0;
   color: var(--muted);
   font-size: 0.86rem;
 }
 
-.recommendation {
-  color: var(--blue-deep);
+.class-choice-fieldset,
+.returning-field {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.class-choice-fieldset {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.class-choice-fieldset legend,
+.returning-field legend {
+  margin-bottom: 0.25rem;
+  padding: 0;
+  color: var(--ink);
+  font-size: 0.9rem;
   font-weight: 750;
+}
+
+.segmented-choice {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.segmented-choice label {
+  position: relative;
+}
+
+.segmented-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.segmented-choice span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px solid #cbd3df;
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 750;
+}
+
+.segmented-choice input:checked + span {
+  border-color: var(--blue);
+  background: rgba(7, 58, 175, 0.08);
+  color: var(--blue-deep);
+}
+
+.segmented-choice input:focus-visible + span {
+  outline: 3px solid rgba(7, 58, 175, 0.18);
+  outline-offset: 1px;
 }
 
 .class-options {
@@ -1167,6 +1241,16 @@ textarea:focus {
 .class-option small {
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.field-message-error {
+  color: #a52a15;
+  font-weight: 750;
+}
+
+.catalog-message:focus-visible {
+  outline: 3px solid rgba(222, 74, 39, 0.18);
+  outline-offset: 3px;
 }
 
 .class-option.full {

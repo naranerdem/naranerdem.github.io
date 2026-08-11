@@ -89,13 +89,7 @@ const formCopy = registrationFormCopy;
         </section>
 
         <section class="form-section" aria-labelledby="children-title">
-          <div class="section-title-row">
-            <div>
-              <h2 id="children-title">{formCopy.child.title}</h2>
-              <p>{formCopy.child.help}</p>
-            </div>
-            <button class="text-button add-child-button" type="button" id="add-child">{formCopy.buttons.addChild}</button>
-          </div>
+          <h2 id="children-title" class="visually-hidden">{formCopy.child.title}</h2>
           <div id="children-list" class="children-list"></div>
         </section>
 
@@ -168,12 +162,18 @@ const formCopy = registrationFormCopy;
     </dialog>
 
     <script id="registration-data" type="application/json" is:inline set:html={JSON.stringify(registrationData)} />
-    <script is:inline>
+    <script is:inline type="module">
+      import {
+        applyStageRecommendation,
+        classSelectionIssue,
+        initialStageSelection,
+        userStageSelection,
+      } from "/scripts/registration-state.js";
+
       const registrationData = JSON.parse(document.getElementById("registration-data").textContent);
       const formCopy = registrationData.registrationFormCopy;
       const form = document.getElementById("registration-form");
       const childrenList = document.getElementById("children-list");
-      const addChildButton = document.getElementById("add-child");
       const errorBox = document.getElementById("information-error");
       const progress = document.getElementById("registration-progress");
       const reviewPanel = document.getElementById("review-panel");
@@ -182,12 +182,10 @@ const formCopy = registrationFormCopy;
       const guardianDialog = document.getElementById("guardian-rules-dialog");
       const studentDialog = document.getElementById("student-rules-dialog");
       const stageLabels = formCopy.child.stageLabels;
-      const stagesFromQuery = { "1": "stage_1", "2": "stage_2", "3": "stage_3" };
-      const queryStage = stagesFromQuery[new URLSearchParams(window.location.search).get("stage")] || "";
+      const initialStage = initialStageSelection(window.location.search);
       let childCount = 0;
       let catalog = null;
-      let catalogAvailable = false;
-      let catalogLoading = true;
+      let catalogState = "loading";
       let parentAcknowledged = false;
       let studentAcknowledged = false;
       let returnFocusTo = null;
@@ -221,7 +219,7 @@ const formCopy = registrationFormCopy;
       }
 
       function recommendedStage(card) {
-        const returning = card.querySelector("[data-child-returning]").value;
+        const returning = card.querySelector("[data-child-returning]:checked")?.value || "";
         const previous = card.querySelector("[data-child-previous-stage]").value;
         if (returning !== "yes") return "";
         if (previous === "stage_1") return "stage_2";
@@ -229,14 +227,15 @@ const formCopy = registrationFormCopy;
         return "";
       }
 
-      function updateRecommendation(card, applySuggestion = false) {
+      function updateRecommendation(card) {
         const suggestion = recommendedStage(card);
         const stage = card.querySelector("[data-child-stage]");
-        const notice = card.querySelector("[data-child-recommendation]");
-        if (suggestion && applySuggestion) stage.value = suggestion;
-        notice.textContent = suggestion
-          ? formCopy.child.recommendation.replace("{stage}", stageLabels[suggestion])
-          : stage.value ? "" : formCopy.child.recommendationUnknown;
+        const selection = applyStageRecommendation(
+          { value: stage.value, source: card.dataset.stageSource || "none" },
+          suggestion,
+        );
+        stage.value = selection.value;
+        card.dataset.stageSource = selection.source;
       }
 
       function sessionForId(id) {
@@ -248,28 +247,40 @@ const formCopy = registrationFormCopy;
         return `${session.weekday} ${session.startTime}–${session.endTime}`;
       }
 
+      function sessionsForStage(stage) {
+        if (!catalog || !stage) return [];
+        return catalog.academicYears
+          .flatMap((year) => year.classSessions)
+          .filter((session) => session.stageCode === stage);
+      }
+
+      function setCatalogMessage(card, message, isError = false) {
+        const status = card.querySelector("[data-catalog-message]");
+        status.textContent = message;
+        status.classList.toggle("field-message-error", isError);
+      }
+
       function renderClasses(card) {
         const stage = card.querySelector("[data-child-stage]").value;
         const target = card.querySelector("[data-class-options]");
-        const status = card.querySelector("[data-catalog-message]");
+        const fieldset = card.querySelector("[data-class-choice]");
         const selected = card.querySelector("[data-child-class]:checked")?.value || "";
         target.innerHTML = "";
-        status.textContent = "";
+        setCatalogMessage(card, "");
 
-        if (!catalog) {
-          status.textContent = catalogLoading ? formCopy.classChoice.loading : formCopy.classChoice.unavailable;
-          return;
-        }
         if (!stage) {
-          status.textContent = formCopy.classChoice.chooseStage;
+          fieldset.hidden = true;
+          return;
+        }
+        fieldset.hidden = false;
+        if (!catalog) {
+          setCatalogMessage(card, catalogState === "loading" ? formCopy.classChoice.loading : formCopy.classChoice.unavailable);
           return;
         }
 
-        const sessions = catalog.academicYears
-          .flatMap((year) => year.classSessions)
-          .filter((session) => session.stageCode === stage);
+        const sessions = sessionsForStage(stage);
         if (!sessions.length) {
-          status.textContent = formCopy.classChoice.noSessions;
+          setCatalogMessage(card, formCopy.classChoice.noSessions);
           return;
         }
 
@@ -298,8 +309,28 @@ const formCopy = registrationFormCopy;
 
         target.querySelectorAll("[data-waitlist]").forEach((button) => {
           button.addEventListener("click", () => {
-            status.textContent = formCopy.classChoice.waitlistPrototype;
+            setCatalogMessage(card, formCopy.classChoice.waitlistPrototype);
           });
+        });
+        target.querySelectorAll("[data-child-class]").forEach((input) => {
+          input.addEventListener("change", () => setCatalogMessage(card, ""));
+        });
+      }
+
+      function updatePreviousStageVisibility(card) {
+        const returning = card.querySelector("[data-child-returning]:checked")?.value || "";
+        const field = card.querySelector("[data-previous-stage-field]");
+        const previous = card.querySelector("[data-child-previous-stage]");
+        const visible = returning === "yes";
+        field.hidden = !visible;
+        previous.disabled = !visible;
+        previous.required = visible;
+        if (!visible) previous.value = "";
+      }
+
+      function refreshChildHeadings() {
+        childCards().forEach((card, position) => {
+          card.querySelector("[data-child-heading]").textContent = `${formCopy.child.cardTitle} ${position + 1}`;
         });
       }
 
@@ -310,8 +341,10 @@ const formCopy = registrationFormCopy;
         card.dataset.childIndex = String(index);
         card.innerHTML = `
           <div class="child-entry-heading">
-            <h3>${formCopy.child.cardTitle} ${childCards().length + 1}</h3>
-            ${index > 0 ? `<button class="text-button" type="button" data-remove-child>${formCopy.buttons.removeChild}</button>` : ""}
+            <h3 data-child-heading>${formCopy.child.cardTitle} ${childCards().length + 1}</h3>
+            <div class="child-entry-actions">
+              ${index === 0 ? `<button class="text-button add-child-button" type="button" data-add-child>${formCopy.buttons.addChild}</button>` : `<button class="text-button" type="button" data-remove-child>${formCopy.buttons.removeChild}</button>`}
+            </div>
           </div>
           <div class="compact-fields child-fields">
             <label><span>${formCopy.child.surname} ${requiredMarker()}</span><input name="child-${index}-surname" data-child-surname value="${escapeText(surname)}" required></label>
@@ -320,46 +353,105 @@ const formCopy = registrationFormCopy;
             <label><span>${formCopy.child.gender} ${requiredMarker()}</span><select name="child-${index}-gender" data-child-gender required><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.genderOptions.map(optionHtml).join("")}</select></label>
             <label><span>${formCopy.child.dob} ${requiredMarker()}</span><input name="child-${index}-dob" data-child-dob type="date" required></label>
             <label><span>${formCopy.child.school}</span><input name="child-${index}-school" data-child-school></label>
-            <label><span>${formCopy.child.returning} ${requiredMarker()}</span><select name="child-${index}-returning" data-child-returning required><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.returningOptions.map(optionHtml).join("")}</select></label>
-            <label><span>${formCopy.child.previousStage}</span><select name="child-${index}-previous-stage" data-child-previous-stage><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.previousStageOptions.map(optionHtml).join("")}</select><small>${formCopy.child.previousStageHelp}</small></label>
-            <label class="field-wide"><span>${formCopy.child.referralCode}</span><input name="child-${index}-referral-code" data-child-referral autocomplete="off"><small>${formCopy.child.referralCodeHelp}</small></label>
+            <fieldset class="returning-field field-wide" data-returning-field>
+              <legend>${formCopy.child.returning} ${requiredMarker()}</legend>
+              <div class="segmented-choice">
+                ${formCopy.child.returningOptions.map((option) => `<label><input type="radio" name="child-${index}-returning" value="${escapeText(option.value)}" data-child-returning required><span>${escapeText(option.label)}</span></label>`).join("")}
+              </div>
+            </fieldset>
+            <label data-previous-stage-field hidden><span>${formCopy.child.previousStage} ${requiredMarker()}</span><select name="child-${index}-previous-stage" data-child-previous-stage disabled><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.previousStageOptions.map(optionHtml).join("")}</select></label>
+            <label><span>${formCopy.child.referralCode}</span><input name="child-${index}-referral-code" data-child-referral autocomplete="off" placeholder="${formCopy.child.referralCodePlaceholder}"></label>
           </div>
           <div class="class-picker">
-            <label class="stage-field"><span>${formCopy.child.stage} ${requiredMarker()}</span><select name="child-${index}-stage" data-child-stage required><option value="">${formCopy.selectPlaceholder}</option>${stageOptions()}</select><small>${formCopy.child.stageHelp}</small></label>
-            <p class="recommendation" data-child-recommendation>${formCopy.child.recommendationUnknown}</p>
-            <div class="class-options" data-class-options></div>
-            <p class="catalog-message" data-catalog-message aria-live="polite"></p>
+            <label class="stage-field"><span>${formCopy.child.stage} ${requiredMarker()}</span><select name="child-${index}-stage" data-child-stage required><option value="">${formCopy.selectPlaceholder}</option>${stageOptions()}</select></label>
+            <fieldset class="class-choice-fieldset" data-class-choice hidden>
+              <legend>${formCopy.classChoice.title} ${requiredMarker()}</legend>
+              <div class="class-options" data-class-options></div>
+              <p class="catalog-message" data-catalog-message aria-live="polite" tabindex="-1"></p>
+            </fieldset>
           </div>
         `;
         childrenList.append(card);
         const stage = card.querySelector("[data-child-stage]");
-        if (queryStage) stage.value = queryStage;
-        card.querySelector("[data-child-returning]").addEventListener("change", () => {
-          updateRecommendation(card, true);
+        stage.value = initialStage.value;
+        card.dataset.stageSource = initialStage.source;
+        card.querySelector("[data-returning-field]").addEventListener("change", () => {
+          updatePreviousStageVisibility(card);
+          updateRecommendation(card);
           renderClasses(card);
         });
         card.querySelector("[data-child-previous-stage]").addEventListener("change", () => {
-          updateRecommendation(card, true);
+          updateRecommendation(card);
           renderClasses(card);
         });
-        stage.addEventListener("change", () => renderClasses(card));
-        card.querySelector("[data-remove-child]")?.addEventListener("click", () => card.remove());
-        updateRecommendation(card);
+        stage.addEventListener("change", () => {
+          const selection = userStageSelection(stage.value);
+          card.dataset.stageSource = selection.source;
+          stage.value = selection.value;
+          renderClasses(card);
+        });
+        card.querySelector("[data-add-child]")?.addEventListener("click", () => {
+          const firstSurname = childCards()[0]?.querySelector("[data-child-surname]")?.value || "";
+          childCount += 1;
+          renderChild(childCount, firstSurname);
+        });
+        card.querySelector("[data-remove-child]")?.addEventListener("click", () => {
+          card.remove();
+          refreshChildHeadings();
+        });
+        updatePreviousStageVisibility(card);
+        refreshChildHeadings();
         renderClasses(card);
+      }
+
+      function focusVisibleControl(control) {
+        if (!control || control.disabled || control.closest("[hidden]")) return;
+        control.focus();
+        control.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+
+      function firstVisibleInvalidControl() {
+        return Array.from(form.querySelectorAll(":invalid"))
+          .find((control) => !control.disabled && !control.closest("[hidden]"));
+      }
+
+      function issueMessage(issue) {
+        if (issue.code === "catalog_loading") return formCopy.classChoice.loading;
+        if (issue.code === "catalog_unavailable") return formCopy.classChoice.unavailable;
+        if (issue.code === "no_sessions") return formCopy.classChoice.noSessions;
+        if (issue.code === "no_available_class") return formCopy.classChoice.noAvailableClass;
+        return formCopy.classChoice.selectRequired;
       }
 
       function validateInformation() {
         errorBox.hidden = true;
         if (!form.checkValidity()) {
           errorBox.hidden = false;
-          form.querySelector(":invalid")?.focus();
+          const invalid = firstVisibleInvalidControl();
+          const card = invalid?.closest("[data-child-card]");
+          if (invalid?.matches("[data-child-class]") && card) {
+            setCatalogMessage(card, formCopy.classChoice.selectRequired, true);
+          }
+          focusVisibleControl(invalid);
           return false;
         }
-        if (catalogAvailable && catalog) {
-          const incomplete = childCards().find((card) => !card.querySelector("[data-child-class]:checked"));
-          if (incomplete) {
+        for (const card of childCards()) {
+          const stage = card.querySelector("[data-child-stage]").value;
+          const issue = classSelectionIssue({
+            catalogState,
+            stage,
+            sessions: sessionsForStage(stage),
+            selectedClassId: card.querySelector("[data-child-class]:checked")?.value || "",
+          });
+          if (issue) {
             errorBox.hidden = false;
-            incomplete.querySelector("[data-child-stage]")?.focus();
+            setCatalogMessage(card, issueMessage(issue), true);
+            const target = issue.focusTarget === "stage"
+              ? card.querySelector("[data-child-stage]")
+              : issue.focusTarget === "class-options"
+                ? card.querySelector("[data-child-class]")
+                : card.querySelector("[data-catalog-message]");
+            focusVisibleControl(target);
             return false;
           }
         }
@@ -451,12 +543,6 @@ const formCopy = registrationFormCopy;
         document.getElementById("guardian-name").focus();
       });
       document.getElementById("finish-prototype").addEventListener("click", () => { completeMessage.hidden = false; });
-      addChildButton.addEventListener("click", () => {
-        const firstSurname = childCards()[0]?.querySelector("[data-child-surname]")?.value || "";
-        childCount += 1;
-        renderChild(childCount, firstSurname);
-      });
-
       async function loadCatalog() {
         try {
           const response = await fetch("/api/registration/catalog", { headers: { Accept: "application/json" } });
@@ -464,12 +550,11 @@ const formCopy = registrationFormCopy;
           const payload = await response.json();
           if (!Array.isArray(payload.academicYears)) throw new Error("Invalid catalog");
           catalog = payload;
-          catalogAvailable = true;
+          catalogState = "available";
         } catch {
           catalog = null;
-          catalogAvailable = false;
+          catalogState = "unavailable";
         }
-        catalogLoading = false;
         childCards().forEach((card) => renderClasses(card));
       }
 

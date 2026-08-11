@@ -74,6 +74,10 @@ The backend should expose narrow application-level operations instead of letting
 
 Ordinary registration selects one concrete class per child. Future class availability and seat-hold creation must use that selected class atomically. A full class uses a simple FIFO waitlist for that same class; ranked alternative-class choices are not part of the public model.
 
+The current non-submitting prototype keeps stage selection deterministic: an explicit user choice wins, a valid `?stage=` value is only an initial default, and a previous-stage recommendation is used only when neither is present. Returning-history controls must never overwrite a manual stage choice. Conditional controls are disabled while hidden so native validation cannot target invisible fields.
+
+The production catalog may legitimately contain no configured classes. The UI must then focus and explain the class-availability state rather than treating the already-valid stage select as the missing field. A previous prototype bug did the latter because its custom selected-class check ran for every successful catalog response, including an empty catalog, and always focused the stage select. Regression coverage preserves the corrected behavior.
+
 Parent and student rule acknowledgements are distinct product events. The current prototype keeps them as separate client-side state only; a real submission must persist versioned acknowledgements with the application.
 
 Parent-facing account access should eventually be passwordless, based on verified email magic links or one-time codes. Email links should return the parent to durable server-side registration/account state, not rely on an old browser tab or client session remaining alive.

@@ -178,7 +178,9 @@ Ordinary registration selects exactly one concrete `ClassSession` for each child
 stage + weekday + start/end time
 ```
 
-The selected class is not merely a preferred stage. It is the class to capacity-check before creating a future temporary hold. A stage recommendation may be derived from previous confirmed participation where known, but it remains an editable parent choice. Homepage stage links may preselect a stage in the prototype; they never lock it.
+The selected class is not merely a preferred stage. It is the class to capacity-check before creating a future temporary hold. A stage recommendation may be derived from previous confirmed participation where known, but it remains an editable parent choice. Homepage stage links may preselect a stage in the prototype; they never lock it. Selection precedence is explicit user choice, then a valid initial URL stage, then a derived recommendation. Once the parent chooses manually, returning-history changes and catalog refreshes must not overwrite that choice.
+
+The phone-first prototype keeps the child form compact: required fields use only the documented red asterisk, optional fields have no marker, previous-stage selection appears and becomes required only for a returning child, and stage/class controls read as ordinary fields rather than a nested wizard. When a selected stage has no configured classes, the page explains that state at the class field and does not redirect focus to the stage selector.
 
 ### Enrollment
 
