@@ -39,6 +39,23 @@ import {
   updateStaffSessionPolicies,
   type StaffSessionPolicyInput,
 } from "../staff/session-policy";
+import {
+  ProgramCalendarError,
+  archiveAcademicYearBreak,
+  cancelFutureCalendarSlot,
+  changeCalendarDraft,
+  copyPreviousProgram,
+  createCalendarChangeDraft,
+  createProgramDraft,
+  generateCalendarDraft,
+  getProgramCalendarOverview,
+  publishCalendarDraft,
+  publishProgramDraft,
+  saveAcademicYearBreak,
+  saveClassSession,
+  saveProgramDraft,
+  setCalendarDeliveredPrefix,
+} from "../staff/program-calendar";
 
 type ErrorCode =
   | "configuration_error"
@@ -148,6 +165,17 @@ function registrationError(caught: unknown): Response {
     return error("internal_error", "Баталгаажуулах и-мэйлийг одоогоор илгээж чадсангүй.", 503);
   }
   return error("internal_error", "Бүртгэлийг одоогоор үргэлжлүүлж чадсангүй.", 500);
+}
+
+function programCalendarError(caught: unknown): Response {
+  if (!(caught instanceof ProgramCalendarError)) {
+    return error("internal_error", "Хөтөлбөр, хуваарийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("invalid_request", "Сонгосон мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", "Өөр хүн саяхан өөрчилсөн байна. Хуудсыг шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "immutable") return error("invalid_request", "Хэвлэгдсэн эсвэл ашиглагдаж буй мэдээллийг шууд өөрчилж болохгүй. Шинэ ноорог үүсгэнэ үү.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 export async function handleApiRequest(
@@ -600,6 +628,97 @@ export async function handleApiRequest(
     return denied ?? json({ ok: true, capability: "calendar.manage", changed: false }, 200, {
       "Cache-Control": "no-store",
     });
+  }
+
+  if (path === "/api/staff/program-calendar") {
+    if (request.method === "GET") {
+      const denied = await requireStaffCapability(request, env, "calendar.view");
+      if (denied) return denied;
+      try {
+        return json(await getProgramCalendarOverview(env), 200, { "Cache-Control": "no-store" });
+      } catch (caught) {
+        return programCalendarError(caught);
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    let payload: Record<string, unknown>;
+    try {
+      payload = await request.json() as Record<string, unknown>;
+      if (!payload || typeof payload.action !== "string") throw new Error("invalid payload");
+    } catch {
+      return error("invalid_request", "Хүсэлтийн мэдээллийг шалгана уу.", 400, { "Cache-Control": "no-store" });
+    }
+    try {
+      switch (payload.action) {
+        case "program.create":
+          await createProgramDraft(env, principal, { academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), displayName: String(payload.displayName ?? "") });
+          break;
+        case "program.copy-previous":
+          await copyPreviousProgram(env, principal, { academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? "") });
+          break;
+        case "program.save":
+          await saveProgramDraft(env, principal, {
+            programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            displayName: String(payload.displayName ?? ""), lessons: Array.isArray(payload.lessons) ? payload.lessons as Array<{ id?: string; title: string; internalNote?: string | null }> : [],
+          });
+          break;
+        case "program.publish":
+          await publishProgramDraft(env, principal, { programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          break;
+        case "class.save":
+          await saveClassSession(env, principal, {
+            id: typeof payload.id === "string" ? payload.id : undefined,
+            expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
+            academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), displayLabel: String(payload.displayLabel ?? ""), weekday: String(payload.weekday ?? ""), startTime: String(payload.startTime ?? ""), endTime: String(payload.endTime ?? ""), capacity: Number(payload.capacity), status: String(payload.status ?? ""), facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null,
+          });
+          break;
+        case "break.save":
+          await saveAcademicYearBreak(env, principal, {
+            id: typeof payload.id === "string" ? payload.id : undefined,
+            expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
+            academicYearId: String(payload.academicYearId ?? ""), label: String(payload.label ?? ""), startsOn: String(payload.startsOn ?? ""), endsOn: String(payload.endsOn ?? ""), excludesHabitualSlots: payload.excludesHabitualSlots === true, sourceNote: typeof payload.sourceNote === "string" ? payload.sourceNote : null,
+          });
+          break;
+        case "break.archive":
+          await archiveAcademicYearBreak(env, principal, { breakId: String(payload.breakId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          break;
+        case "calendar.generate":
+          await generateCalendarDraft(env, principal, { classSessionId: String(payload.classSessionId ?? ""), programId: String(payload.programId ?? ""), firstCandidateDate: String(payload.firstCandidateDate ?? "") });
+          break;
+        case "calendar.change-draft":
+          await createCalendarChangeDraft(env, principal, { classSessionId: String(payload.classSessionId ?? "") });
+          break;
+        case "calendar.change":
+          await changeCalendarDraft(env, principal, {
+            revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), kind: String(payload.kind ?? "") as "exclude" | "restore" | "extra", localDate: String(payload.localDate ?? ""), startTime: typeof payload.startTime === "string" ? payload.startTime : undefined, endTime: typeof payload.endTime === "string" ? payload.endTime : undefined, reasonLabel: typeof payload.reasonLabel === "string" ? payload.reasonLabel : null,
+          });
+          break;
+        case "calendar.lock":
+          await setCalendarDeliveredPrefix(env, principal, { revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), lockedThroughSequence: Number(payload.lockedThroughSequence) });
+          break;
+        case "calendar.cancel":
+          await cancelFutureCalendarSlot(env, principal, {
+            revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), slotId: String(payload.slotId ?? ""),
+            replacement: payload.replacement && typeof payload.replacement === "object" ? payload.replacement as { localDate: string; startTime: string; endTime: string; reasonLabel?: string | null } : undefined,
+          });
+          break;
+        case "calendar.publish":
+          await publishCalendarDraft(env, principal, { revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          break;
+        default:
+          return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+      }
+      return json({ ok: true }, 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return programCalendarError(caught);
+    }
   }
 
   if (path === "/api/staff/proof/admin") {

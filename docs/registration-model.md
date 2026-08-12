@@ -180,6 +180,11 @@ The implemented program/calendar foundation separates an academic-year, stage-sp
 
 After publication, cancellation preserves the original dated entry and only reflows lessons after an explicit manually locked prefix. Without a replacement, the tail extends; with a timely replacement, it absorbs the missed lesson. Read-only class schedules expose no registration data. Details are in [program-calendar-model.md](program-calendar-model.md).
 
+Teachers and admins now configure these annual records through a protected,
+Mongolian operational surface. It deliberately asks for program lessons,
+cohort time, breaks, and explicit date-level decisions rather than exposing
+database concepts. Accountants cannot open or mutate this setup area.
+
 A missed Lesson 7 can be made up only through another suitable occurrence of Lesson 7, not by joining Lesson 8 because it has space. Future make-up suggestions require the same curriculum lesson, a suitable future occurrence with capacity, an unresolved absence, and teacher consideration. Suggestions never automatically invite parents; the teacher approves/rejects and can override them. A teacher may create one extra non-standard occurrence when normal occurrences are unavailable.
 
 ### Future Attendance and Absence Notice

@@ -82,6 +82,9 @@ import "../styles/global.css";
           <h2 id="staff-access-title">Таны ажиллах хэсэг</h2>
           <ul id="staff-capability-list"></ul>
         </div>
+        <a id="staff-program-calendar-link" class="button primary" href="/staff/program-calendar/" hidden>
+          Хөтөлбөр ба хуваарь
+        </a>
         <a id="staff-auth-settings-link" class="staff-settings-link" href="/staff/settings/auth/" hidden>
           Нэвтрэх хугацааны тохиргоо
         </a>
@@ -95,6 +98,7 @@ import "../styles/global.css";
       const formError = document.getElementById("staff-form-error");
       const welcome = document.getElementById("staff-welcome");
       const capabilityList = document.getElementById("staff-capability-list");
+      const programCalendarLink = document.getElementById("staff-program-calendar-link");
       const settingsLink = document.getElementById("staff-auth-settings-link");
       let pollTimer = 0;
       let polling = false;
@@ -131,6 +135,7 @@ import "../styles/global.css";
           return item;
         }));
         settingsLink.hidden = !capabilities.includes("admin.settings.manage");
+        programCalendarLink.hidden = !(capabilities.includes("program.manage") && capabilities.includes("calendar.manage"));
         show("staff-home");
       }
 

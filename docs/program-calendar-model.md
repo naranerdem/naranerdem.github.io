@@ -68,10 +68,31 @@ candidates at the tail and reassigns only the future lesson sequence. With a
 replacement before the next habitual slot, that replacement absorbs the missed
 lesson and later assignments remain unchanged where chronology permits.
 
-The domain service returns a preview suitable for a later teacher action:
-cancelled occurrence, next lesson, number of future lesson assignments changed,
-and new final lesson date. No teacher editor or public mutation endpoint exists
-yet.
+The domain service returns a preview suitable for a teacher action: cancelled
+occurrence, next lesson, number of future lesson assignments changed, and new
+final lesson date. The protected staff editor creates a fresh draft from a
+published calendar before any later change. It offers only domain actions such
+as exclude/restore a date, add an extra occurrence, confirm the delivered
+prefix, or cancel a future occurrence; it does not expose raw lesson-to-date
+assignment.
+
+## Staff Setup Surface
+
+`/staff/program-calendar/` is a protected teacher/admin operational surface.
+It works with one year at a time and keeps program, cohort time, and dated
+calendar separate. A draft program can add, rename, order, or remove named
+lessons; publishing freezes it. Copying a prior published program creates new
+lesson identities. A class session can be opened/closed and given a practical
+cohort label, but its time/stage/capacity cannot be casually rewritten once it
+has operational references.
+
+Academic-year breaks are global planning inputs. Calendar generation uses the
+selected published program, first candidate date, class weekday/time, active
+breaks, class overrides, and manual extra slots to write an explicit draft.
+The chronological preview is the publication check. Every meaningful setup,
+publication, delivered-prefix confirmation, and cancellation action is audited.
+Accountants have no access to the surface; server capability checks remain the
+authority rather than the visual menu.
 
 ## Public And Future Use
 

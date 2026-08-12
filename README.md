@@ -99,7 +99,10 @@ The registration domain is documented before implementation so the future app pr
 
 See [docs/registration-model.md](docs/registration-model.md).
 
-The program/calendar foundation keeps what is taught, a class's habitual cohort slot, and its published dated schedule separate. Its staging data is deliberately fake; production has no curriculum or calendar configuration yet. See [docs/program-calendar-model.md](docs/program-calendar-model.md).
+The protected staff `Хөтөлбөр ба хуваарь` setup now creates revisioned annual
+programs, class sessions, breaks, and explicit dated calendar drafts. Its
+staging data is deliberately fake; production has no curriculum or calendar
+configuration yet. See [docs/program-calendar-model.md](docs/program-calendar-model.md).
 
 ## Editing Public Content
 

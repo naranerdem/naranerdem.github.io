@@ -159,6 +159,11 @@ Migration `0006_program_and_calendar_foundation.sql` implements class-level prog
 
 Database triggers allow lessons, overrides, and entries only while their parent is a draft, require program/year/stage compatibility, and prevent deletion or identity edits of published program/calendar history. Production has the empty schema only; all current programs/calendars are clearly marked staging fixtures.
 
+The protected staff setup surface uses these existing tables directly through
+narrow server operations. It adds no generic database editor or new persistence
+model: published rows remain immutable, copied program lessons receive new IDs,
+and a post-publication calendar change is a separately auditable draft revision.
+
 Attendance, absence notice, make-up, accountant workflow, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
 
 - attendance bookkeeping and prior absence notice: editable operational records attached to a concrete occurrence, with auditable correction history.

@@ -19,6 +19,7 @@
     "test:api": "npm run build && node scripts/api-worker-test.mjs",
     "test:auth": "npm run build && node scripts/auth-worker-test.mjs",
     "test:staff-auth": "npm run build && node scripts/staff-auth-test.mjs",
+    "test:staff:program-calendar": "node scripts/staff-program-calendar-test.mjs",
     "test:registration": "node scripts/registration-hold-test.mjs",
     "test:calendar": "node scripts/calendar-domain-test.mjs",
     "test:schedule:preview": "npm run build && node scripts/schedule-preview-test.mjs",

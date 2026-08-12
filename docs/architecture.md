@@ -152,6 +152,16 @@ Published program and calendar revisions are immutable. Global academic-year bre
 
 Future cancellation/reflow is limited by a manual locked/delivered lesson prefix rather than wall-clock inference. Cancelling one future active slot retains cancellation history and either extends the habitual tail or lets a chronological replacement slot absorb the lesson. See [program-calendar-model.md](program-calendar-model.md) for the exact invariants and generator semantics.
 
+The protected Mongolian `Хөтөлбөр ба хуваарь` staff surface now makes this
+annual setup operational for teachers and admins. It is intentionally a small
+sequence of obvious actions: make/publish an ordered program, set a cohort's
+weekday/time/capacity/status, enter global breaks, generate a dated draft,
+review it, and publish it. It does not expose D1, API, adapter, or deployment
+terminology. A calendar change after publication always starts from a new
+draft revision; a teacher can confirm only a forward delivered prefix before a
+future cancellation/reflow. Accountant capability has no access, and the
+Worker enforces every permission and same-origin mutation request.
+
 Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
 
 Parents may later use a simple action such as `Хичээлд ирж чадахгүйгээ мэдэгдэх` for one specific upcoming occurrence and an optional short note. Advance notice may favor teacher consideration of a make-up, but guarantees neither a make-up nor an automatic credit. An uninformed absence creates no automatic entitlement.

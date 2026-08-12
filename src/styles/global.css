@@ -1681,6 +1681,250 @@ textarea:focus {
   width: min(100%, 42rem);
 }
 
+.staff-program-shell {
+  width: min(100%, 62rem);
+  padding-bottom: 3.5rem;
+}
+
+.staff-page-heading,
+.staff-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.staff-page-heading {
+  margin-bottom: 1.25rem;
+}
+
+.staff-page-heading h1,
+.staff-section-heading h2 {
+  margin: 0;
+}
+
+.staff-back-link {
+  color: var(--blue-deep);
+  font-weight: 800;
+}
+
+.staff-year-picker,
+.staff-section-heading > label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.staff-year-picker select,
+.staff-section-heading select,
+.staff-compact-form input,
+.staff-compact-form select,
+.staff-program-form input,
+.staff-lock-form select {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.48rem 0.6rem;
+}
+
+.staff-year-picker {
+  width: min(100%, 21rem);
+  margin-bottom: 1.5rem;
+}
+
+.staff-operation-section {
+  display: grid;
+  gap: 1rem;
+  border-top: 2px solid var(--line);
+  padding: 1.5rem 0;
+}
+
+.staff-section-heading .eyebrow,
+.staff-page-heading .eyebrow {
+  margin-bottom: 0.3rem;
+}
+
+.staff-compact-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.staff-compact-form label,
+.staff-program-form > label,
+.staff-lock-form label:first-child {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.staff-wide {
+  grid-column: 1 / -1;
+}
+
+.staff-check {
+  display: flex !important;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 44px;
+  color: var(--ink) !important;
+}
+
+.staff-check input {
+  width: 1.15rem;
+  min-height: 1.15rem;
+  accent-color: var(--blue);
+}
+
+.staff-record-list,
+.staff-calendar-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staff-record-list article,
+.staff-calendar-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding: 0.75rem 0;
+}
+
+.staff-record-list p,
+.staff-calendar-list small,
+.staff-empty p,
+.staff-draft-label {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+}
+
+.staff-record-list .button,
+.staff-calendar-list .button {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0.45rem 0.65rem;
+}
+
+.staff-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.staff-empty,
+.staff-calendar-draft {
+  display: grid;
+  gap: 1rem;
+}
+
+.staff-program-form {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.staff-draft-label {
+  border-left: 3px solid var(--blue);
+  padding-left: 0.65rem;
+}
+
+.staff-lesson-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staff-lesson-list li {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) repeat(3, 2.4rem);
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.staff-order {
+  color: var(--muted);
+  font-weight: 800;
+  text-align: center;
+}
+
+.staff-icon-button {
+  min-width: 2.4rem;
+  min-height: 2.4rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--blue-deep);
+  font: inherit;
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
+.staff-calendar-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 1rem 0;
+}
+
+.staff-lock-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: end;
+}
+
+.staff-lock-form .staff-check {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 38rem) {
+  .staff-page-heading,
+  .staff-section-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .staff-section-heading > label {
+    width: 100%;
+  }
+
+  .staff-compact-form,
+  .staff-calendar-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .staff-wide {
+    grid-column: auto;
+  }
+
+  .staff-lock-form {
+    grid-template-columns: 1fr;
+  }
+
+  .staff-record-list article,
+  .staff-calendar-list li {
+    align-items: start;
+    flex-direction: column;
+  }
+}
+
 .staff-policy-form {
   display: grid;
   gap: 0;
