@@ -83,7 +83,39 @@ try {
   const unauthenticated = await handleApiRequest(new Request("https://staging.example.test/api/staff/program-calendar"), runtime);
   assert.equal(unauthenticated.status, 401, "unauthenticated callers cannot read staff setup data");
 
+  const programsPage = readFileSync("src/pages/staff/programs.astro", "utf8");
+  const holidaysPage = readFileSync("src/pages/staff/holidays.astro", "utf8");
+  const schedulePage = readFileSync("src/pages/staff/schedule.astro", "utf8");
+  const settingsPage = readFileSync("src/pages/staff/settings/index.astro", "utf8");
+  const legacyPage = readFileSync("src/pages/staff/program-calendar.astro", "utf8");
+  assert.match(programsPage, /Хөтөлбөр нийтлэх/, "program tool uses the ordinary publish action");
+  assert.match(holidaysPage, /Амралтын хугацаа нэмэх/, "holiday tool is a separate focused screen");
+  assert.match(schedulePage, /Анги нэмэх/);
+  assert.match(schedulePage, /Хуваарь нийтлэх/);
+  assert.doesNotMatch(schedulePage, /Ангийн нэр|Facebook бүлгийн холбоос|value="draft"|value="cancelled"/, "ordinary class editing hides legacy technical fields and states");
+  assert.match(settingsPage, /Шат бүрт нэг холбоос хадгална/, "Facebook configuration is stage scoped");
+  assert.match(legacyPage, /url=\/staff\/schedule\//, "old bookmark redirects to the schedule tool");
+
   await assert.rejects(() => service.copyPreviousProgram(runtime, actor("accountant"), { academicYearId: "year-2026", stageCode: "stage_1" }), /Program and calendar/);
+  await assert.rejects(() => service.saveAcademicYearStageSetting(runtime, actor("accountant"), { academicYearId: "year-2026", stageCode: "stage_1", facebookGroupUrl: "https://facebook.com/groups/one" }), /Program and calendar/);
+  await service.saveAcademicYearStageSetting(runtime, actor("teacher"), { academicYearId: "year-2026", stageCode: "stage_1", facebookGroupUrl: "https://facebook.com/groups/stage-one" });
+  await service.saveAcademicYearStageSetting(runtime, actor("teacher"), { academicYearId: "year-2026", stageCode: "stage_2", facebookGroupUrl: "https://facebook.com/groups/stage-two" });
+  await service.saveAcademicYearStageSetting(runtime, actor("teacher"), { academicYearId: "year-2025", stageCode: "stage_1", facebookGroupUrl: "https://facebook.com/groups/stage-one-previous" });
+  await assert.rejects(() => service.saveAcademicYearStageSetting(runtime, actor("teacher"), { academicYearId: "year-2026", stageCode: "stage_3", facebookGroupUrl: "javascript:alert(1)" }), /Program and calendar/);
+  assert.equal(count(database, "academic_year_stage_setting", "academic_year_id = 'year-2026'"), 2, "each current-year stage has one independent setting");
+  assert.equal(database.query("SELECT facebook_group_url AS url FROM academic_year_stage_setting WHERE academic_year_id = 'year-2025' AND stage_code = 'stage_1'")[0].url, "https://facebook.com/groups/stage-one-previous", "historical annual stage setting remains separate");
+
+  await service.createProgramDraft(runtime, actor("teacher"), { academicYearId: "year-2026", stageCode: "stage_3", displayName: "" });
+  assert.equal(database.query("SELECT display_name AS displayName FROM curriculum_program WHERE academic_year_id = 'year-2026' AND stage_code = 'stage_3' AND status = 'draft'")[0].displayName, "3-р шатны хөтөлбөр", "a new teacher draft receives a normal editable default name");
+  await service.saveClassSession(runtime, actor("teacher"), { academicYearId: "year-2026", stageCode: "stage_1", weekday: "Мягмар", startTime: "16:00", endTime: "17:20", capacity: 8, registrationOpen: true });
+  const newClass = database.query("SELECT id, display_label AS displayLabel, status, updated_at AS updatedAt FROM class_session WHERE weekday = 'Мягмар' AND start_time = '16:00'")[0];
+  assert.equal(newClass.displayLabel, "1-р шат · Мягмар 16:00", "class labels are generated from normal teaching details");
+  assert.equal(newClass.status, "closed", "a new class starts with registration safely closed");
+  await service.saveClassSession(runtime, actor("teacher"), { id: newClass.id, expectedUpdatedAt: newClass.updatedAt, academicYearId: "year-2026", stageCode: "stage_1", weekday: "Мягмар", startTime: "16:00", endTime: "17:20", capacity: 8, registrationOpen: true });
+  assert.equal(database.query(`SELECT status FROM class_session WHERE id = ${quote(newClass.id)}`)[0].status, "available", "teacher-facing open registration maps to the available catalog state");
+  const openedClass = database.query(`SELECT updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
+  await service.deleteClassSession(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: openedClass.updatedAt });
+  assert.equal(count(database, "class_session", `id = ${quote(newClass.id)}`), 0, "an unused class can be deleted");
   await service.createProgramDraft(runtime, actor("admin"), { academicYearId: "year-2026", stageCode: "stage_2", displayName: "Админы ноорог" });
   assert.equal(count(database, "curriculum_program", "academic_year_id = 'year-2026' AND stage_code = 'stage_2' AND status = 'draft'"), 1, "admin may create a program draft");
   await service.copyPreviousProgram(runtime, actor("teacher"), { academicYearId: "year-2026", stageCode: "stage_1" });
@@ -99,6 +131,7 @@ try {
   await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: "class-1", programId: copied.id, firstCandidateDate: "2026-09-05" });
   let draft = database.query("SELECT id, updated_at AS updatedAt FROM class_calendar_revision WHERE status = 'draft'")[0];
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'scheduled'`), 3);
+  await assert.rejects(() => service.deleteClassSession(runtime, actor("teacher"), { classSessionId: "class-1", expectedUpdatedAt: now }), /Program and calendar/, "a referenced class cannot be deleted");
   await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, kind: "exclude", localDate: "2026-09-12", reasonLabel: "Тест" });
   draft = database.query(`SELECT id, updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
   await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt });
@@ -111,7 +144,11 @@ try {
   await service.cancelFutureCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: futureSlot.id });
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`), 1, "future cancellation remains visible history");
   assert.ok(count(database, "audit_event", "action LIKE 'program_%' OR action LIKE 'calendar_%'") >= 7, "meaningful staff actions are audited");
-  console.log("ok staff program/calendar permissions, revisions, draft generation, reflow, concurrency, and audit tests");
+  const overview = await service.getProgramCalendarOverview(runtime);
+  assert.equal(overview.classes.find((entry) => entry.id === "class-1").displayLabel, "1-р шат · Бямба 10:00", "teacher overview ignores a legacy manual class label");
+  assert.equal(overview.classes.find((entry) => entry.id === "class-1").canDelete, false, "reference checks keep linked classes out of the delete path");
+  assert.equal(overview.stageSettings.filter((entry) => entry.academicYearId === "year-2026" && entry.stageCode === "stage_1").length, 1, "stage settings remain one-per-year-and-stage");
+  console.log("ok staff program/calendar permissions, stage settings, class safety, revisions, draft generation, reflow, concurrency, and audit tests");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

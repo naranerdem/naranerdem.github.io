@@ -166,7 +166,9 @@ stage
 + end time
 ```
 
-It should eventually also include capacity, current availability, academic year/session, and the class Facebook group URL.
+It includes capacity, registration availability, and academic year/session.
+A normal class label is generated from these teaching details rather than typed
+as a separate teacher-facing name.
 
 For example, two different Saturday `1-р шат — Анхан шат` time slots are two different classes. Parents choose a specific class/time during registration.
 
@@ -661,11 +663,14 @@ Underlying installments remain individually auditable.
 
 Similarly, a future payment request may present a combined total while preserving the expected allocation to individual installments. This should work naturally with `BillingGroup`, `Payment`, and `PaymentAllocation`, but should not require every payment to belong to one billing group.
 
-## Facebook Class Groups
+## Facebook Stage Groups
 
-Facebook is a major operational communication channel for parents and students. Each class may have its own Facebook group.
+Facebook is a major operational communication channel for parents and students.
+The current operational model has one Facebook group per academic year and
+stage, shared by that stage's concrete class times. The link is a typed annual
+stage setting rather than a per-class teacher field.
 
-Future registration data should be able to record a guardian's Facebook profile name or profile link when useful. After enrollment is confirmed, the system should eventually be able to show or send that class's Facebook group link so the parent/student can request to join.
+Future registration data should be able to record a guardian's Facebook profile name or profile link when useful. After enrollment is confirmed, the system should eventually be able to show or send that stage's Facebook group link so the parent/student can request to join.
 
 Do not require a child to have a Facebook account. Do not plan automated Facebook group invitations, Facebook API integration, or Facebook Login as part of the core registration model.
 

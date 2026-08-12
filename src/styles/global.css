@@ -1677,6 +1677,40 @@ textarea:focus {
   font-weight: 800;
 }
 
+.staff-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.staff-tool-link {
+  display: grid;
+  gap: 0.2rem;
+  min-height: 5.25rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  padding: 0.8rem;
+  text-decoration: none;
+}
+
+.staff-tool-link:focus-visible,
+.staff-tool-link:hover {
+  border-color: var(--blue);
+  outline: 3px solid rgba(7, 58, 175, 0.16);
+  outline-offset: 1px;
+}
+
+.staff-tool-link strong {
+  color: var(--blue-deep);
+}
+
+.staff-tool-link span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .staff-settings-shell {
   width: min(100%, 42rem);
 }
@@ -1736,6 +1770,16 @@ textarea:focus {
 .staff-year-picker {
   width: min(100%, 21rem);
   margin-bottom: 1.5rem;
+}
+
+.staff-tool-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem 1rem;
+}
+
+.staff-tool-pickers .staff-year-picker {
+  margin-bottom: 1.25rem;
 }
 
 .staff-operation-section {
@@ -1883,6 +1927,43 @@ textarea:focus {
   padding: 1rem 0;
 }
 
+.staff-settings-list {
+  display: grid;
+  gap: 0;
+}
+
+.staff-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: end;
+  border-bottom: 1px solid var(--line);
+  padding: 0.85rem 0;
+}
+
+.staff-setting-row label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.staff-setting-row input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  padding: 0.48rem 0.6rem;
+}
+
+.staff-setting-row input:focus-visible {
+  border-color: var(--blue);
+  outline: 3px solid rgba(7, 58, 175, 0.2);
+  outline-offset: 1px;
+}
+
 .staff-lock-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1922,6 +2003,14 @@ textarea:focus {
   .staff-calendar-list li {
     align-items: start;
     flex-direction: column;
+  }
+
+  .staff-setting-row {
+    grid-template-columns: 1fr;
+  }
+
+  .staff-setting-row .button {
+    width: 100%;
   }
 }
 
@@ -1982,6 +2071,9 @@ textarea:focus {
 }
 
 @media (max-width: 31rem) {
+  .staff-tool-grid {
+    grid-template-columns: 1fr;
+  }
   .staff-policy-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

@@ -10,6 +10,20 @@ INSERT OR IGNORE INTO academic_year (
   '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
 );
 
+INSERT OR IGNORE INTO academic_year_stage_setting (
+  id, academic_year_id, stage_code, facebook_group_url, is_test, test_run_id,
+  created_at, updated_at
+) VALUES
+  ('staging-fixture-stage-setting-1', 'staging-fixture-2026-27', 'stage_1',
+    'https://example.invalid/naran-erdem/stage-1', 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('staging-fixture-stage-setting-2', 'staging-fixture-2026-27', 'stage_2',
+    'https://example.invalid/naran-erdem/stage-2', 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('staging-fixture-stage-setting-3', 'staging-fixture-2026-27', 'stage_3',
+    'https://example.invalid/naran-erdem/stage-3', 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z');
+
 INSERT OR IGNORE INTO class_session (
   id, academic_year_id, stage_code, display_label, weekday, start_time,
   end_time, capacity, status, is_test_only, is_test, test_run_id,

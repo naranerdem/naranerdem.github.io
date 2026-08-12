@@ -35,6 +35,11 @@ export interface RegistrationCatalog {
   paymentPlans: [];
 }
 
+function generatedClassLabel(stageCode: CatalogRow["stageCode"], weekday: string, startTime: string): string {
+  const stage = ({ stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" })[stageCode];
+  return `${stage} · ${weekday} ${startTime}`;
+}
+
 const stagingCatalogSql = `
   SELECT
     academic_year.id AS academicYearId,
@@ -187,7 +192,7 @@ export async function getRegistrationCatalog(
     year.classSessions.push({
       id: row.classSessionId,
       stageCode: row.stageCode,
-      label: row.displayLabel,
+      label: generatedClassLabel(row.stageCode, row.weekday, row.startTime),
       weekday: row.weekday,
       startTime: row.startTime,
       endTime: row.endTime,

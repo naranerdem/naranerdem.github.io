@@ -26,7 +26,8 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `guardian_student_relationship`: persistent relationship between guardians and students, including whether the guardian is currently authorized to manage registration.
 - `family_group` and `family_group_member`: minimal explicit family-discount eligibility foundation. Family is not inferred from surname, address, payment origin, or Facebook identity.
 - `academic_year`: public label and registration status for a year/session without hard-coding unsupplied year details.
-- `class_session`: concrete stage + weekday + start/end time, capacity, availability, optional future Facebook group URL, and test-only marker.
+- `class_session`: concrete stage + weekday + start/end time, capacity, registration availability, and test-only marker. Its stored display label is retained for compatibility, but ordinary UI and public output generate a label from the teaching details.
+- `academic_year_stage_setting`: one typed setting record for an academic year and stage. The first setting is an optional Facebook group URL shared by that stage's current-year cohorts.
 - `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children.
 - `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional generic `code_input`, payment-plan choice, and one selected concrete `class_session`.
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
@@ -163,6 +164,12 @@ The protected staff setup surface uses these existing tables directly through
 narrow server operations. It adds no generic database editor or new persistence
 model: published rows remain immutable, copied program lessons receive new IDs,
 and a post-publication calendar change is a separately auditable draft revision.
+
+Migration `0009_academic_year_stage_settings.sql` adds the intentionally narrow
+typed annual stage-setting record. It does not create a generic settings JSON
+table and it does not remove the legacy `class_session.facebook_group_url`
+column. New teacher-facing behavior ignores that old per-class field and stores
+the single stage/year Facebook group URL in `academic_year_stage_setting`.
 
 Attendance, absence notice, make-up, accountant workflow, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
 

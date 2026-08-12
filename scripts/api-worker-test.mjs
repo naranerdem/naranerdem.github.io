@@ -159,6 +159,7 @@ try {
       catalogRow("staging-nearly-full", { isTest: 1, isTestOnly: 1, confirmedCount: 8, activeHoldCount: 1 }),
       catalogRow("staging-full-firm", { isTest: 1, isTestOnly: 1, confirmedCount: 10 }),
       catalogRow("staging-full-limbo", { isTest: 1, isTestOnly: 1, confirmedCount: 8, activeHoldCount: 2 }),
+      catalogRow("staging-closed", { isTest: 1, isTestOnly: 1, status: "closed", displayLabel: "old manual name" }),
     ], {
       calendarRows: [
         calendarRow("calendar-staging-lesson-1"),
@@ -190,8 +191,10 @@ try {
       ["staging-nearly-full", 1, 1, "available"],
       ["staging-full-firm", 0, 0, "full"],
       ["staging-full-limbo", 0, 2, "full"],
+      ["staging-closed", 10, 0, "unavailable"],
     ],
   );
+  assert.equal(stagingCatalog.body.academicYears[0].classSessions.find((session) => session.id === "staging-closed").label, "1-р шат · Бямба 10:00", "public catalog uses the generated class label, not legacy stored wording");
 
   const stagingCalendar = await jsonResponse(stagingWorker, "/api/calendar/published", stagingEnv);
   assert.equal(stagingCalendar.response.status, 200);
@@ -201,6 +204,7 @@ try {
     ["no_class", null, "Туршилтын завсарлага"],
   ]);
   assert.doesNotMatch(JSON.stringify(stagingCalendar.body), /internalNote|must never/i, "calendar API does not expose private fields");
+  assert.equal(stagingCalendar.body.calendars[0].classSession.label, "2-р шат · Ням 10:00", "published schedules use the generated class label");
 
   const productionWorker = (await bundleWorker("production", "production")).default;
   const productionEnv = {

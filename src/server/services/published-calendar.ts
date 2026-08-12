@@ -52,6 +52,11 @@ export interface PublishedCalendarResponse {
   }>;
 }
 
+function generatedClassLabel(stageCode: PublishedCalendarRow["stageCode"], weekday: string, startTime: string): string {
+  const stage = ({ stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" })[stageCode];
+  return `${stage} · ${weekday} ${startTime}`;
+}
+
 const stagingSql = `
   SELECT
     academic_year.id AS academicYearId,
@@ -152,7 +157,7 @@ export async function getPublishedCalendars(
         academicYear: { id: row.academicYearId, label: row.academicYearLabel },
         classSession: {
           id: row.classSessionId,
-          label: row.classLabel,
+          label: generatedClassLabel(row.stageCode, row.weekday, row.startTime),
           stageCode: row.stageCode,
           weekday: row.weekday,
           startTime: row.startTime,

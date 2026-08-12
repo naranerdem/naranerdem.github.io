@@ -1,0 +1,53 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><meta name="theme-color" content="#073aaf" /><title>Амралтын хуваарь | {siteIdentity.name}</title></head>
+  <body class="staff-page" data-staff-tool-surface="booting">
+    <header class="site-header"><a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>Амралтын хуваарь</span></span></a></header>
+    <main class="staff-shell staff-program-shell" aria-live="polite">
+      <section id="tool-booting" class="staff-state"><p class="eyebrow">Амралтын хуваарь</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Амралтын хуваарь</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-app" hidden>
+        <div class="staff-page-heading"><div><p class="eyebrow">Жилийн бэлтгэл</p><h1>Амралтын хуваарь</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <p id="tool-message" class="staff-error" role="status" hidden></p>
+        <label class="staff-year-picker">Хичээлийн жил <select id="year-select"></select></label>
+        <section class="staff-operation-section" aria-labelledby="holiday-title"><div class="staff-section-heading"><h2 id="holiday-title">Амралтын хугацаа</h2><button id="add-break" class="button primary" type="button">Амралтын хугацаа нэмэх</button></div><div id="break-editor"></div><div id="break-list" class="staff-record-list"></div></section>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      import { currentYearId, escape, fillSelect, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
+
+      const state = { data: null, yearId: "", editing: null };
+      const q = (selector) => document.querySelector(selector);
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      const breaks = () => (state.data?.breaks || []).filter((entry) => entry.academicYearId === state.yearId && entry.status === "active");
+      function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
+      async function refresh(success = "") { state.data = await getOverview(); state.yearId = currentYearId(state.data, state.yearId); render(); message(success, Boolean(success)); }
+      function render() {
+        fillSelect(q("#year-select"), state.data.years || [], state.yearId, (year) => year.label);
+        const entry = breaks().find((item) => item.id === state.editing);
+        q("#break-editor").innerHTML = entry || state.editing === "new" ? form(entry) : "";
+        q("#break-list").innerHTML = breaks().length ? breaks().map((item) => `<article><div><strong>${escape(item.label)}</strong><p>${formatDate(item.startsOn)} - ${formatDate(item.endsOn)}${item.sourceNote ? ` · ${escape(item.sourceNote)}` : ""}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-edit="${escape(item.id)}">Засах</button><button class="button secondary" type="button" data-remove="${escape(item.id)}">Устгах</button></div></article>`).join("") : `<p class="staff-empty">Амралтын хугацаа оруулаагүй байна.</p>`;
+        q("#break-editor form")?.addEventListener("submit", submit);
+        q("#break-editor [data-cancel]")?.addEventListener("click", () => { state.editing = null; render(); });
+        q("#break-list").querySelectorAll("[data-edit]").forEach((button) => button.onclick = () => { state.editing = button.dataset.edit; render(); q("#break-label").focus(); });
+        q("#break-list").querySelectorAll("[data-remove]").forEach((button) => button.onclick = () => {
+          const item = breaks().find((entry) => entry.id === button.dataset.remove);
+          if (item && window.confirm("Энэ амралтын хугацааг устгах уу?")) run(() => postOverviewAction("break.remove", { breakId: item.id, expectedUpdatedAt: item.updatedAt }), "Амралтын хугацааг устгалаа.");
+        });
+      }
+      function form(entry) {
+        return `<form id="break-form" class="staff-compact-form"><label>Нэр <input id="break-label" required maxlength="160" value="${escape(entry?.label || "")}" /></label><label>Эхлэх өдөр <input id="break-start" type="date" required value="${escape(entry?.startsOn || "")}" /></label><label>Дуусах өдөр <input id="break-end" type="date" required value="${escape(entry?.endsOn || "")}" /></label><label>Тэмдэглэл <input id="break-note" maxlength="500" value="${escape(entry?.sourceNote || "")}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" type="button" data-cancel>Болих</button><button class="button primary" type="submit">Хадгалах</button></div></form>`;
+      }
+      function submit(event) { event.preventDefault(); const form = event.currentTarget; if (!form.reportValidity()) return; const entry = breaks().find((item) => item.id === state.editing); run(() => postOverviewAction("break.save", { id: entry?.id, expectedUpdatedAt: entry?.updatedAt, academicYearId: state.yearId, label: q("#break-label").value, startsOn: q("#break-start").value, endsOn: q("#break-end").value, sourceNote: q("#break-note").value }), "Амралтын хугацааг хадгаллаа."); }
+      async function run(work, success) { message(); try { await work(); state.editing = null; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      q("#year-select").onchange = (event) => { state.yearId = event.target.value; state.editing = null; render(); };
+      q("#add-break").onclick = () => { state.editing = "new"; render(); q("#break-label").focus(); };
+      (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+    </script>
+  </body>
+</html>

@@ -1,0 +1,99 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><meta name="theme-color" content="#073aaf" /><title>Хуваарь | {siteIdentity.name}</title></head>
+  <body class="staff-page" data-staff-tool-surface="booting">
+    <header class="site-header"><a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>Хуваарь</span></span></a></header>
+    <main class="staff-shell staff-program-shell" aria-live="polite">
+      <section id="tool-booting" class="staff-state"><p class="eyebrow">Хуваарь</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Хуваарь</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-app" hidden>
+        <div class="staff-page-heading"><div><p class="eyebrow">Жилийн бэлтгэл</p><h1>Хуваарь</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <p id="tool-message" class="staff-error" role="status" hidden></p>
+        <label class="staff-year-picker">Хичээлийн жил <select id="year-select"></select></label>
+        <section class="staff-operation-section" aria-labelledby="classes-title"><div class="staff-section-heading"><h2 id="classes-title">Анги, цаг</h2><button id="add-class" class="button primary" type="button">Анги нэмэх</button></div><div id="class-editor"></div><div id="class-list" class="staff-record-list"></div></section>
+        <section class="staff-operation-section" aria-labelledby="calendar-title"><div class="staff-section-heading"><div><h2 id="calendar-title">Жилийн хуваарь</h2><p class="staff-muted">Амралтын хуваарийг автоматаар тооцно.</p></div><label>Анги <select id="calendar-class"></select></label></div><div id="calendar-editor"></div></section>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      import { currentYearId, escape, fillSelect, formatDate, getOverview, hasSetupAccess, postOverviewAction, stageLabel } from "../../scripts/staff-setup.js";
+
+      const state = { data: null, yearId: "", selectedClassId: "", editingClass: null };
+      const q = (selector) => document.querySelector(selector);
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      const classes = () => (state.data?.classes || []).filter((entry) => entry.academicYearId === state.yearId);
+      const programs = () => (state.data?.programs || []).filter((entry) => entry.academicYearId === state.yearId);
+      function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
+      async function refresh(success = "") {
+        state.data = await getOverview(); state.yearId = currentYearId(state.data, state.yearId);
+        if (!classes().some((entry) => entry.id === state.selectedClassId)) state.selectedClassId = classes()[0]?.id || "";
+        render(); message(success, Boolean(success));
+      }
+      function render() {
+        fillSelect(q("#year-select"), state.data.years || [], state.yearId, (year) => year.label);
+        renderClasses(); renderCalendar();
+      }
+      function classForm(entry) {
+        return `<form id="class-form" class="staff-compact-form"><input id="class-id" type="hidden" value="${escape(entry?.id || "")}" /><input id="class-updated" type="hidden" value="${escape(entry?.updatedAt || "")}" /><label>Сургалтын шат <select id="class-stage" required>${(state.data.stages || []).map((stage) => `<option value="${escape(stage)}" ${entry?.stageCode === stage ? "selected" : ""}>${stageLabel(stage)}</option>`).join("")}</select></label><label>Гараг <select id="class-weekday" required>${(state.data.weekdays || []).map((weekday) => `<option value="${escape(weekday)}" ${entry?.weekday === weekday || (!entry && weekday === "Бямба") ? "selected" : ""}>${escape(weekday)}</option>`).join("")}</select></label><label>Эхлэх цаг <input id="class-start" type="time" required value="${escape(entry?.startTime || "10:00")}" /></label><label>Дуусах цаг <input id="class-end" type="time" required value="${escape(entry?.endTime || "11:20")}" /></label><label>Суудлын тоо <input id="class-capacity" type="number" min="1" max="80" required value="${escape(entry?.capacity || "12")}" /></label><label class="staff-check"><input id="class-open" type="checkbox" ${entry?.registrationOpen ? "checked" : ""} /> Бүртгэл нээлттэй</label><div class="staff-form-actions staff-wide"><button class="button secondary" data-class-cancel type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div></form>`;
+      }
+      function renderClasses() {
+        const editing = classes().find((entry) => entry.id === state.editingClass);
+        q("#class-editor").innerHTML = state.editingClass ? classForm(editing) : "";
+        q("#class-list").innerHTML = classes().length ? classes().map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${escape(entry.weekday)} ${escape(entry.startTime)}-${escape(entry.endTime)} · ${entry.capacity} суудал · ${entry.registrationOpen ? "Бүртгэл нээлттэй" : "Бүртгэл хаалттай"}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-class-edit="${escape(entry.id)}">Засах</button>${entry.canDelete ? `<button class="button secondary" type="button" data-class-delete="${escape(entry.id)}">Устгах</button>` : ""}</div></article>`).join("") : `<p class="staff-empty">Анги, цаг оруулаагүй байна.</p>`;
+        q("#class-editor form")?.addEventListener("submit", saveClass);
+        q("#class-editor [data-class-cancel]")?.addEventListener("click", () => { state.editingClass = null; renderClasses(); });
+        q("#class-list").querySelectorAll("[data-class-edit]").forEach((button) => button.onclick = () => { state.editingClass = button.dataset.classEdit; renderClasses(); q("#class-stage").focus(); });
+        q("#class-list").querySelectorAll("[data-class-delete]").forEach((button) => button.onclick = () => {
+          const entry = classes().find((item) => item.id === button.dataset.classDelete);
+          if (entry && window.confirm(`${entry.displayLabel} ангийг устгах уу?`)) run(() => postOverviewAction("class.delete", { classSessionId: entry.id, expectedUpdatedAt: entry.updatedAt }), "Ангийг устгалаа.");
+        });
+      }
+      function saveClass(event) {
+        event.preventDefault(); const form = event.currentTarget; if (!form.reportValidity()) return;
+        run(() => postOverviewAction("class.save", { id: q("#class-id").value || undefined, expectedUpdatedAt: q("#class-updated").value || undefined, academicYearId: state.yearId, stageCode: q("#class-stage").value, weekday: q("#class-weekday").value, startTime: q("#class-start").value, endTime: q("#class-end").value, capacity: Number(q("#class-capacity").value), registrationOpen: q("#class-open").checked }), q("#class-id").value ? "Ангийг хадгаллаа." : "Ангийг үүслээ. Бүртгэл анх хаалттай байна.");
+      }
+      function renderCalendar() {
+        const availableClasses = classes();
+        fillSelect(q("#calendar-class"), availableClasses, state.selectedClassId, (entry) => entry.displayLabel);
+        const container = q("#calendar-editor"); const selected = availableClasses.find((entry) => entry.id === state.selectedClassId);
+        if (!selected) { container.innerHTML = `<p class="staff-empty">Эхлээд анги, цаг оруулна уу.</p>`; return; }
+        const revisions = (state.data.revisions || []).filter((entry) => entry.classSessionId === selected.id);
+        const draft = revisions.find((entry) => entry.status === "draft"); const published = revisions.find((entry) => entry.status === "published");
+        const compatiblePrograms = programs().filter((entry) => entry.stageCode === selected.stageCode && entry.status === "published");
+        if (!draft) {
+          const publishedRows = published?.slots.map((slot) => `<li><span><strong>${formatDate(slot.localDate)} · ${escape(slot.startTime)}</strong><br /><small>${slot.status === "scheduled" ? `${slot.lessonSequence}. ${escape(slot.lessonTitle)}` : slot.status === "cancelled" ? `Цуцлагдсан: ${slot.cancelledLessonSequence}. ${escape(slot.cancelledLessonTitle)}` : `Хичээлгүй${slot.reasonLabel ? `: ${escape(slot.reasonLabel)}` : ""}`}</small></span></li>`).join("") || "";
+          container.innerHTML = published
+            ? `<div class="staff-empty"><p><strong>Нийтлэгдсэн хуваарь</strong> · ${published.slots.length} огноо.</p><ol class="staff-calendar-list">${publishedRows}</ol><button class="button primary" data-change-draft type="button">Өөрчлөх ноорог эхлүүлэх</button></div>`
+            : `<div class="staff-empty"><p>Энэ ангид нийтлэгдсэн хуваарь алга байна.</p><form id="calendar-generate" class="staff-compact-form"><label>Хөтөлбөр <select id="calendar-program" required>${compatiblePrograms.map((program) => `<option value="${escape(program.id)}">${escape(program.displayName)}</option>`).join("")}</select></label><label>Эхний өдөр <input id="calendar-first-date" type="date" required /></label><p class="staff-wide staff-muted">Амралтын хуваарийн өдрүүдийг автоматаар алгасна.</p><button class="button primary staff-wide" type="submit" ${compatiblePrograms.length ? "" : "disabled"}>Хуваарь үүсгэх</button></form>${compatiblePrograms.length ? "" : "<p>Эхлээд энэ шатны хөтөлбөрийг нийтэлнэ үү.</p>"}</div>`;
+          container.querySelector("[data-change-draft]")?.addEventListener("click", () => { if (window.confirm("Нийтлэгдсэн хуваариас өөрчлөх ноорог эхлүүлэх үү?")) run(() => postOverviewAction("calendar.change-draft", { classSessionId: selected.id }), "Өөрчлөх ноорог үүслээ."); });
+          container.querySelector("#calendar-generate")?.addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; if (form.reportValidity()) run(() => postOverviewAction("calendar.generate", { classSessionId: selected.id, programId: q("#calendar-program").value, firstCandidateDate: q("#calendar-first-date").value }), "Хуваарийн ноорог үүслээ."); });
+          return;
+        }
+        renderDraftCalendar(container, draft, compatiblePrograms);
+      }
+      function renderDraftCalendar(container, draft, compatiblePrograms) {
+        const program = compatiblePrograms.find((entry) => entry.id === draft.programId) || programs().find((entry) => entry.id === draft.programId);
+        const lessonCount = program?.lessons.length || 0;
+        const rows = draft.slots.map((slot) => `<li><span><strong>${formatDate(slot.localDate)} · ${escape(slot.startTime)}</strong><br /><small>${slot.status === "scheduled" ? `${slot.lessonSequence}. ${escape(slot.lessonTitle)}` : slot.status === "cancelled" ? `Цуцлагдсан: ${slot.cancelledLessonSequence}. ${escape(slot.cancelledLessonTitle)}` : `Хичээлгүй${slot.reasonLabel ? `: ${escape(slot.reasonLabel)}` : ""}`}</small></span>${slot.status === "scheduled" && (slot.lessonSequence || 0) > draft.lockedThroughSequence ? `<button class="button secondary" type="button" data-cancel-slot="${escape(slot.id)}">Цуцлах</button>` : ""}</li>`).join("");
+        container.innerHTML = `<div class="staff-calendar-draft"><p class="staff-draft-label">Ноорог хуваарь · ${draft.slots.length} өдөр · Дууссан: ${draft.lockedThroughSequence}/${lessonCount} хичээл</p><div class="staff-calendar-actions"><form id="calendar-date-action" class="staff-compact-form"><label>Өдөр <input id="action-date" type="date" required /></label><label>Үйлдэл <select id="action-kind"><option value="exclude">Тухайн өдрийн хичээлийг алгасах</option><option value="restore">Амралтын үеэр хичээл оруулах</option></select></label><label class="staff-wide">Тэмдэглэл <input id="action-reason" maxlength="160" /></label><button class="button secondary staff-wide" type="submit">Өдрийн өөрчлөлт хадгалах</button></form><form id="calendar-extra" class="staff-compact-form"><label>Нэмэлт өдөр <input id="extra-date" type="date" required /></label><label>Эхлэх цаг <input id="extra-start" type="time" required /></label><label>Дуусах цаг <input id="extra-end" type="time" required /></label><label class="staff-wide">Тэмдэглэл <input id="extra-reason" maxlength="160" /></label><button class="button secondary staff-wide" type="submit">Нэмэлт хичээл оруулах</button></form></div><form id="calendar-lock" class="staff-lock-form"><label>Дууссан хичээл <select id="lock-through">${Array.from({ length: lessonCount + 1 }, (_, number) => `<option value="${number}" ${number === draft.lockedThroughSequence ? "selected" : ""}>${number === 0 ? "Одоогоор батлаагүй" : `${number}-р хичээл хүртэл`}</option>`).join("")}</select></label><label class="staff-check"><input id="lock-confirm" type="checkbox" /> Энэ хүртэлх хичээлүүд дууссаныг баталж байна.</label><button class="button secondary" type="submit">Батлах</button></form><ol class="staff-calendar-list">${rows}</ol><div class="staff-form-actions"><button id="calendar-publish" class="button primary" type="button">Хуваарь нийтлэх</button></div></div>`;
+        q("#calendar-date-action").onsubmit = (event) => { event.preventDefault(); const form = event.currentTarget; if (form.reportValidity()) run(() => postOverviewAction("calendar.change", { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, kind: q("#action-kind").value, localDate: q("#action-date").value, reasonLabel: q("#action-reason").value }), "Өдрийн өөрчлөлтийг хадгаллаа."); };
+        q("#calendar-extra").onsubmit = (event) => { event.preventDefault(); const form = event.currentTarget; if (form.reportValidity()) run(() => postOverviewAction("calendar.change", { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, kind: "extra", localDate: q("#extra-date").value, startTime: q("#extra-start").value, endTime: q("#extra-end").value, reasonLabel: q("#extra-reason").value }), "Нэмэлт хичээлийг орууллаа."); };
+        q("#calendar-lock").onsubmit = (event) => { event.preventDefault(); const value = Number(q("#lock-through").value); if (value > draft.lockedThroughSequence && !q("#lock-confirm").checked) { message("Дууссан хичээлийг батлахын тулд зөвшөөрнө үү."); return; } run(() => postOverviewAction("calendar.lock", { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, lockedThroughSequence: value }), "Дууссан хичээлийг баталлаа."); };
+        container.querySelectorAll("[data-cancel-slot]").forEach((button) => button.onclick = () => {
+          if (!window.confirm("Энэ ирээдүйн хичээлийг цуцлах уу? Дараах хичээлүүд дахин тооцогдоно.")) return;
+          run(() => postOverviewAction("calendar.cancel", { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: button.dataset.cancelSlot }), "Цуцлалтыг ноорогт орууллаа.");
+        });
+        q("#calendar-publish").onclick = () => { if (window.confirm("Энэ огноотой хуваарийг нийтлэх үү? Нийтэлсний дараа шууд засахгүй.")) run(() => postOverviewAction("calendar.publish", { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt }), "Хуваарь нийтлэгдлээ."); };
+      }
+      async function run(work, success) { message(); try { await work(); state.editingClass = null; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      q("#year-select").onchange = (event) => { state.yearId = event.target.value; state.selectedClassId = ""; state.editingClass = null; render(); };
+      q("#calendar-class").onchange = (event) => { state.selectedClassId = event.target.value; renderCalendar(); };
+      q("#add-class").onclick = () => { state.editingClass = "new"; renderClasses(); q("#class-stage").focus(); };
+      (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+    </script>
+  </body>
+</html>

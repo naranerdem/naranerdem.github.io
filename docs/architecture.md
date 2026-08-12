@@ -142,7 +142,15 @@ Migration 0007 and the staff service layer preserve this teacher/admin separatio
 
 ### Content And Settings Direction
 
-Before teacher/admin authentication exists, do not build an editor. Later, the Mongolian Content/Settings editor should support quick phone edits but remain desktop-comfortable for long rules, yearly setup, and bulk schedules. Ordinary site copy needs simple revision history and a current published value. Academic-year configuration needs classes, dates, prices, payment-plan settings, registration status, and copy-previous-year to editable draft to publish. Rules/policies need immutable versions, and registrations must retain the exact parent/student versions acknowledged. Important content follows Draft -> Preview -> Publish; this is not a generic heavyweight CMS.
+Teacher/admin authentication now protects the small annual-setup tools. They
+are deliberately separate: `Хөтөлбөр` for ordered stage lessons, `Хуваарь` for
+class times and dated class calendars, `Амралтын хуваарь` for year-wide breaks,
+and `Тохиргоо` for typed stage/year operational settings. The first typed
+setting is one Facebook group URL per academic year and stage; it is not a
+per-class setting. A future Mongolian Content/Settings editor should support
+quick phone edits but remain desktop-comfortable for long rules and future
+yearly setup. It must stay a collection of clear operational tools, not a
+generic heavyweight CMS.
 
 ### Program and academic-year calendar domain
 
@@ -152,15 +160,18 @@ Published program and calendar revisions are immutable. Global academic-year bre
 
 Future cancellation/reflow is limited by a manual locked/delivered lesson prefix rather than wall-clock inference. Cancelling one future active slot retains cancellation history and either extends the habitual tail or lets a chronological replacement slot absorb the lesson. See [program-calendar-model.md](program-calendar-model.md) for the exact invariants and generator semantics.
 
-The protected Mongolian `Хөтөлбөр ба хуваарь` staff surface now makes this
-annual setup operational for teachers and admins. It is intentionally a small
-sequence of obvious actions: make/publish an ordered program, set a cohort's
-weekday/time/capacity/status, enter global breaks, generate a dated draft,
-review it, and publish it. It does not expose D1, API, adapter, or deployment
-terminology. A calendar change after publication always starts from a new
-draft revision; a teacher can confirm only a forward delivered prefix before a
-future cancellation/reflow. Accountant capability has no access, and the
-Worker enforces every permission and same-origin mutation request.
+The protected Mongolian annual setup uses four focused teacher tools rather
+than one large editor. `Хөтөлбөр` makes and publishes ordered lessons;
+`Амралтын хуваарь` records global year-wide breaks; `Хуваарь` records a class's
+weekday/time/capacity and then makes its explicit dated calendar; and
+`Тохиргоо` holds typed annual stage settings. A class label is generated from
+stage, weekday, and start time. The teacher sees only `Бүртгэл нээлттэй` or
+`Бүртгэл хаалттай`; this registration choice is separate from the immutable
+draft/published calendar lifecycle. New classes start closed. A calendar change
+after publication always starts from a new draft revision; a teacher can
+confirm only a forward delivered prefix before a future cancellation/reflow.
+Accountant capability has no access, and the Worker enforces every permission
+and same-origin mutation request.
 
 Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
 

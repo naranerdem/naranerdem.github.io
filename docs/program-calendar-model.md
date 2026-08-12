@@ -78,21 +78,31 @@ assignment.
 
 ## Staff Setup Surface
 
-`/staff/program-calendar/` is a protected teacher/admin operational surface.
-It works with one year at a time and keeps program, cohort time, and dated
-calendar separate. A draft program can add, rename, order, or remove named
-lessons; publishing freezes it. Copying a prior published program creates new
-lesson identities. A class session can be opened/closed and given a practical
-cohort label, but its time/stage/capacity cannot be casually rewritten once it
-has operational references.
+The protected teacher/admin setup is split into four small routes: `/staff/programs/`,
+`/staff/holidays/`, `/staff/schedule/`, and `/staff/settings/`. The old
+`/staff/program-calendar/` bookmark redirects to the schedule tool.
 
-Academic-year breaks are global planning inputs. Calendar generation uses the
-selected published program, first candidate date, class weekday/time, active
-breaks, class overrides, and manual extra slots to write an explicit draft.
-The chronological preview is the publication check. Every meaningful setup,
-publication, delivered-prefix confirmation, and cancellation action is audited.
-Accountants have no access to the surface; server capability checks remain the
-authority rather than the visual menu.
+`Хөтөлбөр` works with one year and stage at a time. A draft program can add,
+rename, order, or remove named lessons; `Хөтөлбөр нийтлэх` freezes it. Copying
+a prior published program creates new lesson identities.
+
+`Амралтын хуваарь` records global year-wide breaks. They automatically exclude
+habitual candidates when a schedule is generated. A class's dated calendar can
+still explicitly skip another date or teach during a break.
+
+`Хуваарь` first records compact class details: stage, weekday, start/end time,
+capacity, and whether registration is open. The server generates the normal
+class label, and a new class begins with registration closed. Registration
+open/closed is separate from the calendar draft/published lifecycle. The same
+tool then chooses a compatible published program and first date to generate an
+explicit dated draft. The chronological preview is the publication check.
+
+`Тохиргоо` is typed rather than generic. Its first setting is one optional
+Facebook group URL for each academic-year/stage pair; it is shared by all
+current class times in that stage. Every meaningful setup, publication,
+delivered-prefix confirmation, and cancellation action is audited. Accountants
+have no access to the surface; server capability checks remain the authority
+rather than the visual menu.
 
 ## Public And Future Use
 
@@ -103,7 +113,7 @@ data. Production safely returns an empty array until real configuration is
 published. The unlinked `/schedule-preview/` route is a staging-facing read-only
 rendering of deliberately fake fixture data.
 
-Attendance, parent absence notices, make-up eligibility/invitations, staff
-authentication/editor UI, and schedule email jobs are deferred. When schedule
+Attendance, parent absence notices, make-up eligibility/invitations, and
+schedule email jobs are deferred. When schedule
 communications are added, a published cancellation or material reschedule is
 one meaningful event; shifted lesson mappings are not individual email events.

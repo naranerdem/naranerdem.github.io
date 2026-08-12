@@ -41,16 +41,18 @@ import {
 } from "../staff/session-policy";
 import {
   ProgramCalendarError,
-  archiveAcademicYearBreak,
   cancelFutureCalendarSlot,
   changeCalendarDraft,
   copyPreviousProgram,
   createCalendarChangeDraft,
   createProgramDraft,
+  deleteClassSession,
   generateCalendarDraft,
   getProgramCalendarOverview,
   publishCalendarDraft,
   publishProgramDraft,
+  removeAcademicYearBreak,
+  saveAcademicYearStageSetting,
   saveAcademicYearBreak,
   saveClassSession,
   saveProgramDraft,
@@ -175,6 +177,7 @@ function programCalendarError(caught: unknown): Response {
   if (caught.code === "not_found") return error("invalid_request", "Сонгосон мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Өөр хүн саяхан өөрчилсөн байна. Хуудсыг шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "immutable") return error("invalid_request", "Хэвлэгдсэн эсвэл ашиглагдаж буй мэдээллийг шууд өөрчилж болохгүй. Шинэ ноорог үүсгэнэ үү.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "referenced") return error("invalid_request", "Энэ анги бүртгэл эсвэл хуваарьт ашиглагдсан тул устгаж болохгүй.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
@@ -676,18 +679,26 @@ export async function handleApiRequest(
           await saveClassSession(env, principal, {
             id: typeof payload.id === "string" ? payload.id : undefined,
             expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
-            academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), displayLabel: String(payload.displayLabel ?? ""), weekday: String(payload.weekday ?? ""), startTime: String(payload.startTime ?? ""), endTime: String(payload.endTime ?? ""), capacity: Number(payload.capacity), status: String(payload.status ?? ""), facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null,
+            academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), weekday: String(payload.weekday ?? ""), startTime: String(payload.startTime ?? ""), endTime: String(payload.endTime ?? ""), capacity: Number(payload.capacity), registrationOpen: typeof payload.registrationOpen === "boolean" ? payload.registrationOpen : undefined,
           });
+          break;
+        case "class.delete":
+          await deleteClassSession(env, principal, { classSessionId: String(payload.classSessionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
           break;
         case "break.save":
           await saveAcademicYearBreak(env, principal, {
             id: typeof payload.id === "string" ? payload.id : undefined,
             expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
-            academicYearId: String(payload.academicYearId ?? ""), label: String(payload.label ?? ""), startsOn: String(payload.startsOn ?? ""), endsOn: String(payload.endsOn ?? ""), excludesHabitualSlots: payload.excludesHabitualSlots === true, sourceNote: typeof payload.sourceNote === "string" ? payload.sourceNote : null,
+            academicYearId: String(payload.academicYearId ?? ""), label: String(payload.label ?? ""), startsOn: String(payload.startsOn ?? ""), endsOn: String(payload.endsOn ?? ""), sourceNote: typeof payload.sourceNote === "string" ? payload.sourceNote : null,
           });
           break;
-        case "break.archive":
-          await archiveAcademicYearBreak(env, principal, { breakId: String(payload.breakId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+        case "break.remove":
+          await removeAcademicYearBreak(env, principal, { breakId: String(payload.breakId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          break;
+        case "stage-setting.save":
+          await saveAcademicYearStageSetting(env, principal, {
+            academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null, expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
+          });
           break;
         case "calendar.generate":
           await generateCalendarDraft(env, principal, { classSessionId: String(payload.classSessionId ?? ""), programId: String(payload.programId ?? ""), firstCandidateDate: String(payload.firstCandidateDate ?? "") });
