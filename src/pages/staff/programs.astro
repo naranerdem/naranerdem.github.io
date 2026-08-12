@@ -4,108 +4,71 @@ import "../../styles/global.css";
 ---
 
 <html lang="mn">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="robots" content="noindex" />
-    <meta name="theme-color" content="#073aaf" />
-    <title>Хөтөлбөр | {siteIdentity.name}</title>
-  </head>
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><meta name="theme-color" content="#073aaf" /><title>Хөтөлбөр | {siteIdentity.name}</title></head>
   <body class="staff-page" data-staff-tool-surface="booting">
-    <header class="site-header">
-      <a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг">
-        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
-        <span><strong>{siteIdentity.name}</strong><span>Хөтөлбөр</span></span>
-      </a>
-    </header>
+    <header class="site-header"><a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>Хөтөлбөр</span></span></a></header>
     <main class="staff-shell staff-program-shell" aria-live="polite">
       <section id="tool-booting" class="staff-state"><p class="eyebrow">Хөтөлбөр</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
       <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Хөтөлбөр</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
-        <div class="staff-page-heading"><div><p class="eyebrow">Жилийн бэлтгэл</p><h1>Хөтөлбөр</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <div class="staff-page-heading"><div><p class="eyebrow">Заах хичээлүүд</p><h1>Хөтөлбөр</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <div class="staff-tool-pickers">
-          <label class="staff-year-picker">Хичээлийн жил <select id="year-select"></select></label>
-          <label class="staff-year-picker">Сургалтын шат <select id="stage-select"></select></label>
-        </div>
-        <section class="staff-operation-section" aria-labelledby="program-title"><div id="program-editor"></div></section>
+        <label class="staff-year-picker">Сургалт <select id="offering-select"></select></label>
+        <section class="staff-operation-section"><div id="program-editor"></div></section>
       </section>
     </main>
     <script>
       // @ts-nocheck
-      import { currentYearId, escape, fillSelect, getOverview, hasSetupAccess, postOverviewAction, stageLabel } from "../../scripts/staff-setup.js";
+      import { escape, fillSelect, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
 
-      const state = { data: null, yearId: "", stage: "stage_1" };
+      const state = { data: null, offeringId: new URLSearchParams(location.search).get("offering") || "" };
       const q = (selector) => document.querySelector(selector);
-      const show = (id) => {
-        for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id;
-        document.body.dataset.staffToolSurface = id.replace("tool-", "");
-      };
-      function message(value = "", success = false) {
-        const node = q("#tool-message");
-        node.textContent = value;
-        node.classList.toggle("staff-success", success);
-        node.hidden = !value;
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active" && entry.kind !== "event");
+      const selectedOffering = () => offerings().find((entry) => entry.id === state.offeringId);
+      const kindLabel = (kind) => kind === "summer_course" ? "Зуны сургалт" : "Жилийн сургалт";
+      function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
+      function programsForOffering(offering) {
+        const current = (state.data.programs || []).find((program) => program.id === offering.curriculumProgramId);
+        if (!current) return { current: null, draft: null, published: null };
+        const sameContext = (state.data.programs || []).filter((program) => program.academicYearId === current.academicYearId && program.stageCode === current.stageCode);
+        return { current, draft: current.status === "draft" ? current : sameContext.find((program) => program.status === "draft"), published: current.status === "published" ? current : sameContext.find((program) => program.status === "published") };
       }
-      const programs = () => (state.data?.programs || []).filter((program) => program.academicYearId === state.yearId && program.stageCode === state.stage);
-      const canCopyPrevious = () => {
-        const current = (state.data?.years || []).find((year) => year.id === state.yearId);
-        return (state.data?.programs || []).some((program) => {
-          const year = (state.data?.years || []).find((entry) => entry.id === program.academicYearId);
-          return program.stageCode === state.stage && program.status === "published" && year?.startsOn && current?.startsOn && year.startsOn < current.startsOn;
-        });
-      };
       async function refresh(success = "") {
-        state.data = await getOverview();
-        state.yearId = currentYearId(state.data, state.yearId);
-        render();
-        message(success, Boolean(success));
+        state.data = await getOverview(); if (!offerings().some((entry) => entry.id === state.offeringId)) state.offeringId = offerings()[0]?.id || "";
+        render(); message(success, Boolean(success));
+      }
+      function lessonRow(lesson = {}, index = 0) { return `<li><span class="staff-order">${index + 1}</span><input class="lesson-id" type="hidden" value="${escape(lesson.id || "")}" /><input class="lesson-title" required maxlength="200" value="${escape(lesson.title || "")}" aria-label="${index + 1}-р хичээлийн нэр" /><button class="staff-icon-button" data-up type="button" title="Дээш зөөх" aria-label="Дээш зөөх">↑</button><button class="staff-icon-button" data-down type="button" title="Доош зөөх" aria-label="Доош зөөх">↓</button><button class="staff-icon-button" data-remove type="button" title="Хасах" aria-label="Хасах">×</button></li>`; }
+      function renumber() { [...q("#lesson-list").children].forEach((row, index) => { row.querySelector(".staff-order").textContent = String(index + 1); row.querySelector(".lesson-title").setAttribute("aria-label", `${index + 1}-р хичээлийн нэр`); }); }
+      function wireRows() {
+        q("#lesson-list").querySelectorAll("li").forEach((row) => {
+          row.querySelector("[data-up]").onclick = () => { if (row.previousElementSibling) row.parentElement.insertBefore(row, row.previousElementSibling); renumber(); };
+          row.querySelector("[data-down]").onclick = () => { if (row.nextElementSibling) row.parentElement.insertBefore(row.nextElementSibling, row); renumber(); };
+          row.querySelector("[data-remove]").onclick = () => { if (row.parentElement.children.length > 1) row.remove(); else message("Хөтөлбөр дор хаяж нэг хичээлтэй байна."); renumber(); };
+        });
       }
       function render() {
-        fillSelect(q("#year-select"), state.data.years || [], state.yearId, (year) => year.label);
-        fillSelect(q("#stage-select"), state.data.stages || [], state.stage, stageLabel);
-        renderProgram();
-      }
-      function renderProgram() {
-        const container = q("#program-editor");
-        const selected = programs();
-        const draft = selected.find((program) => program.status === "draft");
-        const published = selected.find((program) => program.status === "published");
+        fillSelect(q("#offering-select"), offerings(), state.offeringId, (entry) => `${kindLabel(entry.kind)} · ${entry.title}`);
+        const offering = selectedOffering(); const container = q("#program-editor");
+        if (!offering) { container.innerHTML = `<p class="staff-empty">Эхлээд сургалт нэмнэ үү.</p>`; return; }
+        const { current, draft, published } = programsForOffering(offering);
+        if (!current) { container.innerHTML = `<p class="staff-empty">Энэ сургалтын хөтөлбөр олдсонгүй.</p>`; return; }
         if (!draft) {
-          container.innerHTML = `<div class="staff-empty"><p>${published ? `Одоогийн нийтлэгдсэн хөтөлбөр: <strong>${escape(published.displayName)}</strong>, ${published.lessons.length} хичээл.` : "Энэ шатанд нийтлэгдсэн хөтөлбөр алга байна."}</p><div class="staff-inline-actions"><button class="button primary" type="button" data-create>Ноорог эхлүүлэх</button><button class="button secondary" type="button" data-copy ${canCopyPrevious() ? "" : "disabled"}>Өмнөх хөтөлбөрөөс хуулах</button>${published ? `<button class="button secondary" type="button" data-preview>Урьдчилан харах</button>` : ""}</div></div>`;
-          container.querySelector("[data-create]").addEventListener("click", () => run(() => postOverviewAction("program.create", { academicYearId: state.yearId, stageCode: state.stage }), "Ноорог үүслээ."));
-          container.querySelector("[data-copy]")?.addEventListener("click", () => run(() => postOverviewAction("program.copy-previous", { academicYearId: state.yearId, stageCode: state.stage }), "Өмнөх хөтөлбөрөөс ноорог хууллаа."));
-          container.querySelector("[data-preview]")?.addEventListener("click", () => window.alert(published.lessons.map((lesson, index) => `${index + 1}. ${lesson.title}`).join("\n")));
+          const rows = (published?.lessons || []).map((lesson) => `<li><span class="staff-order">${lesson.sequenceNumber}</span><span>${escape(lesson.title)}</span></li>`).join("");
+          container.innerHTML = `<div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2>${escape(offering.title)}</h2></div><button id="program-new-revision" class="button secondary" type="button">Засах ноорог эхлүүлэх</button></div><p><strong>${escape(published?.displayName || current.displayName)}</strong> · ${(published?.lessons || []).length} хичээл</p><ol class="staff-program-preview">${rows}</ol>`;
+          q("#program-new-revision").onclick = () => run(() => postOverviewAction("program.create-offering-draft", { offeringId: offering.id }), "Засах ноорог үүслээ.");
           return;
         }
-        const rows = draft.lessons.map((lesson, index) => `<li data-lesson-id="${escape(lesson.id)}"><span class="staff-order">${index + 1}</span><input class="lesson-title" value="${escape(lesson.title)}" maxlength="160" aria-label="${index + 1}-р хичээлийн нэр" required /><button type="button" class="staff-icon-button" data-up title="Дээш зөөх" aria-label="Дээш зөөх">↑</button><button type="button" class="staff-icon-button" data-down title="Доош зөөх" aria-label="Доош зөөх">↓</button><button type="button" class="staff-icon-button" data-remove title="Хасах" aria-label="Хасах">×</button></li>`).join("");
-        container.innerHTML = `<form id="program-form" class="staff-program-form"><p class="staff-draft-label">Ноорог${published ? ` · Одоогийн нийтлэгдсэн: ${escape(published.displayName)}` : ""}</p><label>Хөтөлбөрийн нэр <input id="program-name" value="${escape(draft.displayName)}" maxlength="160" required /></label><ol id="lesson-list" class="staff-lesson-list">${rows}</ol><div class="staff-inline-actions"><button id="lesson-add" class="button secondary" type="button">Хичээл нэмэх</button><button id="program-preview" class="button secondary" type="button">Урьдчилан харах</button></div><div class="staff-form-actions"><button class="button secondary" type="submit">Ноорог хадгалах</button><button id="program-publish" class="button primary" type="button">Хөтөлбөр нийтлэх</button></div></form>`;
-        const list = q("#lesson-list");
-        const bindRows = () => list.querySelectorAll("li").forEach((row) => {
-          row.querySelector("[data-up]").onclick = () => { const previous = row.previousElementSibling; if (previous) list.insertBefore(row, previous); };
-          row.querySelector("[data-down]").onclick = () => { const next = row.nextElementSibling; if (next) list.insertBefore(next, row); };
-          row.querySelector("[data-remove]").onclick = () => { if (list.children.length > 1) row.remove(); else message("Хөтөлбөр дор хаяж нэг хичээлтэй байна."); };
-        });
-        bindRows();
-        q("#lesson-add").onclick = () => {
-          const row = document.createElement("li");
-          row.innerHTML = `<span class="staff-order">+</span><input class="lesson-title" maxlength="160" aria-label="Шинэ хичээлийн нэр" required /><button type="button" class="staff-icon-button" data-up title="Дээш зөөх" aria-label="Дээш зөөх">↑</button><button type="button" class="staff-icon-button" data-down title="Доош зөөх" aria-label="Доош зөөх">↓</button><button type="button" class="staff-icon-button" data-remove title="Хасах" aria-label="Хасах">×</button>`;
-          list.append(row); bindRows(); row.querySelector("input").focus();
-        };
-        q("#program-preview").onclick = () => window.alert([...list.querySelectorAll(".lesson-title")].map((input, index) => `${index + 1}. ${input.value || "(нэр оруулаагүй)"}`).join("\n"));
-        q("#program-form").onsubmit = (event) => {
-          event.preventDefault(); const form = event.currentTarget;
-          if (!form.reportValidity()) return;
-          const lessons = [...list.children].map((row) => ({ id: row.dataset.lessonId || undefined, title: row.querySelector(".lesson-title").value }));
-          run(() => postOverviewAction("program.save", { programId: draft.id, expectedUpdatedAt: draft.updatedAt, displayName: q("#program-name").value, lessons }), "Ноорог хадгалагдлаа.");
-        };
-        q("#program-publish").onclick = () => {
-          if (window.confirm("Энэ хөтөлбөрийг нийтлэх үү? Нийтэлсний дараа хичээлүүдийг шууд засахгүй.")) run(() => postOverviewAction("program.publish", { programId: draft.id, expectedUpdatedAt: draft.updatedAt }), "Хөтөлбөр нийтлэгдлээ.");
-        };
+        const lessons = draft.lessons.length ? draft.lessons : [{}];
+        container.innerHTML = `<form id="program-form" class="staff-program-form"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2>${escape(offering.title)}</h2></div><span class="staff-draft-label">Ноорог</span></div><label>Хөтөлбөрийн нэр <input id="program-name" value="${escape(draft.displayName)}" maxlength="160" required /></label><ol id="lesson-list" class="staff-lesson-list">${lessons.map(lessonRow).join("")}</ol><div class="staff-inline-actions"><button id="lesson-add" class="button secondary" type="button">Хичээл нэмэх</button><button id="program-preview" class="button secondary" type="button">Урьдчилан харах</button></div><div class="staff-form-actions"><button class="button secondary" type="submit">Ноорог хадгалах</button><button id="program-publish" class="button primary" type="button">Хөтөлбөр нийтлэх</button></div></form>`;
+        wireRows();
+        q("#lesson-add").onclick = () => { q("#lesson-list").insertAdjacentHTML("beforeend", lessonRow({}, q("#lesson-list").children.length)); wireRows(); renumber(); q("#lesson-list li:last-child .lesson-title").focus(); };
+        q("#program-preview").onclick = () => window.alert([...q("#lesson-list").querySelectorAll(".lesson-title")].map((input, index) => `${index + 1}. ${input.value || "(нэр оруулаагүй)"}`).join("\n"));
+        q("#program-form").onsubmit = (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; const lessons = [...q("#lesson-list").children].map((row) => ({ id: row.querySelector(".lesson-id").value || undefined, title: row.querySelector(".lesson-title").value })); run(() => postOverviewAction("program.save", { programId: draft.id, expectedUpdatedAt: draft.updatedAt, displayName: q("#program-name").value, lessons }), "Ноорог хадгалагдлаа."); };
+        q("#program-publish").onclick = () => { if (q("#program-form").reportValidity() && window.confirm("Энэ хөтөлбөрийг нийтлэх үү? Нийтэлсний дараа хичээлүүдийг шууд засахгүй.")) run(async () => { const lessons = [...q("#lesson-list").children].map((row) => ({ id: row.querySelector(".lesson-id").value || undefined, title: row.querySelector(".lesson-title").value })); await postOverviewAction("program.save", { programId: draft.id, expectedUpdatedAt: draft.updatedAt, displayName: q("#program-name").value, lessons }); const refreshed = await getOverview(); const saved = refreshed.programs.find((program) => program.id === draft.id); await postOverviewAction("program.publish", { programId: draft.id, expectedUpdatedAt: saved.updatedAt, offeringId: offering.id }); }, "Хөтөлбөр нийтлэгдлээ."); };
       }
       async function run(work, success) { message(); try { await work(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
-      q("#year-select").onchange = (event) => { state.yearId = event.target.value; render(); };
-      q("#stage-select").onchange = (event) => { state.stage = event.target.value; renderProgram(); };
+      q("#offering-select").onchange = (event) => { state.offeringId = event.target.value; history.replaceState(null, "", `?offering=${encodeURIComponent(state.offeringId)}`); render(); };
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>

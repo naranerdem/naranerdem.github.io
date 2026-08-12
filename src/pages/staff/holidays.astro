@@ -19,16 +19,20 @@ import "../../styles/global.css";
     </main>
     <script>
       // @ts-nocheck
-      import { currentYearId, escape, fillSelect, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
+      import { escape, fillSelect, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
 
       const state = { data: null, yearId: "", editing: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const breaks = () => (state.data?.breaks || []).filter((entry) => entry.academicYearId === state.yearId && entry.status === "active");
+      const visibleYears = () => (state.data?.years || []).filter((year) => {
+        const linked = (state.data?.offerings || []).filter((offering) => offering.academicYearId === year.id);
+        return !linked.length || linked.some((offering) => offering.kind === "annual_course");
+      });
       function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
-      async function refresh(success = "") { state.data = await getOverview(); state.yearId = currentYearId(state.data, state.yearId); render(); message(success, Boolean(success)); }
+      async function refresh(success = "") { state.data = await getOverview(); const years = visibleYears(); state.yearId = years.some((year) => year.id === state.yearId) ? state.yearId : (years.find((year) => year.isCurrent)?.id || years[0]?.id || ""); render(); message(success, Boolean(success)); }
       function render() {
-        fillSelect(q("#year-select"), state.data.years || [], state.yearId, (year) => year.label);
+        fillSelect(q("#year-select"), visibleYears(), state.yearId, (year) => year.label);
         const entry = breaks().find((item) => item.id === state.editing);
         q("#break-editor").innerHTML = entry || state.editing === "new" ? form(entry) : "";
         q("#break-list").innerHTML = breaks().length ? breaks().map((item) => `<article><div><strong>${escape(item.label)}</strong><p>${formatDate(item.startsOn)} - ${formatDate(item.endsOn)}${item.sourceNote ? ` · ${escape(item.sourceNote)}` : ""}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-edit="${escape(item.id)}">Засах</button><button class="button secondary" type="button" data-remove="${escape(item.id)}">Устгах</button></div></article>`).join("") : `<p class="staff-empty">Амралтын хугацаа оруулаагүй байна.</p>`;

@@ -99,11 +99,13 @@ The registration domain is documented before implementation so the future app pr
 
 See [docs/registration-model.md](docs/registration-model.md).
 
-The protected staff setup is split into `Хөтөлбөр`, `Хуваарь`, `Амралтын
-хуваарь`, and a small typed `Тохиргоо` screen. It creates revisioned annual
-programs, class times, breaks, stage-level Facebook group links, and explicit
-dated calendar drafts. Its staging data is deliberately fake; production has
-no curriculum or calendar configuration yet. See
+The protected staff setup starts with `Сургалт, арга хэмжээ`, then uses
+`Хөтөлбөр`, `Хуваарь`, `Амралтын хуваарь`, and a small typed `Тохиргоо` screen.
+It supports annual courses, summer intensives, and one-off events while keeping
+published course calendars as explicit dated records. Facebook groups and
+school-break policy belong to the concrete Offering. Its staging data is
+deliberately fake; production has no curriculum, Offering, class, event, or
+calendar configuration. See
 [docs/program-calendar-model.md](docs/program-calendar-model.md).
 
 ## Editing Public Content

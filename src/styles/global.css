@@ -1711,6 +1711,13 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
+.staff-tool-primary {
+  grid-column: 1 / -1;
+  min-height: 5.75rem;
+  border-color: rgba(7, 58, 175, 0.45);
+  background: rgba(7, 58, 175, 0.04);
+}
+
 .staff-settings-shell {
   width: min(100%, 42rem);
 }
@@ -1755,8 +1762,8 @@ textarea:focus {
 .staff-section-heading select,
 .staff-compact-form input,
 .staff-compact-form select,
-.staff-program-form input,
-.staff-lock-form select {
+.staff-compact-form textarea,
+.staff-program-form input {
   width: 100%;
   min-height: 44px;
   border: 1px solid var(--line);
@@ -1765,6 +1772,11 @@ textarea:focus {
   color: var(--ink);
   font: inherit;
   padding: 0.48rem 0.6rem;
+}
+
+.staff-compact-form textarea {
+  min-height: 5.5rem;
+  resize: vertical;
 }
 
 .staff-year-picker {
@@ -1802,8 +1814,7 @@ textarea:focus {
 }
 
 .staff-compact-form label,
-.staff-program-form > label,
-.staff-lock-form label:first-child {
+.staff-program-form > label {
   display: grid;
   gap: 0.3rem;
   color: var(--muted);
@@ -1859,7 +1870,7 @@ textarea:focus {
 .staff-record-list .button,
 .staff-calendar-list .button {
   flex: 0 0 auto;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0.45rem 0.65rem;
 }
 
@@ -1873,6 +1884,114 @@ textarea:focus {
 .staff-calendar-draft {
   display: grid;
   gap: 1rem;
+}
+
+.staff-offering-editor:empty {
+  display: none;
+}
+
+.staff-offering-list {
+  display: grid;
+  gap: 0;
+  margin-top: 1.25rem;
+}
+
+.staff-offering-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--line);
+  padding: 1rem 0;
+}
+
+.staff-offering-row h2 {
+  margin: 0.2rem 0;
+  font-size: 1.1rem;
+}
+
+.staff-offering-row p {
+  margin: 0.15rem 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.staff-kind-label {
+  color: var(--blue-deep);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.staff-kind-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.staff-event-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.staff-event-summary div {
+  border-bottom: 1px solid var(--line);
+  padding: 0.8rem 0;
+}
+
+.staff-event-summary dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.staff-event-summary dd {
+  margin: 0.2rem 0 0;
+  font-weight: 800;
+}
+
+.staff-program-preview {
+  display: grid;
+  gap: 0.45rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staff-program-preview li {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.45rem;
+}
+
+.staff-history-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.staff-danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid #d9a5a5;
+  margin-top: 0.35rem;
+  padding-top: 0.9rem;
+}
+
+.staff-danger-zone p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.button.danger {
+  border-color: #9f2929;
+  background: var(--paper);
+  color: #8b1f1f;
 }
 
 .staff-program-form {
@@ -1964,17 +2083,6 @@ textarea:focus {
   outline-offset: 1px;
 }
 
-.staff-lock-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.7rem;
-  align-items: end;
-}
-
-.staff-lock-form .staff-check {
-  grid-column: 1 / -1;
-}
-
 @media (max-width: 38rem) {
   .staff-page-heading,
   .staff-section-heading {
@@ -1995,14 +2103,17 @@ textarea:focus {
     grid-column: auto;
   }
 
-  .staff-lock-form {
-    grid-template-columns: 1fr;
-  }
-
   .staff-record-list article,
-  .staff-calendar-list li {
+  .staff-calendar-list li,
+  .staff-offering-row,
+  .staff-danger-zone {
     align-items: start;
     flex-direction: column;
+  }
+
+  .staff-kind-choices,
+  .staff-event-summary {
+    grid-template-columns: 1fr;
   }
 
   .staff-setting-row {
@@ -2073,6 +2184,9 @@ textarea:focus {
 @media (max-width: 31rem) {
   .staff-tool-grid {
     grid-template-columns: 1fr;
+  }
+  .staff-tool-primary {
+    grid-column: auto;
   }
   .staff-policy-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));

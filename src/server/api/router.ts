@@ -45,6 +45,7 @@ import {
   changeCalendarDraft,
   copyPreviousProgram,
   createCalendarChangeDraft,
+  createOfferingProgramDraft,
   createProgramDraft,
   deleteClassSession,
   generateCalendarDraft,
@@ -52,12 +53,15 @@ import {
   publishCalendarDraft,
   publishProgramDraft,
   removeAcademicYearBreak,
-  saveAcademicYearStageSetting,
   saveAcademicYearBreak,
   saveClassSession,
   saveProgramDraft,
-  setCalendarDeliveredPrefix,
 } from "../staff/program-calendar";
+import {
+  OfferingError,
+  saveActivityOffering,
+  saveOfferingFacebookGroup,
+} from "../staff/offerings";
 
 type ErrorCode =
   | "configuration_error"
@@ -170,6 +174,13 @@ function registrationError(caught: unknown): Response {
 }
 
 function programCalendarError(caught: unknown): Response {
+  if (caught instanceof OfferingError) {
+    if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+    if (caught.code === "not_found") return error("invalid_request", "Сонгосон мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+    if (caught.code === "conflict") return error("invalid_request", "Өөр хүн саяхан өөрчилсөн байна. Хуудсыг шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
+    if (caught.code === "immutable") return error("invalid_request", "Ашиглагдаж буй мэдээллийг эндээс шууд өөрчилж болохгүй.", 409, { "Cache-Control": "no-store" });
+    return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+  }
   if (!(caught instanceof ProgramCalendarError)) {
     return error("internal_error", "Хөтөлбөр, хуваарийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
   }
@@ -178,6 +189,7 @@ function programCalendarError(caught: unknown): Response {
   if (caught.code === "conflict") return error("invalid_request", "Өөр хүн саяхан өөрчилсөн байна. Хуудсыг шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "immutable") return error("invalid_request", "Хэвлэгдсэн эсвэл ашиглагдаж буй мэдээллийг шууд өөрчилж болохгүй. Шинэ ноорог үүсгэнэ үү.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "referenced") return error("invalid_request", "Энэ анги бүртгэл эсвэл хуваарьт ашиглагдсан тул устгаж болохгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "insufficient_slots") return error("invalid_request", "Хөтөлбөрийн бүх хичээл сонгосон хугацаанд багтахгүй байна. Хугацааг сунгах, давтамжийг өөрчлөх эсвэл нэмэлт өдөр оруулна уу.", 422, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
@@ -660,8 +672,41 @@ export async function handleApiRequest(
     }
     try {
       switch (payload.action) {
+        case "offering.save":
+          await saveActivityOffering(env, principal, {
+            id: typeof payload.id === "string" ? payload.id : undefined,
+            expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
+            eventExpectedUpdatedAt: typeof payload.eventExpectedUpdatedAt === "string" ? payload.eventExpectedUpdatedAt : undefined,
+            kind: String(payload.kind ?? ""), title: typeof payload.title === "string" ? payload.title : undefined,
+            academicYearId: typeof payload.academicYearId === "string" ? payload.academicYearId : null,
+            stageCode: typeof payload.stageCode === "string" ? payload.stageCode : null,
+            levelLabel: typeof payload.levelLabel === "string" ? payload.levelLabel : null,
+            startsOn: typeof payload.startsOn === "string" ? payload.startsOn : null,
+            endsOn: typeof payload.endsOn === "string" ? payload.endsOn : null,
+            curriculumProgramId: typeof payload.curriculumProgramId === "string" ? payload.curriculumProgramId : null,
+            useAcademicYearBreaks: typeof payload.useAcademicYearBreaks === "boolean" ? payload.useAcademicYearBreaks : undefined,
+            chargeMode: typeof payload.chargeMode === "string" ? payload.chargeMode : undefined,
+            facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null,
+            note: typeof payload.note === "string" ? payload.note : null,
+            eventDate: typeof payload.eventDate === "string" ? payload.eventDate : null,
+            eventStartTime: typeof payload.eventStartTime === "string" ? payload.eventStartTime : null,
+            eventEndTime: typeof payload.eventEndTime === "string" ? payload.eventEndTime : null,
+            eventCapacity: Number(payload.eventCapacity),
+            eventRegistrationOpen: typeof payload.eventRegistrationOpen === "boolean" ? payload.eventRegistrationOpen : false,
+          });
+          break;
+        case "offering-facebook.save":
+          await saveOfferingFacebookGroup(env, principal, {
+            offeringId: String(payload.offeringId ?? ""),
+            expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null,
+          });
+          break;
         case "program.create":
           await createProgramDraft(env, principal, { academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), displayName: String(payload.displayName ?? "") });
+          break;
+        case "program.create-offering-draft":
+          await createOfferingProgramDraft(env, principal, { offeringId: String(payload.offeringId ?? "") });
           break;
         case "program.copy-previous":
           await copyPreviousProgram(env, principal, { academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? "") });
@@ -673,13 +718,18 @@ export async function handleApiRequest(
           });
           break;
         case "program.publish":
-          await publishProgramDraft(env, principal, { programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          await publishProgramDraft(env, principal, { programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), offeringId: typeof payload.offeringId === "string" ? payload.offeringId : undefined });
           break;
         case "class.save":
           await saveClassSession(env, principal, {
             id: typeof payload.id === "string" ? payload.id : undefined,
             expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
             academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), weekday: String(payload.weekday ?? ""), startTime: String(payload.startTime ?? ""), endTime: String(payload.endTime ?? ""), capacity: Number(payload.capacity), registrationOpen: typeof payload.registrationOpen === "boolean" ? payload.registrationOpen : undefined,
+            offeringId: typeof payload.offeringId === "string" ? payload.offeringId : undefined,
+            recurrenceKind: typeof payload.recurrenceKind === "string" ? payload.recurrenceKind : undefined,
+            firstDate: typeof payload.firstDate === "string" ? payload.firstDate : undefined,
+            lastDate: typeof payload.lastDate === "string" ? payload.lastDate : null,
+            weeklyWeekday: typeof payload.weeklyWeekday === "string" ? payload.weeklyWeekday : null,
           });
           break;
         case "class.delete":
@@ -695,13 +745,9 @@ export async function handleApiRequest(
         case "break.remove":
           await removeAcademicYearBreak(env, principal, { breakId: String(payload.breakId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
           break;
-        case "stage-setting.save":
-          await saveAcademicYearStageSetting(env, principal, {
-            academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null, expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
-          });
-          break;
         case "calendar.generate":
-          await generateCalendarDraft(env, principal, { classSessionId: String(payload.classSessionId ?? ""), programId: String(payload.programId ?? ""), firstCandidateDate: String(payload.firstCandidateDate ?? "") });
+          if ("programId" in payload || "firstCandidateDate" in payload) throw new ProgramCalendarError("invalid");
+          await generateCalendarDraft(env, principal, { classSessionId: String(payload.classSessionId ?? "") });
           break;
         case "calendar.change-draft":
           await createCalendarChangeDraft(env, principal, { classSessionId: String(payload.classSessionId ?? "") });
@@ -710,9 +756,6 @@ export async function handleApiRequest(
           await changeCalendarDraft(env, principal, {
             revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), kind: String(payload.kind ?? "") as "exclude" | "restore" | "extra", localDate: String(payload.localDate ?? ""), startTime: typeof payload.startTime === "string" ? payload.startTime : undefined, endTime: typeof payload.endTime === "string" ? payload.endTime : undefined, reasonLabel: typeof payload.reasonLabel === "string" ? payload.reasonLabel : null,
           });
-          break;
-        case "calendar.lock":
-          await setCalendarDeliveredPrefix(env, principal, { revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), lockedThroughSequence: Number(payload.lockedThroughSequence) });
           break;
         case "calendar.cancel":
           await cancelFutureCalendarSlot(env, principal, {

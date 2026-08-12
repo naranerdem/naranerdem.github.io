@@ -147,45 +147,74 @@ Do not expose `FamilyGroup` or `BillingGroup` terminology unnecessarily in publi
 
 ### Program
 
-A science program offered by the center. Programs may last a full academic year.
+A `CurriculumProgram` is the ordered lesson content taught by a course. Program
+length is data: an annual program may run for a school year, while a summer
+program may be a short intensive. The center's current annual progression still
+uses stages 1, 2, and 3. A one-off event may have no program.
 
-The center has a three-year progression, so a returning student may participate in year 1, year 2, or year 3 of the broader program.
+### ActivityOffering
 
-### Session or Academic Year
+An `ActivityOffering` is one concrete run offered by the center:
 
-A concrete offering of a program for a specific academic year, schedule, capacity, and teacher-facing cohort.
+- annual course
+- summer course
+- one-off event
+
+It owns the period, optional year/stage or level, optional program, free/paid
+mode, academic-break policy, and shared Facebook group. Annual and summer
+courses are paid by default; events are free by default. These modes do not yet
+create prices, payment schedules, or obligations.
 
 ### ClassSession
 
-A concrete class is not merely a stage or level. A `ClassSession` is:
+A `ClassSession` is a concrete registration time/cohort inside a course
+Offering. It is not merely a stage or level. Its authoritative meeting rule is:
 
 ```text
-stage
-+ weekday
++ first date and optional last date
++ weekly / weekdays / daily recurrence
 + start time
 + end time
 ```
 
-It includes capacity, registration availability, and academic year/session.
-A normal class label is generated from these teaching details rather than typed
-as a separate teacher-facing name.
+It includes capacity and registration availability. Annual compatibility still
+retains academic year, stage, and weekday fields for the current public catalog.
+A normal label is generated from teaching details rather than typed.
 
-For example, two different Saturday `1-р шат — Анхан шат` time slots are two different classes. Parents choose a specific class/time during registration.
+For example, two Saturday Stage 1 times are distinct annual classes. A summer
+Offering can instead have `6/1–6/16 · 10:00–11:30` and
+`6/15–6/26 · 13:00–14:30` classes that share one program but use different
+periods and recurrences.
 
 Class/session capacity should be configurable. Historically a class has 10 children.
 
 ### Program And Published Calendar
 
-`ClassSession` remains a concrete enrolled cohort and habitual time slot, such as `2-р шат — Ням 10:00–11:20`. It supports registration and family expectations but is not curriculum content and does not mechanically define a weekly lesson calendar.
+The durable course path is `CurriculumProgram -> ActivityOffering ->
+ClassSession -> ClassCalendar`. The ClassSession supports registration and
+family expectations but is not curriculum content and does not mechanically
+define the occurrence calendar.
 
-The implemented program/calendar foundation separates an academic-year, stage-specific ordered `CurriculumProgram` from the explicit dated calendar for each `ClassSession`. A weekly pattern is only a draft candidate generator. Published `scheduled`, `no_class`, and `cancelled` rows are the operational truth, which lets one cohort teach Lesson 7 on Sunday and another on the following Tuesday. Global breaks normally exclude habitual candidates; a class can exclude another date or restore a date within a break; a manual extra slot participates in the same chronological lesson order.
+Weekly, weekday, and daily patterns only generate draft candidates. Published
+`scheduled`, `no_class`, and `cancelled` rows are operational truth. The class
+inherits the Offering program, so calendar generation cannot reselect it.
+Academic-year breaks apply only when that Offering opts in; class-specific
+exclusion, restore, and extra-slot decisions remain available.
 
-After publication, cancellation preserves the original dated entry and only reflows lessons after an explicit manually locked prefix. Without a replacement, the tail extends; with a timely replacement, it absorbs the missed lesson. Read-only class schedules expose no registration data. Details are in [program-calendar-model.md](program-calendar-model.md).
+After publication, cancellation preserves the original dated entry and only
+reflows safe future assignments. Normal changes automatically protect past
+published dates plus any stronger stored internal boundary; the teacher does
+not enter a completed-lesson sequence. This protection does not claim that a
+past lesson was delivered or attended. Attendance remains the future stronger
+source. An annual tail may extend when it has no hard end; a summer class with a
+hard period instead reports insufficient space. Read-only class schedules
+expose no registration data. Details are in
+[program-calendar-model.md](program-calendar-model.md).
 
-Teachers and admins now configure these annual records through a protected,
-Mongolian operational surface. It deliberately asks for program lessons,
-cohort time, breaks, and explicit date-level decisions rather than exposing
-database concepts. Accountants cannot open or mutate this setup area.
+Programless events use an explicit `OfferingEventOccurrence` for date/time,
+capacity, and registration state rather than pretending to have Lesson 1.
+Teachers and admins configure these records through a protected Mongolian
+operational surface. Accountants cannot open or mutate it.
 
 A missed Lesson 7 can be made up only through another suitable occurrence of Lesson 7, not by joining Lesson 8 because it has space. Future make-up suggestions require the same curriculum lesson, a suitable future occurrence with capacity, an unresolved absence, and teacher consideration. Suggestions never automatically invite parents; the teacher approves/rejects and can override them. A teacher may create one extra non-standard occurrence when normal occurrences are unavailable.
 
@@ -201,11 +230,32 @@ Schedule communication is future planned and separate from payment-reminder esca
 
 Communication needs event/idempotency semantics: avoid duplicate sends for one published change, do not notify on unrelated metadata edits, group siblings where clearer, and allow a materially changed reschedule to create a new notice. Make-up messages remain teacher-approved before they are generated or sent.
 
-Current staging calendar fixtures are deliberately fake and carry test provenance. They exercise independent cross-week cohort progress, no-class/holiday rows, a long break, class restoration/exclusion, and an extra slot. They are not Naran Erdem's real curriculum or public schedule.
+Current staging calendar fixtures are deliberately fake and carry test
+provenance. They include annual weekly cohorts, a 12-lesson summer Offering with
+weekday and daily classes, and a free programless event. They exercise breaks,
+independent progress, class restoration/exclusion, and extra slots. They are not
+Naran Erdem's real curriculum or public schedule.
+
+### Future Generalized Registration Target
+
+The current public flow remains the existing annual stage/class flow. It still
+selects one stable `ClassSession`, and its capacity, hold, and FIFO waitlist
+rules do not change in this migration.
+
+Future course registration should target `ActivityOffering + ClassSession`.
+Future event registration should target `ActivityOffering +
+OfferingEventOccurrence`. Both should share guardian/student identity, verified
+email, capacity checks, and a class/occurrence-specific FIFO waitlist where
+appropriate. For a free Offering, the intended path is submission, email
+verification, capacity confirmation, then enrollment confirmation; it needs no
+24-hour hold solely for initial payment. A paid Offering must use the same
+future pricing/payment machinery as other paid activities, not an event-only
+finance model. Public summer/event registration is not implemented yet.
 
 ### Selected Class
 
-Ordinary registration selects at most one current concrete `ClassSession` for each child:
+The current annual public registration selects at most one concrete
+`ClassSession` for each child:
 
 ```text
 stage + weekday + start/end time
@@ -663,14 +713,17 @@ Underlying installments remain individually auditable.
 
 Similarly, a future payment request may present a combined total while preserving the expected allocation to individual installments. This should work naturally with `BillingGroup`, `Payment`, and `PaymentAllocation`, but should not require every payment to belong to one billing group.
 
-## Facebook Stage Groups
+## Facebook Offering Groups
 
 Facebook is a major operational communication channel for parents and students.
-The current operational model has one Facebook group per academic year and
-stage, shared by that stage's concrete class times. The link is a typed annual
-stage setting rather than a per-class teacher field.
+The authoritative operational model has one optional Facebook group per
+`ActivityOffering`, shared by all of that Offering's concrete class times. An
+annual stage run may therefore share one group across Saturday morning and
+afternoon classes, while a summer run may use another. Migration 0009's older
+academic-year/stage setting remains compatibility/history and is not a second
+write authority.
 
-Future registration data should be able to record a guardian's Facebook profile name or profile link when useful. After enrollment is confirmed, the system should eventually be able to show or send that stage's Facebook group link so the parent/student can request to join.
+Future registration data should be able to record a guardian's Facebook profile name or profile link when useful. After enrollment is confirmed, the system should eventually be able to show or send that Offering's Facebook group link so the parent/student can request to join.
 
 Do not require a child to have a Facebook account. Do not plan automated Facebook group invitations, Facebook API integration, or Facebook Login as part of the core registration model.
 

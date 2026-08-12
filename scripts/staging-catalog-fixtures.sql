@@ -24,46 +24,73 @@ INSERT OR IGNORE INTO academic_year_stage_setting (
     'https://example.invalid/naran-erdem/stage-3', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z');
 
+INSERT OR IGNORE INTO activity_offering (
+  id, kind, title, academic_year_id, stage_code, starts_on, ends_on,
+  curriculum_program_id, use_academic_year_breaks, charge_mode,
+  facebook_group_url, status, is_test, test_run_id, created_at, updated_at
+) VALUES
+  ('annual-offering-staging-fixture-2026-27-stage_1', 'annual_course',
+    'Туршилтын 2026–2027 хичээлийн жил · 1-р шат', 'staging-fixture-2026-27', 'stage_1',
+    '2026-09-01', '2027-06-01', NULL, 1, 'paid',
+    'https://example.invalid/naran-erdem/stage-1', 'active', 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('annual-offering-staging-fixture-2026-27-stage_2', 'annual_course',
+    'Туршилтын 2026–2027 хичээлийн жил · 2-р шат', 'staging-fixture-2026-27', 'stage_2',
+    '2026-09-01', '2027-06-01', NULL, 1, 'paid',
+    'https://example.invalid/naran-erdem/stage-2', 'active', 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('annual-offering-staging-fixture-2026-27-stage_3', 'annual_course',
+    'Туршилтын 2026–2027 хичээлийн жил · 3-р шат', 'staging-fixture-2026-27', 'stage_3',
+    '2026-09-01', '2027-06-01', NULL, 1, 'paid',
+    'https://example.invalid/naran-erdem/stage-3', 'active', 1, 'staging-catalog-fixture',
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z');
+
 INSERT OR IGNORE INTO class_session (
   id, academic_year_id, stage_code, display_label, weekday, start_time,
   end_time, capacity, status, is_test_only, is_test, test_run_id,
-  created_at, updated_at
+  created_at, updated_at, activity_offering_id
 ) VALUES
   (
     'staging-fixture-stage-1-saturday', 'staging-fixture-2026-27', 'stage_1',
     'Туршилтын 1-р шат, Бямба 10:00', 'Бямба', '10:00', '11:20', 10,
     'available', 1, 1, 'staging-catalog-fixture',
-    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
+    'annual-offering-staging-fixture-2026-27-stage_1'
   ),
   (
     'staging-fixture-stage-1-afternoon', 'staging-fixture-2026-27', 'stage_1',
     'Туршилтын 1-р шат, Бямба 14:00', 'Бямба', '14:00', '15:20', 10,
     'full', 1, 1, 'staging-catalog-fixture',
-    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
+    'annual-offering-staging-fixture-2026-27-stage_1'
   ),
   (
     'staging-fixture-stage-2-sunday', 'staging-fixture-2026-27', 'stage_2',
     'Туршилтын 2-р шат, Ням 10:00', 'Ням', '10:00', '11:20', 10,
     'available', 1, 1, 'staging-catalog-fixture',
-    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
+    'annual-offering-staging-fixture-2026-27-stage_2'
   ),
   (
     'staging-fixture-stage-2-tuesday', 'staging-fixture-2026-27', 'stage_2',
     'Туршилтын 2-р шат, Мягмар 16:00', 'Мягмар', '16:00', '17:20', 8,
     'available', 1, 1, 'staging-catalog-fixture',
-    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
+    'annual-offering-staging-fixture-2026-27-stage_2'
   ),
   (
     'staging-fixture-stage-3-sunday', 'staging-fixture-2026-27', 'stage_3',
     'Туршилтын 3-р шат, Ням 13:00', 'Ням', '13:00', '15:00', 10,
     'full', 1, 1, 'staging-catalog-fixture',
-    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
+    'annual-offering-staging-fixture-2026-27-stage_3'
   ),
   (
     'staging-fixture-stage-3-tuesday', 'staging-fixture-2026-27', 'stage_3',
     'Туршилтын 3-р шат, Мягмар 18:00', 'Мягмар', '18:00', '19:20', 6,
     'available', 1, 1, 'staging-catalog-fixture',
-    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+    '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
+    'annual-offering-staging-fixture-2026-27-stage_3'
   );
 
 UPDATE class_session
@@ -80,6 +107,11 @@ SET
   is_test_only = 1,
   is_test = 1,
   test_run_id = 'staging-catalog-fixture',
+  activity_offering_id = CASE stage_code
+    WHEN 'stage_1' THEN 'annual-offering-staging-fixture-2026-27-stage_1'
+    WHEN 'stage_2' THEN 'annual-offering-staging-fixture-2026-27-stage_2'
+    ELSE 'annual-offering-staging-fixture-2026-27-stage_3'
+  END,
   updated_at = '2026-08-10T00:00:00Z'
 WHERE id IN (
   'staging-fixture-stage-1-saturday',
@@ -102,8 +134,20 @@ AND (
   OR is_test_only != 1
   OR is_test != 1
   OR test_run_id != 'staging-catalog-fixture'
+  OR activity_offering_id IS NULL
   OR updated_at != '2026-08-10T00:00:00Z'
 );
+
+INSERT OR IGNORE INTO class_meeting_rule (
+  class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
+  start_time, end_time, created_at, updated_at
+) VALUES
+  ('staging-fixture-stage-1-saturday', 'weekly', '2026-09-05', NULL, 'Бямба', '10:00', '11:20', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('staging-fixture-stage-1-afternoon', 'weekly', '2026-09-05', NULL, 'Бямба', '14:00', '15:20', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('staging-fixture-stage-2-sunday', 'weekly', '2026-09-06', NULL, 'Ням', '10:00', '11:20', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('staging-fixture-stage-2-tuesday', 'weekly', '2026-09-08', NULL, 'Мягмар', '16:00', '17:20', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('staging-fixture-stage-3-sunday', 'weekly', '2026-09-06', NULL, 'Ням', '13:00', '15:00', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
+  ('staging-fixture-stage-3-tuesday', 'weekly', '2026-09-08', NULL, 'Мягмар', '18:00', '19:20', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z');
 
 INSERT OR IGNORE INTO guardian_account (
   id, full_name, primary_phone, primary_phone_normalized, email, email_normalized,

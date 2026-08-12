@@ -9,6 +9,14 @@ export type LocalTime = string;
 export type CalendarSlotStatus = "scheduled" | "no_class" | "cancelled";
 export type CalendarSlotSource = "generated" | "manual_extra" | "manual_restore";
 export type CalendarOverrideBehavior = "exclude" | "restore";
+export type MeetingRecurrenceKind = "weekly" | "weekdays" | "daily";
+
+export class SchedulePlanningError extends Error {
+  constructor(public readonly code: "invalid" | "insufficient_slots", message: string) {
+    super(`Invalid calendar plan: ${message}`);
+    this.name = "SchedulePlanningError";
+  }
+}
 
 export interface ProgramLesson {
   id: string;
@@ -55,7 +63,9 @@ export interface CalendarSlot {
 export interface ScheduleGenerationInput {
   lessons: readonly ProgramLesson[];
   firstCandidateDate: LocalDate;
-  habitualWeekday: string;
+  recurrenceKind?: MeetingRecurrenceKind;
+  habitualWeekday?: string;
+  lastCandidateDate?: LocalDate | null;
   startTime: LocalTime;
   endTime: LocalTime;
   breaks?: readonly AcademicYearBreak[];
@@ -97,7 +107,7 @@ const weekdayByName: Record<string, number> = {
 };
 
 function invariant(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(`Invalid calendar plan: ${message}`);
+  if (!condition) throw new SchedulePlanningError("invalid", message);
 }
 
 function dateParts(localDate: LocalDate): [number, number, number] {
@@ -150,6 +160,32 @@ function strictNextHabitualDate(after: LocalDate, weekday: string): LocalDate {
   return nextHabitualDate(addDays(after, 1), weekday);
 }
 
+function nextWeekdayDate(fromInclusive: LocalDate): LocalDate {
+  let candidate = fromInclusive;
+  while ([0, 6].includes(dayOfWeek(candidate))) candidate = addDays(candidate, 1);
+  return candidate;
+}
+
+function firstRuleDate(input: ScheduleGenerationInput): LocalDate {
+  const recurrence = input.recurrenceKind ?? "weekly";
+  if (recurrence === "weekly") {
+    invariant(Boolean(input.habitualWeekday), "a weekly rule needs a weekday");
+    return nextHabitualDate(input.firstCandidateDate, input.habitualWeekday as string);
+  }
+  if (recurrence === "weekdays") return nextWeekdayDate(input.firstCandidateDate);
+  return input.firstCandidateDate;
+}
+
+function nextRuleDate(after: LocalDate, input: ScheduleGenerationInput): LocalDate {
+  const recurrence = input.recurrenceKind ?? "weekly";
+  if (recurrence === "weekly") {
+    invariant(Boolean(input.habitualWeekday), "a weekly rule needs a weekday");
+    return strictNextHabitualDate(after, input.habitualWeekday as string);
+  }
+  if (recurrence === "weekdays") return nextWeekdayDate(addDays(after, 1));
+  return addDays(after, 1);
+}
+
 function compareSlots(left: CalendarSlot, right: CalendarSlot): number {
   return left.localDate.localeCompare(right.localDate)
     || left.startTime.localeCompare(right.startTime)
@@ -175,7 +211,7 @@ function normalizedLessons(lessons: readonly ProgramLesson[]): ProgramLesson[] {
 }
 
 function validateTime(value: LocalTime, field: string): void {
-  invariant(/^\d{2}:\d{2}$/.test(value), `${field} must be HH:MM`);
+  invariant(/^([01]\d|2[0-3]):[0-5]\d$/.test(value), `${field} must be HH:MM`);
 }
 
 function assertUniqueSlotTimes(slots: readonly CalendarSlot[]): void {
@@ -220,6 +256,12 @@ function makeHabitualSlot(
 }
 
 function validatePlanningInput(input: ScheduleGenerationInput): void {
+  dateParts(input.firstCandidateDate);
+  if (input.lastCandidateDate) {
+    dateParts(input.lastCandidateDate);
+    invariant(input.lastCandidateDate >= input.firstCandidateDate, "the class period ends before it starts");
+  }
+  invariant(["weekly", "weekdays", "daily"].includes(input.recurrenceKind ?? "weekly"), "unsupported meeting recurrence");
   for (const period of input.breaks ?? []) {
     dateParts(period.startsOn);
     dateParts(period.endsOn);
@@ -238,6 +280,7 @@ function makeExtraSlot(slot: ExtraTeachingSlot): CalendarSlot {
   dateParts(slot.localDate);
   validateTime(slot.startTime, "extra slot start time");
   validateTime(slot.endTime, "extra slot end time");
+  invariant(slot.endTime > slot.startTime, "extra slot must end after it starts");
   invariant(slot.id.trim().length > 0, "extra slot ID is required");
   return {
     id: slot.id,
@@ -274,21 +317,31 @@ export function generateCalendarSchedule(input: ScheduleGenerationInput): Calend
   dateParts(input.firstCandidateDate);
   validateTime(input.startTime, "habitual start time");
   validateTime(input.endTime, "habitual end time");
+  invariant(input.endTime > input.startTime, "habitual meeting must end after it starts");
   validatePlanningInput(input);
   const extras = [...(input.extraSlots ?? [])].map(makeExtraSlot).sort(compareSlots);
+  for (const extra of extras) {
+    invariant(extra.localDate >= input.firstCandidateDate, "extra slots must not precede the first candidate date");
+    invariant(!input.lastCandidateDate || extra.localDate <= input.lastCandidateDate, "extra slots must remain inside the class period");
+  }
   const entries: CalendarSlot[] = [];
   let extraIndex = 0;
-  let candidateDate = nextHabitualDate(input.firstCandidateDate, input.habitualWeekday);
+  let candidateDate = firstRuleDate(input);
 
   while (entries.filter((slot) => slot.status === "scheduled").length < lessons.length) {
     while (extraIndex < extras.length && extras[extraIndex].localDate <= candidateDate) {
-      invariant(extras[extraIndex].localDate >= input.firstCandidateDate, "extra slots must not precede the first candidate date");
       entries.push(extras[extraIndex]);
       extraIndex += 1;
     }
+    if (input.lastCandidateDate && candidateDate > input.lastCandidateDate) {
+      if (entries.filter((slot) => slot.status === "scheduled").length < lessons.length) {
+        throw new SchedulePlanningError("insufficient_slots", "the program does not fit the configured class period");
+      }
+      break;
+    }
     entries.push(makeHabitualSlot(candidateDate, input));
     assertUniqueSlotTimes(entries);
-    candidateDate = addDays(candidateDate, 7);
+    candidateDate = nextRuleDate(candidateDate, input);
   }
 
   const chronological = [...entries].sort(compareSlots);
@@ -342,8 +395,9 @@ function changedLessonCount(
 
 /**
  * Creates the content for a new calendar revision after a future cancellation.
- * A lock is a manually confirmed delivered prefix; this service never infers
- * delivery from wall-clock time or rewrites that prefix.
+ * The protected prefix is supplied by the caller. It combines any stored
+ * historical protection with past published dates; it is not a claim that a
+ * lesson was attended or delivered.
  */
 export function reflowCancelledFutureSchedule(input: ScheduleReflowInput): ScheduleReflowResult {
   const lessons = normalizedLessons(input.lessons);
@@ -364,6 +418,10 @@ export function reflowCancelledFutureSchedule(input: ScheduleReflowInput): Sched
   };
   let revised = original.map((slot) => slot.id === target.id ? cancelledSlot : cloneSlot(slot));
   const replacements = (input.replacementSlots ?? []).map(makeExtraSlot);
+  for (const replacement of replacements) {
+    invariant(replacement.localDate >= input.firstCandidateDate, "replacement slots must not precede the class period");
+    invariant(!input.lastCandidateDate || replacement.localDate <= input.lastCandidateDate, "replacement slots must remain inside the class period");
+  }
   assertUniqueSlotIds([...revised, ...replacements]);
   assertUniqueSlotTimes([...revised, ...replacements]);
   revised = [...revised, ...replacements];
@@ -372,7 +430,10 @@ export function reflowCancelledFutureSchedule(input: ScheduleReflowInput): Sched
   invariant(activeCount <= lessons.length, "replacement slots exceed remaining program lessons");
   let tailDate = revised.reduce((latest, slot) => slot.localDate > latest ? slot.localDate : latest, input.firstCandidateDate);
   while (activeCount < lessons.length) {
-    tailDate = strictNextHabitualDate(tailDate, input.habitualWeekday);
+    tailDate = nextRuleDate(tailDate, input);
+    if (input.lastCandidateDate && tailDate > input.lastCandidateDate) {
+      throw new SchedulePlanningError("insufficient_slots", "the program no longer fits the configured class period");
+    }
     const tail = makeHabitualSlot(tailDate, input);
     revised.push(tail);
     if (tail.status === "scheduled") activeCount += 1;

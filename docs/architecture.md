@@ -142,36 +142,55 @@ Migration 0007 and the staff service layer preserve this teacher/admin separatio
 
 ### Content And Settings Direction
 
-Teacher/admin authentication now protects the small annual-setup tools. They
-are deliberately separate: `Хөтөлбөр` for ordered stage lessons, `Хуваарь` for
-class times and dated class calendars, `Амралтын хуваарь` for year-wide breaks,
-and `Тохиргоо` for typed stage/year operational settings. The first typed
-setting is one Facebook group URL per academic year and stage; it is not a
-per-class setting. A future Mongolian Content/Settings editor should support
-quick phone edits but remain desktop-comfortable for long rules and future
-yearly setup. It must stay a collection of clear operational tools, not a
-generic heavyweight CMS.
+Teacher/admin authentication now protects a small set of operational tools.
+`Сургалт, арга хэмжээ` is the entry point for annual courses, summer courses,
+and one-off events; `Хөтөлбөр`, `Хуваарь`, and `Амралтын хуваарь` handle course
+content and dated teaching plans; and `Тохиргоо` holds narrow typed settings.
+The current communication setting is one optional Facebook group URL owned by
+the concrete Offering and shared by its classes, never by an individual time
+slot. A future Mongolian Content/Settings editor should support quick phone
+edits but remain desktop-comfortable for long rules. It must stay a collection
+of clear operational tools, not a generic heavyweight CMS.
 
-### Program and academic-year calendar domain
+### Program, Offering, class, and calendar domain
 
-The implemented calendar foundation keeps three concepts separate: `curriculum_program` is the ordered named lesson content for one stage/year; `ClassSession` is the registered cohort and habitual time; and a published `class_calendar_revision` is the explicit operational schedule. Weekly recurrence only generates draft candidates. It is never the source of truth after publication.
+The durable hierarchy is `CurriculumProgram -> ActivityOffering -> ClassSession
+-> ClassCalendar`. Program is ordered lesson content. Offering is one concrete
+annual course, summer intensive, or event, with a period, optional level/year,
+program association, charge mode, break policy, and Facebook group. ClassSession
+is a course cohort/time option. A published calendar revision is the explicit
+operational schedule. Programless events use a narrow event occurrence rather
+than a fake one-lesson curriculum.
 
-Published program and calendar revisions are immutable. Global academic-year breaks, class-specific exclusions/restores, and manual extra slots form draft planning inputs. A published calendar stores explicit `scheduled`, `no_class`, and `cancelled` dated entries, so an absent row never has to stand for a holiday, cancellation, or incomplete configuration. Every class calendar remains independent even where cohorts share the same program lesson.
+Class meeting rules support weekly, weekdays, and daily draft generation using
+Mongolia-local civil dates. The selected class inherits its Offering program;
+calendar generation does not ask the teacher or API caller to choose that
+program again. Academic-year breaks participate only when the Offering enables
+them, which defaults true for annual courses and false for summer courses and
+events. Recurrence remains only a draft generator and never replaces explicit
+published dated occurrences.
 
-Future cancellation/reflow is limited by a manual locked/delivered lesson prefix rather than wall-clock inference. Cancelling one future active slot retains cancellation history and either extends the habitual tail or lets a chronological replacement slot absorb the lesson. See [program-calendar-model.md](program-calendar-model.md) for the exact invariants and generator semantics.
+Published program and calendar revisions remain immutable. Class-specific
+exclusions/restores and manual extra slots remain planning inputs. A published
+calendar records explicit `scheduled`, `no_class`, and `cancelled` entries, so
+absence never ambiguously means holiday, cancellation, or incomplete setup.
+Every class calendar remains independent even where cohorts share one Offering
+program.
 
-The protected Mongolian annual setup uses four focused teacher tools rather
-than one large editor. `Хөтөлбөр` makes and publishes ordered lessons;
-`Амралтын хуваарь` records global year-wide breaks; `Хуваарь` records a class's
-weekday/time/capacity and then makes its explicit dated calendar; and
-`Тохиргоо` holds typed annual stage settings. A class label is generated from
-stage, weekday, and start time. The teacher sees only `Бүртгэл нээлттэй` or
-`Бүртгэл хаалттай`; this registration choice is separate from the immutable
-draft/published calendar lifecycle. New classes start closed. A calendar change
-after publication always starts from a new draft revision; a teacher can
-confirm only a forward delivered prefix before a future cancellation/reflow.
-Accountant capability has no access, and the Worker enforces every permission
-and same-origin mutation request.
+Ordinary post-publication drafts automatically protect the greater of the
+stored internal lock and all published lesson assignments whose local teaching
+date is already past. This is historical schedule protection, not a claim that
+the lesson was attended or delivered. The teacher no longer sees or confirms a
+raw completed-sequence boundary. Safe future cancellation retains history and
+reflows only future lessons; a hard summer period reports insufficient slots
+instead of silently extending. Attendance will later be the stronger delivered
+state source. See [program-calendar-model.md](program-calendar-model.md).
+
+New course classes and event occurrences always start with registration closed.
+Human class labels are generated from annual stage/weekday/time or summer
+period/time. An unused class exposes deletion only in its edit details; durable
+references suppress hard deletion. Accountant capability has no access, and
+the Worker enforces every permission and same-origin mutation request.
 
 Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
 
@@ -189,7 +208,14 @@ For an irregular cancellation/reschedule, teacher/admin may send immediate email
 
 Make-up invitations keep their existing teacher-mediated path: the system may suggest, the teacher approves, then email and/or Messenger-copy text can be produced.
 
-The implemented staging fixtures are explicitly fake: two cohorts per stage share a 30-lesson fake program, include short and winter breaks, a class exclusion, a break restore, and a manual extra slot. They deliberately show a Stage 2 lesson on Sunday and the following Tuesday for the other cohort. Attendance, absence, make-up, and parent notification workflows remain separate future work.
+The implemented staging fixtures are explicitly fake. Annual stages retain two
+weekly cohorts sharing one 30-lesson example program and exercise breaks,
+restore/exclusion, extra slots, and independent progress. A fake 12-lesson
+summer Offering has both weekday and daily classes with distinct periods/times,
+and a fake free telescope event has one programless occurrence. Production is
+schema-only and receives none of these records. Attendance, absence, make-up,
+public summer/event registration, finance, and parent notification workflows
+remain separate future work.
 
 ### Scheduled reminder jobs
 

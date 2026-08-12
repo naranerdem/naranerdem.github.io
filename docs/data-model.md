@@ -26,8 +26,11 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `guardian_student_relationship`: persistent relationship between guardians and students, including whether the guardian is currently authorized to manage registration.
 - `family_group` and `family_group_member`: minimal explicit family-discount eligibility foundation. Family is not inferred from surname, address, payment origin, or Facebook identity.
 - `academic_year`: public label and registration status for a year/session without hard-coding unsupplied year details.
-- `class_session`: concrete stage + weekday + start/end time, capacity, registration availability, and test-only marker. Its stored display label is retained for compatibility, but ordinary UI and public output generate a label from the teaching details.
-- `academic_year_stage_setting`: one typed setting record for an academic year and stage. The first setting is an optional Facebook group URL shared by that stage's current-year cohorts.
+- `activity_offering`: one annual course, summer course, or event, with typed period/context, optional program, break policy, charge mode, shared Facebook group, status, and provenance.
+- `class_session`: concrete course cohort/time option attached to an Offering, with capacity, registration availability, and test provenance. Legacy annual stage/weekday/time and stored label fields remain for current catalog compatibility.
+- `class_meeting_rule`: authoritative weekly, weekdays, or daily generation rule and local period/time for one course class.
+- `offering_event_occurrence`: narrow programless one-off event date/time, capacity, and registration state.
+- `academic_year_stage_setting`: legacy 0009 annual Facebook setting retained for compatibility/history; new operational writes use `activity_offering.facebook_group_url`.
 - `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children.
 - `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional generic `code_input`, payment-plan choice, and one selected concrete `class_session`.
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
@@ -154,22 +157,73 @@ Migration `0006_program_and_calendar_foundation.sql` implements class-level prog
 - `curriculum_program` is a versioned parent for one academic year and stage; its child `curriculum_lesson` rows have explicit positive, unique sequence numbers, titles, optional internal notes, and test provenance.
 - `academic_year_break` stores named inclusive planning periods. It is an input to generation, not an occurrence.
 - `class_calendar` belongs one-to-one to a `class_session` and fixes `Asia/Ulaanbaatar` as its teaching-time timezone.
-- `class_calendar_revision` is a draft/publish snapshot associated with the matching stage/year program. Only one published revision exists per calendar. `locked_through_sequence` protects delivered history from future reflow.
+- `class_calendar_revision` is a draft/publish snapshot associated with the matching stage/year program. Only one published revision exists per calendar. The internal `locked_through_sequence` is retained as one input to historical schedule protection; it is not exposed as teacher-confirmed attendance or delivery.
 - `class_calendar_revision_override` gives one class a dated `exclude` or `restore` planning decision.
 - `class_calendar_slot` is the explicit dated result. It has a unique class/date/time, permits each lesson at most once per revision, and distinguishes `scheduled`, `no_class`, and `cancelled`. Cancellations retain a lesson number/title snapshot rather than deleting the public history.
 
-Database triggers allow lessons, overrides, and entries only while their parent is a draft, require program/year/stage compatibility, and prevent deletion or identity edits of published program/calendar history. Production has the empty schema only; all current programs/calendars are clearly marked staging fixtures.
+Database triggers allow lessons, overrides, and entries only while their parent is a draft, require program/year/stage compatibility, and prevent deletion or identity edits of published program/calendar history.
 
 The protected staff setup surface uses these existing tables directly through
 narrow server operations. It adds no generic database editor or new persistence
 model: published rows remain immutable, copied program lessons receive new IDs,
 and a post-publication calendar change is a separately auditable draft revision.
 
-Migration `0009_academic_year_stage_settings.sql` adds the intentionally narrow
-typed annual stage-setting record. It does not create a generic settings JSON
-table and it does not remove the legacy `class_session.facebook_group_url`
-column. New teacher-facing behavior ignores that old per-class field and stores
-the single stage/year Facebook group URL in `academic_year_stage_setting`.
+Migration `0009_academic_year_stage_settings.sql` added an intentionally narrow
+annual stage-setting record. Migration 0010 preserves that table as
+legacy/history and copies an existing annual stage Facebook URL into the new
+corresponding Offering where safe. New staff behavior reads and writes only the
+Offering-level URL, so 0009 is not a second authority. The older
+`class_session.facebook_group_url` column also remains compatibility-only.
+
+## Activity Offering And Meeting Rules
+
+Migration `0010_activity_offerings_and_meeting_rules.sql` adds the domain layer
+between curriculum content and concrete cohorts:
+
+- `activity_offering` represents one `annual_course`, `summer_course`, or
+  `event`. Typed fields hold title, optional academic year/stage/level, period,
+  optional program, break policy, `free`/`paid` charge mode, optional Facebook
+  group URL, status, test provenance, and timestamps.
+- `class_session.activity_offering_id` attaches existing and future course
+  cohorts to an Offering without rebuilding the registration table.
+- `class_meeting_rule` is one-to-one with a course class and supports `weekly`,
+  `weekdays`, and `daily` recurrence, first/optional last date, weekly weekday,
+  and authoritative local start/end time.
+- `offering_event_occurrence` stores a programless event's local date/time,
+  capacity, registration status, lifecycle, and provenance without inventing a
+  fake class or curriculum lesson.
+
+Existing annual year/stage programs and classes are backfilled into one annual
+Offering per year/stage, retaining stable ClassSession IDs. The migration also
+backfills weekly meeting rules from existing class/calendar data and copies the
+legacy 0009 Facebook setting to the annual Offering. The legacy ClassSession
+weekday/time fields continue to support the current public annual catalog; new
+staff/calendar services treat the meeting rule as authoritative and mirror
+those values for compatibility.
+
+Course classes inherit their program, break policy, charge mode, and shared
+Facebook group from their Offering. Database triggers prevent mismatched
+year/stage attachment and consequential Offering/program changes after a
+published calendar exists. Harmless communication changes remain possible.
+New classes and event occurrences start with registration closed.
+
+Annual and summer offerings default to paid; events default to free. These
+values create no finance records. Future paid registration must use common
+pricing/payment machinery, while a free Offering can eventually confirm after
+email verification and capacity checks without a payment-only hold.
+
+Production has the schema only and no operational Offerings, classes, programs,
+events, Facebook groups, or personal data. Staging fixtures are explicitly
+test-only and exercise annual, summer, and event behavior.
+
+Migration `0011_legacy_calendar_program_continuity.sql` is a narrow transition
+guard for calendars that were already published before Offerings existed. A
+new initial calendar must use the Offering's current program. A later revision
+may continue a superseded program only when it is directly based on published
+history for the same class/calendar and same program. This preserves old
+operational schedules without permitting arbitrary program substitution. New
+staff behavior prevents an Offering program change once any class calendar
+exists, so this exception cannot create new drift.
 
 Attendance, absence notice, make-up, accountant workflow, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
 

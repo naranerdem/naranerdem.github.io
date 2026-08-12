@@ -77,6 +77,37 @@ try {
   assert.equal(byLesson(tuesday, 3).localDate, "2026-10-20");
   assert.equal(byLesson(sunday, 3).lesson.id, byLesson(tuesday, 3).lesson.id, "cohorts share program identity, not dates");
 
+  const intensiveLessons = lessons(12, "summer");
+  const weekdays = generateCalendarSchedule({
+    lessons: intensiveLessons,
+    recurrenceKind: "weekdays",
+    firstCandidateDate: "2027-06-01",
+    lastCandidateDate: "2027-06-16",
+    startTime: "10:00",
+    endTime: "11:30",
+  });
+  assertCompleteProgram(weekdays, 12);
+  assert.equal(byLesson(weekdays, 1).localDate, "2027-06-01");
+  assert.equal(byLesson(weekdays, 12).localDate, "2027-06-16");
+  assert.ok(active(weekdays).every((slot) => !["2027-06-05", "2027-06-06", "2027-06-12", "2027-06-13"].includes(slot.localDate)), "weekday recurrence excludes Mongolia-local weekends");
+  assert.throws(() => generateCalendarSchedule({
+    lessons: intensiveLessons,
+    recurrenceKind: "weekdays",
+    firstCandidateDate: "2027-06-01",
+    lastCandidateDate: "2027-06-14",
+    startTime: "10:00",
+    endTime: "11:30",
+  }), (error) => error.code === "insufficient_slots", "a hard summer period reports that the program does not fit");
+  const daily = generateCalendarSchedule({
+    lessons: intensiveLessons,
+    recurrenceKind: "daily",
+    firstCandidateDate: "2027-06-15",
+    lastCandidateDate: "2027-06-26",
+    startTime: "13:00",
+    endTime: "14:30",
+  });
+  assert.deepEqual(active(daily).map((slot) => slot.localDate), Array.from({ length: 12 }, (_, index) => `2027-06-${String(index + 15).padStart(2, "0")}`), "daily recurrence preserves local civil dates without a UTC shift");
+
   const baseline = generateCalendarSchedule({
     lessons: lessons(30, "holiday"),
     firstCandidateDate: "2026-10-04",
@@ -181,6 +212,18 @@ try {
   assert.equal(byLesson(cancelledWithReplacement.slots, 8).id, byLesson(original, 8).id, "later lessons remain assigned when a timely replacement exists");
   assert.equal(byLesson(cancelledWithReplacement.slots, 10).localDate, byLesson(original, 10).localDate);
   assert.equal(cancelledWithReplacement.changedFutureLessonAssignments, 1);
+
+  assert.throws(() => reflowCancelledFutureSchedule({
+    lessons: intensiveLessons,
+    recurrenceKind: "daily",
+    firstCandidateDate: "2027-06-15",
+    lastCandidateDate: "2027-06-26",
+    startTime: "13:00",
+    endTime: "14:30",
+    existingSlots: daily,
+    lockedThroughSequence: 4,
+    cancelSlotId: byLesson(daily, 5).id,
+  }), (error) => error.code === "insufficient_slots", "a summer cancellation cannot silently extend beyond its hard period");
 
   console.log("ok calendar domain generation and reflow tests");
 } finally {

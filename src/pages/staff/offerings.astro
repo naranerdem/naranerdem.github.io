@@ -1,0 +1,106 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><meta name="theme-color" content="#073aaf" /><title>Сургалт, арга хэмжээ | {siteIdentity.name}</title></head>
+  <body class="staff-page" data-staff-tool-surface="booting">
+    <header class="site-header"><a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>Сургалт, арга хэмжээ</span></span></a></header>
+    <main class="staff-shell staff-program-shell" aria-live="polite">
+      <section id="tool-booting" class="staff-state"><p class="eyebrow">Сургалт, арга хэмжээ</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Сургалт, арга хэмжээ</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-app" hidden>
+        <div class="staff-page-heading"><div><p class="eyebrow">Бүртгэлд санал болгох зүйлс</p><h1>Сургалт, арга хэмжээ</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <p id="tool-message" class="staff-error" role="status" hidden></p>
+        <div class="staff-section-heading"><p class="staff-muted">Жилийн сургалт, зуны сургалт, нэг удаагийн арга хэмжээг энд бэлтгэнэ.</p><button id="add-offering" class="button primary" type="button">Шинэ сургалт / арга хэмжээ</button></div>
+        <div id="offering-editor" class="staff-offering-editor"></div>
+        <div id="offering-list" class="staff-offering-list"></div>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      import { escape, getOverview, hasSetupAccess, postOverviewAction, stageLabel } from "../../scripts/staff-setup.js";
+
+      const state = { data: null, editingId: "", creatingKind: "" };
+      const q = (selector) => document.querySelector(selector);
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      const kindLabel = (kind) => ({ annual_course: "Жилийн сургалт", summer_course: "Зуны сургалт", event: "Арга хэмжээ" })[kind] || "";
+      const chargeLabel = (mode) => mode === "free" ? "Үнэгүй" : "Төлбөртэй";
+      const formatDate = (value) => value ? `${Number(value.slice(5, 7))}-р сарын ${Number(value.slice(8, 10))}` : "";
+      const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active");
+      const occurrenceFor = (offeringId) => (state.data?.eventOccurrences || []).find((entry) => entry.offeringId === offeringId);
+      function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
+      async function refresh(success = "") { state.data = await getOverview(); render(); message(success, Boolean(success)); }
+      function periodText(entry) {
+        if (entry.kind === "event") { const occurrence = occurrenceFor(entry.id); return occurrence ? `${formatDate(occurrence.localDate)} · ${occurrence.startTime}–${occurrence.endTime}` : "Огноо оруулаагүй"; }
+        return entry.startsOn && entry.endsOn ? `${formatDate(entry.startsOn)} – ${formatDate(entry.endsOn)}` : "Хугацаа оруулаагүй";
+      }
+      function renderList() {
+        q("#offering-list").innerHTML = offerings().length ? offerings().map((entry) => `<article class="staff-offering-row"><div><span class="staff-kind-label">${kindLabel(entry.kind)}</span><h2>${escape(entry.title)}</h2><p>${escape(periodText(entry))} · ${chargeLabel(entry.chargeMode)}</p>${entry.kind !== "event" ? `<p>Хөтөлбөр: ${escape(entry.programName || "Ноорог бэлтгэж байна")}</p>` : ""}</div><div class="staff-inline-actions">${entry.kind !== "event" ? `<a class="button secondary" href="/staff/programs/?offering=${encodeURIComponent(entry.id)}">Хөтөлбөр</a>` : ""}<a class="button secondary" href="/staff/schedule/?offering=${encodeURIComponent(entry.id)}">Хуваарь</a><button class="button secondary" type="button" data-edit-offering="${escape(entry.id)}">Засах</button></div></article>`).join("") : `<p class="staff-empty">Сургалт, арга хэмжээ оруулаагүй байна.</p>`;
+        q("#offering-list").querySelectorAll("[data-edit-offering]").forEach((button) => button.onclick = () => { state.editingId = button.dataset.editOffering; state.creatingKind = ""; renderEditor(); q("#offering-editor").scrollIntoView({ behavior: "smooth", block: "start" }); });
+      }
+      function chargeSelect(value) { return `<label>Төлбөр <select id="offering-charge"><option value="free" ${value === "free" ? "selected" : ""}>Үнэгүй</option><option value="paid" ${value === "paid" ? "selected" : ""}>Төлбөртэй</option></select></label>`; }
+      function programOptions(entry, annual = false) {
+        const attached = new Set(offerings().filter((item) => item.id !== entry?.id).map((item) => item.curriculumProgramId).filter(Boolean));
+        return (state.data.programs || []).filter((program) => ["draft", "published"].includes(program.status) && !attached.has(program.id) && (!entry || (program.academicYearId === entry.academicYearId && (!annual || program.stageCode === entry.stageCode)))).map((program) => `<option value="${escape(program.id)}" ${program.id === entry?.curriculumProgramId ? "selected" : ""}>${escape(program.displayName)}${program.status === "draft" ? " · ноорог" : ""}</option>`).join("");
+      }
+      function commonCourseFields(entry, kind) {
+        const startsOn = entry?.startsOn || ""; const endsOn = entry?.endsOn || "";
+        return `<label>Эхлэх өдөр <input id="offering-starts" type="date" required value="${escape(startsOn)}" /></label><label>Дуусах өдөр <input id="offering-ends" type="date" required value="${escape(endsOn)}" /></label>${chargeSelect(entry?.chargeMode || "paid")}<label>Facebook бүлгийн холбоос <input id="offering-facebook" type="url" inputmode="url" value="${escape(entry?.facebookGroupUrl || "")}" /></label><label class="staff-check staff-wide"><input id="offering-breaks" type="checkbox" ${entry ? (entry.useAcademicYearBreaks ? "checked" : "") : (kind === "annual_course" ? "checked" : "")} /> Хичээлийн жилийн амралтыг тооцно</label>`;
+      }
+      function annualForm(entry) {
+        const years = state.data.years || [];
+        const selectedYear = years.find((year) => year.id === entry?.academicYearId) || years.find((year) => year.isCurrent) || years[0];
+        const selectedStage = entry?.stageCode || (state.data.stages || [])[0];
+        const defaults = entry || { startsOn: selectedYear?.startsOn || "", endsOn: selectedYear?.endsOn || "", chargeMode: "paid", useAcademicYearBreaks: true };
+        const programContext = entry || { academicYearId: selectedYear?.id, stageCode: selectedStage };
+        return `<form id="offering-form" class="staff-compact-form"><input id="offering-id" type="hidden" value="${escape(entry?.id || "")}" /><input id="offering-updated" type="hidden" value="${escape(entry?.updatedAt || "")}" /><input id="offering-kind" type="hidden" value="annual_course" /><label>Хичээлийн жил <select id="offering-year" required ${entry ? "disabled" : ""}>${years.map((year) => `<option value="${escape(year.id)}" ${year.id === selectedYear?.id ? "selected" : ""}>${escape(year.label)}</option>`).join("")}</select></label><label>Сургалтын шат <select id="offering-stage" required ${entry ? "disabled" : ""}>${(state.data.stages || []).map((stage) => `<option value="${stage}" ${stage === selectedStage ? "selected" : ""}>${stageLabel(stage)}</option>`).join("")}</select></label><label class="staff-wide">Хөтөлбөр <select id="offering-program"><option value="">Шинээр бэлтгэх</option>${programOptions(programContext, true)}</select></label>${commonCourseFields(defaults, "annual_course")}${formActions()}</form>`;
+      }
+      function summerForm(entry) {
+        const programField = entry
+          ? `<label class="staff-wide">Хөтөлбөр <select id="offering-program">${programOptions(entry)}</select></label>`
+          : `<input id="offering-program" type="hidden" value="" /><p class="staff-muted staff-wide">Хөтөлбөрийг шинээр бэлтгэнэ.</p>`;
+        return `<form id="offering-form" class="staff-compact-form"><input id="offering-id" type="hidden" value="${escape(entry?.id || "")}" /><input id="offering-updated" type="hidden" value="${escape(entry?.updatedAt || "")}" /><input id="offering-kind" type="hidden" value="summer_course" /><label class="staff-wide">Нэр <input id="offering-title" maxlength="160" required value="${escape(entry?.title || "")}" placeholder="Зуны сургалт 2027" /></label><label class="staff-wide">Түвшин <input id="offering-level" maxlength="80" value="${escape(entry?.levelLabel || "")}" placeholder="Байвал оруулна уу" /></label>${programField}${commonCourseFields(entry, "summer_course")}${formActions()}</form>`;
+      }
+      function eventForm(entry) {
+        const occurrence = entry ? occurrenceFor(entry.id) : null;
+        return `<form id="offering-form" class="staff-compact-form"><input id="offering-id" type="hidden" value="${escape(entry?.id || "")}" /><input id="offering-updated" type="hidden" value="${escape(entry?.updatedAt || "")}" /><input id="event-updated" type="hidden" value="${escape(occurrence?.updatedAt || "")}" /><input id="offering-kind" type="hidden" value="event" /><label class="staff-wide">Арга хэмжээний нэр <input id="offering-title" maxlength="160" required value="${escape(entry?.title || "")}" /></label><label>Өдөр <input id="event-date" type="date" required value="${escape(occurrence?.localDate || "")}" /></label><label>Суудлын тоо <input id="event-capacity" type="number" min="1" max="500" required value="${escape(occurrence?.capacity || "12")}" /></label><label>Эхлэх цаг <input id="event-start" type="time" required value="${escape(occurrence?.startTime || "20:00")}" /></label><label>Дуусах цаг <input id="event-end" type="time" required value="${escape(occurrence?.endTime || "22:30")}" /></label>${chargeSelect(entry?.chargeMode || "free")}<label>Facebook бүлгийн холбоос <input id="offering-facebook" type="url" inputmode="url" value="${escape(entry?.facebookGroupUrl || "")}" /></label><label class="staff-wide">Тайлбар <textarea id="offering-note" rows="3" maxlength="1000">${escape(entry?.note || "")}</textarea></label>${entry ? `<label class="staff-check staff-wide"><input id="event-open" type="checkbox" ${occurrence?.registrationOpen ? "checked" : ""} /> Бүртгэл нээлттэй</label>` : `<p class="staff-muted staff-wide">Шинэ арга хэмжээний бүртгэл анх хаалттай байна.</p>`}${formActions()}</form>`;
+      }
+      function formActions() { return `<div class="staff-form-actions staff-wide"><button class="button secondary" data-cancel type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div>`; }
+      function renderEditor() {
+        const container = q("#offering-editor"); const entry = offerings().find((item) => item.id === state.editingId);
+        if (!entry && !state.creatingKind) { container.innerHTML = ""; return; }
+        if (!entry && state.creatingKind === "choose") {
+          container.innerHTML = `<section class="staff-operation-section"><h2>Төрлөө сонгоно уу</h2><div class="staff-kind-choices"><button class="button secondary" data-kind="annual_course" type="button">Жилийн сургалт</button><button class="button secondary" data-kind="summer_course" type="button">Зуны сургалт</button><button class="button secondary" data-kind="event" type="button">Арга хэмжээ</button></div><button class="button secondary" data-cancel type="button">Болих</button></section>`;
+          container.querySelectorAll("[data-kind]").forEach((button) => button.onclick = () => { state.creatingKind = button.dataset.kind; renderEditor(); });
+          container.querySelector("[data-cancel]").onclick = closeEditor; return;
+        }
+        const kind = entry?.kind || state.creatingKind;
+        container.innerHTML = `<section class="staff-operation-section"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(kind)}</span><h2>${entry ? "Мэдээлэл засах" : "Шинээр нэмэх"}</h2></div></div>${kind === "annual_course" ? annualForm(entry) : kind === "summer_course" ? summerForm(entry) : eventForm(entry)}</section>`;
+        container.querySelector("[data-cancel]").onclick = closeEditor;
+        container.querySelector("#offering-form").onsubmit = saveOffering;
+        if (!entry && kind === "annual_course") {
+          const refreshPrograms = () => {
+            q("#offering-program").innerHTML = `<option value="">Шинээр бэлтгэх</option>${programOptions({ academicYearId: q("#offering-year").value, stageCode: q("#offering-stage").value }, true)}`;
+          };
+          q("#offering-year").onchange = refreshPrograms;
+          q("#offering-stage").onchange = refreshPrograms;
+        }
+      }
+      function closeEditor() { state.editingId = ""; state.creatingKind = ""; renderEditor(); }
+      function saveOffering(event) {
+        event.preventDefault(); if (!event.currentTarget.reportValidity()) return;
+        const kind = q("#offering-kind").value; const id = q("#offering-id").value;
+        const payload = { action: "offering.save", id: id || undefined, expectedUpdatedAt: q("#offering-updated").value || undefined, kind, title: q("#offering-title")?.value, chargeMode: q("#offering-charge").value, facebookGroupUrl: q("#offering-facebook")?.value || "" };
+        if (kind === "event") Object.assign(payload, { eventExpectedUpdatedAt: q("#event-updated").value || undefined, eventDate: q("#event-date").value, eventStartTime: q("#event-start").value, eventEndTime: q("#event-end").value, eventCapacity: Number(q("#event-capacity").value), eventRegistrationOpen: Boolean(q("#event-open")?.checked), note: q("#offering-note").value });
+        else Object.assign(payload, { academicYearId: q("#offering-year")?.value, stageCode: q("#offering-stage")?.value, levelLabel: q("#offering-level")?.value, startsOn: q("#offering-starts").value, endsOn: q("#offering-ends").value, curriculumProgramId: q("#offering-program").value, useAcademicYearBreaks: q("#offering-breaks").checked });
+        run(() => postOverviewAction(payload.action, payload), id ? "Мэдээллийг хадгаллаа." : "Шинээр нэмлээ. Бүртгэл анх хаалттай байна.");
+      }
+      async function run(work, success) { message(); try { await work(); closeEditor(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      function render() { renderList(); renderEditor(); }
+      q("#add-offering").onclick = () => { state.editingId = ""; state.creatingKind = "choose"; renderEditor(); };
+      (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+    </script>
+  </body>
+</html>

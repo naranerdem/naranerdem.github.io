@@ -2,20 +2,23 @@ import type { D1PreparedStatement, WorkerEnv } from "../env";
 import {
   generateCalendarSchedule,
   reflowCancelledFutureSchedule,
+  SchedulePlanningError,
   type AcademicYearBreak,
   type CalendarOverride,
   type CalendarSlot,
   type ExtraTeachingSlot,
+  type MeetingRecurrenceKind,
   type ProgramLesson,
 } from "../services/program-calendar";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { getOfferingOverview } from "./offerings";
 
 const STAGES = ["stage_1", "stage_2", "stage_3"] as const;
 type StageCode = typeof STAGES[number];
 const WEEKDAYS = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"] as const;
 
 export class ProgramCalendarError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced") {
+  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced" | "insufficient_slots") {
     super("Program and calendar operation failed.");
     this.name = "ProgramCalendarError";
   }
@@ -65,6 +68,32 @@ interface ClassRow {
   testRunId: string | null;
   updatedAt: string;
   calendarId: string | null;
+  offeringId: string | null;
+  offeringKind: "annual_course" | "summer_course" | null;
+  offeringTitle: string | null;
+  offeringProgramId: string | null;
+  useAcademicYearBreaks: number;
+  recurrenceKind: MeetingRecurrenceKind;
+  firstDate: string;
+  lastDate: string | null;
+  weeklyWeekday: string | null;
+}
+
+interface OfferingContextRow {
+  id: string;
+  kind: "annual_course" | "summer_course" | "event";
+  title: string;
+  academicYearId: string | null;
+  stageCode: StageCode | null;
+  programId: string | null;
+  programAcademicYearId: string | null;
+  programStageCode: StageCode | null;
+  programStatus: ProgramRow["status"] | null;
+  useAcademicYearBreaks: number;
+  startsOn: string | null;
+  endsOn: string | null;
+  isTest: number;
+  testRunId: string | null;
 }
 
 interface StageSettingRow {
@@ -142,6 +171,11 @@ export interface ClassSaveInput {
   endTime: string;
   capacity: number;
   registrationOpen?: boolean;
+  offeringId?: string;
+  recurrenceKind?: string;
+  firstDate?: string;
+  lastDate?: string | null;
+  weeklyWeekday?: string | null;
 }
 export interface BreakSaveInput {
   id?: string;
@@ -151,13 +185,6 @@ export interface BreakSaveInput {
   startsOn: string;
   endsOn: string;
   sourceNote?: string | null;
-}
-
-export interface StageSettingSaveInput {
-  academicYearId: string;
-  stageCode: string;
-  facebookGroupUrl?: string | null;
-  expectedUpdatedAt?: string;
 }
 
 function requireCapability(actor: StaffPrincipal, capability: "program.manage" | "calendar.manage"): void {
@@ -199,22 +226,36 @@ function defaultProgramName(stage: StageCode): string {
   })[stage];
 }
 
-function classDisplayLabel(stage: StageCode, weekday: string, startTime: string): string {
-  return `${stageLabel(stage)} · ${weekday} ${startTime}`;
+function shortDate(value: string): string {
+  const [, month, day] = value.split("-").map(Number);
+  return `${month}/${day}`;
+}
+
+function classDisplayLabel(entry: Pick<ClassRow, "stageCode" | "weekday" | "startTime" | "endTime" | "offeringKind" | "firstDate" | "lastDate">): string {
+  if (entry.offeringKind === "summer_course") {
+    return `${shortDate(entry.firstDate)}${entry.lastDate ? `–${shortDate(entry.lastDate)}` : ""} · ${entry.startTime}–${entry.endTime}`;
+  }
+  return `${stageLabel(entry.stageCode)} · ${entry.weekday} ${entry.startTime}–${entry.endTime}`;
+}
+
+function legacyWeekday(recurrence: MeetingRecurrenceKind, weeklyWeekday: string | null, firstDate: string): string {
+  if (recurrence === "weekly") return weeklyWeekday as string;
+  return `${recurrence === "weekdays" ? "Ажлын өдөр" : "Өдөр бүр"} ${shortDate(firstDate)}`;
+}
+
+function localToday(): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ulaanbaatar",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function registrationOpen(status: ClassRow["status"]): boolean {
   return status === "available" || status === "full";
-}
-
-function validOptionalUrl(value: string | null): boolean {
-  if (!value) return true;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
-  }
 }
 
 function now(): string { return new Date().toISOString(); }
@@ -295,17 +336,69 @@ async function lessonsForProgram(env: WorkerEnv, programId: string): Promise<Les
   return result.results;
 }
 
+const CLASS_SELECT = `SELECT class_session.id, class_session.academic_year_id AS academicYearId,
+  class_session.stage_code AS stageCode, class_session.display_label AS displayLabel,
+  COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) AS weekday,
+  COALESCE(class_meeting_rule.start_time, class_session.start_time) AS startTime,
+  COALESCE(class_meeting_rule.end_time, class_session.end_time) AS endTime,
+  class_session.capacity, class_session.status,
+  class_session.is_test AS isTest, class_session.test_run_id AS testRunId,
+  class_session.updated_at AS updatedAt, class_calendar.id AS calendarId,
+  class_session.activity_offering_id AS offeringId, activity_offering.kind AS offeringKind,
+  activity_offering.title AS offeringTitle,
+  activity_offering.curriculum_program_id AS offeringProgramId,
+  COALESCE(activity_offering.use_academic_year_breaks, 1) AS useAcademicYearBreaks,
+  COALESCE(class_meeting_rule.recurrence_kind, 'weekly') AS recurrenceKind,
+  COALESCE(class_meeting_rule.first_date, academic_year.starts_on, '1970-01-01') AS firstDate,
+  class_meeting_rule.last_date AS lastDate,
+  COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) AS weeklyWeekday
+  FROM class_session
+  INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
+  LEFT JOIN class_calendar ON class_calendar.class_session_id = class_session.id
+  LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+  LEFT JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id`;
+
+async function classById(env: WorkerEnv, classSessionId: string): Promise<ClassRow> {
+  return one<ClassRow>(env, env.DB.prepare(`${CLASS_SELECT} WHERE class_session.id = ?`).bind(classSessionId));
+}
+
 async function classForCalendar(env: WorkerEnv, calendarId: string): Promise<ClassRow> {
-  return one<ClassRow>(env, env.DB.prepare(`
-    SELECT class_session.id, class_session.academic_year_id AS academicYearId,
-      class_session.stage_code AS stageCode, class_session.display_label AS displayLabel,
-      class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
-      class_session.capacity, class_session.status,
-      class_session.is_test AS isTest, class_session.test_run_id AS testRunId,
-      class_session.updated_at AS updatedAt, class_calendar.id AS calendarId
-    FROM class_calendar INNER JOIN class_session ON class_session.id = class_calendar.class_session_id
-    WHERE class_calendar.id = ?
-  `).bind(calendarId));
+  return one<ClassRow>(env, env.DB.prepare(`${CLASS_SELECT} WHERE class_calendar.id = ?`).bind(calendarId));
+}
+
+async function offeringContext(env: WorkerEnv, offeringId: string): Promise<OfferingContextRow> {
+  return one<OfferingContextRow>(env, env.DB.prepare(`SELECT offering.id, offering.kind, offering.title,
+    offering.academic_year_id AS academicYearId, offering.stage_code AS stageCode,
+    offering.curriculum_program_id AS programId,
+    program.academic_year_id AS programAcademicYearId, program.stage_code AS programStageCode,
+    program.status AS programStatus, offering.use_academic_year_breaks AS useAcademicYearBreaks,
+    offering.starts_on AS startsOn, offering.ends_on AS endsOn,
+    offering.is_test AS isTest, offering.test_run_id AS testRunId
+    FROM activity_offering AS offering
+    LEFT JOIN curriculum_program AS program ON program.id = offering.curriculum_program_id
+    WHERE offering.id = ? AND offering.status = 'active'`).bind(offeringId));
+}
+
+function scheduleInputForClass(classSession: ClassRow) {
+  return {
+    firstCandidateDate: classSession.firstDate,
+    lastCandidateDate: classSession.lastDate,
+    recurrenceKind: classSession.recurrenceKind,
+    habitualWeekday: classSession.weeklyWeekday ?? undefined,
+    startTime: classSession.startTime,
+    endTime: classSession.endTime,
+  };
+}
+
+async function applicableBreaks(env: WorkerEnv, classSession: ClassRow): Promise<AcademicYearBreak[]> {
+  return classSession.useAcademicYearBreaks ? breaksForYear(env, classSession.academicYearId) : [];
+}
+
+function mapPlanningError(caught: unknown): never {
+  if (caught instanceof SchedulePlanningError && caught.code === "insufficient_slots") {
+    throw new ProgramCalendarError("insufficient_slots");
+  }
+  throw caught;
 }
 
 async function classHasReferences(env: WorkerEnv, classSessionId: string): Promise<boolean> {
@@ -324,6 +417,16 @@ async function classHasReferences(env: WorkerEnv, classSessionId: string): Promi
     classSessionId, classSessionId, classSessionId, classSessionId,
     classSessionId, classSessionId, classSessionId, classSessionId,
   ).first<{ found: number }>();
+  return row?.found === 1;
+}
+
+async function offeringHasCalendar(env: WorkerEnv, offeringId: string): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM class_session
+    INNER JOIN class_calendar ON class_calendar.class_session_id = class_session.id
+    INNER JOIN class_calendar_revision ON class_calendar_revision.class_calendar_id = class_calendar.id
+    WHERE class_session.activity_offering_id = ?
+  ) THEN 1 ELSE 0 END AS found`).bind(offeringId).first<{ found: number }>();
   return row?.found === 1;
 }
 
@@ -380,11 +483,13 @@ async function replaceDraftSlots(
   actor: StaffPrincipal,
   action: string,
   metadata: Record<string, unknown>,
+  preStatements: readonly D1PreparedStatement[] = [],
 ): Promise<void> {
   const time = now();
   const flags = operationFlags(env, revision);
   const result = await env.DB.batch([
     env.DB.prepare("DELETE FROM class_calendar_slot WHERE class_calendar_revision_id = ?").bind(revision.id),
+    ...preStatements,
     ...insertSlots(env, revision.id, slots, flags, time),
     env.DB.prepare("UPDATE class_calendar_revision SET updated_at = ? WHERE id = ? AND status = 'draft'").bind(time, revision.id),
     audit(env, actor, action, "class_calendar_revision", revision.id, metadata, flags, time),
@@ -393,7 +498,7 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings] = await Promise.all([
+  const [years, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
@@ -404,14 +509,9 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     env.DB.prepare(`SELECT id, curriculum_program_id AS programId, sequence_number AS sequenceNumber,
       title, internal_note AS internalNote FROM curriculum_lesson WHERE status = 'active'
       ORDER BY curriculum_program_id, sequence_number`).all<LessonRow>(),
-    env.DB.prepare(`SELECT class_session.id, class_session.academic_year_id AS academicYearId,
-      class_session.stage_code AS stageCode, class_session.display_label AS displayLabel,
-      class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
-      class_session.capacity, class_session.status,
-      class_session.is_test AS isTest, class_session.test_run_id AS testRunId,
-      class_session.updated_at AS updatedAt, class_calendar.id AS calendarId
-      FROM class_session LEFT JOIN class_calendar ON class_calendar.class_session_id = class_session.id
-      ORDER BY class_session.academic_year_id, class_session.stage_code, class_session.weekday, class_session.start_time`).all<ClassRow>(),
+    env.DB.prepare(`${CLASS_SELECT}
+      ORDER BY activity_offering.starts_on DESC, class_session.stage_code,
+        class_meeting_rule.first_date, class_meeting_rule.start_time`).all<ClassRow>(),
     env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn,
       ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, source_note AS sourceNote,
       status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
@@ -438,6 +538,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
       facebook_group_url AS facebookGroupUrl, is_test AS isTest, test_run_id AS testRunId,
       updated_at AS updatedAt FROM academic_year_stage_setting
       ORDER BY academic_year_id, stage_code`).all<StageSettingRow>(),
+    getOfferingOverview(env),
   ]);
   const lessonsByProgram = new Map<string, LessonRow[]>();
   for (const lesson of lessons.results) lessonsByProgram.set(lesson.programId, [...(lessonsByProgram.get(lesson.programId) ?? []), lesson]);
@@ -447,20 +548,30 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
   for (const slot of slots.results) slotsByRevision.set(slot.revisionId, [...(slotsByRevision.get(slot.revisionId) ?? []), slot]);
   const classesWithTeacherDetails = await Promise.all(classes.results.map(async (entry) => ({
     ...entry,
-    displayLabel: classDisplayLabel(entry.stageCode, entry.weekday, entry.startTime),
+    displayLabel: classDisplayLabel(entry),
     registrationOpen: registrationOpen(entry.status),
     canDelete: !(await classHasReferences(env, entry.id)),
   })));
+  const today = localToday();
   return {
     years: years.results,
     programs: programs.results.map((program) => ({ ...program, lessons: lessonsByProgram.get(program.id) ?? [] })),
     classes: classesWithTeacherDetails,
     breaks: breaks.results,
     stageSettings: stageSettings.results,
+    offerings: offeringSetup.offerings,
+    eventOccurrences: offeringSetup.eventOccurrences,
     revisions: revisions.results.map((revision) => ({
       ...revision,
       overrides: overridesByRevision.get(revision.id) ?? [],
-      slots: slotsByRevision.get(revision.id) ?? [],
+      slots: (slotsByRevision.get(revision.id) ?? []).map((slot) => ({
+        ...slot,
+        isHistorical: slot.localDate < today,
+        canCancel: revision.status === "draft"
+          && slot.status === "scheduled"
+          && slot.localDate >= today
+          && (slot.lessonSequence ?? 0) > revision.lockedThroughSequence,
+      })),
     })),
     stages: STAGES,
     weekdays: WEEKDAYS,
@@ -548,58 +659,171 @@ export async function saveProgramDraft(env: WorkerEnv, actor: StaffPrincipal, in
   if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
-export async function publishProgramDraft(env: WorkerEnv, actor: StaffPrincipal, input: { programId: string; expectedUpdatedAt: string }): Promise<void> {
+export async function createOfferingProgramDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { offeringId: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const offering = await offeringContext(env, input.offeringId);
+  if (offering.kind === "event" || !offering.programId || !offering.programAcademicYearId || !offering.programStageCode) {
+    throw new ProgramCalendarError("invalid");
+  }
+  if (offering.programStatus === "draft") throw new ProgramCalendarError("conflict");
+  if (await offeringHasCalendar(env, offering.id)) throw new ProgramCalendarError("immutable");
+  const existing = await env.DB.prepare(`SELECT id FROM curriculum_program
+    WHERE academic_year_id = ? AND stage_code = ? AND status = 'draft'`)
+    .bind(offering.programAcademicYearId, offering.programStageCode).first<{ id: string }>();
+  if (existing) throw new ProgramCalendarError("conflict");
+  const source = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
+    stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName,
+    status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM curriculum_program WHERE id = ? AND status = 'published'`).bind(offering.programId));
+  const sourceLessons = await lessonsForProgram(env, source.id);
+  const next = await env.DB.prepare(`SELECT COALESCE(MAX(revision_number), 0) + 1 AS value
+    FROM curriculum_program WHERE academic_year_id = ? AND stage_code = ?`)
+    .bind(source.academicYearId, source.stageCode).first<{ value: number }>();
+  const draftId = id(); const time = now(); const provenance = operationFlags(env, offering);
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO curriculum_program (
+      id, academic_year_id, stage_code, revision_number, display_name, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`)
+      .bind(draftId, source.academicYearId, source.stageCode, next?.value ?? 1,
+        source.displayName, provenance.isTest, provenance.testRunId, time, time),
+    ...sourceLessons.map((lesson) => env.DB.prepare(`INSERT INTO curriculum_lesson (
+      id, curriculum_program_id, sequence_number, title, internal_note, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .bind(id(), draftId, lesson.sequenceNumber, lesson.title, lesson.internalNote,
+        provenance.isTest, provenance.testRunId, time, time)),
+    audit(env, actor, "program_draft_created_for_offering", "curriculum_program", draftId, {
+      offeringId: offering.id, sourceProgramId: source.id,
+    }, provenance, time),
+  ]);
+}
+
+export async function publishProgramDraft(env: WorkerEnv, actor: StaffPrincipal, input: { programId: string; expectedUpdatedAt: string; offeringId?: string }): Promise<void> {
   requireCapability(actor, "program.manage");
   const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM curriculum_program WHERE id = ?`).bind(input.programId));
   if (program.status !== "draft") throw new ProgramCalendarError("immutable");
   if (program.updatedAt !== input.expectedUpdatedAt || !(await lessonsForProgram(env, program.id)).length) throw new ProgramCalendarError("conflict");
+  const offering = input.offeringId ? await offeringContext(env, input.offeringId) : null;
+  if (offering) {
+    if (offering.kind === "event" || offering.programAcademicYearId !== program.academicYearId || offering.programStageCode !== program.stageCode) throw new ProgramCalendarError("invalid");
+    if (offering.programId !== program.id && await offeringHasCalendar(env, offering.id)) throw new ProgramCalendarError("immutable");
+  }
   const time = now(); const flags = operationFlags(env, program);
-  const result = await env.DB.batch([
+  const statements: D1PreparedStatement[] = [
     env.DB.prepare("UPDATE curriculum_program SET status = 'superseded', updated_at = ? WHERE academic_year_id = ? AND stage_code = ? AND status = 'published'").bind(time, program.academicYearId, program.stageCode),
     env.DB.prepare("UPDATE curriculum_program SET status = 'published', updated_at = ? WHERE id = ? AND status = 'draft' AND updated_at = ?").bind(time, program.id, input.expectedUpdatedAt),
-    audit(env, actor, "program_published", "curriculum_program", program.id, { stageCode: program.stageCode, academicYearId: program.academicYearId }, flags, time),
-  ]);
+  ];
+  if (offering && offering.programId !== program.id) {
+    statements.push(env.DB.prepare(`UPDATE activity_offering SET curriculum_program_id = ?, updated_at = ?
+      WHERE id = ? AND curriculum_program_id = ?`).bind(program.id, time, offering.id, offering.programId));
+  }
+  statements.push(audit(env, actor, "program_published", "curriculum_program", program.id, {
+    stageCode: program.stageCode, academicYearId: program.academicYearId, offeringId: offering?.id ?? null,
+  }, flags, time));
+  const result = await env.DB.batch(statements);
   if ((result[1]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
 export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, input: ClassSaveInput): Promise<void> {
   requireCapability(actor, "calendar.manage");
-  const stage = text(input.stageCode); const weekday = text(input.weekday);
-  if (!validStage(stage) || !WEEKDAYS.includes(weekday as typeof WEEKDAYS[number]) || !validTime(input.startTime) || !validTime(input.endTime)
-    || input.startTime >= input.endTime || !Number.isInteger(input.capacity) || input.capacity < 1 || input.capacity > 80
+  let requestedOfferingId = text(input.offeringId, 100);
+  if (!requestedOfferingId && input.academicYearId && input.stageCode) {
+    const compatible = await env.DB.prepare(`SELECT id FROM activity_offering
+      WHERE kind = 'annual_course' AND academic_year_id = ? AND stage_code = ? AND status = 'active'`)
+      .bind(input.academicYearId, input.stageCode).first<{ id: string }>();
+    requestedOfferingId = compatible?.id ?? "";
+  }
+  if (!requestedOfferingId) throw new ProgramCalendarError("invalid");
+  const offering = await offeringContext(env, requestedOfferingId);
+  if (offering.kind === "event" || !offering.programId || !offering.programAcademicYearId || !offering.programStageCode) {
+    throw new ProgramCalendarError("invalid");
+  }
+  const academicYearId = offering.academicYearId ?? offering.programAcademicYearId;
+  const stage = offering.stageCode ?? offering.programStageCode;
+  const recurrence = (text(input.recurrenceKind, 20) || "weekly") as MeetingRecurrenceKind;
+  const firstDate = text(input.firstDate, 10) || offering.startsOn || "";
+  const lastDate = optionalText(input.lastDate, 10) ?? (offering.kind === "summer_course" ? offering.endsOn : null);
+  const weeklyWeekday = recurrence === "weekly" ? text(input.weeklyWeekday ?? input.weekday, 20) : null;
+  if (!["weekly", "weekdays", "daily"].includes(recurrence)
+    || !validDate(firstDate) || (lastDate !== null && (!validDate(lastDate) || lastDate < firstDate))
+    || (offering.kind === "summer_course" && !lastDate)
+    || (offering.kind === "summer_course" && Boolean(offering.startsOn) && firstDate < (offering.startsOn as string))
+    || (offering.kind === "summer_course" && Boolean(offering.endsOn) && (lastDate as string) > (offering.endsOn as string))
+    || (recurrence === "weekly" && !WEEKDAYS.includes(weeklyWeekday as typeof WEEKDAYS[number]))
+    || !validTime(input.startTime) || !validTime(input.endTime) || input.startTime >= input.endTime
+    || !Number.isInteger(input.capacity) || input.capacity < 1 || input.capacity > 80
     || (input.registrationOpen !== undefined && typeof input.registrationOpen !== "boolean")) throw new ProgramCalendarError("invalid");
-  await one<YearRow>(env, env.DB.prepare("SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn, is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId FROM academic_year WHERE id = ?").bind(input.academicYearId));
-  const time = now(); const label = classDisplayLabel(stage, weekday, input.startTime);
+  const weekday = legacyWeekday(recurrence, weeklyWeekday, firstDate);
+  const label = classDisplayLabel({
+    stageCode: stage, weekday, startTime: input.startTime, endTime: input.endTime,
+    offeringKind: offering.kind, firstDate, lastDate,
+  });
+  const time = now();
   if (!input.id) {
-    const flags = operationFlags(env);
+    const flags = operationFlags(env, offering);
     const classId = id();
     await env.DB.batch([
-      env.DB.prepare(`INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, facebook_group_url, is_test_only, is_test, test_run_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', NULL, 0, ?, ?, ?, ?)`)
-        .bind(classId, input.academicYearId, stage, label, weekday, input.startTime, input.endTime, input.capacity, flags.isTest, flags.testRunId, time, time),
-      audit(env, actor, "class_session_created", "class_session", classId, { stageCode: stage, academicYearId: input.academicYearId, registrationOpen: false }, flags, time),
+      env.DB.prepare(`INSERT INTO class_session (id, academic_year_id, stage_code, display_label,
+        weekday, start_time, end_time, capacity, status, facebook_group_url,
+        is_test_only, is_test, test_run_id, created_at, updated_at, activity_offering_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', NULL, ?, ?, ?, ?, ?, ?)`)
+        .bind(classId, academicYearId, stage, label, weekday, input.startTime, input.endTime,
+          input.capacity, flags.isTest, flags.isTest, flags.testRunId, time, time, offering.id),
+      env.DB.prepare(`INSERT INTO class_meeting_rule (
+        class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
+        start_time, end_time, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(classId, recurrence, firstDate, lastDate, weeklyWeekday, input.startTime, input.endTime, time, time),
+      audit(env, actor, "class_session_created", "class_session", classId, {
+        offeringId: offering.id, recurrenceKind: recurrence, registrationOpen: false,
+      }, flags, time),
+      audit(env, actor, "class_meeting_rule_created", "class_session", classId, { recurrenceKind: recurrence }, flags, time),
     ]);
     return;
   }
-  const current = await one<ClassRow>(env, env.DB.prepare(`SELECT class_session.id, class_session.academic_year_id AS academicYearId, class_session.stage_code AS stageCode, class_session.display_label AS displayLabel, class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime, class_session.capacity, class_session.status, class_session.is_test AS isTest, class_session.test_run_id AS testRunId, class_session.updated_at AS updatedAt, class_calendar.id AS calendarId FROM class_session LEFT JOIN class_calendar ON class_calendar.class_session_id = class_session.id WHERE class_session.id = ?`).bind(input.id));
+  const current = await classById(env, input.id);
   if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const referenced = await classHasReferences(env, current.id);
-  const structuralChange = current.academicYearId !== input.academicYearId || current.stageCode !== stage || current.weekday !== weekday || current.startTime !== input.startTime || current.endTime !== input.endTime || current.capacity !== input.capacity;
+  const structuralChange = current.offeringId !== offering.id || current.academicYearId !== academicYearId
+    || current.stageCode !== stage || current.recurrenceKind !== recurrence
+    || current.firstDate !== firstDate || current.lastDate !== lastDate
+    || current.weeklyWeekday !== weeklyWeekday || current.startTime !== input.startTime
+    || current.endTime !== input.endTime || current.capacity !== input.capacity;
   if (referenced && structuralChange) throw new ProgramCalendarError("immutable");
   const status = input.registrationOpen === undefined
     ? current.status
     : input.registrationOpen ? "available" : "closed";
   const result = await env.DB.batch([
-    env.DB.prepare(`UPDATE class_session SET academic_year_id = ?, stage_code = ?, display_label = ?, weekday = ?, start_time = ?, end_time = ?, capacity = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
-      .bind(input.academicYearId, stage, label, weekday, input.startTime, input.endTime, input.capacity, status, time, current.id, input.expectedUpdatedAt),
-    audit(env, actor, "class_session_saved", "class_session", current.id, { registrationOpen: registrationOpen(status) }, operationFlags(env, current), time),
+    env.DB.prepare(`UPDATE class_session SET academic_year_id = ?, stage_code = ?, display_label = ?,
+      weekday = ?, start_time = ?, end_time = ?, capacity = ?, status = ?,
+      activity_offering_id = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
+      .bind(academicYearId, stage, label, weekday, input.startTime, input.endTime,
+        input.capacity, status, offering.id, time, current.id, input.expectedUpdatedAt),
+    env.DB.prepare(`INSERT INTO class_meeting_rule (
+      class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
+      start_time, end_time, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(class_session_id) DO UPDATE SET recurrence_kind = excluded.recurrence_kind,
+      first_date = excluded.first_date, last_date = excluded.last_date,
+      weekly_weekday = excluded.weekly_weekday, start_time = excluded.start_time,
+      end_time = excluded.end_time, updated_at = excluded.updated_at`)
+      .bind(current.id, recurrence, firstDate, lastDate, weeklyWeekday, input.startTime, input.endTime, time, time),
+    audit(env, actor, "class_session_saved", "class_session", current.id, {
+      offeringId: offering.id, registrationOpen: registrationOpen(status), meetingRuleChanged: structuralChange,
+    }, operationFlags(env, current), time),
+    ...(structuralChange ? [audit(env, actor, "class_meeting_rule_changed", "class_session", current.id, { recurrenceKind: recurrence }, operationFlags(env, current), time)] : []),
   ]);
   if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
 export async function deleteClassSession(env: WorkerEnv, actor: StaffPrincipal, input: { classSessionId: string; expectedUpdatedAt: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
-  const current = await one<ClassRow>(env, env.DB.prepare(`SELECT class_session.id, class_session.academic_year_id AS academicYearId, class_session.stage_code AS stageCode, class_session.display_label AS displayLabel, class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime, class_session.capacity, class_session.status, class_session.is_test AS isTest, class_session.test_run_id AS testRunId, class_session.updated_at AS updatedAt, class_calendar.id AS calendarId FROM class_session LEFT JOIN class_calendar ON class_calendar.class_session_id = class_session.id WHERE class_session.id = ?`).bind(input.classSessionId));
+  const current = await classById(env, input.classSessionId);
   if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   if (await classHasReferences(env, current.id)) throw new ProgramCalendarError("referenced");
   const time = now();
@@ -643,57 +867,36 @@ export async function removeAcademicYearBreak(env: WorkerEnv, actor: StaffPrinci
   ]); if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
-export async function saveAcademicYearStageSetting(
-  env: WorkerEnv,
-  actor: StaffPrincipal,
-  input: StageSettingSaveInput,
-): Promise<void> {
-  requireCapability(actor, "calendar.manage");
-  const stage = text(input.stageCode);
-  const facebookGroupUrl = optionalText(input.facebookGroupUrl, 500);
-  if (!validStage(stage) || !validOptionalUrl(facebookGroupUrl)) throw new ProgramCalendarError("invalid");
-  const year = await one<YearRow>(env, env.DB.prepare("SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn, is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId FROM academic_year WHERE id = ?").bind(input.academicYearId));
-  const existing = await env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode, facebook_group_url AS facebookGroupUrl, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_stage_setting WHERE academic_year_id = ? AND stage_code = ?`).bind(year.id, stage).first<StageSettingRow>();
-  if (existing && (!input.expectedUpdatedAt || existing.updatedAt !== input.expectedUpdatedAt)) throw new ProgramCalendarError("conflict");
-  const time = now();
-  if (!existing) {
-    const settingId = id(); const flags = operationFlags(env, year);
-    await env.DB.batch([
-      env.DB.prepare(`INSERT INTO academic_year_stage_setting (id, academic_year_id, stage_code, facebook_group_url, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(settingId, year.id, stage, facebookGroupUrl, flags.isTest, flags.testRunId, time, time),
-      audit(env, actor, "academic_year_stage_setting_saved", "academic_year_stage_setting", settingId, { academicYearId: year.id, stageCode: stage }, flags, time),
-    ]);
-    return;
-  }
-  const result = await env.DB.batch([
-    env.DB.prepare(`UPDATE academic_year_stage_setting SET facebook_group_url = ?, updated_at = ? WHERE id = ? AND updated_at = ?`).bind(facebookGroupUrl, time, existing.id, input.expectedUpdatedAt),
-    audit(env, actor, "academic_year_stage_setting_saved", "academic_year_stage_setting", existing.id, { academicYearId: year.id, stageCode: stage }, operationFlags(env, existing), time),
-  ]);
-  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
-}
-
 async function nextRevisionNumber(env: WorkerEnv, calendarId: string): Promise<number> {
   const row = await env.DB.prepare("SELECT COALESCE(MAX(revision_number), 0) + 1 AS value FROM class_calendar_revision WHERE class_calendar_id = ?").bind(calendarId).first<{ value: number }>();
   return row?.value ?? 1;
 }
 
-export async function generateCalendarDraft(env: WorkerEnv, actor: StaffPrincipal, input: { classSessionId: string; programId: string; firstCandidateDate: string }): Promise<void> {
+export async function generateCalendarDraft(env: WorkerEnv, actor: StaffPrincipal, input: { classSessionId: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
-  if (!validDate(input.firstCandidateDate)) throw new ProgramCalendarError("invalid");
-  const classSession = await one<ClassRow>(env, env.DB.prepare(`SELECT class_session.id, class_session.academic_year_id AS academicYearId, class_session.stage_code AS stageCode, class_session.display_label AS displayLabel, class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime, class_session.capacity, class_session.status, class_session.is_test AS isTest, class_session.test_run_id AS testRunId, class_session.updated_at AS updatedAt, class_calendar.id AS calendarId FROM class_session LEFT JOIN class_calendar ON class_calendar.class_session_id = class_session.id WHERE class_session.id = ?`).bind(input.classSessionId));
-  const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM curriculum_program WHERE id = ?`).bind(input.programId));
+  const classSession = await classById(env, input.classSessionId);
+  if (!classSession.offeringId || !classSession.offeringProgramId) throw new ProgramCalendarError("invalid");
+  const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
+    stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName,
+    status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM curriculum_program WHERE id = ?`).bind(classSession.offeringProgramId));
   if (program.status !== "published" || program.academicYearId !== classSession.academicYearId || program.stageCode !== classSession.stageCode) throw new ProgramCalendarError("invalid");
   const draft = classSession.calendarId ? await env.DB.prepare("SELECT id FROM class_calendar_revision WHERE class_calendar_id = ? AND status = 'draft'").bind(classSession.calendarId).first<{ id: string }>() : null;
   if (draft) throw new ProgramCalendarError("conflict");
   const lessons = (await lessonsForProgram(env, program.id)).map(toProgramLesson); if (!lessons.length) throw new ProgramCalendarError("invalid");
-  const breaks = await breaksForYear(env, classSession.academicYearId); const flags = operationFlags(env, classSession); const time = now();
+  const breaks = await applicableBreaks(env, classSession); const flags = operationFlags(env, classSession); const time = now();
   const calendarId = classSession.calendarId ?? id(); const revisionId = id();
-  const schedule = generateCalendarSchedule({ lessons, firstCandidateDate: input.firstCandidateDate, habitualWeekday: classSession.weekday, startTime: classSession.startTime, endTime: classSession.endTime, breaks });
+  let schedule: CalendarSlot[];
+  try {
+    schedule = generateCalendarSchedule({ lessons, ...scheduleInputForClass(classSession), breaks });
+  } catch (caught) {
+    mapPlanningError(caught);
+  }
   const statements: D1PreparedStatement[] = [];
   if (!classSession.calendarId) statements.push(env.DB.prepare(`INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, 'Asia/Ulaanbaatar', 'active', ?, ?, ?, ?)`).bind(calendarId, classSession.id, flags.isTest, flags.testRunId, time, time));
   statements.push(
     env.DB.prepare(`INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, based_on_revision_id, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, 0, NULL, ?, ?, ?, ?)`)
-      .bind(revisionId, calendarId, program.id, await nextRevisionNumber(env, calendarId), input.firstCandidateDate, flags.isTest, flags.testRunId, time, time),
+      .bind(revisionId, calendarId, program.id, await nextRevisionNumber(env, calendarId), classSession.firstDate, flags.isTest, flags.testRunId, time, time),
     ...insertSlots(env, revisionId, schedule, flags, time),
     audit(env, actor, "calendar_draft_generated", "class_calendar_revision", revisionId, { classSessionId: classSession.id, programId: program.id, slotCount: schedule.length }, flags, time),
   );
@@ -705,26 +908,54 @@ export async function createCalendarChangeDraft(env: WorkerEnv, actor: StaffPrin
   const current = await one<RevisionRow>(env, env.DB.prepare(`SELECT revision.id, revision.class_calendar_id AS calendarId, revision.curriculum_program_id AS programId, revision.revision_number AS revisionNumber, revision.status, revision.first_candidate_date AS firstCandidateDate, revision.locked_through_sequence AS lockedThroughSequence, revision.based_on_revision_id AS basedOnRevisionId, revision.is_test AS isTest, revision.test_run_id AS testRunId, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar ON class_calendar.id = revision.class_calendar_id WHERE class_calendar.class_session_id = ? AND revision.status = 'published'`).bind(input.classSessionId));
   const existingDraft = await env.DB.prepare("SELECT id FROM class_calendar_revision WHERE class_calendar_id = ? AND status = 'draft'").bind(current.calendarId).first<{ id: string }>(); if (existingDraft) throw new ProgramCalendarError("conflict");
   const oldSlots = await slotsForRevision(env, current.id); const oldOverrides = await overridesForRevision(env, current.id); const time = now(); const flags = operationFlags(env, current); const revisionId = id();
+  const pastPublishedSequence = oldSlots
+    .filter((slot) => slot.status === "scheduled" && slot.localDate < localToday())
+    .reduce((highest, slot) => Math.max(highest, slot.lessonSequence ?? 0), 0);
+  const protectedThroughSequence = Math.max(current.lockedThroughSequence, pastPublishedSequence);
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, based_on_revision_id, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(revisionId, current.calendarId, current.programId, await nextRevisionNumber(env, current.calendarId), current.firstCandidateDate, current.lockedThroughSequence, current.id, flags.isTest, flags.testRunId, time, time),
+      .bind(revisionId, current.calendarId, current.programId, await nextRevisionNumber(env, current.calendarId), current.firstCandidateDate, protectedThroughSequence, current.id, flags.isTest, flags.testRunId, time, time),
     ...oldOverrides.map((override) => env.DB.prepare(`INSERT INTO class_calendar_revision_override (id, class_calendar_revision_id, local_date, behavior, reason_label, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id(), revisionId, override.localDate, override.behavior, override.reasonLabel, flags.isTest, flags.testRunId, time, time)),
     ...oldSlots.map((slot) => env.DB.prepare(`INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, cancelled_lesson_sequence, cancelled_lesson_title, reason_label, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id(), revisionId, slot.localDate, slot.startTime, slot.endTime, slot.slotSource, slot.status, slot.lessonId, slot.cancelledLessonSequence, slot.cancelledLessonTitle, slot.reasonLabel, flags.isTest, flags.testRunId, time, time)),
-    audit(env, actor, "calendar_change_draft_created", "class_calendar_revision", revisionId, { basedOnRevisionId: current.id }, flags, time),
+    audit(env, actor, "calendar_change_draft_created", "class_calendar_revision", revisionId, {
+      basedOnRevisionId: current.id,
+      protectedHistoricalSequence: protectedThroughSequence,
+      protectionBasis: "stored_lock_and_past_published_dates",
+    }, flags, time),
   ]);
 }
 
-async function rebuiltDraftSchedule(env: WorkerEnv, revision: RevisionRow, addedExtra?: ExtraTeachingSlot): Promise<CalendarSlot[]> {
+async function rebuiltDraftSchedule(
+  env: WorkerEnv,
+  revision: RevisionRow,
+  addedExtra?: ExtraTeachingSlot,
+  proposedOverride?: CalendarOverride,
+): Promise<CalendarSlot[]> {
   const classSession = await classForCalendar(env, revision.calendarId);
   const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson);
-  const breaks = await breaksForYear(env, classSession.academicYearId);
-  const overrides = await overridesForRevision(env, revision.id);
+  const breaks = await applicableBreaks(env, classSession);
+  let overrides = await overridesForRevision(env, revision.id);
+  if (proposedOverride) {
+    overrides = [...overrides.filter((entry) => entry.localDate !== proposedOverride.localDate), proposedOverride];
+  }
   const oldSlots = await slotsForRevision(env, revision.id);
   const extraSlots: ExtraTeachingSlot[] = oldSlots.filter((slot) => slot.slotSource === "manual_extra" && slot.status === "scheduled").map((slot) => ({ id: slot.id, localDate: slot.localDate, startTime: slot.startTime, endTime: slot.endTime, reasonLabel: slot.reasonLabel ?? undefined }));
   if (addedExtra) extraSlots.push(addedExtra);
-  return generateCalendarSchedule({ lessons, firstCandidateDate: revision.firstCandidateDate, habitualWeekday: classSession.weekday, startTime: classSession.startTime, endTime: classSession.endTime, breaks, overrides, extraSlots });
+  let rebuilt: CalendarSlot[];
+  try {
+    rebuilt = generateCalendarSchedule({ lessons, ...scheduleInputForClass(classSession), breaks, overrides, extraSlots });
+  } catch (caught) {
+    mapPlanningError(caught);
+  }
+  for (const protectedSlot of oldSlots.filter((slot) => slot.status === "scheduled" && (slot.lessonSequence ?? 0) <= revision.lockedThroughSequence)) {
+    const match = rebuilt.find((slot) => slot.status === "scheduled" && slot.lesson?.id === protectedSlot.lessonId);
+    if (!match || match.localDate !== protectedSlot.localDate || match.startTime !== protectedSlot.startTime || match.endTime !== protectedSlot.endTime) {
+      throw new ProgramCalendarError("immutable");
+    }
+  }
+  return rebuilt;
 }
 
 export async function changeCalendarDraft(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string; kind: "exclude" | "restore" | "extra"; localDate: string; startTime?: string; endTime?: string; reasonLabel?: string | null }): Promise<void> {
@@ -732,21 +963,22 @@ export async function changeCalendarDraft(env: WorkerEnv, actor: StaffPrincipal,
   if (!validDate(input.localDate) || !input.expectedUpdatedAt || !["exclude", "restore", "extra"].includes(input.kind)) throw new ProgramCalendarError("invalid");
   const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft") throw new ProgramCalendarError("immutable"); if (revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const classSession = await classForCalendar(env, revision.calendarId); const time = now(); const flags = operationFlags(env, revision);
+  if (revision.basedOnRevisionId && input.localDate < localToday()) throw new ProgramCalendarError("immutable");
   if (input.kind === "extra" && (!validTime(input.startTime ?? "") || !validTime(input.endTime ?? "") || (input.startTime ?? "") >= (input.endTime ?? ""))) throw new ProgramCalendarError("invalid");
   let extra: ExtraTeachingSlot | undefined;
+  let proposedOverride: CalendarOverride | undefined;
+  const preStatements: D1PreparedStatement[] = [];
   if (input.kind === "extra") {
     const existing = await slotsForRevision(env, revision.id);
     if (existing.some((slot) => slot.localDate === input.localDate && slot.startTime === input.startTime && slot.endTime === input.endTime)) throw new ProgramCalendarError("conflict");
     extra = { id: id(), localDate: input.localDate, startTime: input.startTime as string, endTime: input.endTime as string, reasonLabel: optionalText(input.reasonLabel) ?? undefined };
   } else {
-    await env.DB.batch([
-      env.DB.prepare(`INSERT INTO class_calendar_revision_override (id, class_calendar_revision_id, local_date, behavior, reason_label, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(class_calendar_revision_id, local_date) DO UPDATE SET behavior = excluded.behavior, reason_label = excluded.reason_label, updated_at = excluded.updated_at`)
-        .bind(id(), revision.id, input.localDate, input.kind, optionalText(input.reasonLabel), flags.isTest, flags.testRunId, time, time),
-    ]);
+    proposedOverride = { id: id(), localDate: input.localDate, behavior: input.kind, reasonLabel: optionalText(input.reasonLabel) ?? undefined };
+    preStatements.push(env.DB.prepare(`INSERT INTO class_calendar_revision_override (id, class_calendar_revision_id, local_date, behavior, reason_label, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(class_calendar_revision_id, local_date) DO UPDATE SET behavior = excluded.behavior, reason_label = excluded.reason_label, updated_at = excluded.updated_at`)
+      .bind(proposedOverride.id, revision.id, input.localDate, input.kind, optionalText(input.reasonLabel), flags.isTest, flags.testRunId, time, time));
   }
-  const refreshed = await revisionForUpdate(env, revision.id);
-  const rebuilt = await rebuiltDraftSchedule(env, refreshed, extra);
-  await replaceDraftSlots(env, refreshed, rebuilt, actor, input.kind === "extra" ? "calendar_extra_added" : `calendar_override_${input.kind}`, { localDate: input.localDate, classSessionId: classSession.id });
+  const rebuilt = await rebuiltDraftSchedule(env, revision, extra, proposedOverride);
+  await replaceDraftSlots(env, revision, rebuilt, actor, input.kind === "extra" ? "calendar_extra_added" : `calendar_override_${input.kind}`, { localDate: input.localDate, classSessionId: classSession.id }, preStatements);
 }
 
 export async function setCalendarDeliveredPrefix(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string; lockedThroughSequence: number }): Promise<void> {
@@ -762,10 +994,17 @@ export async function setCalendarDeliveredPrefix(env: WorkerEnv, actor: StaffPri
 export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string; slotId: string; replacement?: { localDate: string; startTime: string; endTime: string; reasonLabel?: string | null } }): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft" || revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
-  const classSession = await classForCalendar(env, revision.calendarId); const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson); const breaks = await breaksForYear(env, classSession.academicYearId); const overrides = await overridesForRevision(env, revision.id); const slots = (await slotsForRevision(env, revision.id)).map(toSlot);
+  const classSession = await classForCalendar(env, revision.calendarId); const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson); const breaks = await applicableBreaks(env, classSession); const overrides = await overridesForRevision(env, revision.id); const slots = (await slotsForRevision(env, revision.id)).map(toSlot);
+  const target = slots.find((slot) => slot.id === input.slotId);
+  if (!target || target.localDate < localToday()) throw new ProgramCalendarError("immutable");
   const replacementSlots = input.replacement ? [{ id: id(), localDate: input.replacement.localDate, startTime: input.replacement.startTime, endTime: input.replacement.endTime, reasonLabel: optionalText(input.replacement.reasonLabel) ?? undefined }] : undefined;
   if (replacementSlots && (!validDate(replacementSlots[0].localDate) || !validTime(replacementSlots[0].startTime) || !validTime(replacementSlots[0].endTime) || replacementSlots[0].startTime >= replacementSlots[0].endTime)) throw new ProgramCalendarError("invalid");
-  const result = reflowCancelledFutureSchedule({ lessons, firstCandidateDate: revision.firstCandidateDate, habitualWeekday: classSession.weekday, startTime: classSession.startTime, endTime: classSession.endTime, breaks, overrides, existingSlots: slots, lockedThroughSequence: revision.lockedThroughSequence, cancelSlotId: input.slotId, replacementSlots });
+  let result;
+  try {
+    result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), breaks, overrides, existingSlots: slots, lockedThroughSequence: revision.lockedThroughSequence, cancelSlotId: input.slotId, replacementSlots });
+  } catch (caught) {
+    mapPlanningError(caught);
+  }
   await replaceDraftSlots(env, revision, result.slots, actor, "calendar_future_slot_cancelled", { slotId: input.slotId, changedFutureLessonAssignments: result.changedFutureLessonAssignments, newFinalLessonDate: result.newFinalLessonDate, hasReplacement: Boolean(replacementSlots?.length) });
 }
 
@@ -773,7 +1012,18 @@ export async function publishCalendarDraft(env: WorkerEnv, actor: StaffPrincipal
   requireCapability(actor, "calendar.manage");
   const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft" || revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const lessons = await lessonsForProgram(env, revision.programId); const slots = await slotsForRevision(env, revision.id); const active = slots.filter((slot) => slot.status === "scheduled");
-  if (!(await env.DB.prepare("SELECT id FROM curriculum_program WHERE id = ? AND status = 'published'").bind(revision.programId).first<{ id: string }>()) || active.length !== lessons.length || new Set(active.map((slot) => slot.lessonId)).size !== lessons.length || active.some((slot) => !slot.lessonId)) throw new ProgramCalendarError("invalid");
+  const publishableProgram = await env.DB.prepare(`SELECT program.id FROM curriculum_program AS program
+    WHERE program.id = ? AND (
+      program.status = 'published'
+      OR (program.status = 'superseded' AND EXISTS (
+        SELECT 1 FROM class_calendar_revision AS base_revision
+        WHERE base_revision.id = ?
+          AND base_revision.class_calendar_id = ?
+          AND base_revision.curriculum_program_id = program.id
+          AND base_revision.status IN ('published', 'superseded')
+      ))
+    )`).bind(revision.programId, revision.basedOnRevisionId, revision.calendarId).first<{ id: string }>();
+  if (!publishableProgram || active.length !== lessons.length || new Set(active.map((slot) => slot.lessonId)).size !== lessons.length || active.some((slot) => !slot.lessonId)) throw new ProgramCalendarError("invalid");
   const time = now(); const flags = operationFlags(env, revision); const result = await env.DB.batch([
     env.DB.prepare("UPDATE class_calendar_revision SET status = 'superseded', superseded_at = ?, updated_at = ? WHERE class_calendar_id = ? AND status = 'published'").bind(time, time, revision.calendarId),
     env.DB.prepare("UPDATE class_calendar_revision SET status = 'published', published_at = ?, updated_at = ? WHERE id = ? AND status = 'draft' AND updated_at = ?").bind(time, time, revision.id, input.expectedUpdatedAt),
