@@ -90,6 +90,10 @@ date, restore one otherwise skipped school date, or add an explicit extra
 occurrence. An Offering break remains an Offering-level rule and cannot be
 overridden by a class restore.
 
+The teacher reaches this rare all-class control from the Schedule screen under
+`Тусгай өөрчлөлт`. A one-class change remains with that class's schedule, while
+school-calendar periods remain in Holidays.
+
 A calendar revision is drafted from the class's Offering-pinned program and meeting
 rule, then published. The caller cannot substitute another program or start
 date during generation. Published programs, lessons, calendar revisions, slots,
@@ -156,10 +160,11 @@ The protected Mongolian setup is organized around concrete work:
 - `/staff/offerings/` (`Сургалт, арга хэмжээ`) creates and edits annual courses,
   summer courses, and events.
 - `/staff/programs/` presents the three annual Program identities and named
-  summer Programs. `Засах` opens an existing draft or copies the current
-  revision. Teachers insert, delete, and move lessons without sequence numbers;
-  publish atomically advances the family pointer and rejects stale drafts. Only
-  unreferenced summer drafts can be deleted.
+  summer Programs. `Засах` opens existing work or copies the current content
+  internally; `Хадгалах` atomically advances the family pointer and rejects
+  stale work. Teachers edit titles inline and insert-before, append, delete,
+  or move lessons without sequence numbers. Only unreferenced summer drafts
+  can be deleted.
 - `/staff/schedule/` chooses an Offering, manages its classes or event
   occurrence, and generates course calendars without asking for Program again.
 - `/staff/holidays/` records annual school-calendar periods with either an

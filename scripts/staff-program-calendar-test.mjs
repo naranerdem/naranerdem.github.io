@@ -174,10 +174,12 @@ try {
   const settingsPage = readFileSync("src/pages/staff/settings/index.astro", "utf8");
   const legacyPage = readFileSync("src/pages/staff/program-calendar.astro", "utf8");
   const routerSource = readFileSync("src/server/api/router.ts", "utf8");
-  assert.match(programsPage, /Хөтөлбөр нийтлэх/, "program tool uses the ordinary publish action");
+  assert.match(programsPage, />Хадгалах</, "program tool presents ordinary save wording");
   assert.match(programsPage, /Зуны хөтөлбөр нэмэх/, "ordinary program setup only creates summer program families");
-  assert.match(programsPage, /Ноорог засварлаж байна/, "the Program list keeps the published curriculum visible when a draft exists");
-  assert.match(programsPage, /state\.edit = false/, "opening a Program shows its current published curriculum before entering a draft");
+  assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
+  assert.match(programsPage, /Эндээс өмнө хичээл оруулах/, "the Program row menu supports insertion before a lesson");
+  assert.match(programsPage, /Хичээл нэмэх/, "the Program editor keeps one append action");
+  assert.doesNotMatch(programsPage, /Хөтөлбөр нийтлэх|Ноорог хөтөлбөр|Ноорог засварлаж байна|Нийтлэгдсэн хувилбар|window\.prompt/, "ordinary Program editing hides revision language and native prompt entry");
   assert.doesNotMatch(programsPage, /Хичээлийн жил/, "annual Program identity is not recreated per academic year");
   assert.match(offeringsPage, /Жилийн сургалт/);
   assert.match(offeringsPage, /Зуны сургалт/);
@@ -185,6 +187,9 @@ try {
   assert.match(offeringsPage, /Үнэгүй/);
   assert.match(holidaysPage, /Амралтын хугацаа нэмэх/, "holiday tool is a separate focused screen");
   assert.match(schedulePage, /Анги нэмэх/);
+  assert.match(schedulePage, /Бүх ангид хичээлгүй хугацаа оруулах/, "Offering-wide breaks are managed from Schedule");
+  assert.match(schedulePage, /offering-break\.save/, "Schedule uses the existing Offering-break domain operation");
+  assert.doesNotMatch(offeringsPage, /offering-break|Сургалтын завсарлага|Завсарлага нэмэх/, "Offering metadata editing does not expose break controls");
   assert.match(schedulePage, /Хуваарь нийтлэх/);
   assert.doesNotMatch(schedulePage, /Ангийн нэр|Facebook бүлгийн холбоос|value="draft"|value="cancelled"|calendar-program|calendar-lock|Дууссан хичээл|баталж байна/, "ordinary schedule editing hides legacy program, lock, and technical fields");
   assert.match(schedulePage, /staff-danger-zone/, "unused class deletion lives inside class details");
@@ -304,25 +309,44 @@ try {
   const openedClass = database.query(`SELECT updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
   await service.deleteClassSession(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: openedClass.updatedAt });
   assert.equal(count(database, "class_session", `id = ${quote(newClass.id)}`), 0, "an unused class can be deleted");
+  sqlite(`INSERT INTO curriculum_program (
+    id, program_family_id, academic_year_id, stage_code, revision_number, display_name,
+    program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('isolated-staging-test-draft', 'annual-program-stage_1', 'year-2026', 'stage_1', 50, 'Тусгаарлагдсан тест', 'annual_course', 'draft', NULL, 1, 'staging-catalog-fixture', '${now}', '${now}');`);
+  const cleanOverview = await service.getProgramCalendarOverview(runtime);
+  assert.equal(cleanOverview.programFamilies.find((entry) => entry.id === "annual-program-stage_1").draftProgram, null, "an isolated staging test draft is hidden from ordinary Program work");
   await service.startProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1" });
-  const copied = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft'")[0];
+  const copied = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft' AND based_on_program_id IS NOT NULL")[0];
   assert.equal(count(database, "curriculum_lesson", "curriculum_program_id = 'old-program'"), 3);
   assert.equal(count(database, "curriculum_lesson", `curriculum_program_id = ${quote(copied.id)}`), 3);
   assert.equal(count(database, "curriculum_lesson", `curriculum_program_id = ${quote(copied.id)} AND id LIKE 'old-%'`), 0, "copied program has new lesson identities");
-  await service.insertProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: copied.updatedAt, afterLessonId: null, title: "Нэмэлт хичээл" });
+  const thirdLesson = database.query(`SELECT id FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} AND sequence_number = 3`)[0];
+  await service.insertProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: copied.updatedAt, beforeLessonId: thirdLesson.id, title: "Нэмэлт хичээл" });
   let revisedDraft = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
   const insertedLesson = database.query(`SELECT id FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} AND title = 'Нэмэлт хичээл'`)[0];
-  await service.moveProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: revisedDraft.updatedAt, lessonId: insertedLesson.id, direction: "up" });
+  assert.deepEqual(database.query(`SELECT title FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} ORDER BY sequence_number`).map((entry) => entry.title), ["Одоогийн туршилт 1", "Одоогийн туршилт 2", "Нэмэлт хичээл", "Одоогийн туршилт 3"], "inserting before lesson C renumbers C and later lessons automatically");
+  await service.insertProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: revisedDraft.updatedAt, title: "Төгсгөлийн хичээл" });
   revisedDraft = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
-  await service.renameProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: revisedDraft.updatedAt, lessonId: insertedLesson.id, title: "Шинэчилсэн хичээл" });
-  revisedDraft = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
+  assert.deepEqual(database.query(`SELECT title FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} ORDER BY sequence_number`).map((entry) => entry.title), ["Одоогийн туршилт 1", "Одоогийн туршилт 2", "Нэмэлт хичээл", "Одоогийн туршилт 3", "Төгсгөлийн хичээл"], "append adds a lesson at the final sequence");
   await service.deleteProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: revisedDraft.updatedAt, lessonId: insertedLesson.id });
-  assert.deepEqual(database.query(`SELECT sequence_number AS sequenceNumber FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} ORDER BY sequence_number`).map((entry) => entry.sequenceNumber), [1, 2, 3], "lesson insert, move, and deletion preserve one explicit sequence");
+  revisedDraft = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
+  assert.deepEqual(database.query(`SELECT title FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} ORDER BY sequence_number`).map((entry) => entry.title), ["Одоогийн туршилт 1", "Одоогийн туршилт 2", "Одоогийн туршилт 3", "Төгсгөлийн хичээл"], "deleting a lesson shifts later lessons upward without gaps");
+  const lastOriginalLesson = database.query(`SELECT id FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} AND title = 'Одоогийн туршилт 3'`)[0];
+  await service.moveProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: revisedDraft.updatedAt, lessonId: lastOriginalLesson.id, direction: "up" });
+  revisedDraft = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
+  assert.deepEqual(database.query(`SELECT title, sequence_number AS sequenceNumber FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} ORDER BY sequence_number`).map((entry) => [entry.title, entry.sequenceNumber]), [["Одоогийн туршилт 1", 1], ["Одоогийн туршилт 3", 2], ["Одоогийн туршилт 2", 3], ["Төгсгөлийн хичээл", 4]], "moving a lesson preserves contiguous sequence numbers");
+  await service.renameProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: revisedDraft.updatedAt, lessonId: lastOriginalLesson.id, title: "Шинэчилсэн хичээл" });
+  revisedDraft = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
+  assert.deepEqual(database.query(`SELECT sequence_number AS sequenceNumber FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} ORDER BY sequence_number`).map((entry) => entry.sequenceNumber), [1, 2, 3, 4], "lesson operations preserve one explicit sequence");
   await assert.rejects(() => service.renameProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: copied.updatedAt, lessonId: "missing", title: "Хуучин хүсэлт" }), /Program and calendar/);
   const saved = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
   await service.publishProgramFamilyDraft(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: saved.updatedAt });
   assert.equal(count(database, "curriculum_program", `id = ${quote(copied.id)} AND status = 'published'`), 1);
   assert.equal(database.query("SELECT curriculum_program_id AS programId FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0].programId, "current-program", "publishing a Program revision leaves existing Offerings pinned");
+  sqlite(`INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
+    VALUES ('year-current-save-test', 'Хадгалалтын тест', 'draft', '2027-09-01', '2028-06-01', 0, 1, 'staff-program-test', '${now}', '${now}');`);
+  await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1", startsOn: "2027-09-01", endsOn: "2028-06-01" });
+  assert.equal(count(database, "activity_offering", `curriculum_program_id = ${quote(copied.id)}`), 1, "a new annual Offering resolves the newly saved current Program");
   await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   let draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'scheduled'`), 3);
@@ -345,7 +369,7 @@ try {
   await service.cancelFutureCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: futureSlot.id });
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`), 1, "future cancellation remains visible history");
   await service.startProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1" });
-  const staleDraft = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft'")[0];
+  const staleDraft = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft' AND based_on_program_id IS NOT NULL")[0];
   sqlite(`
     INSERT INTO curriculum_program (id, program_family_id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('parallel-program', 'annual-program-stage_1', 'year-2026', 'stage_1', 90, 'Зэрэг засвар', 'annual_course', 'draft', ${quote(copied.id)}, 1, 'staff-program-test', '${now}', '${now}');

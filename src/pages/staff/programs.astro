@@ -13,7 +13,7 @@ import "../../styles/global.css";
       <section id="tool-app" hidden>
         <div class="staff-page-heading"><div><p class="eyebrow">Заах хичээлүүд</p><h1>Хөтөлбөр</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <div class="staff-section-heading"><p class="staff-muted">Шатуудын үндсэн хөтөлбөрийг засварлаж, нийтэлнэ.</p><button id="add-summer" class="button primary" type="button">Зуны хөтөлбөр нэмэх</button></div>
+        <div class="staff-section-heading"><p class="staff-muted">Шатуудын үндсэн хөтөлбөрийг энд засварлана.</p><button id="add-summer" class="button primary" type="button">Зуны хөтөлбөр нэмэх</button></div>
         <div id="program-create"></div>
         <div id="program-list" class="staff-offering-list"></div>
         <section id="program-editor" class="staff-operation-section" hidden></section>
@@ -23,7 +23,7 @@ import "../../styles/global.css";
       // @ts-nocheck
       import { escape, getOverview, hasSetupAccess, postOverviewAction, stageLabel } from "../../scripts/staff-setup.js";
 
-      const state = { data: null, familyId: new URLSearchParams(location.search).get("family") || "", creating: false, edit: false };
+      const state = { data: null, familyId: new URLSearchParams(location.search).get("family") || "", creating: false, edit: false, editingLessonId: "", insertingBeforeLessonId: "", appendingLesson: false };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const families = () => (state.data?.programFamilies || []).filter((family) => family.status === "active");
@@ -34,38 +34,65 @@ import "../../styles/global.css";
       function rows(program) { return (program?.lessons || []).map((lesson) => `<li><span class="staff-order">${lesson.sequenceNumber}</span><span>${escape(lesson.title)}</span></li>`).join(""); }
       function renderCreate() {
         const box = q("#program-create"); if (!state.creating) { box.innerHTML = ""; return; }
-        box.innerHTML = `<section class="staff-operation-section"><h2>Зуны хөтөлбөр</h2><form id="summer-create" class="staff-compact-form"><label class="staff-wide">Нэр <input id="summer-name" required maxlength="160" placeholder="Зуны сургалтын нэр" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" data-cancel type="button">Болих</button><button class="button primary" type="submit">Ноорог үүсгэх</button></div></form></section>`;
+        box.innerHTML = `<section class="staff-operation-section"><h2>Зуны хөтөлбөр</h2><form id="summer-create" class="staff-compact-form"><label class="staff-wide">Нэр <input id="summer-name" required maxlength="160" placeholder="Зуны сургалтын нэр" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" data-cancel type="button">Болих</button><button class="button primary" type="submit">Үүсгэх</button></div></form></section>`;
         q("[data-cancel]").onclick = () => { state.creating = false; renderCreate(); };
-        q("#summer-create").onsubmit = (event) => { event.preventDefault(); if (event.currentTarget.reportValidity()) run(() => postOverviewAction("program.create-summer", { displayName: q("#summer-name").value }), "Ноорог үүслээ."); };
+        q("#summer-create").onsubmit = (event) => { event.preventDefault(); if (event.currentTarget.reportValidity()) run(() => postOverviewAction("program.create-summer", { displayName: q("#summer-name").value }), "Зуны хөтөлбөр үүслээ."); };
       }
       function renderList() {
         const annual = families().filter((family) => family.kind === "annual_course"); const summer = families().filter((family) => family.kind === "summer_course");
-        const familyRow = (family) => { const current = family.currentProgram; const draft = family.draftProgram; return `<article class="staff-offering-row"><div><span class="staff-kind-label">${family.kind === "annual_course" ? "Жилийн сургалт" : "Зуны хөтөлбөр"}</span><h2>${escape(label(family))}</h2><p>${current ? `Нийтлэгдсэн · ${current.lessons.length} хичээл` : "Нийтлэгдсэн хөтөлбөр алга"}${draft ? " · Ноорог засварлаж байна" : ""}</p></div><button class="button secondary" type="button" data-open="${escape(family.id)}">Нээх</button></article>`; };
+        const familyRow = (family) => { const current = family.currentProgram; return `<article class="staff-offering-row"><div><span class="staff-kind-label">${family.kind === "annual_course" ? "Жилийн сургалт" : "Зуны хөтөлбөр"}</span><h2>${escape(label(family))}</h2><p>${current ? `${current.lessons.length} хичээл` : "Хичээл оруулаагүй байна"}</p></div><button class="button secondary" type="button" data-open="${escape(family.id)}">Нээх</button></article>`; };
         q("#program-list").innerHTML = `${annual.length ? `<section class="staff-offering-group"><h2>Жилийн сургалт</h2>${annual.map(familyRow).join("")}</section>` : ""}${summer.length ? `<section class="staff-offering-group"><h2>Зуны хөтөлбөр</h2>${summer.map(familyRow).join("")}</section>` : ""}` || `<p class="staff-empty">Хөтөлбөр оруулаагүй байна.</p>`;
         q("#program-list").querySelectorAll("[data-open]").forEach((button) => button.onclick = () => { state.familyId = button.dataset.open; state.edit = false; history.replaceState(null, "", `?family=${encodeURIComponent(state.familyId)}`); renderEditor(); q("#program-editor").scrollIntoView({ behavior: "smooth", block: "start" }); });
       }
+      function titleEditor(lesson) {
+        return `<li class="staff-lesson-row staff-lesson-edit-row"><span class="staff-order">${lesson.sequenceNumber}</span><form class="staff-lesson-inline-form" data-title-form="${escape(lesson.id)}"><input data-lesson-title required maxlength="200" value="${escape(lesson.title)}" aria-label="${lesson.sequenceNumber}-р хичээлийн нэр" /><div class="staff-inline-actions"><button class="button secondary" data-title-cancel type="button">Болих</button><button class="button primary" type="submit">OK</button></div></form></li>`;
+      }
+      function insertEditor(beforeLessonId = "") {
+        return `<li class="staff-lesson-insert-row"><span aria-hidden="true"></span><form class="staff-lesson-inline-form" data-insert-form="${escape(beforeLessonId)}"><label>Шинэ хичээлийн нэр <input data-insert-title required maxlength="200" /></label><div class="staff-inline-actions"><button class="button secondary" data-insert-cancel type="button">Болих</button><button class="button primary" type="submit">Оруулах</button></div></form></li>`;
+      }
+      function lessonRow(lesson, index, lessonCount) {
+        if (state.editingLessonId === lesson.id) return titleEditor(lesson);
+        const actions = `<details class="staff-lesson-menu"><summary aria-label="${lesson.sequenceNumber}-р хичээлийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-insert-before="${escape(lesson.id)}">Эндээс өмнө хичээл оруулах</button>${index > 0 ? `<button type="button" data-move="up" data-lesson="${escape(lesson.id)}">Дээш зөөх</button>` : ""}${index < lessonCount - 1 ? `<button type="button" data-move="down" data-lesson="${escape(lesson.id)}">Доош зөөх</button>` : ""}<button type="button" data-delete="${escape(lesson.id)}">Хасах</button></div></details>`;
+        return `<li class="staff-lesson-row"><span class="staff-order">${lesson.sequenceNumber}</span><button class="staff-lesson-title" type="button" data-edit-title="${escape(lesson.id)}">${escape(lesson.title)}</button>${actions}</li>`;
+      }
+      function lessonRows(program) {
+        const lessons = program.lessons || [];
+        return lessons.map((lesson, index) => `${state.insertingBeforeLessonId === lesson.id ? insertEditor(lesson.id) : ""}${lessonRow(lesson, index, lessons.length)}`).join("") + (state.appendingLesson ? insertEditor() : "");
+      }
+      function clearInlineEditor() { state.editingLessonId = ""; state.insertingBeforeLessonId = ""; state.appendingLesson = false; }
       function renderEditor() {
         const family = selected(); const box = q("#program-editor"); if (!family) { box.hidden = true; return; } box.hidden = false;
-        const program = state.edit ? family.draftProgram : family.currentProgram; if (!program) { box.innerHTML = `<p class="staff-empty">Энэ хөтөлбөрийн нийтлэгдсэн хувилбар алга.</p>`; return; }
-        if (!state.edit) {
-          box.innerHTML = `<div class="staff-section-heading"><div><span class="staff-kind-label">${escape(family.kind === "annual_course" ? "Жилийн сургалт" : "Зуны хөтөлбөр")}</span><h2>${escape(label(family))}</h2></div><button id="program-edit" class="button secondary" type="button">Засах</button></div><p><strong>Нийтлэгдсэн</strong> · ${program.lessons.length} хичээл</p><ol class="staff-program-preview">${rows(program)}</ol>${family.history?.length ? `<details><summary>Өмнөх хувилбарууд</summary><ul class="staff-program-preview">${family.history.map((entry) => `<li><span>${escape(entry.displayName)}</span><span>${entry.lessons.length} хичээл${entry.offeringCount ? ` · ${entry.offeringCount} сургалт ашиглаж байна` : ""}</span></li>`).join("")}</ul></details>` : ""}`;
-          q("#program-edit").onclick = () => run(async () => { await postOverviewAction("program.edit", { programFamilyId: family.id }); state.edit = true; }, "Ноорог нээгдлээ.");
+        const program = state.edit ? family.draftProgram : family.currentProgram;
+        if (!program) {
+          box.innerHTML = family.kind === "summer_course" && family.draftProgram
+            ? `<p class="staff-empty">Хичээл оруулаагүй байна.</p><button id="program-edit" class="button secondary" type="button">Хичээл оруулах</button>`
+            : `<p class="staff-empty">Хичээл оруулаагүй байна.</p>`;
+          q("#program-edit")?.addEventListener("click", () => { state.edit = true; renderEditor(); });
           return;
         }
-        const lessonRows = program.lessons.map((lesson) => `<li><span class="staff-order">${lesson.sequenceNumber}</span><input class="lesson-title" data-lesson-title="${escape(lesson.id)}" required maxlength="200" value="${escape(lesson.title)}" aria-label="${lesson.sequenceNumber}-р хичээлийн нэр" /><button class="staff-icon-button" data-move="up" data-lesson="${escape(lesson.id)}" type="button" title="Дээш зөөх" aria-label="Дээш зөөх">↑</button><button class="staff-icon-button" data-move="down" data-lesson="${escape(lesson.id)}" type="button" title="Доош зөөх" aria-label="Доош зөөх">↓</button><button class="staff-icon-button" data-delete="${escape(lesson.id)}" type="button" title="Хасах" aria-label="Хасах">×</button></li>`).join("");
-        box.innerHTML = `<form id="program-form" class="staff-program-form"><div class="staff-section-heading"><div><span class="staff-kind-label">${escape(label(family))}</span><h2>Ноорог хөтөлбөр</h2></div><span class="staff-draft-label">Ноорог</span></div>${family.kind === "summer_course" ? `<label>Хөтөлбөрийн нэр <input id="program-name" value="${escape(program.displayName)}" maxlength="160" required /></label>` : ""}<ol id="lesson-list" class="staff-lesson-list">${lessonRows}</ol><div class="staff-inline-actions"><button id="lesson-add" class="button secondary" type="button">Хичээл нэмэх</button></div><div class="staff-form-actions"><button class="button secondary" data-close-draft type="button">Буцах</button><button id="program-publish" class="button primary" type="button">Хөтөлбөр нийтлэх</button></div></form>${family.kind === "summer_course" && !family.currentProgram ? `<div class="staff-danger-zone"><button class="button danger" id="summer-delete" type="button">Ноорог устгах</button></div>` : ""}`;
-        q("[data-close-draft]").onclick = () => { state.edit = false; renderEditor(); };
+        if (!state.edit) {
+          box.innerHTML = `<div class="staff-section-heading"><div><span class="staff-kind-label">${escape(family.kind === "annual_course" ? "Жилийн сургалт" : "Зуны хөтөлбөр")}</span><h2>${escape(label(family))}</h2></div><button id="program-edit" class="button secondary" type="button">Засах</button></div><p>${program.lessons.length} хичээл</p><ol class="staff-program-preview">${rows(program)}</ol>${family.history?.length ? `<details><summary>Өмнөх хувилбарууд</summary><ul class="staff-program-preview">${family.history.map((entry) => `<li><span>${escape(entry.displayName)}</span><span>${entry.lessons.length} хичээл${entry.offeringCount ? ` · ${entry.offeringCount} сургалт ашиглаж байна` : ""}</span></li>`).join("")}</ul></details>` : ""}`;
+          q("#program-edit").onclick = () => run(async () => { await postOverviewAction("program.edit", { programFamilyId: family.id }); state.edit = true; });
+          return;
+        }
+        box.innerHTML = `<form id="program-form" class="staff-program-form"><div class="staff-section-heading"><div><span class="staff-kind-label">${escape(label(family))}</span><h2>Хичээл засах</h2></div></div>${family.kind === "summer_course" ? `<label>Хөтөлбөрийн нэр <input id="program-name" value="${escape(program.displayName)}" maxlength="160" required /></label>` : ""}<ol id="lesson-list" class="staff-lesson-list">${lessonRows(program)}</ol><div class="staff-inline-actions"><button id="lesson-add" class="button secondary" type="button">Хичээл нэмэх</button></div><div class="staff-form-actions"><button class="button secondary" data-close-editor type="button">Болих</button><button id="program-save" class="button primary" type="button">Хадгалах</button></div></form>${family.kind === "summer_course" && !family.currentProgram ? `<div class="staff-danger-zone"><button class="button danger" id="summer-delete" type="button">Үүсгэхээ болих</button></div>` : ""}`;
+        q("[data-close-editor]").onclick = () => { if ((state.editingLessonId || state.insertingBeforeLessonId || state.appendingLesson) && !window.confirm("Оруулсан өөрчлөлтөө хадгалахгүй гарах уу?")) return; clearInlineEditor(); state.edit = false; renderEditor(); };
         q("#program-form").onsubmit = (event) => event.preventDefault();
         if (family.kind === "summer_course") q("#program-name").onchange = () => run(() => postOverviewAction("program.rename", { programId: program.id, expectedUpdatedAt: program.updatedAt, displayName: q("#program-name").value }), "Нэрийг хадгаллаа.");
-        q("#lesson-list").querySelectorAll("[data-lesson-title]").forEach((input) => input.onchange = () => run(() => postOverviewAction("program.lesson.rename", { programId: program.id, expectedUpdatedAt: program.updatedAt, lessonId: input.dataset.lessonTitle, title: input.value }), "Хичээлийг хадгаллаа."));
+        q("#lesson-list").querySelectorAll("[data-edit-title]").forEach((button) => button.onclick = () => { state.editingLessonId = button.dataset.editTitle; state.insertingBeforeLessonId = ""; state.appendingLesson = false; renderEditor(); q("[data-lesson-title]")?.focus(); });
+        q("#lesson-list").querySelectorAll("[data-title-cancel]").forEach((button) => button.onclick = () => { clearInlineEditor(); renderEditor(); });
+        q("#lesson-list").querySelectorAll("[data-title-form]").forEach((form) => form.onsubmit = (event) => { event.preventDefault(); if (event.currentTarget.reportValidity()) run(() => postOverviewAction("program.lesson.rename", { programId: program.id, expectedUpdatedAt: program.updatedAt, lessonId: form.dataset.titleForm, title: form.querySelector("[data-lesson-title]").value }), "Хичээлийг хадгаллаа."); });
+        q("#lesson-list").querySelectorAll("[data-insert-before]").forEach((button) => button.onclick = () => { state.insertingBeforeLessonId = button.dataset.insertBefore; state.editingLessonId = ""; state.appendingLesson = false; renderEditor(); q("[data-insert-title]")?.focus(); });
+        q("#lesson-list").querySelectorAll("[data-insert-cancel]").forEach((button) => button.onclick = () => { clearInlineEditor(); renderEditor(); });
+        q("#lesson-list").querySelectorAll("[data-insert-form]").forEach((form) => form.onsubmit = (event) => { event.preventDefault(); if (event.currentTarget.reportValidity()) run(() => postOverviewAction("program.lesson.insert", { programId: program.id, expectedUpdatedAt: program.updatedAt, beforeLessonId: form.dataset.insertForm || undefined, title: form.querySelector("[data-insert-title]").value }), "Хичээл орууллаа."); });
         q("#lesson-list").querySelectorAll("[data-move]").forEach((button) => button.onclick = () => run(() => postOverviewAction("program.lesson.move", { programId: program.id, expectedUpdatedAt: program.updatedAt, lessonId: button.dataset.lesson, direction: button.dataset.move }), "Дарааллыг шинэчиллээ."));
         q("#lesson-list").querySelectorAll("[data-delete]").forEach((button) => button.onclick = () => { if (window.confirm("Энэ хичээлийг хасах уу?")) run(() => postOverviewAction("program.lesson.delete", { programId: program.id, expectedUpdatedAt: program.updatedAt, lessonId: button.dataset.delete }), "Хичээлийг хаслаа."); });
-        q("#lesson-add").onclick = () => { const title = window.prompt("Хичээлийн нэр"); const afterLessonId = program.lessons.at(-1)?.id; if (title) run(() => postOverviewAction("program.lesson.insert", { programId: program.id, expectedUpdatedAt: program.updatedAt, afterLessonId, title }), "Хичээл нэмэгдлээ."); };
-        q("#program-publish").onclick = () => { if (window.confirm("Энэ хөтөлбөрийг нийтлэх үү?")) run(() => postOverviewAction("program.publish", { programId: program.id, expectedUpdatedAt: program.updatedAt }), "Хөтөлбөр нийтлэгдлээ."); };
-        q("#summer-delete")?.addEventListener("click", () => { if (window.confirm("Энэ ноорог зуны хөтөлбөрийг устгах уу?")) run(() => postOverviewAction("program.delete-summer", { programFamilyId: family.id }), "Ноорог устлаа."); });
+        q("#lesson-add").onclick = () => { state.appendingLesson = true; state.editingLessonId = ""; state.insertingBeforeLessonId = ""; renderEditor(); q("[data-insert-title]")?.focus(); };
+        q("#program-save").onclick = () => run(async () => { await postOverviewAction("program.publish", { programId: program.id, expectedUpdatedAt: program.updatedAt }); state.edit = false; }, "Хөтөлбөрийг хадгаллаа.");
+        q("#summer-delete")?.addEventListener("click", () => { if (window.confirm("Энэ зуны хөтөлбөрийг устгах уу?")) run(() => postOverviewAction("program.delete-summer", { programFamilyId: family.id }), "Зуны хөтөлбөрийг устгалаа."); });
       }
       function render() { renderCreate(); renderList(); renderEditor(); }
-      async function run(work, success) { message(); try { await work(); state.creating = false; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      async function run(work, success = "") { message(); try { await work(); state.creating = false; clearInlineEditor(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       q("#add-summer").onclick = () => { state.creating = true; renderCreate(); q("#summer-name")?.focus(); };
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>

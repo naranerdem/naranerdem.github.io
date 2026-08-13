@@ -185,6 +185,17 @@ absence never ambiguously means holiday, cancellation, or incomplete setup.
 Every class calendar remains independent even where cohorts share one Offering
 program.
 
+The teacher Program editor presents this as ordinary `Засах` then `Хадгалах`.
+Saving still creates and atomically selects an immutable Program revision;
+existing Offerings retain their pinned historical revision. Lesson titles are
+edited inline, while insert-before, append, delete, and move actions keep the
+ordered sequence contiguous without a teacher entering sequence numbers.
+
+Offering-wide course pauses are managed as a compact `Тусгай өөрчлөлт` on the
+Schedule screen. They affect every class in that Offering. School-calendar
+periods remain the separate Holidays tool, and a one-class change remains on
+that class's schedule.
+
 Ordinary post-publication drafts automatically protect the greater of the
 stored internal lock and all published lesson assignments whose local teaching
 date is already past. This is historical schedule protection, not a claim that

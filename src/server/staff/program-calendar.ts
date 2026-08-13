@@ -614,7 +614,8 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
   const programFamilies = families.results.map((family) => {
     const revisions = programsByFamily.get(family.id) ?? [];
     const currentProgram = revisions.find((program) => program.id === family.currentProgramId) ?? null;
-    const draftProgram = revisions.find((program) => program.status === "draft") ?? null;
+    const draftProgram = revisions.find((program) => program.status === "draft"
+      && !(program.programKind === "annual_course" && program.isTest === 1 && !program.basedOnProgramId)) ?? null;
     const history = revisions.filter((program) => program.id !== family.currentProgramId && program.status !== "draft" && program.status !== "archived")
       .map((program) => ({ ...program, offeringCount: usageByProgram.get(program.id) ?? 0 }));
     return {
@@ -634,6 +635,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     stageSettings: stageSettings.results,
     offerings: offeringSetup.offerings,
     eventOccurrences: offeringSetup.eventOccurrences,
+    offeringBreaks: offeringSetup.offeringBreaks,
     revisions: revisions.results.map((revision) => {
       const classSession = classById.get(revision.classSessionId);
       const offering = classSession?.offeringId ? offeringById.get(classSession.offeringId) : undefined;
@@ -694,7 +696,8 @@ async function startFamilyDraft(
   requireCapability(actor, "program.manage");
   const family = await familyById(env, familyId);
   const existing = await env.DB.prepare(`SELECT id FROM curriculum_program
-    WHERE program_family_id = ? AND status = 'draft'`).bind(family.id).first<{ id: string }>();
+    WHERE program_family_id = ? AND status = 'draft'
+      AND NOT (program_kind = 'annual_course' AND is_test = 1 AND based_on_program_id IS NULL)`).bind(family.id).first<{ id: string }>();
   if (existing) return;
   if (!family.currentProgramId) throw new ProgramCalendarError("not_found");
   const source = await programById(env, family.currentProgramId);
@@ -828,16 +831,16 @@ export async function renameProgramDraftLesson(
 
 export async function insertProgramDraftLesson(
   env: WorkerEnv, actor: StaffPrincipal,
-  input: { programId: string; expectedUpdatedAt: string; afterLessonId?: string; title: string },
+  input: { programId: string; expectedUpdatedAt: string; beforeLessonId?: string; title: string },
 ): Promise<void> {
   requireCapability(actor, "program.manage");
   const title = text(input.title, 200);
   if (!title) throw new ProgramCalendarError("invalid");
   const program = await editableDraft(env, input.programId, input.expectedUpdatedAt);
   const lessons = await lessonsForProgram(env, program.id);
-  const afterIndex = input.afterLessonId ? lessons.findIndex((lesson) => lesson.id === input.afterLessonId) : lessons.length - 1;
-  if (input.afterLessonId && afterIndex < 0) throw new ProgramCalendarError("not_found");
-  const sequenceNumber = afterIndex + 2;
+  const beforeIndex = input.beforeLessonId ? lessons.findIndex((lesson) => lesson.id === input.beforeLessonId) : lessons.length;
+  if (input.beforeLessonId && beforeIndex < 0) throw new ProgramCalendarError("not_found");
+  const sequenceNumber = beforeIndex + 1;
   const time = now(); const flags = operationFlags(env, program); const lessonId = id();
   await touchDraft(env, actor, program, input.expectedUpdatedAt, "program_lesson_inserted", { lessonId, sequenceNumber }, [
     env.DB.prepare(`UPDATE curriculum_lesson SET sequence_number = sequence_number + 1000, updated_at = ?

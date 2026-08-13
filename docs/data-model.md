@@ -236,6 +236,8 @@ It adds `activity_offering_break` for a shared course-specific break and
 `academic_year_break.generation_behavior` for `exclude_by_default` versus
 `warn_only` school-period guidance. It also creates
 `operational_default_import`, which records stable source-template imports.
+The Schedule surface manages this shared all-class break; school-calendar
+periods remain separate annual guidance in Holidays.
 
 Approved non-private startup Programs and school-calendar periods live in
 `src/config/operational-defaults.mjs`. The owner-supplied 2024-2025 baseline

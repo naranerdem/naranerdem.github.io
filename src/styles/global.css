@@ -2022,17 +2022,20 @@ textarea:focus {
 
 .staff-lesson-list {
   display: grid;
-  gap: 0.45rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.staff-lesson-list li {
+.staff-lesson-row,
+.staff-lesson-insert-row {
   display: grid;
-  grid-template-columns: 2rem minmax(0, 1fr) repeat(3, 2.4rem);
-  gap: 0.35rem;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  gap: 0.45rem;
   align-items: center;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  padding: 0.2rem 0;
 }
 
 .staff-order {
@@ -2041,16 +2044,144 @@ textarea:focus {
   text-align: center;
 }
 
-.staff-icon-button {
-  min-width: 2.4rem;
-  min-height: 2.4rem;
+.staff-lesson-title {
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--blue-deep);
+  font: inherit;
+  font-weight: 700;
+  padding: 0.45rem 0;
+  text-align: left;
+}
+
+.staff-lesson-title:hover,
+.staff-lesson-title:focus-visible {
+  color: var(--blue);
+  text-decoration: underline;
+}
+
+.staff-lesson-menu {
+  position: relative;
+}
+
+.staff-lesson-menu summary {
+  display: grid;
+  width: 44px;
+  min-height: 44px;
+  place-items: center;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--paper);
   color: var(--blue-deep);
-  font: inherit;
-  font-size: 1.15rem;
+  cursor: pointer;
+  font-size: 1.25rem;
   font-weight: 800;
+  list-style: none;
+}
+
+.staff-lesson-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.staff-lesson-menu[open] summary {
+  border-color: var(--blue);
+  background: rgba(7, 58, 175, 0.08);
+}
+
+.staff-lesson-menu-actions {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  display: grid;
+  width: min(17rem, calc(100vw - 3rem));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: 0 0.65rem 1.4rem rgba(8, 30, 71, 0.16);
+  padding: 0.25rem;
+}
+
+.staff-lesson-menu-actions button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+}
+
+.staff-lesson-menu-actions button:hover,
+.staff-lesson-menu-actions button:focus-visible {
+  background: rgba(7, 58, 175, 0.08);
+  color: var(--blue-deep);
+}
+
+.staff-lesson-inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.staff-lesson-inline-form label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.staff-lesson-inline-form .staff-inline-actions {
+  flex-wrap: nowrap;
+}
+
+.staff-lesson-inline-form .button {
+  min-height: 44px;
+  padding: 0.45rem 0.65rem;
+}
+
+.staff-lesson-insert-row {
+  grid-template-columns: 2rem minmax(0, 1fr);
+  background: rgba(7, 58, 175, 0.045);
+  padding: 0.65rem 0;
+}
+
+.staff-lesson-insert-row .staff-lesson-inline-form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.staff-schedule-changes {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin: 0;
+  padding: 0.15rem 0;
+}
+
+.staff-schedule-changes summary {
+  min-height: 44px;
+  color: var(--blue-deep);
+  cursor: pointer;
+  font-weight: 800;
+  padding: 0.65rem 0;
+}
+
+.staff-schedule-changes-content {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0 0 1rem;
+}
+
+.staff-schedule-changes-content > p {
+  margin: 0;
+  max-width: 44rem;
 }
 
 .staff-calendar-actions {
@@ -2130,6 +2261,14 @@ textarea:focus {
   .staff-kind-choices,
   .staff-event-summary {
     grid-template-columns: 1fr;
+  }
+
+  .staff-lesson-inline-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .staff-lesson-inline-form .staff-inline-actions {
+    flex-wrap: wrap;
   }
 
   .staff-setting-row {
