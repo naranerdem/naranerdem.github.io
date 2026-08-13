@@ -48,6 +48,7 @@ interface EventOccurrenceRow {
 
 interface ProgramContextRow {
   id: string;
+  programFamilyId: string;
   academicYearId: string;
   stageCode: "stage_1" | "stage_2" | "stage_3";
   programKind: "annual_course" | "summer_course";
@@ -72,6 +73,8 @@ export interface OfferingSaveInput {
   startsOn?: string | null;
   endsOn?: string | null;
   curriculumProgramId?: string | null;
+  programFamilyId?: string | null;
+  annualStageCode?: string | null;
   useAcademicYearBreaks?: boolean;
   chargeMode?: string;
   facebookGroupUrl?: string | null;
@@ -148,7 +151,8 @@ async function offeringById(env: WorkerEnv, offeringId: string): Promise<Offerin
 }
 
 async function programById(env: WorkerEnv, programId: string): Promise<ProgramContextRow> {
-  const row = await env.DB.prepare(`SELECT program.id, program.academic_year_id AS academicYearId,
+  const row = await env.DB.prepare(`SELECT program.id, program.program_family_id AS programFamilyId,
+    program.academic_year_id AS academicYearId,
     program.stage_code AS stageCode, program.program_kind AS programKind, program.status,
     program.display_name AS displayName, year.public_label AS yearLabel,
     year.starts_on AS yearStartsOn, year.ends_on AS yearEndsOn,
@@ -158,6 +162,44 @@ async function programById(env: WorkerEnv, programId: string): Promise<ProgramCo
     WHERE program.id = ?`).bind(programId).first<ProgramContextRow>();
   if (!row) throw new OfferingError("not_found");
   return row;
+}
+
+async function currentProgramForFamily(
+  env: WorkerEnv,
+  kind: "annual_course" | "summer_course",
+  familyId: string,
+  annualStageCode?: string | null,
+): Promise<ProgramContextRow> {
+  if (!familyId) throw new OfferingError("invalid");
+  const program = await env.DB.prepare(`SELECT program.id, program.program_family_id AS programFamilyId,
+    program.academic_year_id AS academicYearId, program.stage_code AS stageCode,
+    program.program_kind AS programKind, program.status, program.display_name AS displayName,
+    year.public_label AS yearLabel, year.starts_on AS yearStartsOn, year.ends_on AS yearEndsOn,
+    program.is_test AS isTest, program.test_run_id AS testRunId
+    FROM curriculum_program_family AS family
+    INNER JOIN curriculum_program AS program ON program.id = family.current_published_program_id
+    INNER JOIN academic_year AS year ON year.id = program.academic_year_id
+    WHERE family.id = ? AND family.kind = ?
+      AND (? IS NULL OR family.annual_stage_code = ?)`).bind(familyId, kind, annualStageCode ?? null, annualStageCode ?? null).first<ProgramContextRow>();
+  if (!program || program.status !== "published" || program.programKind !== kind) throw new OfferingError("invalid");
+  return program;
+}
+
+async function currentAnnualProgramForStage(env: WorkerEnv, stageCode: string): Promise<ProgramContextRow> {
+  if (!(["stage_1", "stage_2", "stage_3"] as const).includes(stageCode as "stage_1" | "stage_2" | "stage_3")) throw new OfferingError("invalid");
+  const family = await env.DB.prepare(`SELECT id FROM curriculum_program_family
+    WHERE kind = 'annual_course' AND annual_stage_code = ? AND status = 'active'`).bind(stageCode).first<{ id: string }>();
+  if (!family) throw new OfferingError("invalid");
+  return currentProgramForFamily(env, "annual_course", family.id, stageCode);
+}
+
+async function academicYearForAnnualOffering(env: WorkerEnv, startsOn: string, endsOn: string): Promise<{ id: string; label: string }> {
+  const year = await env.DB.prepare(`SELECT id, public_label AS label FROM academic_year
+    WHERE starts_on IS NOT NULL AND ends_on IS NOT NULL
+      AND starts_on <= ? AND ends_on >= ?
+    ORDER BY is_current DESC, starts_on DESC LIMIT 1`).bind(startsOn, endsOn).first<{ id: string; label: string }>();
+  if (!year) throw new OfferingError("invalid");
+  return year;
 }
 
 async function eventForOffering(env: WorkerEnv, offeringId: string): Promise<EventOccurrenceRow | null> {
@@ -223,12 +265,14 @@ export async function getOfferingOverview(env: WorkerEnv): Promise<{
       offering.curriculum_program_id AS curriculumProgramId,
       program.display_name AS programName, program.status AS programStatus,
       program.program_kind AS programKind, year.public_label AS academicYearLabel,
+      family.id AS programFamilyId, family.display_name AS programFamilyName,
       offering.use_academic_year_breaks AS useAcademicYearBreaks,
       offering.charge_mode AS chargeMode, offering.facebook_group_url AS facebookGroupUrl,
       offering.note, offering.status, offering.is_test AS isTest,
       offering.test_run_id AS testRunId, offering.updated_at AS updatedAt
       FROM activity_offering AS offering
       LEFT JOIN curriculum_program AS program ON program.id = offering.curriculum_program_id
+      LEFT JOIN curriculum_program_family AS family ON family.id = program.program_family_id
       LEFT JOIN academic_year AS year ON year.id = offering.academic_year_id
       WHERE offering.status = 'active'
       ORDER BY offering.starts_on DESC, offering.kind, offering.title`).all<Record<string, unknown>>(),
@@ -253,17 +297,6 @@ export async function getOfferingOverview(env: WorkerEnv): Promise<{
     })),
     offeringBreaks: offeringBreaks.results,
   };
-}
-
-async function resolveCourseProgram(
-  env: WorkerEnv,
-  kind: "annual_course" | "summer_course",
-  selectedProgramId: string | null,
-): Promise<ProgramContextRow> {
-  if (!selectedProgramId) throw new OfferingError("invalid");
-  const program = await programById(env, selectedProgramId);
-  if (program.status !== "published" || program.programKind !== kind) throw new OfferingError("invalid");
-  return program;
 }
 
 export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal, input: OfferingSaveInput): Promise<void> {
@@ -307,21 +340,25 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
       return;
     }
 
-    const program = await resolveCourseProgram(env, kind, optionalText(input.curriculumProgramId, 100));
+    const startsOn = optionalText(input.startsOn, 10);
+    const endsOn = optionalText(input.endsOn, 10);
+    if (!startsOn || !endsOn || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
+    const program = kind === "annual_course"
+      ? await currentAnnualProgramForStage(env, text(input.annualStageCode, 30))
+      : await currentProgramForFamily(env, "summer_course", text(input.programFamilyId, 100));
+    const annualYear = kind === "annual_course" ? await academicYearForAnnualOffering(env, startsOn, endsOn) : null;
     const title = kind === "annual_course"
-      ? `${program.yearLabel} · ${stageLabel(program.stageCode)}`
+      ? `${annualYear?.label} · ${stageLabel(program.stageCode)}`
       : text(input.title);
-    const startsOn = optionalText(input.startsOn, 10) || (kind === "annual_course" ? program.yearStartsOn : null);
-    const endsOn = optionalText(input.endsOn, 10) || (kind === "annual_course" ? program.yearEndsOn : null);
     const sourceFlags = flags(env, program);
-    if (!title || !startsOn || !endsOn || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
+    if (!title) throw new OfferingError("invalid");
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO activity_offering (
         id, kind, title, academic_year_id, stage_code, level_label, starts_on, ends_on,
         curriculum_program_id, use_academic_year_breaks, charge_mode, facebook_group_url,
         note, status, is_test, test_run_id, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
-        .bind(offeringId, kind, title, program.academicYearId, kind === "annual_course" ? program.stageCode : null, null,
+        .bind(offeringId, kind, title, annualYear?.id ?? program.academicYearId, kind === "annual_course" ? program.stageCode : null, null,
           startsOn, endsOn, program.id,
           defaultBreakPolicy(kind) ? 1 : 0,
           chargeMode, facebookGroupUrl, note, sourceFlags.isTest, sourceFlags.testRunId, time, time),
@@ -372,15 +409,17 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
     return;
   }
 
-  const program = await resolveCourseProgram(env, current.kind, optionalText(input.curriculumProgramId, 100));
-  const startsOn = text(input.startsOn) || (current.kind === "annual_course" ? program.yearStartsOn ?? "" : "");
-  const endsOn = text(input.endsOn) || (current.kind === "annual_course" ? program.yearEndsOn ?? "" : "");
-  const title = current.kind === "annual_course" ? `${program.yearLabel} · ${stageLabel(program.stageCode)}` : text(input.title);
+  const program = current.curriculumProgramId ? await programById(env, current.curriculumProgramId) : null;
+  if (!program) throw new OfferingError("invalid");
+  const startsOn = text(input.startsOn) || current.startsOn || "";
+  const endsOn = text(input.endsOn) || current.endsOn || "";
+  const annualYear = current.kind === "annual_course" ? await academicYearForAnnualOffering(env, startsOn, endsOn) : null;
+  const title = current.kind === "annual_course" ? `${annualYear?.label} · ${stageLabel(program.stageCode)}` : text(input.title);
   const useBreaks = defaultBreakPolicy(current.kind);
   if (!title || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
   const structuralChange = startsOn !== current.startsOn || endsOn !== current.endsOn
-    || program.id !== current.curriculumProgramId || useBreaks !== Boolean(current.useAcademicYearBreaks)
-    || program.academicYearId !== current.academicYearId
+    || useBreaks !== Boolean(current.useAcademicYearBreaks)
+    || (annualYear?.id ?? program.academicYearId) !== current.academicYearId
     || (current.kind === "annual_course" && program.stageCode !== current.stageCode);
   if (structuralChange && (await offeringHasCalendar(env, current.id)
     || await offeringRegistrationOpen(env, current.id)
@@ -389,7 +428,7 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
     ? env.DB.prepare(`UPDATE activity_offering SET title = ?, academic_year_id = ?, stage_code = ?, level_label = NULL, starts_on = ?, ends_on = ?,
       curriculum_program_id = ?, use_academic_year_breaks = ?, charge_mode = 'paid',
       facebook_group_url = ?, note = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
-      .bind(title, program.academicYearId, current.kind === "annual_course" ? program.stageCode : null,
+      .bind(title, annualYear?.id ?? program.academicYearId, current.kind === "annual_course" ? program.stageCode : null,
         startsOn, endsOn, program.id, useBreaks ? 1 : 0,
         facebookGroupUrl, note, time, current.id, input.expectedUpdatedAt)
     : env.DB.prepare(`UPDATE activity_offering SET title = ?, facebook_group_url = ?, note = ?, updated_at = ?
@@ -398,7 +437,7 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
   const result = await env.DB.batch([
     update,
     audit(env, actor, "activity_offering_changed", "activity_offering", current.id, {
-      programChanged: program.id !== current.curriculumProgramId,
+      programChanged: false,
       breakPolicyChanged: useBreaks !== Boolean(current.useAcademicYearBreaks),
       facebookGroupChanged: facebookGroupUrl !== current.facebookGroupUrl,
     }, provenance, time),

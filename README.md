@@ -109,9 +109,10 @@ calendar configuration. See
 [docs/program-calendar-model.md](docs/program-calendar-model.md).
 
 Approved non-private starting Programs and school-calendar periods are kept as
-source templates in `src/config/operational-defaults.mjs`. They stay empty until
-the owner approves real content and are imported explicitly, never during
-deployment:
+source templates in `src/config/operational-defaults.mjs`. The current template
+contains the owner-supplied three annual baseline curricula; it intentionally
+does not invent school dates or breaks. Templates are imported explicitly,
+never during deployment:
 
 ```sh
 npm run seed:operational-defaults -- --env=staging

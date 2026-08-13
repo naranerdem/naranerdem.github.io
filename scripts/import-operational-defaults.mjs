@@ -37,11 +37,13 @@ export function validateOperationalDefaults(defaults) {
     expect(Array.isArray(program.lessons) && program.lessons.length > 0, `program ${program.key} needs lessons`);
     program.lessons.forEach((lesson, index) => expect(lesson && typeof lesson.title === "string" && lesson.title.trim(), `program ${program.key} lesson ${index + 1} needs a title`));
     if (program.kind === "annual_course") {
-      expect(program.academicYear && keyPattern.test(program.academicYear.key), `annual program ${program.key} needs an academicYear key`);
-      expect(typeof program.academicYear.label === "string" && program.academicYear.label.trim(), `annual program ${program.key} needs an academicYear label`);
-      expect(validDate(program.academicYear.startsOn) && validDate(program.academicYear.endsOn) && program.academicYear.endsOn >= program.academicYear.startsOn, `annual program ${program.key} needs a valid academicYear period`);
       expect(["stage_1", "stage_2", "stage_3"].includes(program.stageCode), `annual program ${program.key} needs a stageCode`);
-      academicYears.set(program.academicYear.key, program.academicYear);
+      if (program.academicYear) {
+        expect(keyPattern.test(program.academicYear.key), `annual program ${program.key} has an invalid academicYear key`);
+        expect(typeof program.academicYear.label === "string" && program.academicYear.label.trim(), `annual program ${program.key} has an invalid academicYear label`);
+        expect(validDate(program.academicYear.startsOn) && validDate(program.academicYear.endsOn) && program.academicYear.endsOn >= program.academicYear.startsOn, `annual program ${program.key} has an invalid academicYear period`);
+        academicYears.set(program.academicYear.key, program.academicYear);
+      }
     }
   }
   const periodKeys = new Set();
@@ -59,22 +61,41 @@ function programSql(program, version, timestamp) {
   const marker = `program:${program.key}`;
   const programId = `operational-default-program-${program.key}`;
   const annual = program.kind === "annual_course";
-  const yearId = annual ? `operational-default-year-${program.academicYear.key}` : `operational-default-summer-context-${program.key}`;
+  const familyId = annual ? `annual-program-${program.stageCode}` : `operational-default-summer-family-${program.key}`;
+  const yearId = annual
+    ? (program.academicYear ? `operational-default-year-${program.academicYear.key}` : "operational-default-program-library")
+    : `operational-default-summer-context-${program.key}`;
   const stageCode = annual ? program.stageCode : "stage_1";
-  const yearLabel = annual ? program.academicYear.label : "Зуны хөтөлбөрийн дотоод тохиргоо";
-  const startsOn = annual ? program.academicYear.startsOn : null;
-  const endsOn = annual ? program.academicYear.endsOn : null;
+  const yearLabel = annual ? (program.academicYear?.label ?? "Хөтөлбөрийн сангийн дотоод тохиргоо") : "Зуны хөтөлбөрийн дотоод тохиргоо";
+  const startsOn = program.academicYear?.startsOn ?? null;
+  const endsOn = program.academicYear?.endsOn ?? null;
+  const publish = program.publish === true;
   const lines = [
     `INSERT OR IGNORE INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
       VALUES (${quote(yearId)}, ${quote(yearLabel)}, 'draft', ${quote(startsOn)}, ${quote(endsOn)}, 0, 0, NULL, ${quote(timestamp)}, ${quote(timestamp)});`,
-    `INSERT INTO curriculum_program (id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, is_test, test_run_id, created_at, updated_at)
-      SELECT ${quote(programId)}, ${quote(yearId)}, ${quote(stageCode)}, 1, ${quote(program.displayName)}, ${quote(program.kind)}, 'draft', 0, NULL, ${quote(timestamp)}, ${quote(timestamp)}
+    `INSERT OR IGNORE INTO curriculum_program_family (id, kind, display_name, annual_stage_code, current_published_program_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (${quote(familyId)}, ${quote(program.kind)}, ${quote(program.displayName)}, ${quote(annual ? stageCode : null)}, NULL, 'active', 0, NULL, ${quote(timestamp)}, ${quote(timestamp)});`,
+    `INSERT INTO curriculum_program (id, program_family_id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at)
+      SELECT ${quote(programId)}, ${quote(familyId)}, ${quote(yearId)}, ${quote(stageCode)},
+        COALESCE((SELECT MAX(revision_number) + 1 FROM curriculum_program WHERE program_family_id = ${quote(familyId)}), 1),
+        ${quote(program.displayName)}, ${quote(program.kind)}, 'draft', NULL, 0, NULL, ${quote(timestamp)}, ${quote(timestamp)}
       WHERE NOT EXISTS (SELECT 1 FROM operational_default_import WHERE template_key = ${quote(marker)})
         AND NOT EXISTS (SELECT 1 FROM curriculum_program WHERE id = ${quote(programId)});`,
     ...program.lessons.map((lesson, index) => `INSERT INTO curriculum_lesson (id, curriculum_program_id, sequence_number, title, internal_note, status, is_test, test_run_id, created_at, updated_at)
       SELECT ${quote(`${programId}-lesson-${String(index + 1).padStart(2, "0")}`)}, ${quote(programId)}, ${index + 1}, ${quote(lesson.title)}, ${quote(lesson.internalNote ?? null)}, 'active', 0, NULL, ${quote(timestamp)}, ${quote(timestamp)}
       WHERE EXISTS (SELECT 1 FROM curriculum_program WHERE id = ${quote(programId)} AND status = 'draft')
         AND NOT EXISTS (SELECT 1 FROM operational_default_import WHERE template_key = ${quote(marker)});`),
+    ...(publish ? [
+      `UPDATE curriculum_program SET status = 'superseded', updated_at = ${quote(timestamp)}
+        WHERE id = (SELECT current_published_program_id FROM curriculum_program_family WHERE id = ${quote(familyId)})
+          AND id != ${quote(programId)} AND status = 'published';`,
+      `UPDATE curriculum_program SET status = 'published', published_at = ${quote(timestamp)}, updated_at = ${quote(timestamp)}
+        WHERE id = ${quote(programId)} AND status = 'draft'
+          AND EXISTS (SELECT 1 FROM curriculum_lesson WHERE curriculum_program_id = ${quote(programId)});`,
+      `UPDATE curriculum_program_family SET current_published_program_id = ${quote(programId)}, updated_at = ${quote(timestamp)}
+        WHERE id = ${quote(familyId)}
+          AND EXISTS (SELECT 1 FROM curriculum_program WHERE id = ${quote(programId)} AND status = 'published');`,
+    ] : []),
     `INSERT OR IGNORE INTO operational_default_import (template_key, template_version, template_kind, imported_at)
       SELECT ${quote(marker)}, ${version}, 'program', ${quote(timestamp)}
       WHERE EXISTS (SELECT 1 FROM curriculum_program WHERE id = ${quote(programId)});`,

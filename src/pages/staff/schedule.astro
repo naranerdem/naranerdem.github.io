@@ -27,7 +27,6 @@ import "../../styles/global.css";
       const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active");
       const selectedOffering = () => offerings().find((entry) => entry.id === state.offeringId);
       const classes = () => (state.data?.classes || []).filter((entry) => entry.offeringId === state.offeringId);
-      const program = () => (state.data?.programs || []).find((entry) => entry.id === selectedOffering()?.curriculumProgramId);
       const kindLabel = (kind) => ({ annual_course: "Жилийн сургалт", summer_course: "Зуны сургалт", event: "Арга хэмжээ" })[kind] || "";
       const recurrenceLabel = (kind) => ({ weekly: "7 хоног бүр", weekdays: "Ажлын өдрүүдэд", daily: "Өдөр бүр" })[kind] || "";
       function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }

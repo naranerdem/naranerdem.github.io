@@ -147,10 +147,11 @@ Do not expose `FamilyGroup` or `BillingGroup` terminology unnecessarily in publi
 
 ### Program
 
-A `CurriculumProgram` is the ordered lesson content taught by a course. Program
-length is data: an annual program may run for a school year, while a summer
-program may be a short intensive. The center's current annual progression still
-uses stages 1, 2, and 3. A one-off event may have no program.
+A logical Program is the stable teacher-recognized course identity. Its current
+published `CurriculumProgram` revision is the ordered lesson content taught by
+a new course; older revisions remain attached to the Offerings and calendars
+that already used them. Program length is data. The annual progression has only
+stages 1, 2, and 3; there is no Stage 4. A one-off event may have no program.
 
 ### ActivityOffering
 
@@ -160,9 +161,10 @@ An `ActivityOffering` is one concrete run offered by the center:
 - summer course
 - one-off event
 
-It owns the period, selected Program, charge mode, calendar guidance, and
-shared Facebook group. An annual Program derives the annual Offering's
-year/stage. Annual and summer courses are always paid; events are free by
+It owns the period, pinned Program revision, charge mode, calendar guidance,
+and shared Facebook group. A new annual Offering chooses only a stage and the
+server resolves the current logical Program revision; its academic year comes
+from dates/current configured school-year logic. Annual and summer courses are always paid; events are free by
 default and may be made paid. These modes do not yet create prices, payment
 schedules, or obligations.
 

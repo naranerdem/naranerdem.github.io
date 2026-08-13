@@ -54,7 +54,7 @@ assert.match(content, /Өмнө нь Наран Эрдэмд сурсан уу\?
 assert.match(content, /code: "Код"/);
 assert.doesNotMatch(content, /Урилгын код/);
 assert.match(content, /Энэ шатны анги, цаг хараахан ороогүй байна\./);
-assert.match(content, /Түр хадгалагдсан: \{count\}/);
+assert.match(content, /Төлбөр баталгаажихыг хүлээж буй: \{count\}/);
 assert.match(page, /REGISTRATION_DRAFT_KEY/);
 assert.match(page, /createRegistrationDraft/);
 assert.match(page, /readRegistrationDraft/);

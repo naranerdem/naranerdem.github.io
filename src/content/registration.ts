@@ -110,7 +110,7 @@ export const registrationFormCopy = {
     selectRequired: "Анги, цагаа сонгоно уу.",
     remainingSeats: "Сул суудал: {count}",
     full: "Анги дүүрсэн",
-    activeHolds: "Түр хадгалагдсан: {count}",
+    activeHolds: "Төлбөр баталгаажихыг хүлээж буй: {count}",
     unavailableSession: "Одоогоор сонгох боломжгүй",
     waitlistRequired: "Хүлээлгийн жагсаалтаас нэг анги сонгоно уу.",
   },

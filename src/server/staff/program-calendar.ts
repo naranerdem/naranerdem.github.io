@@ -40,6 +40,7 @@ interface YearRow {
 
 interface ProgramRow {
   id: string;
+  programFamilyId: string;
   academicYearId: string;
   stageCode: StageCode;
   revisionNumber: number;
@@ -49,6 +50,20 @@ interface ProgramRow {
   academicYearStartsOn?: string | null;
   academicYearEndsOn?: string | null;
   status: "draft" | "published" | "superseded" | "archived";
+  isTest: number;
+  testRunId: string | null;
+  basedOnProgramId: string | null;
+  publishedAt: string | null;
+  updatedAt: string;
+}
+
+interface ProgramFamilyRow {
+  id: string;
+  kind: "annual_course" | "summer_course";
+  displayName: string;
+  annualStageCode: StageCode | null;
+  currentProgramId: string | null;
+  status: "active" | "archived";
   isTest: number;
   testRunId: string | null;
   updatedAt: string;
@@ -519,13 +534,19 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup] = await Promise.all([
+  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
-    env.DB.prepare(`SELECT curriculum_program.id, curriculum_program.academic_year_id AS academicYearId, curriculum_program.stage_code AS stageCode,
+    env.DB.prepare(`SELECT id, kind, display_name AS displayName,
+      annual_stage_code AS annualStageCode, current_published_program_id AS currentProgramId,
+      status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+      FROM curriculum_program_family ORDER BY kind, annual_stage_code, display_name`).all<ProgramFamilyRow>(),
+    env.DB.prepare(`SELECT curriculum_program.id, curriculum_program.program_family_id AS programFamilyId,
+      curriculum_program.academic_year_id AS academicYearId, curriculum_program.stage_code AS stageCode,
       curriculum_program.revision_number AS revisionNumber, curriculum_program.display_name AS displayName, curriculum_program.program_kind AS programKind, curriculum_program.status, curriculum_program.is_test AS isTest,
-      curriculum_program.test_run_id AS testRunId, curriculum_program.updated_at AS updatedAt,
+      curriculum_program.test_run_id AS testRunId, curriculum_program.based_on_program_id AS basedOnProgramId,
+      curriculum_program.published_at AS publishedAt, curriculum_program.updated_at AS updatedAt,
       academic_year.public_label AS academicYearLabel,
       academic_year.starts_on AS academicYearStartsOn,
       academic_year.ends_on AS academicYearEndsOn
@@ -582,9 +603,32 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
   const classById = new Map(classes.results.map((entry) => [entry.id, entry]));
   const offeringById = new Map((offeringSetup.offerings as Array<{ id: string; kind: string; endsOn?: string | null }>).map((entry) => [entry.id, entry]));
   const today = localToday();
+  const programsWithLessons = programs.results.map((program) => ({ ...program, lessons: lessonsByProgram.get(program.id) ?? [] }));
+  const programsByFamily = new Map<string, Array<(typeof programsWithLessons)[number]>>();
+  for (const program of programsWithLessons) {
+    programsByFamily.set(program.programFamilyId, [...(programsByFamily.get(program.programFamilyId) ?? []), program]);
+  }
+  const usedPrograms = await env.DB.prepare(`SELECT curriculum_program_id AS programId, COUNT(*) AS offeringCount
+    FROM activity_offering WHERE curriculum_program_id IS NOT NULL GROUP BY curriculum_program_id`).all<{ programId: string; offeringCount: number }>();
+  const usageByProgram = new Map(usedPrograms.results.map((entry) => [entry.programId, entry.offeringCount]));
+  const programFamilies = families.results.map((family) => {
+    const revisions = programsByFamily.get(family.id) ?? [];
+    const currentProgram = revisions.find((program) => program.id === family.currentProgramId) ?? null;
+    const draftProgram = revisions.find((program) => program.status === "draft") ?? null;
+    const history = revisions.filter((program) => program.id !== family.currentProgramId && program.status !== "draft" && program.status !== "archived")
+      .map((program) => ({ ...program, offeringCount: usageByProgram.get(program.id) ?? 0 }));
+    return {
+      ...family,
+      currentProgram,
+      draftProgram,
+      history,
+      currentOfferingCount: currentProgram ? usageByProgram.get(currentProgram.id) ?? 0 : 0,
+    };
+  });
   return {
     years: years.results,
-    programs: programs.results.map((program) => ({ ...program, lessons: lessonsByProgram.get(program.id) ?? [] })),
+    programs: programsWithLessons,
+    programFamilies,
     classes: classesWithTeacherDetails,
     breaks: breaks.results,
     stageSettings: stageSettings.results,
@@ -624,6 +668,284 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     stages: STAGES,
     weekdays: WEEKDAYS,
   };
+}
+
+async function familyById(env: WorkerEnv, familyId: string): Promise<ProgramFamilyRow> {
+  return one<ProgramFamilyRow>(env, env.DB.prepare(`SELECT id, kind, display_name AS displayName,
+    annual_stage_code AS annualStageCode, current_published_program_id AS currentProgramId,
+    status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM curriculum_program_family WHERE id = ?`).bind(familyId));
+}
+
+async function programById(env: WorkerEnv, programId: string): Promise<ProgramRow> {
+  return one<ProgramRow>(env, env.DB.prepare(`SELECT id, program_family_id AS programFamilyId,
+    academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber,
+    display_name AS displayName, program_kind AS programKind, status, is_test AS isTest,
+    test_run_id AS testRunId, based_on_program_id AS basedOnProgramId,
+    published_at AS publishedAt, updated_at AS updatedAt
+    FROM curriculum_program WHERE id = ?`).bind(programId));
+}
+
+async function startFamilyDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  familyId: string,
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const family = await familyById(env, familyId);
+  const existing = await env.DB.prepare(`SELECT id FROM curriculum_program
+    WHERE program_family_id = ? AND status = 'draft'`).bind(family.id).first<{ id: string }>();
+  if (existing) return;
+  if (!family.currentProgramId) throw new ProgramCalendarError("not_found");
+  const source = await programById(env, family.currentProgramId);
+  if (source.status !== "published") throw new ProgramCalendarError("conflict");
+  const lessons = await lessonsForProgram(env, source.id);
+  if (!lessons.length) throw new ProgramCalendarError("invalid");
+  const next = await env.DB.prepare(`SELECT COALESCE(MAX(revision_number), 0) + 1 AS value
+    FROM curriculum_program WHERE program_family_id = ?`).bind(family.id).first<{ value: number }>();
+  const time = now(); const draftId = id(); const flags = operationFlags(env, source);
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO curriculum_program (
+      id, program_family_id, academic_year_id, stage_code, revision_number, display_name,
+      program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`)
+      .bind(draftId, family.id, source.academicYearId, source.stageCode, next?.value ?? 1,
+        source.displayName, source.programKind, source.id, flags.isTest, flags.testRunId, time, time),
+    ...lessons.map((lesson) => env.DB.prepare(`INSERT INTO curriculum_lesson (
+      id, curriculum_program_id, sequence_number, title, internal_note, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .bind(id(), draftId, lesson.sequenceNumber, lesson.title, lesson.internalNote,
+        flags.isTest, flags.testRunId, time, time)),
+    audit(env, actor, "program_draft_started", "curriculum_program", draftId, {
+      programFamilyId: family.id, sourceProgramId: source.id,
+    }, flags, time),
+  ]);
+}
+
+export async function startProgramFamilyDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { programFamilyId: string },
+): Promise<void> {
+  await startFamilyDraft(env, actor, text(input.programFamilyId, 100));
+}
+
+export async function createSummerProgramFamilyDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { displayName: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const displayName = text(input.displayName);
+  if (!displayName) throw new ProgramCalendarError("invalid");
+  const familyId = id(); const programId = id(); const academicYearId = `summer-program-context-${programId}`;
+  const time = now(); const flags = operationFlags(env);
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO academic_year (
+      id, public_label, registration_status, starts_on, ends_on, is_current,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, 'Зуны хөтөлбөрийн дотоод тохиргоо', 'draft', NULL, NULL, 0, ?, ?, ?, ?)`)
+      .bind(academicYearId, flags.isTest, flags.testRunId, time, time),
+    env.DB.prepare(`INSERT INTO curriculum_program_family (
+      id, kind, display_name, annual_stage_code, current_published_program_id,
+      status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, 'summer_course', ?, NULL, NULL, 'active', ?, ?, ?, ?)`)
+      .bind(familyId, displayName, flags.isTest, flags.testRunId, time, time),
+    env.DB.prepare(`INSERT INTO curriculum_program (
+      id, program_family_id, academic_year_id, stage_code, revision_number, display_name,
+      program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, 'stage_1', 1, ?, 'summer_course', 'draft', NULL, ?, ?, ?, ?)`)
+      .bind(programId, familyId, academicYearId, displayName, flags.isTest, flags.testRunId, time, time),
+    audit(env, actor, "summer_program_family_created", "curriculum_program_family", familyId, {
+      draftProgramId: programId,
+    }, flags, time),
+  ]);
+}
+
+async function editableDraft(env: WorkerEnv, programId: string, expectedUpdatedAt: string): Promise<ProgramRow> {
+  const program = await programById(env, programId);
+  if (program.status !== "draft") throw new ProgramCalendarError("immutable");
+  if (!expectedUpdatedAt || program.updatedAt !== expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  return program;
+}
+
+async function touchDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  program: ProgramRow,
+  expectedUpdatedAt: string,
+  action: string,
+  metadata: Record<string, unknown>,
+  statements: D1PreparedStatement[],
+): Promise<void> {
+  const time = now(); const flags = operationFlags(env, program);
+  statements.push(
+    env.DB.prepare(`UPDATE curriculum_program SET updated_at = ?
+      WHERE id = ? AND status = 'draft' AND updated_at = ?`).bind(time, program.id, expectedUpdatedAt),
+    audit(env, actor, action, "curriculum_program", program.id, metadata, flags, time),
+  );
+  const result = await env.DB.batch(statements);
+  if ((result.at(-2)?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
+}
+
+export async function renameProgramDraft(
+  env: WorkerEnv, actor: StaffPrincipal,
+  input: { programId: string; expectedUpdatedAt: string; displayName: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const name = text(input.displayName);
+  if (!name) throw new ProgramCalendarError("invalid");
+  const program = await editableDraft(env, input.programId, input.expectedUpdatedAt);
+  const family = await familyById(env, program.programFamilyId);
+  if (family.kind !== "summer_course") throw new ProgramCalendarError("immutable");
+  const time = now(); const flags = operationFlags(env, program);
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE curriculum_program SET display_name = ?, updated_at = ?
+      WHERE id = ? AND status = 'draft' AND updated_at = ?`).bind(name, time, program.id, input.expectedUpdatedAt),
+    env.DB.prepare(`UPDATE curriculum_program_family SET display_name = ?, updated_at = ? WHERE id = ?`)
+      .bind(name, time, family.id),
+    audit(env, actor, "program_draft_renamed", "curriculum_program", program.id, { programFamilyId: family.id }, flags, time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
+}
+
+export async function renameProgramDraftLesson(
+  env: WorkerEnv, actor: StaffPrincipal,
+  input: { programId: string; expectedUpdatedAt: string; lessonId: string; title: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const title = text(input.title, 200);
+  if (!title) throw new ProgramCalendarError("invalid");
+  const program = await editableDraft(env, input.programId, input.expectedUpdatedAt);
+  const lesson = await env.DB.prepare(`SELECT id FROM curriculum_lesson
+    WHERE id = ? AND curriculum_program_id = ? AND status = 'active'`).bind(input.lessonId, program.id).first<{ id: string }>();
+  if (!lesson) throw new ProgramCalendarError("not_found");
+  await touchDraft(env, actor, program, input.expectedUpdatedAt, "program_lesson_renamed", { lessonId: lesson.id }, [
+    env.DB.prepare(`UPDATE curriculum_lesson SET title = ?, updated_at = ? WHERE id = ?`).bind(title, now(), lesson.id),
+  ]);
+}
+
+export async function insertProgramDraftLesson(
+  env: WorkerEnv, actor: StaffPrincipal,
+  input: { programId: string; expectedUpdatedAt: string; afterLessonId?: string; title: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const title = text(input.title, 200);
+  if (!title) throw new ProgramCalendarError("invalid");
+  const program = await editableDraft(env, input.programId, input.expectedUpdatedAt);
+  const lessons = await lessonsForProgram(env, program.id);
+  const afterIndex = input.afterLessonId ? lessons.findIndex((lesson) => lesson.id === input.afterLessonId) : lessons.length - 1;
+  if (input.afterLessonId && afterIndex < 0) throw new ProgramCalendarError("not_found");
+  const sequenceNumber = afterIndex + 2;
+  const time = now(); const flags = operationFlags(env, program); const lessonId = id();
+  await touchDraft(env, actor, program, input.expectedUpdatedAt, "program_lesson_inserted", { lessonId, sequenceNumber }, [
+    env.DB.prepare(`UPDATE curriculum_lesson SET sequence_number = sequence_number + 1000, updated_at = ?
+      WHERE curriculum_program_id = ? AND sequence_number >= ?`).bind(time, program.id, sequenceNumber),
+    env.DB.prepare(`INSERT INTO curriculum_lesson (
+      id, curriculum_program_id, sequence_number, title, internal_note, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, NULL, 'active', ?, ?, ?, ?)`).bind(
+      lessonId, program.id, sequenceNumber, title, flags.isTest, flags.testRunId, time, time,
+    ),
+    env.DB.prepare(`UPDATE curriculum_lesson SET sequence_number = sequence_number - 999, updated_at = ?
+      WHERE curriculum_program_id = ? AND sequence_number >= 1000`).bind(time, program.id),
+  ]);
+}
+
+export async function deleteProgramDraftLesson(
+  env: WorkerEnv, actor: StaffPrincipal,
+  input: { programId: string; expectedUpdatedAt: string; lessonId: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const program = await editableDraft(env, input.programId, input.expectedUpdatedAt);
+  const lessons = await lessonsForProgram(env, program.id);
+  const lesson = lessons.find((entry) => entry.id === input.lessonId);
+  if (!lesson) throw new ProgramCalendarError("not_found");
+  if (lessons.length < 2) throw new ProgramCalendarError("invalid");
+  const time = now();
+  await touchDraft(env, actor, program, input.expectedUpdatedAt, "program_lesson_deleted", { lessonId: lesson.id }, [
+    env.DB.prepare(`UPDATE curriculum_lesson SET sequence_number = sequence_number + 1000, updated_at = ?
+      WHERE curriculum_program_id = ? AND sequence_number > ?`).bind(time, program.id, lesson.sequenceNumber),
+    env.DB.prepare("DELETE FROM curriculum_lesson WHERE id = ?").bind(lesson.id),
+    env.DB.prepare(`UPDATE curriculum_lesson SET sequence_number = sequence_number - 1001, updated_at = ?
+      WHERE curriculum_program_id = ? AND sequence_number >= 1000`).bind(time, program.id),
+  ]);
+}
+
+export async function moveProgramDraftLesson(
+  env: WorkerEnv, actor: StaffPrincipal,
+  input: { programId: string; expectedUpdatedAt: string; lessonId: string; direction: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const program = await editableDraft(env, input.programId, input.expectedUpdatedAt);
+  const lessons = await lessonsForProgram(env, program.id);
+  const index = lessons.findIndex((lesson) => lesson.id === input.lessonId);
+  if (index < 0) throw new ProgramCalendarError("not_found");
+  const targetIndex = input.direction === "up" ? index - 1 : input.direction === "down" ? index + 1 : -1;
+  if (targetIndex < 0 || targetIndex >= lessons.length) throw new ProgramCalendarError("invalid");
+  const source = lessons[index]; const target = lessons[targetIndex]; const time = now();
+  const movingUp = targetIndex < index;
+  const lower = Math.min(source.sequenceNumber, target.sequenceNumber);
+  const upper = Math.max(source.sequenceNumber, target.sequenceNumber);
+  await touchDraft(env, actor, program, input.expectedUpdatedAt, "program_lesson_moved", { lessonId: source.id, direction: input.direction }, [
+    env.DB.prepare("UPDATE curriculum_lesson SET sequence_number = 100000 WHERE id = ?").bind(source.id),
+    env.DB.prepare(`UPDATE curriculum_lesson SET sequence_number = sequence_number + 1000, updated_at = ?
+      WHERE curriculum_program_id = ? AND sequence_number BETWEEN ? AND ?`).bind(time, program.id, lower, upper),
+    env.DB.prepare(`UPDATE curriculum_lesson SET sequence_number = sequence_number - ?, updated_at = ?
+      WHERE curriculum_program_id = ? AND sequence_number >= 1000`).bind(movingUp ? 999 : 1001, time, program.id),
+    env.DB.prepare("UPDATE curriculum_lesson SET sequence_number = ?, updated_at = ? WHERE id = ?")
+      .bind(target.sequenceNumber, time, source.id),
+  ]);
+}
+
+export async function publishProgramFamilyDraft(
+  env: WorkerEnv, actor: StaffPrincipal,
+  input: { programId: string; expectedUpdatedAt: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const program = await editableDraft(env, input.programId, input.expectedUpdatedAt);
+  const family = await familyById(env, program.programFamilyId);
+  if (family.currentProgramId !== program.basedOnProgramId) throw new ProgramCalendarError("conflict");
+  if (!(await lessonsForProgram(env, program.id)).length) throw new ProgramCalendarError("invalid");
+  const time = now(); const flags = operationFlags(env, program);
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE curriculum_program SET status = 'superseded', updated_at = ?
+      WHERE id = ? AND status = 'published'`).bind(time, family.currentProgramId),
+    env.DB.prepare(`UPDATE curriculum_program SET status = 'published', published_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'draft' AND updated_at = ?`).bind(time, time, program.id, input.expectedUpdatedAt),
+    env.DB.prepare(`UPDATE curriculum_program_family SET current_published_program_id = ?, updated_at = ?
+      WHERE id = ? AND current_published_program_id IS ?`).bind(program.id, time, family.id, program.basedOnProgramId),
+    audit(env, actor, "program_published", "curriculum_program", program.id, {
+      programFamilyId: family.id, replacedProgramId: program.basedOnProgramId,
+    }, flags, time),
+  ]);
+  if ((result[1]?.meta?.changes ?? 0) !== 1 || (result[2]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
+}
+
+export async function deleteSummerProgramFamilyDraft(
+  env: WorkerEnv, actor: StaffPrincipal,
+  input: { programFamilyId: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const family = await familyById(env, input.programFamilyId);
+  if (family.kind !== "summer_course" || family.currentProgramId) throw new ProgramCalendarError("immutable");
+  const revisions = await env.DB.prepare(`SELECT id, status FROM curriculum_program WHERE program_family_id = ?`)
+    .bind(family.id).all<{ id: string; status: ProgramRow["status"] }>();
+  if (!revisions.results.length) throw new ProgramCalendarError("not_found");
+  if (revisions.results.some((revision) => revision.status !== "draft")) throw new ProgramCalendarError("immutable");
+  const referenced = await env.DB.prepare(`SELECT 1 FROM activity_offering
+    WHERE curriculum_program_id IN (SELECT id FROM curriculum_program WHERE program_family_id = ?) LIMIT 1`).bind(family.id).first();
+  if (referenced) throw new ProgramCalendarError("referenced");
+  const time = now(); const flags = operationFlags(env, family);
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM curriculum_lesson WHERE curriculum_program_id IN (
+      SELECT id FROM curriculum_program WHERE program_family_id = ? AND status = 'draft'
+    )`).bind(family.id),
+    env.DB.prepare("DELETE FROM curriculum_program WHERE program_family_id = ? AND status = 'draft'").bind(family.id),
+    env.DB.prepare("DELETE FROM curriculum_program_family WHERE id = ? AND kind = 'summer_course'").bind(family.id),
+    audit(env, actor, "summer_program_family_deleted", "curriculum_program_family", family.id, {}, flags, time),
+  ]);
 }
 
 export async function createProgramDraft(
@@ -993,11 +1315,11 @@ export async function generateCalendarDraft(env: WorkerEnv, actor: StaffPrincipa
   requireCapability(actor, "calendar.manage");
   const classSession = await classById(env, input.classSessionId);
   if (!classSession.offeringId || !classSession.offeringProgramId) throw new ProgramCalendarError("invalid");
-  const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
-    stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName,
-    program_kind AS programKind, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
-    FROM curriculum_program WHERE id = ?`).bind(classSession.offeringProgramId));
-  if (program.status !== "published" || program.academicYearId !== classSession.academicYearId || program.stageCode !== classSession.stageCode) throw new ProgramCalendarError("invalid");
+  const program = await programById(env, classSession.offeringProgramId);
+  const family = await familyById(env, program.programFamilyId);
+  const compatible = (program.programKind === "annual_course" && family.annualStageCode === classSession.stageCode)
+    || (program.programKind === "summer_course" && program.academicYearId === classSession.academicYearId && program.stageCode === classSession.stageCode);
+  if (!compatible || !["published", "superseded"].includes(program.status)) throw new ProgramCalendarError("invalid");
   const draft = classSession.calendarId ? await env.DB.prepare("SELECT id FROM class_calendar_revision WHERE class_calendar_id = ? AND status = 'draft'").bind(classSession.calendarId).first<{ id: string }>() : null;
   if (draft) throw new ProgramCalendarError("conflict");
   const lessons = (await lessonsForProgram(env, program.id)).map(toProgramLesson); if (!lessons.length) throw new ProgramCalendarError("invalid");
@@ -1138,14 +1460,22 @@ export async function publishCalendarDraft(env: WorkerEnv, actor: StaffPrincipal
   const publishableProgram = await env.DB.prepare(`SELECT program.id FROM curriculum_program AS program
     WHERE program.id = ? AND (
       program.status = 'published'
-      OR (program.status = 'superseded' AND EXISTS (
-        SELECT 1 FROM class_calendar_revision AS base_revision
-        WHERE base_revision.id = ?
-          AND base_revision.class_calendar_id = ?
-          AND base_revision.curriculum_program_id = program.id
-          AND base_revision.status IN ('published', 'superseded')
+      OR (program.status = 'superseded' AND (
+        EXISTS (
+          SELECT 1 FROM class_calendar
+          INNER JOIN class_session ON class_session.id = class_calendar.class_session_id
+          INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+          WHERE class_calendar.id = ? AND activity_offering.curriculum_program_id = program.id
+        )
+        OR EXISTS (
+          SELECT 1 FROM class_calendar_revision AS base_revision
+          WHERE base_revision.id = ?
+            AND base_revision.class_calendar_id = ?
+            AND base_revision.curriculum_program_id = program.id
+            AND base_revision.status IN ('published', 'superseded')
+        )
       ))
-    )`).bind(revision.programId, revision.basedOnRevisionId, revision.calendarId).first<{ id: string }>();
+    )`).bind(revision.programId, revision.calendarId, revision.basedOnRevisionId, revision.calendarId).first<{ id: string }>();
   if (!publishableProgram || active.length !== lessons.length || new Set(active.map((slot) => slot.lessonId)).size !== lessons.length || active.some((slot) => !slot.lessonId)) throw new ProgramCalendarError("invalid");
   const time = now(); const flags = operationFlags(env, revision); const result = await env.DB.batch([
     env.DB.prepare("UPDATE class_calendar_revision SET status = 'superseded', superseded_at = ?, updated_at = ? WHERE class_calendar_id = ? AND status = 'published'").bind(time, time, revision.calendarId),

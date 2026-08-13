@@ -26,7 +26,9 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `guardian_student_relationship`: persistent relationship between guardians and students, including whether the guardian is currently authorized to manage registration.
 - `family_group` and `family_group_member`: minimal explicit family-discount eligibility foundation. Family is not inferred from surname, address, payment origin, or Facebook identity.
 - `academic_year`: public label and registration status for a year/session without hard-coding unsupplied year details.
-- `activity_offering`: one annual course, summer course, or event, with typed period/context, optional program, break policy, charge mode, shared Facebook group, status, and provenance.
+- `curriculum_program_family`: stable logical annual stage or named summer Program identity, with one current published revision pointer.
+- `curriculum_program`: immutable historical revision beneath a Program family; its ordered lessons are the taught content.
+- `activity_offering`: one annual course, summer course, or event, with typed period/context, pinned program revision, break policy, charge mode, shared Facebook group, status, and provenance.
 - `class_session`: concrete course cohort/time option attached to an Offering, with capacity, registration availability, and test provenance. Legacy annual stage/weekday/time and stored label fields remain for current catalog compatibility.
 - `class_meeting_rule`: authoritative weekly, weekdays, or daily generation rule and local period/time for one course class.
 - `offering_event_occurrence`: narrow programless one-off event date/time, capacity, and registration state.
@@ -154,7 +156,7 @@ This migration deliberately does not implement:
 
 Migration `0006_program_and_calendar_foundation.sql` implements class-level program/calendar data without attendance or make-up records:
 
-- `curriculum_program` is a versioned parent for one academic year and stage; its child `curriculum_lesson` rows have explicit positive, unique sequence numbers, titles, optional internal notes, and test provenance.
+- `curriculum_program` was the original versioned parent for academic-year/stage content. Migration 0013 keeps that compatibility context but places every revision beneath a stable `curriculum_program_family`; its child `curriculum_lesson` rows have explicit positive, unique sequence numbers, titles, optional internal notes, and test provenance.
 - `academic_year_break` stores named inclusive planning periods. It is an input to generation, not an occurrence.
 - `class_calendar` belongs one-to-one to a `class_session` and fixes `Asia/Ulaanbaatar` as its teaching-time timezone.
 - `class_calendar_revision` is a draft/publish snapshot associated with the matching stage/year program. Only one published revision exists per calendar. The internal `locked_through_sequence` is retained as one input to historical schedule protection; it is not exposed as teacher-confirmed attendance or delivery.
@@ -236,8 +238,10 @@ It adds `activity_offering_break` for a shared course-specific break and
 `operational_default_import`, which records stable source-template imports.
 
 Approved non-private startup Programs and school-calendar periods live in
-`src/config/operational-defaults.mjs`. They are intentionally empty until the
-owner approves real content. Import is explicit and idempotent:
+`src/config/operational-defaults.mjs`. The owner-supplied 2024-2025 baseline
+contains the three annual logical Program families with 30, 30, and 23 ordered
+lessons; it deliberately contains no historical dates or school breaks. Import
+is explicit and idempotent:
 
 ```sh
 npm run seed:operational-defaults -- --env=staging

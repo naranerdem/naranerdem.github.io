@@ -154,10 +154,12 @@ of clear operational tools, not a generic heavyweight CMS.
 
 ### Program, Offering, class, and calendar domain
 
-The durable hierarchy is `CurriculumProgram -> ActivityOffering -> ClassSession
--> ClassCalendar`. Program is ordered lesson content. Offering is one concrete
-annual course, summer intensive, or event, with a period, program association,
-charge mode, calendar guidance, and Facebook group. ClassSession
+The durable hierarchy is `Program family -> CurriculumProgram revision ->
+ActivityOffering -> ClassSession -> ClassCalendar`. A logical Program family is
+the stable teacher-recognized identity; its current published revision is
+ordered lesson content. Offering is one concrete annual course, summer
+intensive, or event, with a period, pinned program revision, charge mode,
+calendar guidance, and Facebook group. ClassSession
 is a course cohort/time option. A published calendar revision is the explicit
 operational schedule. Programless events use a narrow event occurrence rather
 than a fake one-lesson curriculum.
@@ -165,10 +167,12 @@ than a fake one-lesson curriculum.
 Class meeting rules support weekly, weekdays, and daily draft generation using
 Mongolia-local civil dates. The selected class inherits its Offering program;
 calendar generation does not ask the teacher or API caller to choose that
-program again. A published Program is selected before an annual or summer
-Offering is created; for an annual Offering it derives the teacher-visible
-stage and academic year. Those fields remain internal compatibility/history
-data. Annual and summer courses are always paid; events are normally free but
+program again. A new annual Offering selects only a stage; the server resolves
+that logical Program family's current revision and uses Offering dates to derive
+the configured academic-year context. A summer Offering selects a named summer
+Program family. Existing Offerings retain their exact revision after later
+publication. Raw revision IDs remain internal compatibility/history data.
+Annual and summer courses are always paid; events are normally free but
 the teacher may mark an event paid. The Offering owns that charge state, not
 the event occurrence. School-calendar periods apply automatically to annual
 courses only. Recurrence remains only a draft generator and never replaces

@@ -23,14 +23,18 @@ try {
   const offeringsPageSource = readFileSync("src/pages/staff/offerings.astro", "utf8");
   const holidaysPageSource = readFileSync("src/pages/staff/holidays.astro", "utf8");
   const deploymentScripts = readFileSync("package.json", "utf8");
-  assert.match(defaultsSource, /programs: Object\.freeze\(\[\]\)/, "real program defaults remain intentionally empty until approved values are supplied");
-  assert.match(defaultsSource, /schoolCalendarPeriods: Object\.freeze\(\[\]\)/, "real school-period defaults remain intentionally empty until approved values are supplied");
+  const { operationalDefaults } = await import(pathToFileURL(path.resolve("src/config/operational-defaults.mjs")).href);
+  assert.equal(operationalDefaults.programs.length, 3, "the approved annual Program baseline has exactly three logical families");
+  assert.deepEqual(operationalDefaults.programs.map((program) => program.lessons.length), [30, 30, 23], "the approved lesson counts are preserved exactly");
+  assert.ok(operationalDefaults.programs.every((program) => program.publish === true && program.kind === "annual_course"), "the approved annual baseline publishes current revisions explicitly");
+  assert.match(defaultsSource, /schoolCalendarPeriods: Object\.freeze\(\[\]\)/, "no school-period dates were invented alongside the curriculum baseline");
   assert.doesNotMatch(defaultsSource, /@|facebook\.com/i, "default templates contain no personal data or Facebook URLs");
   const annualForm = offeringsPageSource.slice(offeringsPageSource.indexOf("function annualForm"), offeringsPageSource.indexOf("function summerForm"));
   const summerForm = offeringsPageSource.slice(offeringsPageSource.indexOf("function summerForm"), offeringsPageSource.indexOf("function eventForm"));
-  assert.match(annualForm, /courseProgramField\(entry, "annual_course"\)/, "annual Offering creation selects a published Program");
-  assert.doesNotMatch(annualForm, /Хичээлийн жил|Сургалтын шат|offering-charge|useAcademicYearBreaks/, "annual Offering creation has no redundant year, stage, payment, or break controls");
-  assert.match(summerForm, /courseProgramField\(entry, "summer_course"\)/, "summer Offering creation selects an existing Program");
+  assert.match(annualForm, /courseProgramField\(entry, "annual_course"\)/, "annual Offering creation selects its logical stage");
+  assert.doesNotMatch(annualForm, /Хичээлийн жил|offering-charge|useAcademicYearBreaks/, "annual Offering creation has no redundant year, payment, or break controls");
+  assert.match(offeringsPageSource, /offering-annual-stage/, "annual Offering creation submits a logical stage, not a raw revision ID");
+  assert.match(summerForm, /courseProgramField\(entry, "summer_course"\)/, "summer Offering creation selects an existing logical Program");
   assert.doesNotMatch(summerForm, /offering-charge|Хөтөлбөрийг шинээр/, "summer Offering creation has neither a charge selector nor inline Program creation");
   assert.doesNotMatch(offeringsPageSource, /Хөтөлбөрийг шинээр бэлтгэнэ/, "the obsolete inline Program-creation wording is absent");
   assert.match(offeringsPageSource, /Арга хэмжээ устгах/, "unused event deletion is kept in event details");
@@ -66,13 +70,19 @@ try {
   sqlite("UPDATE curriculum_program SET status = 'published', display_name = 'Баталсан нэр' WHERE id = 'operational-default-program-annual-one';");
   sqlite(sql);
   assert.equal(JSON.parse(sqlite("SELECT display_name AS name, status FROM curriculum_program WHERE id = 'operational-default-program-annual-one';", true))[0].name, "Баталсан нэр", "later imports never overwrite published records");
+  const baselineSql = importer.buildOperationalDefaultsImport(operationalDefaults, "2026-08-13T00:00:01.000Z");
+  sqlite(baselineSql);
+  const baseline = JSON.parse(sqlite(`SELECT family.annual_stage_code AS stageCode, program.status, COUNT(lesson.id) AS lessons
+    FROM curriculum_program_family AS family
+    INNER JOIN curriculum_program AS program ON program.id = family.current_published_program_id
+    LEFT JOIN curriculum_lesson AS lesson ON lesson.curriculum_program_id = program.id
+    WHERE family.kind = 'annual_course'
+    GROUP BY family.id ORDER BY family.annual_stage_code;`, true));
+  assert.deepEqual(baseline.map((entry) => [entry.stageCode, entry.status, entry.lessons]), [["stage_1", "published", 30], ["stage_2", "published", 30], ["stage_3", "published", 23]], "baseline import creates three current published logical Programs");
 
   const productionRefusal = spawnSync(process.execPath, ["scripts/import-operational-defaults.mjs", "--env=production"], { encoding: "utf8" });
   assert.notEqual(productionRefusal.status, 0, "production import requires explicit confirmation");
   assert.match(productionRefusal.stderr, /--confirm-production/);
-  const stagingEmpty = spawnSync(process.execPath, ["scripts/import-operational-defaults.mjs", "--env=staging"], { encoding: "utf8" });
-  assert.equal(stagingEmpty.status, 0, "an explicit staging import with no approved defaults is a safe no-op");
-  assert.match(stagingEmpty.stdout, /was not changed/);
   console.log("ok offering guidance defaults are explicit, idempotent, and production-confirmed");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });

@@ -5,12 +5,13 @@
 The operational hierarchy is:
 
 ```text
-CurriculumProgram -> ActivityOffering -> ClassSession -> ClassCalendar
+Program family -> CurriculumProgram revision -> ActivityOffering -> ClassSession -> ClassCalendar
 ```
 
-`curriculum_program` is what is taught: a versioned ordered collection of named
-`curriculum_lesson` rows. Lesson count is data. An annual example may have about
-30 lessons and a summer example may have 10-15, but neither count is a rule.
+`curriculum_program_family` is the stable logical Program identity a teacher
+recognizes. Its current published `curriculum_program` pointer selects one
+immutable revision; older revisions remain history with the Offerings that use
+them. A revision is the ordered collection of named `curriculum_lesson` rows.
 An event may have no program at all.
 
 `activity_offering` is one concrete run offered by the center. Its typed kind is
@@ -37,11 +38,12 @@ date into UTC and accidentally move it by a day.
 
 ## Offering Kinds
 
-An annual course selects a compatible published annual Program. That Program
-derives the teacher-visible stage and academic year; persisted year/stage remain
-compatibility/history context. Annual courses are always paid and apply
-school-calendar guidance automatically. Multiple weekly classes may share that
-one Offering and therefore inherit the same program and Facebook group.
+An annual course selects only `Шат` in the teacher form. The server resolves
+the logical annual Program family's current published revision and derives the
+Offering's academic year from its dates and configured school years. Raw
+revision IDs are never normal browser choices. The annual families are exactly
+`1-р шат`, `2-р шат`, and `3-р шат`; there is no Stage 4. Annual courses are
+always paid and apply school-calendar guidance automatically.
 
 A summer course has a human title, planned period, and existing published summer
 Program from the dedicated `Хөтөлбөр` tool. It is always paid and does not apply
@@ -88,19 +90,18 @@ date, restore one otherwise skipped school date, or add an explicit extra
 occurrence. An Offering break remains an Offering-level rule and cannot be
 overridden by a class restore.
 
-A calendar revision is drafted from the class's Offering program and meeting
+A calendar revision is drafted from the class's Offering-pinned program and meeting
 rule, then published. The caller cannot substitute another program or start
 date during generation. Published programs, lessons, calendar revisions, slots,
 and overrides remain immutable. A later operational change uses a new draft
 revision based on the published one and publishing supersedes the earlier
 revision rather than rewriting it.
 
-One migration-only compatibility exception preserves calendars that were
-published before Offerings existed: a direct change revision may continue the
-same historical program even if a later program revision had already become
-current. It cannot choose any other program. New setup blocks program changes
-after a class calendar exists, so ordinary Offering behavior remains one
-inherited current program.
+Existing Offerings and calendars never move when a newer Program revision is
+published. They remain valid with their pinned historical revision, including
+when a first explicit calendar is generated later. A direct calendar-change
+revision may continue the same historical program, but can never substitute an
+arbitrary one.
 
 `class_calendar_slot` records `scheduled`, `no_class`, and `cancelled` entries,
 so a missing row never has to mean a holiday, cancellation, or incomplete
@@ -154,8 +155,11 @@ The protected Mongolian setup is organized around concrete work:
 
 - `/staff/offerings/` (`Сургалт, арга хэмжээ`) creates and edits annual courses,
   summer courses, and events.
-- `/staff/programs/` is the only place to create, copy, edit, and publish
-  annual or summer Programs.
+- `/staff/programs/` presents the three annual Program identities and named
+  summer Programs. `Засах` opens an existing draft or copies the current
+  revision. Teachers insert, delete, and move lessons without sequence numbers;
+  publish atomically advances the family pointer and rejects stale drafts. Only
+  unreferenced summer drafts can be deleted.
 - `/staff/schedule/` chooses an Offering, manages its classes or event
   occurrence, and generates course calendars without asking for Program again.
 - `/staff/holidays/` records annual school-calendar periods with either an
@@ -177,6 +181,9 @@ weakening current-program inheritance for new calendars. Migration 0012 adds
 Program kind, Offering-specific breaks, school-calendar generation behavior,
 and stable operational-default import markers. It also makes the paid-course and
 annual school-guidance rules database-enforced rather than merely UI defaults.
+Migration 0013 adds logical Program families, groups old revisions beneath the
+right annual stage or separate summer identity, and keeps concrete Offering and
+calendar rows pinned to their historical revision.
 
 ## Public And Future Use
 

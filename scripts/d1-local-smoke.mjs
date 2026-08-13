@@ -271,11 +271,18 @@ try {
 
   execute(
     `
+    INSERT INTO curriculum_program_family (
+      id, kind, display_name, annual_stage_code, current_published_program_id,
+      status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'program-family-local-1', 'annual_course', '1-р шат', 'stage_1', NULL,
+      'active', 1, '${testRunId}', '${now}', '${now}'
+    );
     INSERT INTO curriculum_program (
-      id, academic_year_id, stage_code, revision_number, display_name, status,
+      id, program_family_id, academic_year_id, stage_code, revision_number, display_name, status,
       is_test, test_run_id, created_at, updated_at
     ) VALUES (
-      'program-local-1', 'year-local-1', 'stage_1', 1, 'Local test program', 'draft',
+      'program-local-1', 'program-family-local-1', 'year-local-1', 'stage_1', 1, 'Local test program', 'draft',
       1, '${testRunId}', '${now}', '${now}'
     );
     INSERT INTO curriculum_lesson (
@@ -285,6 +292,8 @@ try {
       ('lesson-local-1', 'program-local-1', 1, 'Local lesson one', 'active', 1, '${testRunId}', '${now}', '${now}'),
       ('lesson-local-2', 'program-local-1', 2, 'Local lesson two', 'active', 1, '${testRunId}', '${now}', '${now}');
     UPDATE curriculum_program SET status = 'published' WHERE id = 'program-local-1';
+    UPDATE curriculum_program_family SET current_published_program_id = 'program-local-1'
+      WHERE id = 'program-family-local-1';
 
     INSERT INTO academic_year_break (
       id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots,

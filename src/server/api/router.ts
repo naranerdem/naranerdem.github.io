@@ -43,21 +43,23 @@ import {
   ProgramCalendarError,
   cancelFutureCalendarSlot,
   changeCalendarDraft,
-  copyPreviousProgram,
   createCalendarChangeDraft,
-  createOfferingProgramDraft,
-  createProgramDraft,
-  createProgramRevisionDraft,
-  createSummerProgramDraft,
+  createSummerProgramFamilyDraft,
+  deleteProgramDraftLesson,
+  deleteSummerProgramFamilyDraft,
   deleteClassSession,
   generateCalendarDraft,
   getProgramCalendarOverview,
   publishCalendarDraft,
-  publishProgramDraft,
+  publishProgramFamilyDraft,
   removeAcademicYearBreak,
   saveAcademicYearBreak,
   saveClassSession,
-  saveProgramDraft,
+  insertProgramDraftLesson,
+  moveProgramDraftLesson,
+  renameProgramDraft,
+  renameProgramDraftLesson,
+  startProgramFamilyDraft,
 } from "../staff/program-calendar";
 import {
   OfferingError,
@@ -688,7 +690,8 @@ export async function handleApiRequest(
             levelLabel: typeof payload.levelLabel === "string" ? payload.levelLabel : null,
             startsOn: typeof payload.startsOn === "string" ? payload.startsOn : null,
             endsOn: typeof payload.endsOn === "string" ? payload.endsOn : null,
-            curriculumProgramId: typeof payload.curriculumProgramId === "string" ? payload.curriculumProgramId : null,
+            programFamilyId: typeof payload.programFamilyId === "string" ? payload.programFamilyId : null,
+            annualStageCode: typeof payload.annualStageCode === "string" ? payload.annualStageCode : null,
             useAcademicYearBreaks: typeof payload.useAcademicYearBreaks === "boolean" ? payload.useAcademicYearBreaks : undefined,
             chargeMode: typeof payload.chargeMode === "string" ? payload.chargeMode : undefined,
             facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null,
@@ -726,29 +729,48 @@ export async function handleApiRequest(
             offeringId: String(payload.offeringId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
-        case "program.create":
-          await createProgramDraft(env, principal, { academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), displayName: String(payload.displayName ?? "") });
-          break;
         case "program.create-summer":
-          await createSummerProgramDraft(env, principal, { displayName: String(payload.displayName ?? "") });
+          await createSummerProgramFamilyDraft(env, principal, { displayName: String(payload.displayName ?? "") });
           break;
-        case "program.copy":
-          await createProgramRevisionDraft(env, principal, { sourceProgramId: String(payload.sourceProgramId ?? "") });
+        case "program.edit":
+          await startProgramFamilyDraft(env, principal, { programFamilyId: String(payload.programFamilyId ?? "") });
           break;
-        case "program.create-offering-draft":
-          await createOfferingProgramDraft(env, principal, { offeringId: String(payload.offeringId ?? "") });
-          break;
-        case "program.copy-previous":
-          await copyPreviousProgram(env, principal, { academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? "") });
-          break;
-        case "program.save":
-          await saveProgramDraft(env, principal, {
+        case "program.rename":
+          await renameProgramDraft(env, principal, {
             programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
-            displayName: String(payload.displayName ?? ""), lessons: Array.isArray(payload.lessons) ? payload.lessons as Array<{ id?: string; title: string; internalNote?: string | null }> : [],
+            displayName: String(payload.displayName ?? ""),
+          });
+          break;
+        case "program.lesson.rename":
+          await renameProgramDraftLesson(env, principal, {
+            programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            lessonId: String(payload.lessonId ?? ""), title: String(payload.title ?? ""),
+          });
+          break;
+        case "program.lesson.insert":
+          await insertProgramDraftLesson(env, principal, {
+            programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            afterLessonId: typeof payload.afterLessonId === "string" ? payload.afterLessonId : undefined,
+            title: String(payload.title ?? ""),
+          });
+          break;
+        case "program.lesson.move":
+          await moveProgramDraftLesson(env, principal, {
+            programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            lessonId: String(payload.lessonId ?? ""), direction: String(payload.direction ?? ""),
+          });
+          break;
+        case "program.lesson.delete":
+          await deleteProgramDraftLesson(env, principal, {
+            programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            lessonId: String(payload.lessonId ?? ""),
           });
           break;
         case "program.publish":
-          await publishProgramDraft(env, principal, { programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), offeringId: typeof payload.offeringId === "string" ? payload.offeringId : undefined });
+          await publishProgramFamilyDraft(env, principal, { programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          break;
+        case "program.delete-summer":
+          await deleteSummerProgramFamilyDraft(env, principal, { programFamilyId: String(payload.programFamilyId ?? "") });
           break;
         case "class.save":
           await saveClassSession(env, principal, {
