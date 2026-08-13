@@ -47,6 +47,8 @@ import {
   createCalendarChangeDraft,
   createOfferingProgramDraft,
   createProgramDraft,
+  createProgramRevisionDraft,
+  createSummerProgramDraft,
   deleteClassSession,
   generateCalendarDraft,
   getProgramCalendarOverview,
@@ -59,7 +61,10 @@ import {
 } from "../staff/program-calendar";
 import {
   OfferingError,
+  deleteUnusedEventOffering,
   saveActivityOffering,
+  removeOfferingBreak,
+  saveOfferingBreak,
   saveOfferingFacebookGroup,
 } from "../staff/offerings";
 
@@ -702,8 +707,33 @@ export async function handleApiRequest(
             facebookGroupUrl: typeof payload.facebookGroupUrl === "string" ? payload.facebookGroupUrl : null,
           });
           break;
+        case "offering-break.save":
+          await saveOfferingBreak(env, principal, {
+            id: typeof payload.id === "string" ? payload.id : undefined,
+            expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
+            offeringId: String(payload.offeringId ?? ""), label: String(payload.label ?? ""),
+            startsOn: String(payload.startsOn ?? ""), endsOn: String(payload.endsOn ?? ""),
+            note: typeof payload.note === "string" ? payload.note : null,
+          });
+          break;
+        case "offering-break.remove":
+          await removeOfferingBreak(env, principal, {
+            breakId: String(payload.breakId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
+        case "offering-event.delete":
+          await deleteUnusedEventOffering(env, principal, {
+            offeringId: String(payload.offeringId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         case "program.create":
           await createProgramDraft(env, principal, { academicYearId: String(payload.academicYearId ?? ""), stageCode: String(payload.stageCode ?? ""), displayName: String(payload.displayName ?? "") });
+          break;
+        case "program.create-summer":
+          await createSummerProgramDraft(env, principal, { displayName: String(payload.displayName ?? "") });
+          break;
+        case "program.copy":
+          await createProgramRevisionDraft(env, principal, { sourceProgramId: String(payload.sourceProgramId ?? "") });
           break;
         case "program.create-offering-draft":
           await createOfferingProgramDraft(env, principal, { offeringId: String(payload.offeringId ?? "") });
@@ -740,6 +770,7 @@ export async function handleApiRequest(
             id: typeof payload.id === "string" ? payload.id : undefined,
             expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
             academicYearId: String(payload.academicYearId ?? ""), label: String(payload.label ?? ""), startsOn: String(payload.startsOn ?? ""), endsOn: String(payload.endsOn ?? ""), sourceNote: typeof payload.sourceNote === "string" ? payload.sourceNote : null,
+            generationBehavior: typeof payload.generationBehavior === "string" ? payload.generationBehavior : undefined,
           });
           break;
         case "break.remove":

@@ -1910,6 +1910,17 @@ textarea:focus {
   font-size: 1.1rem;
 }
 
+.staff-offering-row h3,
+.staff-offering-group > h2,
+.staff-operation-section h3 {
+  margin: 0.2rem 0;
+  font-size: 1rem;
+}
+
+.staff-offering-group + .staff-offering-group {
+  margin-top: 1.25rem;
+}
+
 .staff-offering-row p {
   margin: 0.15rem 0;
   color: var(--muted);
@@ -1920,6 +1931,11 @@ textarea:focus {
   color: var(--blue-deep);
   font-size: 0.78rem;
   font-weight: 850;
+}
+
+.staff-calendar-warning {
+  color: #8a3d00 !important;
+  font-weight: 750;
 }
 
 .staff-kind-choices {

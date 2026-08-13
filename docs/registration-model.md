@@ -160,10 +160,11 @@ An `ActivityOffering` is one concrete run offered by the center:
 - summer course
 - one-off event
 
-It owns the period, optional year/stage or level, optional program, free/paid
-mode, academic-break policy, and shared Facebook group. Annual and summer
-courses are paid by default; events are free by default. These modes do not yet
-create prices, payment schedules, or obligations.
+It owns the period, selected Program, charge mode, calendar guidance, and
+shared Facebook group. An annual Program derives the annual Offering's
+year/stage. Annual and summer courses are always paid; events are free by
+default and may be made paid. These modes do not yet create prices, payment
+schedules, or obligations.
 
 ### ClassSession
 
@@ -198,17 +199,19 @@ define the occurrence calendar.
 Weekly, weekday, and daily patterns only generate draft candidates. Published
 `scheduled`, `no_class`, and `cancelled` rows are operational truth. The class
 inherits the Offering program, so calendar generation cannot reselect it.
-Academic-year breaks apply only when that Offering opts in; class-specific
-exclusion, restore, and extra-slot decisions remain available.
+Annual school-calendar periods apply automatically and carry either an initial
+exclusion or a warning-only behavior. Course-specific Offering breaks apply to
+every class in one annual or summer Offering. Class-specific exclusion, restore,
+and extra-slot decisions remain available.
 
 After publication, cancellation preserves the original dated entry and only
 reflows safe future assignments. Normal changes automatically protect past
 published dates plus any stronger stored internal boundary; the teacher does
 not enter a completed-lesson sequence. This protection does not claim that a
 past lesson was delivered or attended. Attendance remains the future stronger
-source. An annual tail may extend when it has no hard end; a summer class with a
-hard period instead reports insufficient space. Read-only class schedules
-expose no registration data. Details are in
+source. Planned Offering/class end dates are soft operational guidance: a
+complete draft may extend beyond them with a warning, rather than silently
+dropped lessons. Read-only class schedules expose no registration data. Details are in
 [program-calendar-model.md](program-calendar-model.md).
 
 Programless events use an explicit `OfferingEventOccurrence` for date/time,
@@ -231,10 +234,11 @@ Schedule communication is future planned and separate from payment-reminder esca
 Communication needs event/idempotency semantics: avoid duplicate sends for one published change, do not notify on unrelated metadata edits, group siblings where clearer, and allow a materially changed reschedule to create a new notice. Make-up messages remain teacher-approved before they are generated or sent.
 
 Current staging calendar fixtures are deliberately fake and carry test
-provenance. They include annual weekly cohorts, a 12-lesson summer Offering with
-weekday and daily classes, and a free programless event. They exercise breaks,
-independent progress, class restoration/exclusion, and extra slots. They are not
-Naran Erdem's real curriculum or public schedule.
+provenance. They include annual weekly cohorts and a 12-lesson summer Offering
+with weekday and daily classes. Events are isolated service-test cases, not
+routine staging list data. The fixtures exercise breaks, independent progress,
+class restoration/exclusion, and extra slots. They are not Naran Erdem's real
+curriculum or public schedule.
 
 ### Future Generalized Registration Target
 
@@ -246,11 +250,10 @@ Future course registration should target `ActivityOffering + ClassSession`.
 Future event registration should target `ActivityOffering +
 OfferingEventOccurrence`. Both should share guardian/student identity, verified
 email, capacity checks, and a class/occurrence-specific FIFO waitlist where
-appropriate. For a free Offering, the intended path is submission, email
-verification, capacity confirmation, then enrollment confirmation; it needs no
-24-hour hold solely for initial payment. A paid Offering must use the same
-future pricing/payment machinery as other paid activities, not an event-only
-finance model. Public summer/event registration is not implemented yet.
+appropriate. A free event can eventually confirm after email verification and
+capacity confirmation without a payment-only hold. Every course must use common
+future pricing/payment machinery. Public summer/event registration is not
+implemented yet.
 
 ### Selected Class
 

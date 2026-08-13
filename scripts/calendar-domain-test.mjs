@@ -56,7 +56,7 @@ function assertCompleteProgram(slots, count) {
 
 try {
   bundle();
-  const { generateCalendarSchedule, reflowCancelledFutureSchedule } = await import(pathToFileURL(bundlePath).href);
+  const { generateCalendarPlan, generateCalendarSchedule, reflowCancelledFutureSchedule } = await import(pathToFileURL(bundlePath).href);
 
   const sharedProgram = lessons(6, "stage-2");
   const sunday = generateCalendarSchedule({
@@ -107,6 +107,36 @@ try {
     endTime: "14:30",
   });
   assert.deepEqual(active(daily).map((slot) => slot.localDate), Array.from({ length: 12 }, (_, index) => `2027-06-${String(index + 15).padStart(2, "0")}`), "daily recurrence preserves local civil dates without a UTC shift");
+
+  const restoredSchoolPlan = generateCalendarPlan({
+    lessons: lessons(5, "school-restore"), recurrenceKind: "weekly", firstCandidateDate: "2026-10-04", habitualWeekday: "Ням", startTime: "10:00", endTime: "11:20",
+    schoolCalendarPeriods: [{ id: "winter", label: "Өвлийн амралт", startsOn: "2026-10-18", endsOn: "2026-10-18", excludesHabitualSlots: true, generationBehavior: "exclude_by_default" }],
+    overrides: [{ id: "restore", localDate: "2026-10-18", behavior: "restore" }],
+  });
+  assert.equal(restoredSchoolPlan.slots.find((slot) => slot.localDate === "2026-10-18")?.status, "scheduled", "a class may restore an initially excluded school date");
+  assert.deepEqual(restoredSchoolPlan.warnings, [{ kind: "school_period_overlap", label: "Өвлийн амралт", lessonCount: 1 }], "a restored school-break lesson remains visibly warned");
+
+  const summerVacationWarning = generateCalendarPlan({
+    lessons: lessons(2, "annual-tail"), recurrenceKind: "weekly", firstCandidateDate: "2027-05-26", habitualWeekday: "Лхагва", startTime: "10:00", endTime: "11:20",
+    schoolCalendarPeriods: [{ id: "summer-vacation", label: "Зуны амралт", startsOn: "2027-06-01", endsOn: "2027-08-31", excludesHabitualSlots: false, generationBehavior: "warn_only" }],
+  });
+  assert.equal(byLesson(summerVacationWarning.slots, 2).localDate, "2027-06-02", "warn-only school summer vacation never removes an annual final lesson");
+  assert.equal(summerVacationWarning.warnings[0]?.label, "Зуны амралт", "the annual June lesson receives a school-period warning");
+
+  const offeringBreakPlan = generateCalendarPlan({
+    lessons: lessons(14, "summer-break"), recurrenceKind: "daily", firstCandidateDate: "2027-06-01", plannedEndDate: "2027-06-14", startTime: "10:00", endTime: "11:30",
+    offeringBreaks: [{ id: "course-break", label: "Сургалтын завсарлага", startsOn: "2027-06-07", endsOn: "2027-06-08" }],
+  });
+  assert.equal(byLesson(offeringBreakPlan.slots, 14).localDate, "2027-06-16", "an Offering break extends a daily summer plan past its soft advertised end");
+  assert.equal(offeringBreakPlan.slots.filter((slot) => slot.localDate >= "2027-06-07" && slot.localDate <= "2027-06-08" && slot.status === "scheduled").length, 0, "an Offering break excludes every class candidate");
+  assert.deepEqual(offeringBreakPlan.warnings.at(-1), { kind: "planned_period_overrun", label: "planned_period", finalLessonDate: "2027-06-16" }, "the summer overrun is a warning, not a hard failure");
+  const secondClassPlan = generateCalendarPlan({
+    lessons: lessons(14, "summer-break-b"), recurrenceKind: "daily", firstCandidateDate: "2027-06-01", plannedEndDate: "2027-06-14", startTime: "13:00", endTime: "14:30",
+    offeringBreaks: [{ id: "course-break", label: "Сургалтын завсарлага", startsOn: "2027-06-07", endsOn: "2027-06-08" }],
+    overrides: [{ id: "class-a-only", localDate: "2027-06-11", behavior: "exclude" }],
+  });
+  assert.equal(offeringBreakPlan.slots.find((slot) => slot.localDate === "2027-06-11")?.status, "scheduled", "the other class remains scheduled on its ordinary date");
+  assert.equal(secondClassPlan.slots.find((slot) => slot.localDate === "2027-06-11")?.status, "no_class", "a class-specific exception changes only that class plan");
 
   const baseline = generateCalendarSchedule({
     lessons: lessons(30, "holiday"),

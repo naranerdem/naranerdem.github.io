@@ -108,6 +108,19 @@ deliberately fake; production has no curriculum, Offering, class, event, or
 calendar configuration. See
 [docs/program-calendar-model.md](docs/program-calendar-model.md).
 
+Approved non-private starting Programs and school-calendar periods are kept as
+source templates in `src/config/operational-defaults.mjs`. They stay empty until
+the owner approves real content and are imported explicitly, never during
+deployment:
+
+```sh
+npm run seed:operational-defaults -- --env=staging
+npm run seed:operational-defaults -- --env=production --confirm-production
+```
+
+The importer is idempotent, does not overwrite teacher-edited/published data,
+and never copies staging data into production.
+
 ## Editing Public Content
 
 For small wording, phone, address, schedule, or future price edits, see [EDITING.md](EDITING.md). Public Mongolian wording is kept in `src/content/`; current academic-year data is kept in `src/config/academic-year.ts`.

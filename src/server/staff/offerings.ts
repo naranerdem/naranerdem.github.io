@@ -50,15 +50,12 @@ interface ProgramContextRow {
   id: string;
   academicYearId: string;
   stageCode: "stage_1" | "stage_2" | "stage_3";
+  programKind: "annual_course" | "summer_course";
   status: "draft" | "published" | "superseded" | "archived";
   displayName: string;
-}
-
-interface YearRow {
-  id: string;
-  label: string;
-  startsOn: string | null;
-  endsOn: string | null;
+  yearLabel: string;
+  yearStartsOn: string | null;
+  yearEndsOn: string | null;
   isTest: number;
   testRunId: string | null;
 }
@@ -102,9 +99,6 @@ function validDate(value: string): boolean {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 function validTime(value: string): boolean { return /^([01]\d|2[0-3]):[0-5]\d$/.test(value); }
-function validStage(value: string | null): value is "stage_1" | "stage_2" | "stage_3" {
-  return value !== null && ["stage_1", "stage_2", "stage_3"].includes(value);
-}
 function validUrl(value: string | null): boolean {
   if (!value) return true;
   try {
@@ -154,17 +148,14 @@ async function offeringById(env: WorkerEnv, offeringId: string): Promise<Offerin
 }
 
 async function programById(env: WorkerEnv, programId: string): Promise<ProgramContextRow> {
-  const row = await env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
-    stage_code AS stageCode, status, display_name AS displayName
-    FROM curriculum_program WHERE id = ?`).bind(programId).first<ProgramContextRow>();
-  if (!row) throw new OfferingError("not_found");
-  return row;
-}
-
-async function yearById(env: WorkerEnv, yearId: string): Promise<YearRow> {
-  const row = await env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn,
-    ends_on AS endsOn, is_test AS isTest, test_run_id AS testRunId
-    FROM academic_year WHERE id = ?`).bind(yearId).first<YearRow>();
+  const row = await env.DB.prepare(`SELECT program.id, program.academic_year_id AS academicYearId,
+    program.stage_code AS stageCode, program.program_kind AS programKind, program.status,
+    program.display_name AS displayName, year.public_label AS yearLabel,
+    year.starts_on AS yearStartsOn, year.ends_on AS yearEndsOn,
+    program.is_test AS isTest, program.test_run_id AS testRunId
+    FROM curriculum_program AS program
+    INNER JOIN academic_year AS year ON year.id = program.academic_year_id
+    WHERE program.id = ?`).bind(programId).first<ProgramContextRow>();
   if (!row) throw new OfferingError("not_found");
   return row;
 }
@@ -188,17 +179,6 @@ async function offeringHasCalendar(env: WorkerEnv, offeringId: string): Promise<
     )
     THEN 1 ELSE 0 END AS found`).bind(offeringId).first<{ found: number }>();
   return row?.found === 1;
-}
-
-async function offeringClassesFitPeriod(env: WorkerEnv, offeringId: string, startsOn: string, endsOn: string): Promise<boolean> {
-  const row = await env.DB.prepare(`SELECT CASE WHEN EXISTS (
-    SELECT 1 FROM class_session
-    INNER JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id
-    WHERE class_session.activity_offering_id = ?
-      AND (class_meeting_rule.first_date < ?
-        OR (class_meeting_rule.last_date IS NOT NULL AND class_meeting_rule.last_date > ?))
-    ) THEN 0 ELSE 1 END AS fits`).bind(offeringId, startsOn, endsOn).first<{ fits: number }>();
-  return row?.fits === 1;
 }
 
 async function offeringRegistrationOpen(env: WorkerEnv, offeringId: string): Promise<boolean> {
@@ -234,19 +214,22 @@ async function offeringHasRegistrationReferences(env: WorkerEnv, offeringId: str
 export async function getOfferingOverview(env: WorkerEnv): Promise<{
   offerings: Array<Record<string, unknown>>;
   eventOccurrences: Array<Record<string, unknown>>;
+  offeringBreaks: Array<Record<string, unknown>>;
 }> {
-  const [offerings, occurrences] = await Promise.all([
+  const [offerings, occurrences, offeringBreaks] = await Promise.all([
     env.DB.prepare(`SELECT offering.id, offering.kind, offering.title,
       offering.academic_year_id AS academicYearId, offering.stage_code AS stageCode,
       offering.level_label AS levelLabel, offering.starts_on AS startsOn, offering.ends_on AS endsOn,
       offering.curriculum_program_id AS curriculumProgramId,
       program.display_name AS programName, program.status AS programStatus,
+      program.program_kind AS programKind, year.public_label AS academicYearLabel,
       offering.use_academic_year_breaks AS useAcademicYearBreaks,
       offering.charge_mode AS chargeMode, offering.facebook_group_url AS facebookGroupUrl,
       offering.note, offering.status, offering.is_test AS isTest,
       offering.test_run_id AS testRunId, offering.updated_at AS updatedAt
       FROM activity_offering AS offering
       LEFT JOIN curriculum_program AS program ON program.id = offering.curriculum_program_id
+      LEFT JOIN academic_year AS year ON year.id = offering.academic_year_id
       WHERE offering.status = 'active'
       ORDER BY offering.starts_on DESC, offering.kind, offering.title`).all<Record<string, unknown>>(),
     env.DB.prepare(`SELECT id, activity_offering_id AS offeringId, local_date AS localDate,
@@ -254,6 +237,10 @@ export async function getOfferingOverview(env: WorkerEnv): Promise<{
       registration_status AS registrationStatus, is_test AS isTest,
       test_run_id AS testRunId, updated_at AS updatedAt
       FROM offering_event_occurrence ORDER BY local_date, start_time`).all<Record<string, unknown>>(),
+    env.DB.prepare(`SELECT id, activity_offering_id AS offeringId, label,
+      starts_on AS startsOn, ends_on AS endsOn, note, is_test AS isTest,
+      test_run_id AS testRunId, updated_at AS updatedAt
+      FROM activity_offering_break ORDER BY activity_offering_id, starts_on, ends_on`).all<Record<string, unknown>>(),
   ]);
   return {
     offerings: offerings.results.map((entry) => ({
@@ -264,76 +251,29 @@ export async function getOfferingOverview(env: WorkerEnv): Promise<{
       ...entry,
       registrationOpen: entry.registrationStatus === "open",
     })),
+    offeringBreaks: offeringBreaks.results,
   };
 }
 
 async function resolveCourseProgram(
   env: WorkerEnv,
   kind: "annual_course" | "summer_course",
-  offeringId: string,
-  title: string,
-  academicYearId: string | null,
-  stageCode: string | null,
   selectedProgramId: string | null,
-  provenance: { isTest: number; testRunId: string | null },
-  time: string,
-): Promise<{ academicYearId: string; stageCode: "stage_1" | "stage_2" | "stage_3"; programId: string; setup: D1PreparedStatement[] }> {
-  if (selectedProgramId) {
-    const program = await programById(env, selectedProgramId);
-    if (!['draft', 'published'].includes(program.status)) throw new OfferingError("invalid");
-    if (kind === "annual_course" && (program.academicYearId !== academicYearId || program.stageCode !== stageCode)) throw new OfferingError("invalid");
-    return { academicYearId: program.academicYearId, stageCode: program.stageCode, programId: program.id, setup: [] };
-  }
-
-  if (kind === "annual_course") {
-    if (!academicYearId || !validStage(stageCode)) throw new OfferingError("invalid");
-    const existing = await env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
-      stage_code AS stageCode, status, display_name AS displayName FROM curriculum_program
-      WHERE academic_year_id = ? AND stage_code = ? AND status IN ('draft', 'published')
-      ORDER BY CASE status WHEN 'draft' THEN 0 ELSE 1 END, revision_number DESC LIMIT 1`)
-      .bind(academicYearId, stageCode).first<ProgramContextRow>();
-    if (existing) return { academicYearId, stageCode, programId: existing.id, setup: [] };
-    const programId = id();
-    return {
-      academicYearId,
-      stageCode,
-      programId,
-      setup: [env.DB.prepare(`INSERT INTO curriculum_program (
-        id, academic_year_id, stage_code, revision_number, display_name, status,
-        is_test, test_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, 1, ?, 'draft', ?, ?, ?, ?)`)
-        .bind(programId, academicYearId, stageCode, `${stageLabel(stageCode)}ны хөтөлбөр`, provenance.isTest, provenance.testRunId, time, time)],
-    };
-  }
-
-  const internalYearId = `summer-context-${offeringId}`;
-  const programId = id();
-  return {
-    academicYearId: internalYearId,
-    stageCode: "stage_1",
-    programId,
-    setup: [
-      env.DB.prepare(`INSERT INTO academic_year (
-        id, public_label, registration_status, starts_on, ends_on, is_current,
-        is_test, test_run_id, created_at, updated_at
-      ) VALUES (?, ?, 'draft', ?, ?, 0, ?, ?, ?, ?)`)
-        .bind(internalYearId, title, null, null, provenance.isTest, provenance.testRunId, time, time),
-      env.DB.prepare(`INSERT INTO curriculum_program (
-        id, academic_year_id, stage_code, revision_number, display_name, status,
-        is_test, test_run_id, created_at, updated_at
-      ) VALUES (?, ?, 'stage_1', 1, ?, 'draft', ?, ?, ?, ?)`)
-        .bind(programId, internalYearId, `${title} хөтөлбөр`, provenance.isTest, provenance.testRunId, time, time),
-    ],
-  };
+): Promise<ProgramContextRow> {
+  if (!selectedProgramId) throw new OfferingError("invalid");
+  const program = await programById(env, selectedProgramId);
+  if (program.status !== "published" || program.programKind !== kind) throw new OfferingError("invalid");
+  return program;
 }
 
 export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal, input: OfferingSaveInput): Promise<void> {
   requireManage(actor);
   const kind = text(input.kind) as OfferingKind;
   if (!OFFERING_KINDS.includes(kind)) throw new OfferingError("invalid");
-  const chargeMode = (text(input.chargeMode) || defaultCharge(kind)) as ChargeMode;
+  const requestedChargeMode = text(input.chargeMode);
+  if (kind !== "event" && requestedChargeMode && requestedChargeMode !== "paid") throw new OfferingError("invalid");
+  const chargeMode = (kind === "event" ? (requestedChargeMode || defaultCharge(kind)) : "paid") as ChargeMode;
   const facebookGroupUrl = optionalText(input.facebookGroupUrl);
-  const levelLabel = optionalText(input.levelLabel, 80);
   const note = optionalText(input.note, 1000);
   if (!CHARGE_MODES.includes(chargeMode) || !validUrl(facebookGroupUrl)) throw new OfferingError("invalid");
 
@@ -367,40 +307,27 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
       return;
     }
 
-    const selectedYearId = optionalText(input.academicYearId, 100);
-    const selectedStage = optionalText(input.stageCode, 20);
-    let title = text(input.title);
-    let startsOn = optionalText(input.startsOn, 10);
-    let endsOn = optionalText(input.endsOn, 10);
-    let sourceFlags = provenance;
-    if (kind === "annual_course") {
-      if (!selectedYearId || !validStage(selectedStage)) throw new OfferingError("invalid");
-      const year = await yearById(env, selectedYearId);
-      sourceFlags = flags(env, year);
-      title = `${year.label} · ${stageLabel(selectedStage)}`;
-      startsOn = startsOn || year.startsOn;
-      endsOn = endsOn || year.endsOn;
-    }
+    const program = await resolveCourseProgram(env, kind, optionalText(input.curriculumProgramId, 100));
+    const title = kind === "annual_course"
+      ? `${program.yearLabel} · ${stageLabel(program.stageCode)}`
+      : text(input.title);
+    const startsOn = optionalText(input.startsOn, 10) || (kind === "annual_course" ? program.yearStartsOn : null);
+    const endsOn = optionalText(input.endsOn, 10) || (kind === "annual_course" ? program.yearEndsOn : null);
+    const sourceFlags = flags(env, program);
     if (!title || !startsOn || !endsOn || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
-    const resolved = await resolveCourseProgram(
-      env, kind, offeringId, title, selectedYearId, selectedStage,
-      optionalText(input.curriculumProgramId, 100), sourceFlags, time,
-    );
-    const offeringStage = kind === "annual_course" ? resolved.stageCode : null;
     await env.DB.batch([
-      ...resolved.setup,
       env.DB.prepare(`INSERT INTO activity_offering (
         id, kind, title, academic_year_id, stage_code, level_label, starts_on, ends_on,
         curriculum_program_id, use_academic_year_breaks, charge_mode, facebook_group_url,
         note, status, is_test, test_run_id, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
-        .bind(offeringId, kind, title, resolved.academicYearId, offeringStage, levelLabel,
-          startsOn, endsOn, resolved.programId,
-          (input.useAcademicYearBreaks ?? defaultBreakPolicy(kind)) ? 1 : 0,
+        .bind(offeringId, kind, title, program.academicYearId, kind === "annual_course" ? program.stageCode : null, null,
+          startsOn, endsOn, program.id,
+          defaultBreakPolicy(kind) ? 1 : 0,
           chargeMode, facebookGroupUrl, note, sourceFlags.isTest, sourceFlags.testRunId, time, time),
       audit(env, actor, "activity_offering_created", "activity_offering", offeringId, {
-        kind, chargeMode, useAcademicYearBreaks: input.useAcademicYearBreaks ?? defaultBreakPolicy(kind),
-        programId: resolved.programId,
+        kind, chargeMode, useAcademicYearBreaks: defaultBreakPolicy(kind),
+        programId: program.id,
       }, sourceFlags, time),
     ]);
     return;
@@ -409,20 +336,19 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
   const current = await offeringById(env, input.id);
   if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new OfferingError("conflict");
   if (kind !== current.kind) throw new OfferingError("immutable");
-  const title = current.kind === "annual_course" ? current.title : text(input.title);
-  if (!title) throw new OfferingError("invalid");
   const time = now();
   const provenance = flags(env, current);
 
   if (current.kind === "event") {
     const occurrence = await eventForOffering(env, current.id);
     if (!occurrence || !input.eventExpectedUpdatedAt || occurrence.updatedAt !== input.eventExpectedUpdatedAt) throw new OfferingError("conflict");
+    const title = text(input.title);
     const localDate = text(input.eventDate);
     const startTime = text(input.eventStartTime);
     const endTime = text(input.eventEndTime);
     const capacity = Number(input.eventCapacity);
     const registrationOpen = Boolean(input.eventRegistrationOpen);
-    if (!validDate(localDate) || !validTime(startTime) || !validTime(endTime) || startTime >= endTime
+    if (!title || !validDate(localDate) || !validTime(startTime) || !validTime(endTime) || startTime >= endTime
       || !Number.isInteger(capacity) || capacity < 1 || capacity > 500) throw new OfferingError("invalid");
     const structuralChange = occurrence.localDate !== localDate || occurrence.startTime !== startTime
       || occurrence.endTime !== endTime || occurrence.capacity !== capacity;
@@ -446,34 +372,33 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
     return;
   }
 
-  const startsOn = text(input.startsOn);
-  const endsOn = text(input.endsOn);
-  const programId = text(input.curriculumProgramId);
-  const useBreaks = Boolean(input.useAcademicYearBreaks);
-  if (!validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn || !programId) throw new OfferingError("invalid");
-  const program = await programById(env, programId);
-  if (!['draft', 'published'].includes(program.status)) throw new OfferingError("invalid");
-  if (current.kind === "annual_course" && (program.academicYearId !== current.academicYearId || program.stageCode !== current.stageCode)) throw new OfferingError("invalid");
-  if (current.kind === "summer_course" && program.academicYearId !== current.academicYearId) throw new OfferingError("invalid");
-  const periodChanged = startsOn !== current.startsOn || endsOn !== current.endsOn;
+  const program = await resolveCourseProgram(env, current.kind, optionalText(input.curriculumProgramId, 100));
+  const startsOn = text(input.startsOn) || (current.kind === "annual_course" ? program.yearStartsOn ?? "" : "");
+  const endsOn = text(input.endsOn) || (current.kind === "annual_course" ? program.yearEndsOn ?? "" : "");
+  const title = current.kind === "annual_course" ? `${program.yearLabel} · ${stageLabel(program.stageCode)}` : text(input.title);
+  const useBreaks = defaultBreakPolicy(current.kind);
+  if (!title || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
   const structuralChange = startsOn !== current.startsOn || endsOn !== current.endsOn
-    || programId !== current.curriculumProgramId || useBreaks !== Boolean(current.useAcademicYearBreaks);
+    || program.id !== current.curriculumProgramId || useBreaks !== Boolean(current.useAcademicYearBreaks)
+    || program.academicYearId !== current.academicYearId
+    || (current.kind === "annual_course" && program.stageCode !== current.stageCode);
   if (structuralChange && (await offeringHasCalendar(env, current.id)
     || await offeringRegistrationOpen(env, current.id)
     || await offeringHasRegistrationReferences(env, current.id))) throw new OfferingError("immutable");
-  if (periodChanged && !(await offeringClassesFitPeriod(env, current.id, startsOn, endsOn))) throw new OfferingError("invalid");
-  if (chargeMode !== current.chargeMode && (await offeringRegistrationOpen(env, current.id) || await offeringHasRegistrationReferences(env, current.id))) {
-    throw new OfferingError("immutable");
-  }
-  const result = await env.DB.batch([
-    env.DB.prepare(`UPDATE activity_offering SET title = ?, level_label = ?, starts_on = ?, ends_on = ?,
-      curriculum_program_id = ?, use_academic_year_breaks = ?, charge_mode = ?,
+  const update = structuralChange
+    ? env.DB.prepare(`UPDATE activity_offering SET title = ?, academic_year_id = ?, stage_code = ?, level_label = NULL, starts_on = ?, ends_on = ?,
+      curriculum_program_id = ?, use_academic_year_breaks = ?, charge_mode = 'paid',
       facebook_group_url = ?, note = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
-      .bind(title, levelLabel, startsOn, endsOn, programId, useBreaks ? 1 : 0, chargeMode,
-        facebookGroupUrl, note, time, current.id, input.expectedUpdatedAt),
+      .bind(title, program.academicYearId, current.kind === "annual_course" ? program.stageCode : null,
+        startsOn, endsOn, program.id, useBreaks ? 1 : 0,
+        facebookGroupUrl, note, time, current.id, input.expectedUpdatedAt)
+    : env.DB.prepare(`UPDATE activity_offering SET title = ?, facebook_group_url = ?, note = ?, updated_at = ?
+      WHERE id = ? AND updated_at = ?`)
+      .bind(title, facebookGroupUrl, note, time, current.id, input.expectedUpdatedAt);
+  const result = await env.DB.batch([
+    update,
     audit(env, actor, "activity_offering_changed", "activity_offering", current.id, {
-      chargeModeChanged: chargeMode !== current.chargeMode,
-      programChanged: programId !== current.curriculumProgramId,
+      programChanged: program.id !== current.curriculumProgramId,
       breakPolicyChanged: useBreaks !== Boolean(current.useAcademicYearBreaks),
       facebookGroupChanged: facebookGroupUrl !== current.facebookGroupUrl,
     }, provenance, time),
@@ -498,4 +423,89 @@ export async function saveOfferingFacebookGroup(
     audit(env, actor, "activity_offering_facebook_changed", "activity_offering", current.id, {}, flags(env, current), time),
   ]);
   if ((result[0]?.meta?.changes ?? 0) !== 1) throw new OfferingError("conflict");
+}
+
+export async function saveOfferingBreak(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { id?: string; expectedUpdatedAt?: string; offeringId: string; label: string; startsOn: string; endsOn: string; note?: string | null },
+): Promise<void> {
+  requireManage(actor);
+  const offering = await offeringById(env, text(input.offeringId, 100));
+  if (!['annual_course', 'summer_course'].includes(offering.kind)) throw new OfferingError("invalid");
+  const label = text(input.label);
+  const startsOn = text(input.startsOn, 10);
+  const endsOn = text(input.endsOn, 10);
+  const note = optionalText(input.note, 500);
+  if (!label || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
+  const time = now();
+  const provenance = flags(env, offering);
+
+  if (!input.id) {
+    const breakId = id();
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO activity_offering_break (
+        id, activity_offering_id, label, starts_on, ends_on, note,
+        is_test, test_run_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(breakId, offering.id, label, startsOn, endsOn, note, provenance.isTest, provenance.testRunId, time, time),
+      audit(env, actor, "offering_break_created", "activity_offering_break", breakId, { offeringId: offering.id }, provenance, time),
+    ]);
+    return;
+  }
+
+  if (!input.expectedUpdatedAt) throw new OfferingError("conflict");
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE activity_offering_break
+      SET label = ?, starts_on = ?, ends_on = ?, note = ?, updated_at = ?
+      WHERE id = ? AND activity_offering_id = ? AND updated_at = ?`)
+      .bind(label, startsOn, endsOn, note, time, input.id, offering.id, input.expectedUpdatedAt),
+    audit(env, actor, "offering_break_changed", "activity_offering_break", input.id, { offeringId: offering.id }, provenance, time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new OfferingError("conflict");
+}
+
+export async function removeOfferingBreak(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { breakId: string; expectedUpdatedAt: string },
+): Promise<void> {
+  requireManage(actor);
+  const current = await env.DB.prepare(`SELECT break_row.id, break_row.activity_offering_id AS offeringId,
+    break_row.is_test AS isTest, break_row.test_run_id AS testRunId, break_row.updated_at AS updatedAt
+    FROM activity_offering_break AS break_row WHERE break_row.id = ?`).bind(input.breakId).first<{
+      id: string; offeringId: string; isTest: number; testRunId: string | null; updatedAt: string;
+    }>();
+  if (!current) throw new OfferingError("not_found");
+  if (current.updatedAt !== input.expectedUpdatedAt) throw new OfferingError("conflict");
+  const time = now();
+  const result = await env.DB.batch([
+    env.DB.prepare("DELETE FROM activity_offering_break WHERE id = ? AND updated_at = ?").bind(current.id, input.expectedUpdatedAt),
+    audit(env, actor, "offering_break_removed", "activity_offering_break", current.id, { offeringId: current.offeringId }, flags(env, current), time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new OfferingError("conflict");
+}
+
+export async function deleteUnusedEventOffering(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { offeringId: string; expectedUpdatedAt: string },
+): Promise<void> {
+  requireManage(actor);
+  const current = await offeringById(env, input.offeringId);
+  if (current.kind !== "event") throw new OfferingError("invalid");
+  if (current.updatedAt !== input.expectedUpdatedAt) throw new OfferingError("conflict");
+  const occurrence = await eventForOffering(env, current.id);
+  // Events have no registration or attendance tables yet. A closed occurrence
+  // with no future foreign-key reference is therefore safely removable today;
+  // database restrictions will reject this path as future durable references
+  // are added.
+  if (!occurrence || occurrence.registrationStatus !== "closed") throw new OfferingError("immutable");
+  const time = now();
+  const result = await env.DB.batch([
+    env.DB.prepare("DELETE FROM offering_event_occurrence WHERE id = ?").bind(occurrence.id),
+    env.DB.prepare("DELETE FROM activity_offering WHERE id = ? AND updated_at = ?").bind(current.id, input.expectedUpdatedAt),
+    audit(env, actor, "activity_offering_deleted", "activity_offering", current.id, { kind: "event" }, flags(env, current), time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1 || (result[1]?.meta?.changes ?? 0) !== 1) throw new OfferingError("conflict");
 }

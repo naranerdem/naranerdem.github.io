@@ -30,6 +30,23 @@ export interface AcademicYearBreak {
   startsOn: LocalDate;
   endsOn: LocalDate;
   excludesHabitualSlots: boolean;
+  generationBehavior?: SchoolCalendarGenerationBehavior;
+}
+
+export type SchoolCalendarGenerationBehavior = "exclude_by_default" | "warn_only";
+
+export interface OfferingBreak {
+  id: string;
+  label: string;
+  startsOn: LocalDate;
+  endsOn: LocalDate;
+}
+
+export interface CalendarWarning {
+  kind: "school_period_overlap" | "planned_period_overrun";
+  label: string;
+  lessonCount?: number;
+  finalLessonDate?: LocalDate;
 }
 
 export interface CalendarOverride {
@@ -65,9 +82,17 @@ export interface ScheduleGenerationInput {
   firstCandidateDate: LocalDate;
   recurrenceKind?: MeetingRecurrenceKind;
   habitualWeekday?: string;
+  /** A true hard planning limit. Ordinary Offering periods do not use this. */
   lastCandidateDate?: LocalDate | null;
+  /** An advertised/planned end date that may be exceeded with a warning. */
+  plannedEndDate?: LocalDate | null;
   startTime: LocalTime;
   endTime: LocalTime;
+  /** School periods guide annual draft generation and warn on final slots. */
+  schoolCalendarPeriods?: readonly AcademicYearBreak[];
+  /** A Naran Erdem no-class period shared by every class in one Offering. */
+  offeringBreaks?: readonly OfferingBreak[];
+  /** Compatibility input for existing callers; use schoolCalendarPeriods. */
   breaks?: readonly AcademicYearBreak[];
   overrides?: readonly CalendarOverride[];
   extraSlots?: readonly ExtraTeachingSlot[];
@@ -86,6 +111,12 @@ export interface ScheduleReflowResult {
   nextLessonSlot: CalendarSlot | null;
   changedFutureLessonAssignments: number;
   newFinalLessonDate: LocalDate;
+  warnings: CalendarWarning[];
+}
+
+export interface ScheduleGenerationResult {
+  slots: CalendarSlot[];
+  warnings: CalendarWarning[];
 }
 
 const millisecondsPerDay = 86_400_000;
@@ -193,10 +224,18 @@ function compareSlots(left: CalendarSlot, right: CalendarSlot): number {
     || left.id.localeCompare(right.id);
 }
 
-function isInBreak(localDate: LocalDate, periods: readonly AcademicYearBreak[]): AcademicYearBreak | undefined {
-  return periods.find((period) => period.excludesHabitualSlots
+function schoolBehavior(period: AcademicYearBreak): SchoolCalendarGenerationBehavior {
+  return period.generationBehavior ?? (period.excludesHabitualSlots ? "exclude_by_default" : "warn_only");
+}
+
+function isInSchoolExclusion(localDate: LocalDate, periods: readonly AcademicYearBreak[]): AcademicYearBreak | undefined {
+  return periods.find((period) => schoolBehavior(period) === "exclude_by_default"
     && period.startsOn <= localDate
     && localDate <= period.endsOn);
+}
+
+function isInOfferingBreak(localDate: LocalDate, periods: readonly OfferingBreak[]): OfferingBreak | undefined {
+  return periods.find((period) => period.startsOn <= localDate && localDate <= period.endsOn);
 }
 
 function normalizedLessons(lessons: readonly ProgramLesson[]): ProgramLesson[] {
@@ -233,13 +272,16 @@ function assertUniqueSlotIds(slots: readonly CalendarSlot[]): void {
 
 function makeHabitualSlot(
   localDate: LocalDate,
-  input: Pick<ScheduleGenerationInput, "startTime" | "endTime" | "breaks" | "overrides">,
+  input: Pick<ScheduleGenerationInput, "startTime" | "endTime" | "breaks" | "schoolCalendarPeriods" | "offeringBreaks" | "overrides">,
 ): CalendarSlot {
   const override = (input.overrides ?? []).find((candidate) => candidate.localDate === localDate);
-  const period = isInBreak(localDate, input.breaks ?? []);
-  const restored = override?.behavior === "restore";
-  const excluded = override?.behavior === "exclude" || (Boolean(period) && !restored);
-  const reasonLabel = override?.reasonLabel ?? period?.label ?? null;
+  const schoolPeriod = isInSchoolExclusion(localDate, input.schoolCalendarPeriods ?? input.breaks ?? []);
+  const offeringPeriod = isInOfferingBreak(localDate, input.offeringBreaks ?? []);
+  // A class can restore a school-guidance date, but an Offering break applies
+  // to every one of its classes and remains a no-class date.
+  const restored = override?.behavior === "restore" && !offeringPeriod;
+  const excluded = override?.behavior === "exclude" || (Boolean(schoolPeriod) && !restored) || Boolean(offeringPeriod);
+  const reasonLabel = override?.reasonLabel ?? offeringPeriod?.label ?? schoolPeriod?.label ?? null;
 
   return {
     id: `habitual:${localDate}:${input.startTime}`,
@@ -261,12 +303,29 @@ function validatePlanningInput(input: ScheduleGenerationInput): void {
     dateParts(input.lastCandidateDate);
     invariant(input.lastCandidateDate >= input.firstCandidateDate, "the class period ends before it starts");
   }
+  if (input.plannedEndDate) {
+    dateParts(input.plannedEndDate);
+    invariant(input.plannedEndDate >= input.firstCandidateDate, "the planned class period ends before it starts");
+  }
   invariant(["weekly", "weekdays", "daily"].includes(input.recurrenceKind ?? "weekly"), "unsupported meeting recurrence");
   for (const period of input.breaks ?? []) {
     dateParts(period.startsOn);
     dateParts(period.endsOn);
     invariant(period.endsOn >= period.startsOn, `break ${period.id} ends before it starts`);
     invariant(period.label.trim().length > 0, `break ${period.id} needs a label`);
+  }
+  for (const period of input.schoolCalendarPeriods ?? []) {
+    dateParts(period.startsOn);
+    dateParts(period.endsOn);
+    invariant(period.endsOn >= period.startsOn, `school period ${period.id} ends before it starts`);
+    invariant(period.label.trim().length > 0, `school period ${period.id} needs a label`);
+    invariant(["exclude_by_default", "warn_only"].includes(schoolBehavior(period)), `unsupported school period behavior`);
+  }
+  for (const period of input.offeringBreaks ?? []) {
+    dateParts(period.startsOn);
+    dateParts(period.endsOn);
+    invariant(period.endsOn >= period.startsOn, `offering break ${period.id} ends before it starts`);
+    invariant(period.label.trim().length > 0, `offering break ${period.id} needs a label`);
   }
   const overrideDates = new Set<string>();
   for (const override of input.overrides ?? []) {
@@ -313,6 +372,32 @@ function assignLessons(slots: CalendarSlot[], lessons: readonly ProgramLesson[])
  * published.
  */
 export function generateCalendarSchedule(input: ScheduleGenerationInput): CalendarSlot[] {
+  return generateCalendarPlan(input).slots;
+}
+
+export function calendarWarnings(
+  slots: readonly CalendarSlot[],
+  input: Pick<ScheduleGenerationInput, "schoolCalendarPeriods" | "breaks" | "plannedEndDate">,
+): CalendarWarning[] {
+  const warnings: CalendarWarning[] = [];
+  const scheduled = slots.filter((slot) => slot.status === "scheduled");
+  for (const period of input.schoolCalendarPeriods ?? input.breaks ?? []) {
+    const lessonCount = scheduled.filter((slot) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).length;
+    if (lessonCount) warnings.push({ kind: "school_period_overlap", label: period.label, lessonCount });
+  }
+  const finalLessonDate = scheduled.at(-1)?.localDate;
+  if (input.plannedEndDate && finalLessonDate && finalLessonDate > input.plannedEndDate) {
+    warnings.push({ kind: "planned_period_overrun", label: "planned_period", finalLessonDate });
+  }
+  return warnings;
+}
+
+/**
+ * Generates planning candidates until the program has enough active slots.
+ * `plannedEndDate` is deliberately soft: an explicit warning records an
+ * overrun rather than deleting or blocking valid lesson dates.
+ */
+export function generateCalendarPlan(input: ScheduleGenerationInput): ScheduleGenerationResult {
   const lessons = normalizedLessons(input.lessons);
   dateParts(input.firstCandidateDate);
   validateTime(input.startTime, "habitual start time");
@@ -354,7 +439,8 @@ export function generateCalendarSchedule(input: ScheduleGenerationInput): Calend
   });
   assertUniqueSlotIds(retained);
   assertUniqueSlotTimes(retained);
-  return assignLessons(retained, lessons);
+  const slots = assignLessons(retained, lessons);
+  return { slots, warnings: calendarWarnings(slots, input) };
 }
 
 function cloneSlot(slot: CalendarSlot): CalendarSlot {
@@ -459,5 +545,6 @@ export function reflowCancelledFutureSchedule(input: ScheduleReflowInput): Sched
     nextLessonSlot,
     changedFutureLessonAssignments: changedLessonCount(original, assigned, input.lockedThroughSequence, lessons),
     newFinalLessonDate: finalLessonSlot.localDate,
+    warnings: calendarWarnings(assigned, input),
   };
 }

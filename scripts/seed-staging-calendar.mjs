@@ -44,10 +44,10 @@ function fakeLessons(programId, count = 30) {
 function programSql(spec) {
   const lines = [
     `INSERT OR IGNORE INTO curriculum_program (
-      id, academic_year_id, stage_code, revision_number, display_name, status,
+      id, academic_year_id, stage_code, revision_number, display_name, program_kind, status,
       is_test, test_run_id, created_at, updated_at
     ) VALUES (${quote(spec.programId)}, ${quote(spec.academicYearId ?? academicYearId)}, ${quote(spec.stageCode)}, 1,
-      ${quote(spec.displayName ?? `Туршилтын ${spec.stageNumber}-р шатны хөтөлбөр`)}, 'draft', 1,
+      ${quote(spec.displayName ?? `Туршилтын ${spec.stageNumber}-р шатны хөтөлбөр`)}, ${quote(spec.programKind ?? "annual_course")}, 'draft', 1,
       ${quote(fixtureRunId)}, ${quote(fixtureTimestamp)}, ${quote(fixtureTimestamp)});`,
   ];
 
@@ -128,6 +128,7 @@ try {
     academicYearId: summerYearId,
     programId: "staging-summer-program-2027",
     displayName: "Туршилтын зуны сургалтын хөтөлбөр",
+    programKind: "summer_course",
     lessons: fakeLessons("staging-summer-program-2027", 12),
   };
   const byStage = new Map(programs.map((program) => [program.stageCode, program]));
@@ -275,20 +276,10 @@ try {
       '10:00', '11:30', ${quote(fixtureTimestamp)}, ${quote(fixtureTimestamp)}),
     ('staging-summer-daily-afternoon', 'daily', '2027-06-15', '2027-06-26', NULL,
       '13:00', '14:30', ${quote(fixtureTimestamp)}, ${quote(fixtureTimestamp)});`);
-  lines.push(`INSERT OR IGNORE INTO activity_offering (
-    id, kind, title, academic_year_id, stage_code, level_label, starts_on, ends_on,
-    curriculum_program_id, use_academic_year_breaks, charge_mode, facebook_group_url,
-    note, status, is_test, test_run_id, created_at, updated_at
-  ) VALUES ('staging-offering-telescope-event', 'event', 'Туршилтын од ажиглалт',
-    NULL, NULL, NULL, '2027-06-20', '2027-06-20', NULL, 0, 'free', NULL,
-    'Deliberately fake staging event.', 'active', 1, ${quote(fixtureRunId)},
-    ${quote(fixtureTimestamp)}, ${quote(fixtureTimestamp)});`);
-  lines.push(`INSERT OR IGNORE INTO offering_event_occurrence (
-    id, activity_offering_id, local_date, start_time, end_time, capacity,
-    registration_status, is_test, test_run_id, created_at, updated_at
-  ) VALUES ('staging-telescope-event-occurrence', 'staging-offering-telescope-event',
-    '2027-06-20', '20:00', '22:30', 12, 'closed', 1, ${quote(fixtureRunId)},
-    ${quote(fixtureTimestamp)}, ${quote(fixtureTimestamp)});`);
+  // Events are occasional. Remove the old routine-list fixture; individual
+  // service tests create and delete their own explicitly isolated event.
+  lines.push("DELETE FROM offering_event_occurrence WHERE id = 'staging-telescope-event-occurrence';");
+  lines.push("DELETE FROM activity_offering WHERE id = 'staging-offering-telescope-event';");
   for (const period of breaks) {
     lines.push(`INSERT OR IGNORE INTO academic_year_break (
       id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots,

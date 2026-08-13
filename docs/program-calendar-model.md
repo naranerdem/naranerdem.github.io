@@ -15,8 +15,8 @@ An event may have no program at all.
 
 `activity_offering` is one concrete run offered by the center. Its typed kind is
 `annual_course`, `summer_course`, or `event`. It owns the run's period, optional
-year/stage or level context, optional program association, `free`/`paid` charge
-mode, academic-break policy, and optional Facebook group URL.
+year/stage compatibility context, selected published program, `free`/`paid`
+charge mode, calendar guidance, and optional Facebook group URL.
 
 `class_session` remains the concrete registration cohort/time option within a
 course Offering. Existing annual stage/year and weekday/time columns remain for
@@ -37,20 +37,22 @@ date into UTC and accidentally move it by a day.
 
 ## Offering Kinds
 
-An annual course normally links an `academic_year`, one of the existing three
-progression stages, and a published program. It defaults to paid and applies
-academic-year breaks. Multiple weekly classes may share that one Offering and
-therefore inherit the same program and Facebook group.
+An annual course selects a compatible published annual Program. That Program
+derives the teacher-visible stage and academic year; persisted year/stage remain
+compatibility/history context. Annual courses are always paid and apply
+school-calendar guidance automatically. Multiple weekly classes may share that
+one Offering and therefore inherit the same program and Facebook group.
 
-A summer course has a human title, period, optional level label, and program. It
-defaults to paid and does not apply school-year breaks. Where the existing
-program schema requires year/stage context, the service creates an internal,
-non-current compatibility year; teachers do not see or select that detail.
+A summer course has a human title, planned period, and existing published summer
+Program from the dedicated `Хөтөлбөр` tool. It is always paid and does not apply
+school-calendar periods by default. Its internal academic-year/stage
+compatibility context is never a redundant teacher choice.
 
 An event has a human title and a narrow occurrence record. It defaults to free,
-starts with registration closed, and does not require a program. A closed event
-may be changed to paid, but this task creates no price or payment obligation.
-Future paid events must use the same normalized finance model as paid courses.
+starts with registration closed, and does not require a program. The teacher
+may choose paid for an event, but this creates no price or payment obligation.
+The Offering is the sole charge authority; its occurrence owns only date, time,
+capacity, and registration state. An unused closed event may be hard-deleted.
 
 New course classes and event occurrences always start with registration closed.
 
@@ -62,8 +64,9 @@ New course classes and event occurrences always start with registration closed.
 - `weekdays`: Monday through Friday
 - `daily`: every local calendar date
 
-It also stores first date, optional hard last date, and authoritative local
-start/end time. Legacy `class_session` weekday/time values are mirrored only for
+It also stores first date, optional planned end date, and authoritative local
+start/end time. New summer classes default to `daily`, including Saturday and
+Sunday; `weekdays` remains available. Legacy `class_session` weekday/time values are mirrored only for
 existing registration and catalog compatibility. The service generates human
 labels such as `1-р шат · Бямба 10:00–11:20` and
 `6/1–6/16 · 10:00–11:30`; teachers do not type class names or see duplicate
@@ -71,10 +74,19 @@ labels when two classes share a start time.
 
 ## Planning And Publishing
 
-An `academic_year_break` is a named planning input with an inclusive date range.
-It participates only when the Offering has `use_academic_year_breaks` enabled.
-A class can still exclude another date, restore one within an applicable break,
-or add an explicit extra occurrence.
+Planning has three deliberately separate inputs. An `academic_year_break` is a
+named inclusive school-calendar period for annual courses. Its generation
+behavior is either `exclude_by_default`, which skips habitual candidates in an
+initial draft, or `warn_only`, which leaves them in place and marks the overlap
+for teacher review. School-calendar periods do not automatically apply to
+summer courses or events.
+
+An `activity_offering_break` is a course-specific inclusive period, such as a
+summer break on June 8-9. It excludes each class in that Offering without
+duplicating a date decision into every class. A class can still exclude another
+date, restore one otherwise skipped school date, or add an explicit extra
+occurrence. An Offering break remains an Offering-level rule and cannot be
+overridden by a class restore.
 
 A calendar revision is drafted from the class's Offering program and meeting
 rule, then published. The caller cannot substitute another program or start
@@ -100,17 +112,20 @@ The recurrence rule is a draft-planning convenience only:
 
 1. Read the class's Offering, associated published program, and meeting rule.
 2. Generate weekly, weekday, or daily local candidates from the rule.
-3. Apply academic-year breaks only when enabled by the Offering.
+3. Apply course-specific Offering breaks and applicable school-calendar
+   guidance for annual courses.
 4. Apply class exclusions/restores and explicit extra slots.
 5. Sort active slots chronologically.
 6. Assign ordered program lessons one-to-one.
-7. Continue habitual candidates until all lessons fit, unless the class has a
-   hard last date.
+7. Continue habitual candidates until all lessons fit.
 
-When a hard period has too few active slots, generation fails explicitly. It
-never silently drops a lesson or moves a summer class beyond its configured
-period. The teacher can extend the period, choose another recurrence, add an
-extra slot, or revise an unpublished program.
+The meeting rule's end date and an Offering's advertised/planned period are
+planning guidance, not a silent lesson-dropping limit. When lessons extend past
+that date, the draft remains complete and shows a concise overrun warning. The
+teacher can then accept the plan, adjust the period or recurrence, add a break
+or extra slot, or revise an unpublished program. The low-level generator still
+supports an explicit hard technical bound where a caller truly needs one; the
+normal staff setup does not use it for an advertised course end date.
 
 Two cohorts can share one curriculum lesson while teaching it on different
 dates. There is no shared lesson-week abstraction.
@@ -129,11 +144,9 @@ completed-lesson number, raw sequence lock, or confirmation checkbox.
 
 Cancelling a safe future scheduled slot retains the original date as a
 `cancelled` entry with the lesson number/title snapshot. Later lessons reflow
-chronologically. An annual rule without a hard end may extend the tail. A class
-with a hard end instead reports that the program no longer fits unless an
-eligible replacement/extra slot exists. Past corrections, if later required,
-belong to an exceptional audited admin workflow rather than the normal teacher
-surface.
+chronologically and may produce a planned-period overrun warning. Past
+corrections, if later required, belong to an exceptional audited admin workflow
+rather than the normal teacher surface.
 
 ## Staff Setup Surface
 
@@ -141,10 +154,12 @@ The protected Mongolian setup is organized around concrete work:
 
 - `/staff/offerings/` (`Сургалт, арга хэмжээ`) creates and edits annual courses,
   summer courses, and events.
-- `/staff/programs/` edits the ordered program belonging to a course Offering.
+- `/staff/programs/` is the only place to create, copy, edit, and publish
+  annual or summer Programs.
 - `/staff/schedule/` chooses an Offering, manages its classes or event
   occurrence, and generates course calendars without asking for Program again.
-- `/staff/holidays/` records year-wide breaks used by Offerings that opt in.
+- `/staff/holidays/` records annual school-calendar periods with either an
+  initial exclusion or a warning-only behavior.
 - `/staff/settings/` stores typed operational settings, currently the
   Offering-level Facebook group URL plus separate admin authentication settings.
 
@@ -158,7 +173,10 @@ Migration 0010 copies its existing annual Facebook URLs into the corresponding
 annual Offerings where safe. New behavior reads and writes only the Offering
 value, so there is no dual authority. Migration 0011 preserves direct
 change-revision continuity for pre-Offering published calendars without
-weakening current-program inheritance for new calendars.
+weakening current-program inheritance for new calendars. Migration 0012 adds
+Program kind, Offering-specific breaks, school-calendar generation behavior,
+and stable operational-default import markers. It also makes the paid-course and
+annual school-guidance rules database-enforced rather than merely UI defaults.
 
 ## Public And Future Use
 
@@ -169,15 +187,16 @@ valid. This change does not expose summer/event registration.
 Future course registration should target `ActivityOffering + ClassSession`;
 future event registration should target `ActivityOffering +
 OfferingEventOccurrence`. Both can share guardian/student identity, verified
-email, capacity, and an appropriate FIFO waitlist. A free Offering can confirm
-enrollment after email verification and capacity confirmation without a
-payment-only 24-hour hold. A paid Offering requires future pricing/payment
-configuration and the common finance machinery.
+email, capacity, and an appropriate FIFO waitlist. Courses are always paid and
+will require common future pricing/payment machinery. A free event can
+eventually confirm after email verification and capacity confirmation without a
+payment-only 24-hour hold.
 
 `GET /api/calendar/published` continues to expose only published course
 schedule details and no family data. Production may safely return no rows until
 real configuration is created. Staging fixtures are explicitly fake and cover
-annual, summer weekday/daily, and programless free event cases.
+annual plus summer weekday/daily calendar behavior. Events are exercised in
+isolated service tests rather than appearing as a routine staging list item.
 
 Attendance, parent absence notices, make-up eligibility, full finance,
 generalized public registration, schedule email jobs, and Facebook API

@@ -156,8 +156,8 @@ of clear operational tools, not a generic heavyweight CMS.
 
 The durable hierarchy is `CurriculumProgram -> ActivityOffering -> ClassSession
 -> ClassCalendar`. Program is ordered lesson content. Offering is one concrete
-annual course, summer intensive, or event, with a period, optional level/year,
-program association, charge mode, break policy, and Facebook group. ClassSession
+annual course, summer intensive, or event, with a period, program association,
+charge mode, calendar guidance, and Facebook group. ClassSession
 is a course cohort/time option. A published calendar revision is the explicit
 operational schedule. Programless events use a narrow event occurrence rather
 than a fake one-lesson curriculum.
@@ -165,10 +165,14 @@ than a fake one-lesson curriculum.
 Class meeting rules support weekly, weekdays, and daily draft generation using
 Mongolia-local civil dates. The selected class inherits its Offering program;
 calendar generation does not ask the teacher or API caller to choose that
-program again. Academic-year breaks participate only when the Offering enables
-them, which defaults true for annual courses and false for summer courses and
-events. Recurrence remains only a draft generator and never replaces explicit
-published dated occurrences.
+program again. A published Program is selected before an annual or summer
+Offering is created; for an annual Offering it derives the teacher-visible
+stage and academic year. Those fields remain internal compatibility/history
+data. Annual and summer courses are always paid; events are normally free but
+the teacher may mark an event paid. The Offering owns that charge state, not
+the event occurrence. School-calendar periods apply automatically to annual
+courses only. Recurrence remains only a draft generator and never replaces
+explicit published dated occurrences.
 
 Published program and calendar revisions remain immutable. Class-specific
 exclusions/restores and manual extra slots remain planning inputs. A published
@@ -182,9 +186,10 @@ stored internal lock and all published lesson assignments whose local teaching
 date is already past. This is historical schedule protection, not a claim that
 the lesson was attended or delivered. The teacher no longer sees or confirms a
 raw completed-sequence boundary. Safe future cancellation retains history and
-reflows only future lessons; a hard summer period reports insufficient slots
-instead of silently extending. Attendance will later be the stronger delivered
-state source. See [program-calendar-model.md](program-calendar-model.md).
+reflows only future lessons. Advertised/planned Offering dates are soft
+guidance: an overrun is warned in the draft rather than silently dropping a
+lesson. Attendance will later be the stronger delivered state source. See
+[program-calendar-model.md](program-calendar-model.md).
 
 New course classes and event occurrences always start with registration closed.
 Human class labels are generated from annual stage/weekday/time or summer
@@ -193,6 +198,10 @@ references suppress hard deletion. Accountant capability has no access, and
 the Worker enforces every permission and same-origin mutation request.
 
 Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
+
+Event attendance is a separate, simpler future record: `attended`, `did not
+attend`, and an optional short note. It must not be forced through course
+absence-notice, same-lesson make-up, or make-up-invitation semantics.
 
 Parents may later use a simple action such as `Хичээлд ирж чадахгүйгээ мэдэгдэх` for one specific upcoming occurrence and an optional short note. Advance notice may favor teacher consideration of a make-up, but guarantees neither a make-up nor an automatic credit. An uninformed absence creates no automatic entitlement.
 
@@ -211,9 +220,10 @@ Make-up invitations keep their existing teacher-mediated path: the system may su
 The implemented staging fixtures are explicitly fake. Annual stages retain two
 weekly cohorts sharing one 30-lesson example program and exercise breaks,
 restore/exclusion, extra slots, and independent progress. A fake 12-lesson
-summer Offering has both weekday and daily classes with distinct periods/times,
-and a fake free telescope event has one programless occurrence. Production is
-schema-only and receives none of these records. Attendance, absence, make-up,
+summer Offering exercises weekday and daily scheduling. Events are created only
+when needed and are isolated in service tests, not shown as routine list
+fixtures. Production is schema-only and receives none of these records.
+Attendance, absence, make-up,
 public summer/event registration, finance, and parent notification workflows
 remain separate future work.
 

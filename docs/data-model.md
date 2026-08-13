@@ -181,9 +181,10 @@ Migration `0010_activity_offerings_and_meeting_rules.sql` adds the domain layer
 between curriculum content and concrete cohorts:
 
 - `activity_offering` represents one `annual_course`, `summer_course`, or
-  `event`. Typed fields hold title, optional academic year/stage/level, period,
-  optional program, break policy, `free`/`paid` charge mode, optional Facebook
-  group URL, status, test provenance, and timestamps.
+  `event`. Typed fields hold title, selected Program, period, calendar guidance,
+  `free`/`paid` charge mode, optional Facebook group URL, status, test
+  provenance, and timestamps. An annual Program derives the annual Offering's
+  academic year/stage context.
 - `class_session.activity_offering_id` attaches existing and future course
   cohorts to an Offering without rebuilding the registration table.
 - `class_meeting_rule` is one-to-one with a course class and supports `weekly`,
@@ -207,14 +208,15 @@ year/stage attachment and consequential Offering/program changes after a
 published calendar exists. Harmless communication changes remain possible.
 New classes and event occurrences start with registration closed.
 
-Annual and summer offerings default to paid; events default to free. These
-values create no finance records. Future paid registration must use common
-pricing/payment machinery, while a free Offering can eventually confirm after
-email verification and capacity checks without a payment-only hold.
+Annual and summer Offerings are always paid; events default to free and may be
+paid. These values create no finance records. Future paid registration must use
+common pricing/payment machinery, while a free event can eventually confirm
+after email verification and capacity checks without a payment-only hold.
 
 Production has the schema only and no operational Offerings, classes, programs,
 events, Facebook groups, or personal data. Staging fixtures are explicitly
-test-only and exercise annual, summer, and event behavior.
+test-only and exercise annual and summer behavior; event behavior is isolated
+in service tests because events are occasional.
 
 Migration `0011_legacy_calendar_program_continuity.sql` is a narrow transition
 guard for calendars that were already published before Offerings existed. A
@@ -224,6 +226,27 @@ history for the same class/calendar and same program. This preserves old
 operational schedules without permitting arbitrary program substitution. New
 staff behavior prevents an Offering program change once any class calendar
 exists, so this exception cannot create new drift.
+
+Migration `0012_offering_breaks_and_calendar_guidance.sql` classifies Programs
+as annual or summer, enforces the matching course Program kind, and enforces
+that annual/summer Offerings are paid while annual school guidance remains on.
+It adds `activity_offering_break` for a shared course-specific break and
+`academic_year_break.generation_behavior` for `exclude_by_default` versus
+`warn_only` school-period guidance. It also creates
+`operational_default_import`, which records stable source-template imports.
+
+Approved non-private startup Programs and school-calendar periods live in
+`src/config/operational-defaults.mjs`. They are intentionally empty until the
+owner approves real content. Import is explicit and idempotent:
+
+```sh
+npm run seed:operational-defaults -- --env=staging
+npm run seed:operational-defaults -- --env=production --confirm-production
+```
+
+The command never runs during deployment, never copies staging data to
+production, and never overwrites teacher-edited or published records. The
+stable import marker makes already-imported templates visible as skipped.
 
 Attendance, absence notice, make-up, accountant workflow, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
 

@@ -1,13 +1,17 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import {
+  calendarWarnings,
+  generateCalendarPlan,
   generateCalendarSchedule,
   reflowCancelledFutureSchedule,
   SchedulePlanningError,
   type AcademicYearBreak,
+  type CalendarWarning,
   type CalendarOverride,
   type CalendarSlot,
   type ExtraTeachingSlot,
   type MeetingRecurrenceKind,
+  type OfferingBreak,
   type ProgramLesson,
 } from "../services/program-calendar";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
@@ -40,6 +44,10 @@ interface ProgramRow {
   stageCode: StageCode;
   revisionNumber: number;
   displayName: string;
+  programKind: "annual_course" | "summer_course";
+  academicYearLabel?: string;
+  academicYearStartsOn?: string | null;
+  academicYearEndsOn?: string | null;
   status: "draft" | "published" | "superseded" | "archived";
   isTest: number;
   testRunId: string | null;
@@ -72,6 +80,7 @@ interface ClassRow {
   offeringKind: "annual_course" | "summer_course" | null;
   offeringTitle: string | null;
   offeringProgramId: string | null;
+  offeringEndsOn: string | null;
   useAcademicYearBreaks: number;
   recurrenceKind: MeetingRecurrenceKind;
   firstDate: string;
@@ -113,6 +122,7 @@ interface BreakRow {
   startsOn: string;
   endsOn: string;
   excludesHabitualSlots: number;
+  generationBehavior: "exclude_by_default" | "warn_only";
   sourceNote: string | null;
   status: "active" | "archived";
   isTest: number;
@@ -185,6 +195,7 @@ export interface BreakSaveInput {
   startsOn: string;
   endsOn: string;
   sourceNote?: string | null;
+  generationBehavior?: string;
 }
 
 function requireCapability(actor: StaffPrincipal, capability: "program.manage" | "calendar.manage"): void {
@@ -347,6 +358,7 @@ const CLASS_SELECT = `SELECT class_session.id, class_session.academic_year_id AS
   class_session.activity_offering_id AS offeringId, activity_offering.kind AS offeringKind,
   activity_offering.title AS offeringTitle,
   activity_offering.curriculum_program_id AS offeringProgramId,
+  activity_offering.ends_on AS offeringEndsOn,
   COALESCE(activity_offering.use_academic_year_breaks, 1) AS useAcademicYearBreaks,
   COALESCE(class_meeting_rule.recurrence_kind, 'weekly') AS recurrenceKind,
   COALESCE(class_meeting_rule.first_date, academic_year.starts_on, '1970-01-01') AS firstDate,
@@ -382,7 +394,7 @@ async function offeringContext(env: WorkerEnv, offeringId: string): Promise<Offe
 function scheduleInputForClass(classSession: ClassRow) {
   return {
     firstCandidateDate: classSession.firstDate,
-    lastCandidateDate: classSession.lastDate,
+    plannedEndDate: classSession.lastDate ?? classSession.offeringEndsOn,
     recurrenceKind: classSession.recurrenceKind,
     habitualWeekday: classSession.weeklyWeekday ?? undefined,
     startTime: classSession.startTime,
@@ -391,7 +403,9 @@ function scheduleInputForClass(classSession: ClassRow) {
 }
 
 async function applicableBreaks(env: WorkerEnv, classSession: ClassRow): Promise<AcademicYearBreak[]> {
-  return classSession.useAcademicYearBreaks ? breaksForYear(env, classSession.academicYearId) : [];
+  return classSession.offeringKind === "annual_course" && classSession.useAcademicYearBreaks
+    ? breaksForYear(env, classSession.academicYearId)
+    : [];
 }
 
 function mapPlanningError(caught: unknown): never {
@@ -433,11 +447,18 @@ async function offeringHasCalendar(env: WorkerEnv, offeringId: string): Promise<
 async function breaksForYear(env: WorkerEnv, academicYearId: string): Promise<AcademicYearBreak[]> {
   const result = await env.DB.prepare(`
     SELECT id, label, starts_on AS startsOn, ends_on AS endsOn,
-      excludes_habitual_slots AS excludesHabitualSlots
+      excludes_habitual_slots AS excludesHabitualSlots,
+      generation_behavior AS generationBehavior
     FROM academic_year_break WHERE academic_year_id = ? AND status = 'active'
     ORDER BY starts_on, ends_on
   `).bind(academicYearId).all<AcademicYearBreak>();
   return result.results.map((row) => ({ ...row, excludesHabitualSlots: Boolean(row.excludesHabitualSlots) }));
+}
+
+async function offeringBreaksForOffering(env: WorkerEnv, offeringId: string): Promise<OfferingBreak[]> {
+  const result = await env.DB.prepare(`SELECT id, label, starts_on AS startsOn, ends_on AS endsOn
+    FROM activity_offering_break WHERE activity_offering_id = ? ORDER BY starts_on, ends_on`).bind(offeringId).all<OfferingBreak>();
+  return result.results;
 }
 
 async function overridesForRevision(env: WorkerEnv, revisionId: string): Promise<CalendarOverride[]> {
@@ -502,10 +523,15 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
-    env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode,
-      revision_number AS revisionNumber, display_name AS displayName, status, is_test AS isTest,
-      test_run_id AS testRunId, updated_at AS updatedAt
-      FROM curriculum_program ORDER BY academic_year_id, stage_code, revision_number DESC`).all<ProgramRow>(),
+    env.DB.prepare(`SELECT curriculum_program.id, curriculum_program.academic_year_id AS academicYearId, curriculum_program.stage_code AS stageCode,
+      curriculum_program.revision_number AS revisionNumber, curriculum_program.display_name AS displayName, curriculum_program.program_kind AS programKind, curriculum_program.status, curriculum_program.is_test AS isTest,
+      curriculum_program.test_run_id AS testRunId, curriculum_program.updated_at AS updatedAt,
+      academic_year.public_label AS academicYearLabel,
+      academic_year.starts_on AS academicYearStartsOn,
+      academic_year.ends_on AS academicYearEndsOn
+      FROM curriculum_program
+      INNER JOIN academic_year ON academic_year.id = curriculum_program.academic_year_id
+      ORDER BY curriculum_program.academic_year_id, curriculum_program.stage_code, curriculum_program.revision_number DESC`).all<ProgramRow>(),
     env.DB.prepare(`SELECT id, curriculum_program_id AS programId, sequence_number AS sequenceNumber,
       title, internal_note AS internalNote FROM curriculum_lesson WHERE status = 'active'
       ORDER BY curriculum_program_id, sequence_number`).all<LessonRow>(),
@@ -513,7 +539,8 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
       ORDER BY activity_offering.starts_on DESC, class_session.stage_code,
         class_meeting_rule.first_date, class_meeting_rule.start_time`).all<ClassRow>(),
     env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn,
-      ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, source_note AS sourceNote,
+      ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots,
+      generation_behavior AS generationBehavior, source_note AS sourceNote,
       status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
       FROM academic_year_break ORDER BY academic_year_id, starts_on`).all<BreakRow>(),
     env.DB.prepare(`SELECT revision.id, revision.class_calendar_id AS calendarId,
@@ -552,6 +579,8 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     registrationOpen: registrationOpen(entry.status),
     canDelete: !(await classHasReferences(env, entry.id)),
   })));
+  const classById = new Map(classes.results.map((entry) => [entry.id, entry]));
+  const offeringById = new Map((offeringSetup.offerings as Array<{ id: string; kind: string; endsOn?: string | null }>).map((entry) => [entry.id, entry]));
   const today = localToday();
   return {
     years: years.results,
@@ -561,18 +590,37 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     stageSettings: stageSettings.results,
     offerings: offeringSetup.offerings,
     eventOccurrences: offeringSetup.eventOccurrences,
-    revisions: revisions.results.map((revision) => ({
-      ...revision,
-      overrides: overridesByRevision.get(revision.id) ?? [],
-      slots: (slotsByRevision.get(revision.id) ?? []).map((slot) => ({
-        ...slot,
-        isHistorical: slot.localDate < today,
-        canCancel: revision.status === "draft"
-          && slot.status === "scheduled"
-          && slot.localDate >= today
-          && (slot.lessonSequence ?? 0) > revision.lockedThroughSequence,
-      })),
-    })),
+    revisions: revisions.results.map((revision) => {
+      const classSession = classById.get(revision.classSessionId);
+      const offering = classSession?.offeringId ? offeringById.get(classSession.offeringId) : undefined;
+      const schoolCalendarPeriods = classSession?.offeringKind === "annual_course"
+        ? breaks.results.filter((period) => period.academicYearId === classSession.academicYearId && period.status === "active")
+          .map((period) => ({ ...period, excludesHabitualSlots: Boolean(period.excludesHabitualSlots) }))
+        : [];
+      const revisionSlots = slotsByRevision.get(revision.id) ?? [];
+      const warnings = classSession
+        ? calendarWarnings(revisionSlots.map(toSlot), {
+          schoolCalendarPeriods,
+          plannedEndDate: classSession.lastDate ?? offering?.endsOn ?? null,
+        })
+        : [];
+      return {
+        ...revision,
+        overrides: overridesByRevision.get(revision.id) ?? [],
+        warnings,
+        slots: revisionSlots.map((slot) => ({
+          ...slot,
+          holidayWarnings: slot.status === "scheduled"
+            ? schoolCalendarPeriods.filter((period) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label)
+            : [],
+          isHistorical: slot.localDate < today,
+          canCancel: revision.status === "draft"
+            && slot.status === "scheduled"
+            && slot.localDate >= today
+            && (slot.lessonSequence ?? 0) > revision.lockedThroughSequence,
+        })),
+      };
+    }),
     stages: STAGES,
     weekdays: WEEKDAYS,
   };
@@ -590,10 +638,40 @@ export async function createProgramDraft(
   const time = now(); const programId = id(); const flags = operationFlags(env, year);
   const displayName = text(input.displayName) || defaultProgramName(input.stageCode);
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO curriculum_program (id, academic_year_id, stage_code, revision_number, display_name, status, is_test, test_run_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`)
+    env.DB.prepare(`INSERT INTO curriculum_program (id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'annual_course', 'draft', ?, ?, ?, ?)`)
       .bind(programId, year.id, input.stageCode, next?.value ?? 1, displayName, flags.isTest, flags.testRunId, time, time),
     audit(env, actor, "program_draft_created", "curriculum_program", programId, { stageCode: input.stageCode, academicYearId: year.id }, flags, time),
+  ]);
+}
+
+/** Summer programs are created here, before a summer Offering selects the published program. */
+export async function createSummerProgramDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { displayName: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const displayName = text(input.displayName);
+  if (!displayName) throw new ProgramCalendarError("invalid");
+  const programId = id();
+  const academicYearId = `summer-program-context-${programId}`;
+  const time = now();
+  const flags = operationFlags(env);
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO academic_year (
+      id, public_label, registration_status, starts_on, ends_on, is_current,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, 'Зуны хөтөлбөрийн дотоод тохиргоо', 'draft', NULL, NULL, 0, ?, ?, ?, ?)`)
+      .bind(academicYearId, flags.isTest, flags.testRunId, time, time),
+    env.DB.prepare(`INSERT INTO curriculum_program (
+      id, academic_year_id, stage_code, revision_number, display_name, program_kind,
+      status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, 'stage_1', 1, ?, 'summer_course', 'draft', ?, ?, ?, ?)`)
+      .bind(programId, academicYearId, displayName, flags.isTest, flags.testRunId, time, time),
+    audit(env, actor, "summer_program_draft_created", "curriculum_program", programId, {
+      academicYearId,
+    }, flags, time),
   ]);
 }
 
@@ -603,10 +681,11 @@ export async function copyPreviousProgram(env: WorkerEnv, actor: StaffPrincipal,
   const year = await one<YearRow>(env, env.DB.prepare("SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn, is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId FROM academic_year WHERE id = ?").bind(input.academicYearId));
   const source = await env.DB.prepare(`
     SELECT program.id, program.academic_year_id AS academicYearId, program.stage_code AS stageCode,
-      program.revision_number AS revisionNumber, program.display_name AS displayName, program.status,
+      program.revision_number AS revisionNumber, program.display_name AS displayName,
+      program.program_kind AS programKind, program.status,
       program.is_test AS isTest, program.test_run_id AS testRunId, program.updated_at AS updatedAt
     FROM curriculum_program AS program INNER JOIN academic_year ON academic_year.id = program.academic_year_id
-    WHERE program.stage_code = ? AND program.status = 'published'
+    WHERE program.stage_code = ? AND program.program_kind = 'annual_course' AND program.status = 'published'
       AND COALESCE(academic_year.starts_on, '') < COALESCE(?, '9999-12-31')
     ORDER BY academic_year.starts_on DESC, program.revision_number DESC LIMIT 1
   `).bind(input.stageCode, year.startsOn).first<ProgramRow>();
@@ -618,8 +697,8 @@ export async function copyPreviousProgram(env: WorkerEnv, actor: StaffPrincipal,
   const next = await env.DB.prepare("SELECT COALESCE(MAX(revision_number), 0) + 1 AS value FROM curriculum_program WHERE academic_year_id = ? AND stage_code = ?").bind(year.id, input.stageCode).first<{ value: number }>();
   const time = now(); const programId = id(); const flags = operationFlags(env, year);
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO curriculum_program (id, academic_year_id, stage_code, revision_number, display_name, status, is_test, test_run_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`)
+    env.DB.prepare(`INSERT INTO curriculum_program (id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'annual_course', 'draft', ?, ?, ?, ?)`)
       .bind(programId, year.id, input.stageCode, next?.value ?? 1, source.displayName, flags.isTest, flags.testRunId, time, time),
     ...sourceLessons.map((lesson) => env.DB.prepare(`INSERT INTO curriculum_lesson (id, curriculum_program_id, sequence_number, title, internal_note, status, is_test, test_run_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
@@ -632,7 +711,7 @@ export async function saveProgramDraft(env: WorkerEnv, actor: StaffPrincipal, in
   requireCapability(actor, "program.manage");
   const name = text(input.displayName); const entries = Array.isArray(input.lessons) ? input.lessons : [];
   if (!name || !input.expectedUpdatedAt || entries.length < 1 || entries.length > 80) throw new ProgramCalendarError("invalid");
-  const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM curriculum_program WHERE id = ?`).bind(input.programId));
+  const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName, program_kind AS programKind, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM curriculum_program WHERE id = ?`).bind(input.programId));
   if (program.status !== "draft") throw new ProgramCalendarError("immutable");
   if (program.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const existing = await lessonsForProgram(env, program.id); const known = new Set(existing.map((lesson) => lesson.id));
@@ -677,7 +756,7 @@ export async function createOfferingProgramDraft(
   if (existing) throw new ProgramCalendarError("conflict");
   const source = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
     stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName,
-    status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    program_kind AS programKind, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
     FROM curriculum_program WHERE id = ? AND status = 'published'`).bind(offering.programId));
   const sourceLessons = await lessonsForProgram(env, source.id);
   const next = await env.DB.prepare(`SELECT COALESCE(MAX(revision_number), 0) + 1 AS value
@@ -686,10 +765,11 @@ export async function createOfferingProgramDraft(
   const draftId = id(); const time = now(); const provenance = operationFlags(env, offering);
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO curriculum_program (
-      id, academic_year_id, stage_code, revision_number, display_name, status,
+      id, academic_year_id, stage_code, revision_number, display_name, program_kind, status,
       is_test, test_run_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`)
       .bind(draftId, source.academicYearId, source.stageCode, next?.value ?? 1,
+        source.programKind,
         source.displayName, provenance.isTest, provenance.testRunId, time, time),
     ...sourceLessons.map((lesson) => env.DB.prepare(`INSERT INTO curriculum_lesson (
       id, curriculum_program_id, sequence_number, title, internal_note, status,
@@ -703,14 +783,52 @@ export async function createOfferingProgramDraft(
   ]);
 }
 
+export async function createProgramRevisionDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { sourceProgramId: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const source = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
+    stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName,
+    program_kind AS programKind, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM curriculum_program WHERE id = ? AND status = 'published'`).bind(input.sourceProgramId));
+  const existing = await env.DB.prepare(`SELECT id FROM curriculum_program
+    WHERE academic_year_id = ? AND stage_code = ? AND status = 'draft'`).bind(source.academicYearId, source.stageCode).first<{ id: string }>();
+  if (existing) throw new ProgramCalendarError("conflict");
+  const lessons = await lessonsForProgram(env, source.id);
+  if (!lessons.length) throw new ProgramCalendarError("invalid");
+  const next = await env.DB.prepare(`SELECT COALESCE(MAX(revision_number), 0) + 1 AS value
+    FROM curriculum_program WHERE academic_year_id = ? AND stage_code = ?`).bind(source.academicYearId, source.stageCode).first<{ value: number }>();
+  const draftId = id(); const time = now(); const flags = operationFlags(env, source);
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO curriculum_program (
+      id, academic_year_id, stage_code, revision_number, display_name, program_kind, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`)
+      .bind(draftId, source.academicYearId, source.stageCode, next?.value ?? 1, source.displayName,
+        source.programKind, flags.isTest, flags.testRunId, time, time),
+    ...lessons.map((lesson) => env.DB.prepare(`INSERT INTO curriculum_lesson (
+      id, curriculum_program_id, sequence_number, title, internal_note, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .bind(id(), draftId, lesson.sequenceNumber, lesson.title, lesson.internalNote,
+        flags.isTest, flags.testRunId, time, time)),
+    audit(env, actor, "program_draft_copied", "curriculum_program", draftId, { sourceProgramId: source.id }, flags, time),
+  ]);
+}
+
 export async function publishProgramDraft(env: WorkerEnv, actor: StaffPrincipal, input: { programId: string; expectedUpdatedAt: string; offeringId?: string }): Promise<void> {
   requireCapability(actor, "program.manage");
-  const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM curriculum_program WHERE id = ?`).bind(input.programId));
+  const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName, program_kind AS programKind, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM curriculum_program WHERE id = ?`).bind(input.programId));
   if (program.status !== "draft") throw new ProgramCalendarError("immutable");
   if (program.updatedAt !== input.expectedUpdatedAt || !(await lessonsForProgram(env, program.id)).length) throw new ProgramCalendarError("conflict");
   const offering = input.offeringId ? await offeringContext(env, input.offeringId) : null;
   if (offering) {
-    if (offering.kind === "event" || offering.programAcademicYearId !== program.academicYearId || offering.programStageCode !== program.stageCode) throw new ProgramCalendarError("invalid");
+    if (offering.kind === "event"
+      || program.programKind !== offering.kind
+      || offering.programAcademicYearId !== program.academicYearId
+      || offering.programStageCode !== program.stageCode) throw new ProgramCalendarError("invalid");
     if (offering.programId !== program.id && await offeringHasCalendar(env, offering.id)) throw new ProgramCalendarError("immutable");
   }
   const time = now(); const flags = operationFlags(env, program);
@@ -745,15 +863,12 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
   }
   const academicYearId = offering.academicYearId ?? offering.programAcademicYearId;
   const stage = offering.stageCode ?? offering.programStageCode;
-  const recurrence = (text(input.recurrenceKind, 20) || "weekly") as MeetingRecurrenceKind;
+  const recurrence = (text(input.recurrenceKind, 20) || (offering.kind === "summer_course" ? "daily" : "weekly")) as MeetingRecurrenceKind;
   const firstDate = text(input.firstDate, 10) || offering.startsOn || "";
   const lastDate = optionalText(input.lastDate, 10) ?? (offering.kind === "summer_course" ? offering.endsOn : null);
   const weeklyWeekday = recurrence === "weekly" ? text(input.weeklyWeekday ?? input.weekday, 20) : null;
   if (!["weekly", "weekdays", "daily"].includes(recurrence)
     || !validDate(firstDate) || (lastDate !== null && (!validDate(lastDate) || lastDate < firstDate))
-    || (offering.kind === "summer_course" && !lastDate)
-    || (offering.kind === "summer_course" && Boolean(offering.startsOn) && firstDate < (offering.startsOn as string))
-    || (offering.kind === "summer_course" && Boolean(offering.endsOn) && (lastDate as string) > (offering.endsOn as string))
     || (recurrence === "weekly" && !WEEKDAYS.includes(weeklyWeekday as typeof WEEKDAYS[number]))
     || !validTime(input.startTime) || !validTime(input.endTime) || input.startTime >= input.endTime
     || !Number.isInteger(input.capacity) || input.capacity < 1 || input.capacity > 80
@@ -837,21 +952,23 @@ export async function deleteClassSession(env: WorkerEnv, actor: StaffPrincipal, 
 export async function saveAcademicYearBreak(env: WorkerEnv, actor: StaffPrincipal, input: BreakSaveInput): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const label = text(input.label); if (!label || !validDate(input.startsOn) || !validDate(input.endsOn) || input.endsOn < input.startsOn) throw new ProgramCalendarError("invalid");
+  const generationBehavior = text(input.generationBehavior, 40) || "exclude_by_default";
+  if (!["exclude_by_default", "warn_only"].includes(generationBehavior)) throw new ProgramCalendarError("invalid");
   await one<YearRow>(env, env.DB.prepare("SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn, is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId FROM academic_year WHERE id = ?").bind(input.academicYearId));
   const time = now();
   if (!input.id) {
     const flags = operationFlags(env); const breakId = id();
     await env.DB.batch([
-      env.DB.prepare(`INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, source_note, status, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
-        .bind(breakId, input.academicYearId, label, input.startsOn, input.endsOn, 1, optionalText(input.sourceNote), flags.isTest, flags.testRunId, time, time),
+      env.DB.prepare(`INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, source_note, status, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+        .bind(breakId, input.academicYearId, label, input.startsOn, input.endsOn, generationBehavior === "exclude_by_default" ? 1 : 0, generationBehavior, optionalText(input.sourceNote), flags.isTest, flags.testRunId, time, time),
       audit(env, actor, "academic_year_break_created", "academic_year_break", breakId, { academicYearId: input.academicYearId }, flags, time),
     ]);
     return;
   }
-  const existing = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.id));
+  const existing = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, generation_behavior AS generationBehavior, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.id));
   if (!input.expectedUpdatedAt || existing.updatedAt !== input.expectedUpdatedAt || existing.status !== "active") throw new ProgramCalendarError("conflict");
   const result = await env.DB.batch([
-    env.DB.prepare(`UPDATE academic_year_break SET label = ?, starts_on = ?, ends_on = ?, excludes_habitual_slots = 1, source_note = ?, updated_at = ? WHERE id = ? AND status = 'active' AND updated_at = ?`).bind(label, input.startsOn, input.endsOn, optionalText(input.sourceNote), time, existing.id, input.expectedUpdatedAt),
+    env.DB.prepare(`UPDATE academic_year_break SET label = ?, starts_on = ?, ends_on = ?, excludes_habitual_slots = ?, generation_behavior = ?, source_note = ?, updated_at = ? WHERE id = ? AND status = 'active' AND updated_at = ?`).bind(label, input.startsOn, input.endsOn, generationBehavior === "exclude_by_default" ? 1 : 0, generationBehavior, optionalText(input.sourceNote), time, existing.id, input.expectedUpdatedAt),
     audit(env, actor, "academic_year_break_saved", "academic_year_break", existing.id, {}, operationFlags(env, existing), time),
   ]);
   if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
@@ -859,7 +976,7 @@ export async function saveAcademicYearBreak(env: WorkerEnv, actor: StaffPrincipa
 
 export async function removeAcademicYearBreak(env: WorkerEnv, actor: StaffPrincipal, input: { breakId: string; expectedUpdatedAt: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
-  const current = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.breakId));
+  const current = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, generation_behavior AS generationBehavior, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.breakId));
   if (current.status !== "active" || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const time = now(); const result = await env.DB.batch([
     env.DB.prepare("UPDATE academic_year_break SET status = 'archived', updated_at = ? WHERE id = ? AND status = 'active' AND updated_at = ?").bind(time, current.id, input.expectedUpdatedAt),
@@ -878,17 +995,22 @@ export async function generateCalendarDraft(env: WorkerEnv, actor: StaffPrincipa
   if (!classSession.offeringId || !classSession.offeringProgramId) throw new ProgramCalendarError("invalid");
   const program = await one<ProgramRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
     stage_code AS stageCode, revision_number AS revisionNumber, display_name AS displayName,
-    status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    program_kind AS programKind, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
     FROM curriculum_program WHERE id = ?`).bind(classSession.offeringProgramId));
   if (program.status !== "published" || program.academicYearId !== classSession.academicYearId || program.stageCode !== classSession.stageCode) throw new ProgramCalendarError("invalid");
   const draft = classSession.calendarId ? await env.DB.prepare("SELECT id FROM class_calendar_revision WHERE class_calendar_id = ? AND status = 'draft'").bind(classSession.calendarId).first<{ id: string }>() : null;
   if (draft) throw new ProgramCalendarError("conflict");
   const lessons = (await lessonsForProgram(env, program.id)).map(toProgramLesson); if (!lessons.length) throw new ProgramCalendarError("invalid");
-  const breaks = await applicableBreaks(env, classSession); const flags = operationFlags(env, classSession); const time = now();
+  const schoolCalendarPeriods = await applicableBreaks(env, classSession);
+  const offeringBreaks = await offeringBreaksForOffering(env, classSession.offeringId);
+  const flags = operationFlags(env, classSession); const time = now();
   const calendarId = classSession.calendarId ?? id(); const revisionId = id();
   let schedule: CalendarSlot[];
+  let warnings: CalendarWarning[];
   try {
-    schedule = generateCalendarSchedule({ lessons, ...scheduleInputForClass(classSession), breaks });
+    const plan = generateCalendarPlan({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks });
+    schedule = plan.slots;
+    warnings = plan.warnings;
   } catch (caught) {
     mapPlanningError(caught);
   }
@@ -898,7 +1020,7 @@ export async function generateCalendarDraft(env: WorkerEnv, actor: StaffPrincipa
     env.DB.prepare(`INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, based_on_revision_id, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, 0, NULL, ?, ?, ?, ?)`)
       .bind(revisionId, calendarId, program.id, await nextRevisionNumber(env, calendarId), classSession.firstDate, flags.isTest, flags.testRunId, time, time),
     ...insertSlots(env, revisionId, schedule, flags, time),
-    audit(env, actor, "calendar_draft_generated", "class_calendar_revision", revisionId, { classSessionId: classSession.id, programId: program.id, slotCount: schedule.length }, flags, time),
+    audit(env, actor, "calendar_draft_generated", "class_calendar_revision", revisionId, { classSessionId: classSession.id, programId: program.id, slotCount: schedule.length, warningCount: warnings.length }, flags, time),
   );
   await env.DB.batch(statements);
 }
@@ -935,7 +1057,8 @@ async function rebuiltDraftSchedule(
 ): Promise<CalendarSlot[]> {
   const classSession = await classForCalendar(env, revision.calendarId);
   const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson);
-  const breaks = await applicableBreaks(env, classSession);
+  const schoolCalendarPeriods = await applicableBreaks(env, classSession);
+  const offeringBreaks = classSession.offeringId ? await offeringBreaksForOffering(env, classSession.offeringId) : [];
   let overrides = await overridesForRevision(env, revision.id);
   if (proposedOverride) {
     overrides = [...overrides.filter((entry) => entry.localDate !== proposedOverride.localDate), proposedOverride];
@@ -945,7 +1068,7 @@ async function rebuiltDraftSchedule(
   if (addedExtra) extraSlots.push(addedExtra);
   let rebuilt: CalendarSlot[];
   try {
-    rebuilt = generateCalendarSchedule({ lessons, ...scheduleInputForClass(classSession), breaks, overrides, extraSlots });
+    rebuilt = generateCalendarSchedule({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks, overrides, extraSlots });
   } catch (caught) {
     mapPlanningError(caught);
   }
@@ -994,14 +1117,14 @@ export async function setCalendarDeliveredPrefix(env: WorkerEnv, actor: StaffPri
 export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string; slotId: string; replacement?: { localDate: string; startTime: string; endTime: string; reasonLabel?: string | null } }): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft" || revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
-  const classSession = await classForCalendar(env, revision.calendarId); const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson); const breaks = await applicableBreaks(env, classSession); const overrides = await overridesForRevision(env, revision.id); const slots = (await slotsForRevision(env, revision.id)).map(toSlot);
+  const classSession = await classForCalendar(env, revision.calendarId); const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson); const schoolCalendarPeriods = await applicableBreaks(env, classSession); const offeringBreaks = classSession.offeringId ? await offeringBreaksForOffering(env, classSession.offeringId) : []; const overrides = await overridesForRevision(env, revision.id); const slots = (await slotsForRevision(env, revision.id)).map(toSlot);
   const target = slots.find((slot) => slot.id === input.slotId);
   if (!target || target.localDate < localToday()) throw new ProgramCalendarError("immutable");
   const replacementSlots = input.replacement ? [{ id: id(), localDate: input.replacement.localDate, startTime: input.replacement.startTime, endTime: input.replacement.endTime, reasonLabel: optionalText(input.replacement.reasonLabel) ?? undefined }] : undefined;
   if (replacementSlots && (!validDate(replacementSlots[0].localDate) || !validTime(replacementSlots[0].startTime) || !validTime(replacementSlots[0].endTime) || replacementSlots[0].startTime >= replacementSlots[0].endTime)) throw new ProgramCalendarError("invalid");
   let result;
   try {
-    result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), breaks, overrides, existingSlots: slots, lockedThroughSequence: revision.lockedThroughSequence, cancelSlotId: input.slotId, replacementSlots });
+    result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks, overrides, existingSlots: slots, lockedThroughSequence: revision.lockedThroughSequence, cancelSlotId: input.slotId, replacementSlots });
   } catch (caught) {
     mapPlanningError(caught);
   }

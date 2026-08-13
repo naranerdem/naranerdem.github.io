@@ -13,6 +13,7 @@
     "deploy:cloudflare:staging": "npm run build && wrangler deploy --env staging",
     "seed:catalog:staging": "node scripts/seed-staging-catalog.mjs",
     "seed:calendar:staging": "node scripts/seed-staging-calendar.mjs",
+    "seed:operational-defaults": "node scripts/import-operational-defaults.mjs",
     "cleanup:registration:staging": "node scripts/cleanup-staging-registration-tests.mjs",
     "staff:create": "node scripts/staff-provision.mjs",
     "test:d1:local": "node scripts/d1-local-smoke.mjs",
@@ -24,6 +25,7 @@
     "test:registration": "node scripts/registration-hold-test.mjs",
     "test:calendar": "node scripts/calendar-domain-test.mjs",
     "test:schedule:preview": "npm run build && node scripts/schedule-preview-test.mjs",
+    "test:offering-guidance": "node scripts/offering-guidance-test.mjs",
     "test:register:prototype": "npm run build && node scripts/register-prototype-test.mjs && node scripts/register-state-test.mjs && node scripts/registration-draft-test.mjs"
   },
   "dependencies": {
