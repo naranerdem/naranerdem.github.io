@@ -40,6 +40,26 @@ All teaching dates and times are civil `Asia/Ulaanbaatar` values. System audit
 timestamps remain UTC ISO strings. Schedule code must not convert a local class
 date into UTC and accidentally move it by a day.
 
+## Curriculum Privacy And Promotion
+
+Real annual and summer curricula are private operational data stored in D1.
+They are never checked into public source, embedded in static staff pages, or
+returned by unauthenticated APIs. Checked-in tests use clearly fake lessons;
+checked-in operational defaults contain only public school-calendar guidance.
+
+The private export is a strict versioned whitelist containing stable family
+identity and each family's current saved revision with ordered lessons. It does
+not include working drafts, revision history, Offerings, classes, calendars,
+people, registrations, auth data, or email data. Exports and checksums live
+under the git-ignored `/_private/operational-config/` path.
+
+Promotion follows `export staging -> review counts/checksum -> target dry-run ->
+explicit import`. A matching target is unchanged; different content creates a
+new immutable current revision atomically; an unsafe or stale target fails.
+Production writes require `--confirm-production`. Existing Offerings remain
+pinned to their prior revision, and a private Program import never copies the
+rest of staging D1.
+
 ## Offering Kinds
 
 An annual course teacher form contains only `Шат`, an editable prepopulated

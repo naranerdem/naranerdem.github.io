@@ -103,24 +103,33 @@ The protected staff setup starts with `Сургалт, арга хэмжээ`, t
 `Хөтөлбөр`, `Хуваарь`, `Амралтын хуваарь`, and a small typed `Тохиргоо` screen.
 It supports annual courses, summer intensives, and one-off events while keeping
 published course calendars as explicit dated records. Facebook groups and
-school-break policy belong to the concrete Offering. Its staging data is
-deliberately fake; production has no curriculum, Offering, class, event, or
-calendar configuration. See
+school-break policy belong to the concrete Offering. Real curricula are private
+staging D1 data; automated fixtures remain explicitly fake. Production has no
+curriculum, Offering, class, event, or calendar configuration. See
 [docs/program-calendar-model.md](docs/program-calendar-model.md).
 
-Approved non-private starting Programs and school-calendar periods are kept as
-source templates in `src/config/operational-defaults.mjs`. The current template
-contains the owner-supplied three annual baseline curricula; it intentionally
-does not invent school dates or breaks. Templates are imported explicitly,
-never during deployment:
+The checked-in `src/config/operational-defaults.mjs` contains only public
+school-calendar guidance. It is imported explicitly, never during deployment:
 
 ```sh
 npm run seed:operational-defaults -- --env=staging
 npm run seed:operational-defaults -- --env=production --confirm-production
 ```
 
-The importer is idempotent, does not overwrite teacher-edited/published data,
-and never copies staging data into production.
+Real Program content lives in D1 and git-ignored private bundles. The operator
+workflow is: edit/review in staging, export a fresh bundle, inspect its counts
+and checksum, dry-run the target, then explicitly import it. Production import
+always requires the confirmation flag:
+
+```sh
+npm run export:private-config -- --env=staging
+npm run import:private-config -- --env=production --file=<private-bundle.json> --dry-run
+npm run import:private-config -- --env=production --file=<private-bundle.json> --confirm-production
+```
+
+Never copy staging D1 wholesale, commit a private bundle, or print its lesson
+content in public logs. Private imports create immutable revisions and do not
+move existing Offerings from the revisions they already use.
 
 ## Editing Public Content
 
@@ -130,4 +139,6 @@ For small wording, phone, address, schedule, or future price edits, see [EDITING
 
 Children's registration records, private exports, bank data, credentials, API keys, authentication secrets, and operational data must never be committed to the public repository.
 
-The `.gitignore` includes placeholder private data paths, but the main protection should be architectural: real operational data belongs in a private datastore or controlled export location, not in source control.
+The `.gitignore` explicitly excludes `/_private/operational-config/`, but the
+main protection is architectural: real curricula and other operational data
+belong in a private datastore or controlled export location, not source control.

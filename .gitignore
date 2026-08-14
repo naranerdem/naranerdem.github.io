@@ -29,3 +29,4 @@ pnpm-debug.log*
 # Operational data must not be committed.
 data/private/
 exports/private/
+/_private/operational-config/

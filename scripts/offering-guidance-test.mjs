@@ -28,9 +28,7 @@ try {
   const holidaysPageSource = readFileSync("src/pages/staff/holidays.astro", "utf8");
   const deploymentScripts = readFileSync("package.json", "utf8");
   const { operationalDefaults } = await import(pathToFileURL(path.resolve("src/config/operational-defaults.mjs")).href);
-  assert.equal(operationalDefaults.programs.length, 3, "the approved annual Program baseline has exactly three logical families");
-  assert.deepEqual(operationalDefaults.programs.map((program) => program.lessons.length), [30, 30, 23], "the approved lesson counts are preserved exactly");
-  assert.ok(operationalDefaults.programs.every((program) => program.publish === true && program.kind === "annual_course"), "the approved annual baseline publishes current revisions explicitly");
+  assert.equal(Object.hasOwn(operationalDefaults, "programs"), false, "private Program curricula are absent from checked-in operational defaults");
   assert.equal(operationalDefaults.academicYears.length, 1, "the real operational template has one explicit academic year");
   assert.deepEqual(operationalDefaults.schoolCalendarPeriods.map((period) => [period.label, period.startsOn, period.endsOn]), [
     ["Намрын амралт", "2026-10-31", "2026-11-08"],
@@ -66,11 +64,6 @@ try {
   const fixture = {
     version: 1,
     academicYears: [{ key: "2027-28", label: "Туршилтын жил", startsOn: "2027-09-01", endsOn: "2028-06-01" }],
-    programs: [{
-      key: "annual-one", kind: "annual_course", displayName: "Туршилтын хөтөлбөр",
-      academicYear: { key: "2027-28", label: "Туршилтын жил", startsOn: "2027-09-01", endsOn: "2028-06-01" },
-      stageCode: "stage_1", lessons: [{ title: "Нэг" }, { title: "Хоёр" }],
-    }],
     schoolCalendarPeriods: [{
       key: "winter", academicYearKey: "2027-28", label: "Туршилтын өвлийн амралт",
       startsOn: "2027-12-20", endsOn: "2028-01-10", excludeFromGeneration: true, warnOnOverlap: true,
@@ -78,7 +71,7 @@ try {
   };
   const sql = importer.buildOperationalDefaultsImport(fixture, "2026-08-13T00:00:00.000Z");
   assert.match(sql, /operational_default_import/, "imports have stable idempotency markers");
-  assert.match(sql, /'draft'/, "imported programs remain editable drafts");
+  assert.doesNotMatch(sql, /curriculum_program|curriculum_lesson/, "public defaults import cannot write private Program data");
   assert.doesNotMatch(sql, /facebook\.com/i, "template import does not manage Facebook URLs");
   const migrations = readdirSync("migrations").filter((file) => file.endsWith(".sql")).sort();
   sqlite(migrations.map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
@@ -114,26 +107,14 @@ try {
   assert.deepEqual(JSON.parse(sqliteAt(backfillDatabasePath, `SELECT id, status FROM curriculum_program WHERE id IN ('legacy-current', 'legacy-other') ORDER BY id;`, true)), [{ id: "legacy-current", status: "published" }, { id: "legacy-other", status: "superseded" }], "0015 restores a current Program pointer whose revision was incorrectly superseded");
   sqlite(sql); sqlite(sql);
   const counts = JSON.parse(sqlite(`SELECT
-    (SELECT COUNT(*) FROM curriculum_program WHERE id = 'operational-default-program-annual-one') AS programs,
-    (SELECT COUNT(*) FROM curriculum_lesson WHERE curriculum_program_id = 'operational-default-program-annual-one') AS lessons,
     (SELECT COUNT(*) FROM academic_year_break WHERE id = 'operational-default-school-period-winter') AS periods,
     (SELECT COUNT(*) FROM operational_default_import) AS markers;`, true))[0];
-  assert.deepEqual(counts, { programs: 1, lessons: 2, periods: 1, markers: 3 }, "a repeated explicit import creates no duplicates");
-  sqlite("UPDATE curriculum_program SET status = 'published', display_name = 'Баталсан нэр' WHERE id = 'operational-default-program-annual-one';");
-  sqlite(sql);
-  assert.deepEqual(JSON.parse(sqlite("SELECT display_name AS name, status FROM curriculum_program WHERE id = 'operational-default-program-annual-one';", true))[0], { name: "Баталсан нэр", status: "published" }, "later imports never overwrite or supersede published records");
+  assert.deepEqual(counts, { periods: 1, markers: 2 }, "a repeated explicit public-default import creates no duplicates");
   sqlite("UPDATE academic_year_break SET label = 'Багшийн зассан амралт' WHERE id = 'operational-default-school-period-winter';");
   sqlite(sql);
   assert.equal(JSON.parse(sqlite("SELECT label FROM academic_year_break WHERE id = 'operational-default-school-period-winter';", true))[0].label, "Багшийн зассан амралт", "later imports never overwrite teacher-edited operational periods");
   const baselineSql = importer.buildOperationalDefaultsImport(operationalDefaults, "2026-08-13T00:00:01.000Z");
-  sqlite(baselineSql);
-  const baseline = JSON.parse(sqlite(`SELECT family.annual_stage_code AS stageCode, program.status, COUNT(lesson.id) AS lessons
-    FROM curriculum_program_family AS family
-    INNER JOIN curriculum_program AS program ON program.id = family.current_published_program_id
-    LEFT JOIN curriculum_lesson AS lesson ON lesson.curriculum_program_id = program.id
-    WHERE family.kind = 'annual_course'
-    GROUP BY family.id ORDER BY family.annual_stage_code;`, true));
-  assert.deepEqual(baseline.map((entry) => [entry.stageCode, entry.status, entry.lessons]), [["stage_1", "published", 30], ["stage_2", "published", 30], ["stage_3", "published", 23]], "baseline import creates three current published logical Programs");
+  assert.doesNotMatch(baselineSql, /curriculum_program|curriculum_lesson/, "checked-in defaults remain public school-calendar data only");
 
   const productionRefusal = spawnSync(process.execPath, ["scripts/import-operational-defaults.mjs", "--env=production"], { encoding: "utf8" });
   assert.notEqual(productionRefusal.status, 0, "production import requires explicit confirmation");

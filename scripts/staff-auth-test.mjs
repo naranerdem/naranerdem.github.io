@@ -519,6 +519,10 @@ try {
   const changedPrincipal = await resolveStaffPrincipal(env, roleLogin.rawSession, new Date(baseTime.getTime() + 432_000));
   assert.ok(hasStaffCapability(changedPrincipal, "accountant.call_queue.view"));
   assert.ok(!hasStaffCapability(changedPrincipal, "calendar.view"));
+  const accountantPrograms = await api(env, "/api/staff/program-calendar", {
+    headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` },
+  });
+  assert.equal(accountantPrograms.status, 403, "accountants cannot retrieve curriculum data through the staff API");
   await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "disabled", new Date(baseTime.getTime() + 433_000));
   assert.equal(await resolveStaffPrincipal(env, roleLogin.rawSession, new Date(baseTime.getTime() + 434_000)), null);
   await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "active", new Date(baseTime.getTime() + 435_000));

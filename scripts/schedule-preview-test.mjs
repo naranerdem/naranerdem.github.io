@@ -12,4 +12,5 @@ assert.match(page, /Туршилтын анги/);
 assert.match(page, /weekdayNames/);
 assert.match(page, /replaceChildren/);
 assert.doesNotMatch(page, /innerHTML/);
+assert.doesNotMatch(page, /lessonTitle|lessonNumber|lessonSequence/, "public preview does not expect private curriculum fields");
 console.log("ok static schedule preview contract");

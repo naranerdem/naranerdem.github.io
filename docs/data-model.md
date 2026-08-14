@@ -253,24 +253,24 @@ legacy enum remains compatibility-only. It also repairs an invalid historical
 Program-family state where an interrupted defaults import superseded the
 revision still named by the family's current pointer.
 
-Approved non-private startup Programs and school-calendar periods live in
-`src/config/operational-defaults.mjs`. The baseline contains the three annual
-logical Program families with 30, 30, and 23 ordered lessons and the explicit
-2026–2027 Ulaanbaatar VI–IX operational calendar template from Ministry of
-Education Order A/211 (2026-07-08), Annex 1. Its six inclusive initial
-exclusions and warnings include Republic Day (11/26) and International Women's
-Day (3/8); winter guidance starts on 12/26. There is no generic
-summer-vacation record.
-Import is explicit and idempotent:
+The public `src/config/operational-defaults.mjs` contains only the explicit
+2026–2027 Ulaanbaatar VI–IX school-calendar guidance from Ministry of Education
+Order A/211 (2026-07-08), Annex 1. Its six inclusive initial exclusions and
+warnings include Republic Day (11/26) and International Women's Day (3/8);
+winter guidance starts on 12/26. There is no generic summer-vacation record.
+Public-default import is explicit and idempotent:
 
 ```sh
 npm run seed:operational-defaults -- --env=staging
 npm run seed:operational-defaults -- --env=production --confirm-production
 ```
 
-The command never runs during deployment, never copies staging data to
-production, and never overwrites teacher-edited or published records. The
-stable import marker makes already-imported templates visible as skipped.
+The command never runs during deployment, never writes Program or lesson rows,
+and never overwrites teacher-edited periods. Real curricula live in D1 and
+strict git-ignored private bundles. The private importer compares stable logical
+families, makes unchanged content a no-op, and creates a new immutable revision
+for changed content without moving existing Offering pins. It rejects stale or
+incompatible targets and requires explicit confirmation for production.
 
 Attendance, absence notice, make-up, accountant workflow, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
 

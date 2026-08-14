@@ -167,6 +167,16 @@ interface. The real 2026–2027 school-calendar defaults are source-controlled,
 explicitly imported planning guidance; staging fixtures remain visibly test
 data and do not clutter the normal Holidays list.
 
+Real curricula are proprietary operational data. D1 is their authority and the
+public repository contains only fake curriculum fixtures. A whitelisted,
+versioned export captures current saved Program revisions into
+`/_private/operational-config/`, which Git ignores. Promotion is explicit:
+export staging, review counts/checksum, dry-run the target, then use the
+production confirmation flag. Importing changed content creates and selects a
+new immutable Program revision; unchanged content is a no-op and existing
+Offerings retain their pinned revision. Private bundles, lesson content, and
+internal notes must not be copied to public logs.
+
 ### Program, Offering, class, and calendar domain
 
 The durable hierarchy is `Program family -> CurriculumProgram revision ->
@@ -201,6 +211,12 @@ calendar records explicit `scheduled`, `no_class`, and `cancelled` entries, so
 absence never ambiguously means holiday, cancellation, or incomplete setup.
 Every class calendar remains independent even where cohorts share one Offering
 program.
+
+The unauthenticated published-calendar API exposes only the public class/date,
+time, and teaching-state information needed by its preview. It does not join or
+return curriculum lessons, sequence numbers, internal notes, or Program-family
+data. Full Program content remains behind staff authentication and the
+`calendar.view` capability; the accountant role does not have that capability.
 
 The teacher Program editor presents this as ordinary `Засах` then `Хадгалах`.
 Saving still creates and atomically selects an immutable Program revision;

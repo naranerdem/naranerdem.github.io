@@ -72,13 +72,10 @@ import "../styles/global.css";
       function statusLabel(entry) {
         if (entry.status === "no_class") return entry.reasonLabel || "Хичээлгүй";
         if (entry.status === "cancelled") return entry.reasonLabel || "Цуцлагдсан";
-        return `Хичээл ${entry.lessonNumber}: ${entry.lessonTitle}`;
+        return "Хичээлтэй";
       }
 
       function entryElement(calendar, entry) {
-        const lesson = entry.status === "scheduled" && entry.lessonNumber
-          ? `Хичээл ${entry.lessonNumber}: ${entry.lessonTitle}`
-          : statusLabel(entry);
         const article = document.createElement("article");
         article.className = `schedule-entry schedule-entry-${entry.status}`;
         const addText = (tagName, text) => {
@@ -89,7 +86,7 @@ import "../styles/global.css";
         addText("p", formatDate(entry.localDate));
         addText("h3", calendar.classSession.label);
         addText("p", `${entry.startTime}–${entry.endTime}`);
-        addText("p", lesson);
+        addText("p", statusLabel(entry));
         return article;
       }
 
@@ -103,7 +100,7 @@ import "../styles/global.css";
           return;
         }
         nextTitle.textContent = calendar.classSession.label;
-        nextDetails.textContent = `${formatDate(next.localDate)} · ${next.startTime}–${next.endTime} · Хичээл ${next.lessonNumber}: ${next.lessonTitle}`;
+        nextDetails.textContent = `${formatDate(next.localDate)} · ${next.startTime}–${next.endTime}`;
         list.replaceChildren(...upcoming.map((entry) => entryElement(calendar, entry)));
       }
 

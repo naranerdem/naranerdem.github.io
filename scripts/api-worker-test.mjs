@@ -81,8 +81,8 @@ function createDatabase(rows, options = {}) {
               : calendarRows;
             if (productionQuery) {
               assert.match(sql, /class_session\.is_test_only = 0/);
-              assert.match(sql, /curriculum_lesson\.is_test = 0/);
             }
+            assert.doesNotMatch(sql, /curriculum_(program|lesson)/, "public calendar query does not join private curriculum tables");
             assert.deepEqual(bindings, []);
             return { success: true, results: filtered };
           }
@@ -199,11 +199,11 @@ try {
   const stagingCalendar = await jsonResponse(stagingWorker, "/api/calendar/published", stagingEnv);
   assert.equal(stagingCalendar.response.status, 200);
   assert.equal(stagingCalendar.body.calendars.length, 1);
-  assert.deepEqual(stagingCalendar.body.calendars[0].entries.map((entry) => [entry.status, entry.lessonNumber, entry.reasonLabel]), [
-    ["scheduled", 1, null],
-    ["no_class", null, "Туршилтын завсарлага"],
+  assert.deepEqual(stagingCalendar.body.calendars[0].entries.map((entry) => [entry.status, entry.reasonLabel]), [
+    ["scheduled", null],
+    ["no_class", "Туршилтын завсарлага"],
   ]);
-  assert.doesNotMatch(JSON.stringify(stagingCalendar.body), /internalNote|must never/i, "calendar API does not expose private fields");
+  assert.doesNotMatch(JSON.stringify(stagingCalendar.body), /lesson(Number|Title|Sequence)|cancelledLesson|internalNote|must never/i, "calendar API does not expose curriculum or private fields");
   assert.equal(stagingCalendar.body.calendars[0].classSession.label, "2-р шат · Ням 10:00", "published schedules use the generated class label");
 
   const productionWorker = (await bundleWorker("production", "production")).default;
