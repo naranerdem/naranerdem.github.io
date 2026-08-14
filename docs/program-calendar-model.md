@@ -114,6 +114,14 @@ supersedes the earlier revision rather than rewriting it. Teacher UI calls this
 ordinary `Хадгалах`: it never presents a revision number, a start-draft step,
 or publish terminology.
 
+Program and calendar editing are durable working batches. Small edits update the
+working revision immediately so a reload or accidental navigation can resume the
+same work. `Хадгалах` is the single final action: it advances the appropriate
+current pointer or published calendar only when the batch materially differs
+from its base. A page-level `Болих` first asks before discarding the entire
+working batch; an inline `Болих` only closes the unfinished inline form. This
+prevents both accidental loss and duplicate no-op revisions.
+
 Existing Offerings and calendars never move when a newer Program revision is
 published. They remain valid with their pinned historical revision, including
 when a first explicit calendar is generated later. A direct calendar-change

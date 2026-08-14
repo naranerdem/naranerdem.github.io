@@ -134,7 +134,8 @@ try {
   assert.equal(backfillChangeDraft.programId, "backfill-program", "a migrated change draft continues its exact historical program");
   assert.equal(backfillChangeDraft.basedOnRevisionId, "backfill-calendar-revision", "legacy continuity is limited to a direct published base revision");
   await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: backfillChangeDraft.id, expectedUpdatedAt: backfillChangeDraft.updatedAt });
-  assert.equal(database.query("SELECT curriculum_program_id AS programId FROM class_calendar_revision WHERE id = " + quote(backfillChangeDraft.id))[0].programId, "backfill-program", "a historical-program change revision can be republished without replacing the Offering program");
+  assert.equal(count(database, "class_calendar_revision", `id = ${quote(backfillChangeDraft.id)}`), 0, "an unchanged calendar draft is discarded instead of becoming a duplicate revision");
+  assert.equal(database.query("SELECT curriculum_program_id AS programId FROM class_calendar_revision WHERE id = 'backfill-calendar-revision'")[0].programId, "backfill-program", "an unchanged calendar keeps its original published historical program");
   sqlite(`
     INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
       VALUES ('year-2026', '2026–2027', 'draft', '2026-09-01', '2027-06-01', 1, 1, 'staff-program-test', '${now}', '${now}');
@@ -188,6 +189,9 @@ try {
   assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
   assert.match(programsPage, /Эндээс өмнө хичээл оруулах/, "the Program row menu supports insertion before a lesson");
   assert.match(programsPage, /Хичээл нэмэх/, "the Program editor keeps one append action");
+  assert.doesNotMatch(programsPage, /<form id="program-form"/, "Program inline lesson forms are not nested inside an outer form");
+  assert.match(programsPage, /Хадгалаагүй өөрчлөлтүүдийг устгах уу\?/, "Program batch cancellation confirms before discarding persisted edits");
+  assert.match(programsPage, /program\.discard/, "Program batch cancellation uses the server-side draft discard operation");
   assert.doesNotMatch(programsPage, /Хөтөлбөр нийтлэх|Ноорог хөтөлбөр|Ноорог засварлаж байна|Нийтлэгдсэн хувилбар|window\.prompt/, "ordinary Program editing hides revision language and native prompt entry");
   assert.doesNotMatch(programsPage, /Хичээлийн жил/, "annual Program identity is not recreated per academic year");
   assert.match(offeringsPage, /Жилийн сургалт/);
@@ -209,6 +213,9 @@ try {
   assert.match(schedulePage, /Нэмэлт хичээл оруулах/, "extra lessons are secondary schedule work");
   assert.doesNotMatch(schedulePage, /Өөрчлөх ноорог эхлүүлэх|Хуваарь нийтлэх|Ноорог хуваарь|Нийтлэгдсэн хуваарь|calendar-date-action|Өдөр, цаг өөрчлөх|replacement:/, "ordinary schedule editing hides draft, publish, and arbitrary date-move machinery");
   assert.match(schedulePage, /Энэ өдөр хичээллэх/, "a school-calendar skip has a natural class-level restore action");
+  assert.match(schedulePage, /Энэ өдрөөс хойших хичээлүүдийн огноо өөрчлөгдөнө\./, "schedule consequences avoid misleading exact reflow counts");
+  assert.match(schedulePage, /Хадгалаагүй хуваарийн өөрчлөлтүүдийг устгах уу\?/, "calendar batch cancellation confirms before discarding persisted edits");
+  assert.match(schedulePage, /calendar\.discard/, "calendar batch cancellation uses the server-side draft discard operation");
   assert.doesNotMatch(schedulePage, /Ангийн нэр|Facebook бүлгийн холбоос|value="draft"|value="cancelled"|calendar-program|calendar-lock|Дууссан хичээл|баталж байна/, "ordinary schedule editing hides legacy program, lock, and technical fields");
   assert.match(schedulePage, /staff-danger-zone/, "unused class deletion lives inside class details");
   assert.doesNotMatch(settingsPage, /Facebook бүлгийн|offering-facebook\.save|facebook-form/, "Settings has no duplicate Offering Facebook editor");
@@ -355,6 +362,11 @@ try {
   const thirdLesson = database.query(`SELECT id FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} AND sequence_number = 3`)[0];
   await service.insertProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: copied.updatedAt, beforeLessonId: thirdLesson.id, title: "Нэмэлт хичээл" });
   let revisedDraft = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
+  const persistedProgramOverview = await service.getProgramCalendarOverview(runtime);
+  const persistedFamily = persistedProgramOverview.programFamilies.find((entry) => entry.id === "annual-program-stage_1");
+  assert.equal(persistedFamily.currentProgram.id, "current-program", "a working Program edit leaves the current pointer unchanged before final save");
+  assert.equal(persistedFamily.draftProgram.id, copied.id, "a working Program draft is recoverable from a fresh server overview");
+  assert.equal(persistedFamily.draftProgram.lessons[2].title, "Нэмэлт хичээл", "an inserted Program lesson survives reload before final save");
   const insertedLesson = database.query(`SELECT id FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} AND title = 'Нэмэлт хичээл'`)[0];
   assert.deepEqual(database.query(`SELECT title FROM curriculum_lesson WHERE curriculum_program_id = ${quote(copied.id)} ORDER BY sequence_number`).map((entry) => entry.title), ["Одоогийн туршилт 1", "Одоогийн туршилт 2", "Нэмэлт хичээл", "Одоогийн туршилт 3"], "inserting before lesson C renumbers C and later lessons automatically");
   await service.insertProgramDraftLesson(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: revisedDraft.updatedAt, title: "Төгсгөлийн хичээл" });
@@ -374,7 +386,22 @@ try {
   const saved = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(copied.id)}`)[0];
   await service.publishProgramFamilyDraft(runtime, actor("teacher"), { programId: copied.id, expectedUpdatedAt: saved.updatedAt });
   assert.equal(count(database, "curriculum_program", `id = ${quote(copied.id)} AND status = 'published'`), 1);
+  assert.equal(database.query("SELECT current_published_program_id AS programId FROM curriculum_program_family WHERE id = 'annual-program-stage_1'")[0].programId, copied.id, "final Program save moves only the family current pointer");
+  assert.equal(count(database, "curriculum_program", "id = 'current-program' AND status = 'superseded'"), 1, "the prior Program revision remains immutable history after save");
   assert.equal(database.query("SELECT curriculum_program_id AS programId FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0].programId, "current-program", "publishing a Program revision leaves existing Offerings pinned");
+  const programRevisionCount = count(database, "curriculum_program", "program_family_id = 'annual-program-stage_1'");
+  await service.startProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1" });
+  const unchangedProgramDraft = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft' AND based_on_program_id IS NOT NULL")[0];
+  await service.publishProgramFamilyDraft(runtime, actor("teacher"), { programId: unchangedProgramDraft.id, expectedUpdatedAt: unchangedProgramDraft.updatedAt });
+  assert.equal(count(database, "curriculum_program", "program_family_id = 'annual-program-stage_1'"), programRevisionCount, "a no-op Program save creates no duplicate current revision");
+  assert.equal(database.query("SELECT current_published_program_id AS programId FROM curriculum_program_family WHERE id = 'annual-program-stage_1'")[0].programId, copied.id, "a no-op Program save leaves the current pointer unchanged");
+  await service.startProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1" });
+  const discardedProgramDraft = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft' AND based_on_program_id IS NOT NULL")[0];
+  await service.insertProgramDraftLesson(runtime, actor("teacher"), { programId: discardedProgramDraft.id, expectedUpdatedAt: discardedProgramDraft.updatedAt, title: "Устгах туршилтын хичээл" });
+  const discardProgramVersion = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(discardedProgramDraft.id)}`)[0];
+  await service.discardProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1", expectedUpdatedAt: discardProgramVersion.updatedAt });
+  assert.equal(count(database, "curriculum_program", "program_family_id = 'annual-program-stage_1' AND status = 'draft' AND based_on_program_id IS NOT NULL"), 0, "whole Program cancel removes the persisted working draft");
+  assert.equal(database.query("SELECT current_published_program_id AS programId FROM curriculum_program_family WHERE id = 'annual-program-stage_1'")[0].programId, copied.id, "whole Program cancel preserves the saved current pointer");
   sqlite(`INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
     VALUES ('year-current-save-test', 'Хадгалалтын тест', 'draft', '2027-09-01', '2028-06-01', 0, 1, 'staff-program-test', '${now}', '${now}');`);
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1", startsOn: "2027-09-01", endsOn: "2028-06-01" });
@@ -404,8 +431,14 @@ try {
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND local_date = '2026-09-12' AND status = 'scheduled'`), 1, "a teacher may restore a school-calendar skipped date for one class");
   const restoredOverview = await service.getProgramCalendarOverview(runtime);
   assert.ok(restoredOverview.revisions.find((entry) => entry.id === draft.id).slots.find((slot) => slot.localDate === "2026-09-12").holidayWarnings.includes("Өвлийн амралт"), "a restored school-holiday lesson keeps its warning");
+  assert.equal(restoredOverview.revisions.find((entry) => entry.classSessionId === "class-1" && entry.status === "published").id !== draft.id, true, "a saved calendar stays current until the working change is finally saved");
+  await service.discardCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt });
+  assert.equal(count(database, "class_calendar_revision", `id = ${quote(draft.id)}`), 0, "whole calendar cancel removes the persisted working revision");
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
-  assert.equal(count(database, "class_calendar_revision", "status = 'draft' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1, "a later row action resumes the existing internal calendar draft");
+  draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
+  assert.equal(count(database, "class_calendar_revision", "status = 'draft' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1, "a later row action creates one recoverable internal calendar draft");
+  await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
+  assert.equal(count(database, "class_calendar_revision", "status = 'draft' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1, "reopening calendar editing resumes the existing working revision");
   const futureSlot = database.query(`SELECT slot.id FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND lesson.sequence_number = 2`)[0];
   await service.cancelFutureCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: futureSlot.id });
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`), 1, "future cancellation remains visible history");
@@ -415,6 +448,11 @@ try {
   await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: changedDraft.updatedAt, kind: "extra", localDate: "2026-09-16", startTime: "10:00", endTime: "11:20", reasonLabel: "Нөхөх хичээл" });
   const addedSlot = database.query(`SELECT lesson.sequence_number AS sequenceNumber, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND slot.status = 'scheduled' ORDER BY slot.local_date, slot.start_time`);
   assert.equal(addedSlot.find((entry) => entry.localDate === "2026-09-16")?.sequenceNumber, 2, "an extra dated slot joins chronological order and receives the next lesson automatically");
+  const changedCalendarDraft = database.query(`SELECT updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
+  const previousCalendar = database.query("SELECT id FROM class_calendar_revision WHERE class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1') AND status = 'published'")[0];
+  await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: changedCalendarDraft.updatedAt });
+  assert.equal(database.query("SELECT status FROM class_calendar_revision WHERE id = " + quote(draft.id))[0].status, "published", "final calendar save publishes the persisted working revision");
+  assert.equal(database.query("SELECT status FROM class_calendar_revision WHERE id = " + quote(previousCalendar.id))[0].status, "superseded", "final calendar save preserves the previous revision as history");
   await service.startProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1" });
   const staleDraft = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft' AND based_on_program_id IS NOT NULL")[0];
   sqlite(`

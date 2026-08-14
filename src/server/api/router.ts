@@ -46,6 +46,8 @@ import {
   changeCalendarDraft,
   createCalendarChangeDraft,
   createSummerProgramFamilyDraft,
+  discardCalendarDraft,
+  discardProgramFamilyDraft,
   deleteProgramDraftLesson,
   deleteSummerProgramFamilyDraft,
   deleteClassSession,
@@ -770,6 +772,12 @@ export async function handleApiRequest(
         case "program.publish":
           await publishProgramFamilyDraft(env, principal, { programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
           break;
+        case "program.discard":
+          await discardProgramFamilyDraft(env, principal, {
+            programFamilyId: String(payload.programFamilyId ?? ""),
+            expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         case "program.delete-summer":
           await deleteSummerProgramFamilyDraft(env, principal, { programFamilyId: String(payload.programFamilyId ?? "") });
           break;
@@ -818,6 +826,9 @@ export async function handleApiRequest(
           break;
         case "calendar.publish":
           await publishCalendarDraft(env, principal, { revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          break;
+        case "calendar.discard":
+          await discardCalendarDraft(env, principal, { revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
           break;
         case "annual-course-start-default.save":
           await updateAnnualCourseStartDefault(env, principal, {

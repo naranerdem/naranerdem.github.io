@@ -2135,6 +2135,19 @@ textarea:focus {
   gap: 0.8rem;
 }
 
+.staff-discard-confirm {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.8rem;
+}
+
+.staff-discard-confirm p {
+  margin: 0;
+  font-weight: 700;
+}
+
 .staff-draft-label {
   border-left: 3px solid var(--blue);
   padding-left: 0.65rem;

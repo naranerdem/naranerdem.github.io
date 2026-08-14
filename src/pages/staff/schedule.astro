@@ -22,7 +22,7 @@ import "../../styles/global.css";
       import { escape, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
-      const state = { data: null, contextOfferingId: params.get("offering") || "", selectedClassId: params.get("class") || "", editingClass: "", editingOfferingId: "", editingOfferingBreakId: "", calendarAction: null };
+      const state = { data: null, contextOfferingId: params.get("offering") || "", selectedClassId: params.get("class") || "", editingClass: "", editingOfferingId: "", editingOfferingBreakId: "", calendarAction: null, discardingCalendar: false };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active" && entry.kind !== "event");
@@ -112,8 +112,8 @@ import "../../styles/global.css";
         return `<details class="staff-calendar-menu"><summary aria-label="Хуваарийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-calendar-action="${slot.status === "scheduled" ? "cancel" : "restore"}" data-slot-key="${escape(calendarSlotKey(slot))}">${action}</button></div></details>`;
       }
       function actionEditor(slot, revision) {
-        const action = state.calendarAction; const laterCount = scheduledSlots(revision).filter((entry) => (entry.lessonSequence || 0) > (slot.lessonSequence || 0) && !entry.isHistorical).length;
-        const consequence = `Дараагийн ${laterCount} хичээлийн огноо шилжинэ.`;
+        const action = state.calendarAction;
+        const consequence = "Энэ өдрөөс хойших хичээлүүдийн огноо өөрчлөгдөнө.";
         if (action.kind === "restore") return `<li class="staff-calendar-action-row"><div><strong>${formatDate(slot.localDate)}-ний хичээл хуваарьт орно.</strong><p class="staff-muted">${consequence}</p></div><div class="staff-inline-actions"><button class="button secondary" data-calendar-action-cancel type="button">Болих</button><button class="button primary" data-calendar-restore-confirm="${escape(slot.localDate)}" type="button">Хадгалах</button></div></li>`;
         return `<li class="staff-calendar-action-row"><div><strong>${formatDate(slot.localDate)}-ний хичээл хичээлгүй болно.</strong><p class="staff-muted">${consequence}</p></div><div class="staff-inline-actions"><button class="button secondary" data-calendar-action-cancel type="button">Болих</button><button class="button primary" data-calendar-cancel-confirm="${escape(slot.id)}" type="button">Хадгалах</button></div></li>`;
       }
@@ -146,17 +146,40 @@ import "../../styles/global.css";
         }
         state.calendarAction = { slotKey, kind }; renderCalendar(selectedOffering());
       }
+      function sameCalendarEntries(left, right, keys) {
+        return left.length === right.length && left.every((entry, index) => keys.every((key) => (entry[key] ?? null) === (right[index]?.[key] ?? null)));
+      }
+      function hasSavedCalendarChanges(calendar) {
+        if (!calendar.basedOnRevisionId) return true;
+        const base = (state.data.revisions || []).find((entry) => entry.id === calendar.basedOnRevisionId);
+        if (!base) return true;
+        return !sameCalendarEntries(calendar.slots || [], base.slots || [], ["localDate", "startTime", "endTime", "slotSource", "status", "lessonId", "cancelledLessonSequence", "cancelledLessonTitle", "reasonLabel"])
+          || !sameCalendarEntries(calendar.overrides || [], base.overrides || [], ["localDate", "behavior", "reasonLabel"]);
+      }
       function renderCalendarView(container, calendar, offering, selected, editable) {
         const rows = calendar.slots.map((slot) => calendarRow(slot, calendar)).join("");
-        container.innerHTML = `<div class="staff-calendar-draft">${calendarSummary(calendar, offering)}${warningSummary(calendar)}${editable ? `<details class="staff-calendar-extra" ${state.calendarAction?.kind === "extra" ? "open" : ""}><summary>Нэмэлт хичээл оруулах</summary><form id="calendar-extra" class="staff-compact-form"><label>Өдөр <input id="extra-date" type="date" required /></label><label>Эхлэх цаг <input id="extra-start" type="time" required /></label><label>Дуусах цаг <input id="extra-end" type="time" required /></label><label class="staff-wide">Тэмдэглэл <input id="extra-reason" maxlength="160" /></label><div class="staff-form-actions staff-wide"><button class="button primary" type="submit">Оруулах</button></div></form></details>` : ""}<ol class="staff-calendar-list">${rows}</ol>${editable ? `<div class="staff-form-actions"><button id="calendar-save" class="button primary" type="button">Хадгалах</button></div>` : ""}</div>`;
+        const dirty = editable && hasSavedCalendarChanges(calendar);
+        const calendarActions = state.discardingCalendar
+          ? `<section class="staff-discard-confirm"><p>Хадгалаагүй хуваарийн өөрчлөлтүүдийг устгах уу?</p><div class="staff-form-actions"><button class="button primary" id="calendar-keep-editing" type="button">Үргэлжлүүлэн засах</button><button class="button danger" id="calendar-discard" type="button">Өөрчлөлтийг устгах</button></div></section>`
+          : `<div class="staff-form-actions"><button id="calendar-close" class="button secondary" type="button">Болих</button><button id="calendar-save" class="button primary" type="button" ${dirty ? "" : "disabled"}>Хадгалах</button></div>`;
+        container.innerHTML = `<div class="staff-calendar-draft">${calendarSummary(calendar, offering)}${warningSummary(calendar)}${editable ? `<details class="staff-calendar-extra" ${state.calendarAction?.kind === "extra" ? "open" : ""}><summary>Нэмэлт хичээл оруулах</summary><form id="calendar-extra" class="staff-compact-form"><label>Өдөр <input id="extra-date" type="date" required /></label><label>Эхлэх цаг <input id="extra-start" type="time" required /></label><label>Дуусах цаг <input id="extra-end" type="time" required /></label><label class="staff-wide">Тэмдэглэл <input id="extra-reason" maxlength="160" /></label><div class="staff-form-actions staff-wide"><button class="button primary" type="submit">Оруулах</button></div></form></details>` : ""}<ol class="staff-calendar-list">${rows}</ol>${editable ? calendarActions : ""}</div>`;
         container.querySelectorAll("[data-calendar-action]").forEach((button) => button.onclick = () => beginCalendarAction(selected, editable ? calendar : null, button.dataset.slotKey, button.dataset.calendarAction));
         container.querySelectorAll("[data-calendar-action-cancel]").forEach((button) => button.onclick = () => { state.calendarAction = null; renderCalendar(offering); });
         container.querySelector("[data-calendar-cancel-confirm]")?.addEventListener("click", (event) => run(() => postOverviewAction("calendar.cancel", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt, slotId: event.currentTarget.dataset.calendarCancelConfirm }), "Хичээлийг хичээлгүй болголоо."));
         container.querySelector("[data-calendar-restore-confirm]")?.addEventListener("click", (event) => run(() => postOverviewAction("calendar.change", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt, kind: "restore", localDate: event.currentTarget.dataset.calendarRestoreConfirm }), "Энэ өдрийг хичээлтэй болголоо."));
         container.querySelector("#calendar-extra")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("calendar.change", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt, kind: "extra", localDate: q("#extra-date").value, startTime: q("#extra-start").value, endTime: q("#extra-end").value, reasonLabel: q("#extra-reason").value }), "Нэмэлт хичээл орууллаа."); });
         container.querySelector("#calendar-save")?.addEventListener("click", () => run(async () => { await postOverviewAction("calendar.publish", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt }); state.calendarAction = null; }, "Хуваарийг хадгаллаа."));
+        container.querySelector("#calendar-close")?.addEventListener("click", () => {
+          if (dirty) { state.discardingCalendar = true; renderCalendar(offering); return; }
+          run(() => postOverviewAction("calendar.discard", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt }), "");
+        });
+        container.querySelector("#calendar-keep-editing")?.addEventListener("click", () => { state.discardingCalendar = false; renderCalendar(offering); });
+        container.querySelector("#calendar-discard")?.addEventListener("click", () => run(async () => {
+          await postOverviewAction("calendar.discard", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt });
+          state.discardingCalendar = false; state.calendarAction = null;
+        }, "Өөрчлөлтийг устгалаа."));
       }
-      async function run(work, success) { message(); try { await work(); state.editingClass = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      async function run(work, success) { message(); try { await work(); state.editingClass = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; state.discardingCalendar = false; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>

@@ -863,6 +863,47 @@ export async function insertProgramDraftLesson(
   ]);
 }
 
+async function programDraftMatchesCurrent(env: WorkerEnv, program: ProgramRow, family: ProgramFamilyRow): Promise<boolean> {
+  if (!program.basedOnProgramId || family.currentProgramId !== program.basedOnProgramId) return false;
+  const source = await programById(env, program.basedOnProgramId);
+  if (source.displayName !== program.displayName) return false;
+  const [sourceLessons, draftLessons] = await Promise.all([
+    lessonsForProgram(env, source.id),
+    lessonsForProgram(env, program.id),
+  ]);
+  return sourceLessons.length === draftLessons.length
+    && sourceLessons.every((lesson, index) => lesson.title === draftLessons[index]?.title
+      && (lesson.internalNote ?? null) === (draftLessons[index]?.internalNote ?? null));
+}
+
+export async function discardProgramFamilyDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { programFamilyId: string; expectedUpdatedAt: string },
+): Promise<void> {
+  requireCapability(actor, "program.manage");
+  const family = await familyById(env, text(input.programFamilyId, 100));
+  const draft = await env.DB.prepare(`SELECT id, program_family_id AS programFamilyId,
+    academic_year_id AS academicYearId, stage_code AS stageCode, revision_number AS revisionNumber,
+    display_name AS displayName, program_kind AS programKind, status, is_test AS isTest,
+    test_run_id AS testRunId, based_on_program_id AS basedOnProgramId,
+    published_at AS publishedAt, updated_at AS updatedAt
+    FROM curriculum_program WHERE program_family_id = ? AND status = 'draft'
+      AND NOT (program_kind = 'annual_course' AND is_test = 1 AND based_on_program_id IS NULL)`)
+    .bind(family.id).first<ProgramRow>();
+  if (!draft) return;
+  if (!input.expectedUpdatedAt || draft.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  if (!draft.basedOnProgramId || family.currentProgramId !== draft.basedOnProgramId) throw new ProgramCalendarError("conflict");
+  const time = now(); const flags = operationFlags(env, draft);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM curriculum_lesson WHERE curriculum_program_id = ?").bind(draft.id),
+    env.DB.prepare("DELETE FROM curriculum_program WHERE id = ? AND status = 'draft'").bind(draft.id),
+    audit(env, actor, "program_draft_discarded", "curriculum_program", draft.id, {
+      programFamilyId: family.id, basedOnProgramId: draft.basedOnProgramId,
+    }, flags, time),
+  ]);
+}
+
 export async function deleteProgramDraftLesson(
   env: WorkerEnv, actor: StaffPrincipal,
   input: { programId: string; expectedUpdatedAt: string; lessonId: string },
@@ -918,6 +959,10 @@ export async function publishProgramFamilyDraft(
   const family = await familyById(env, program.programFamilyId);
   if (family.currentProgramId !== program.basedOnProgramId) throw new ProgramCalendarError("conflict");
   if (!(await lessonsForProgram(env, program.id)).length) throw new ProgramCalendarError("invalid");
+  if (await programDraftMatchesCurrent(env, program, family)) {
+    await discardProgramFamilyDraft(env, actor, { programFamilyId: family.id, expectedUpdatedAt: input.expectedUpdatedAt });
+    return;
+  }
   const time = now(); const flags = operationFlags(env, program);
   const result = await env.DB.batch([
     env.DB.prepare(`UPDATE curriculum_program SET status = 'superseded', updated_at = ?
@@ -1473,9 +1518,65 @@ export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrinc
   await replaceDraftSlots(env, revision, result.slots, actor, "calendar_future_slot_cancelled", { slotId: input.slotId, changedFutureLessonAssignments: result.changedFutureLessonAssignments, newFinalLessonDate: result.newFinalLessonDate });
 }
 
+function sameCalendarSlots(left: readonly SlotRow[], right: readonly SlotRow[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((slot, index) => {
+    const other = right[index];
+    return other
+      && slot.localDate === other.localDate
+      && slot.startTime === other.startTime
+      && slot.endTime === other.endTime
+      && slot.slotSource === other.slotSource
+      && slot.status === other.status
+      && slot.lessonId === other.lessonId
+      && slot.cancelledLessonSequence === other.cancelledLessonSequence
+      && slot.cancelledLessonTitle === other.cancelledLessonTitle
+      && (slot.reasonLabel ?? null) === (other.reasonLabel ?? null);
+  });
+}
+
+function sameCalendarOverrides(left: readonly CalendarOverride[], right: readonly CalendarOverride[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((override, index) => override.localDate === right[index]?.localDate
+    && override.behavior === right[index]?.behavior
+    && (override.reasonLabel ?? null) === (right[index]?.reasonLabel ?? null));
+}
+
+async function calendarDraftMatchesBase(env: WorkerEnv, revision: RevisionRow): Promise<boolean> {
+  if (!revision.basedOnRevisionId) return false;
+  const [baseSlots, draftSlots, baseOverrides, draftOverrides] = await Promise.all([
+    slotsForRevision(env, revision.basedOnRevisionId),
+    slotsForRevision(env, revision.id),
+    overridesForRevision(env, revision.basedOnRevisionId),
+    overridesForRevision(env, revision.id),
+  ]);
+  return sameCalendarSlots(baseSlots, draftSlots) && sameCalendarOverrides(baseOverrides, draftOverrides);
+}
+
+export async function discardCalendarDraft(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { revisionId: string; expectedUpdatedAt: string },
+): Promise<void> {
+  requireCapability(actor, "calendar.manage");
+  const revision = await revisionForUpdate(env, input.revisionId);
+  if (revision.status !== "draft" || revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  const time = now(); const flags = operationFlags(env, revision);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM class_calendar_revision WHERE id = ? AND status = 'draft'").bind(revision.id),
+    audit(env, actor, "calendar_draft_discarded", "class_calendar_revision", revision.id, {
+      calendarId: revision.calendarId, basedOnRevisionId: revision.basedOnRevisionId,
+    }, flags, time),
+  ]);
+}
+
 export async function publishCalendarDraft(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft" || revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  if (await calendarDraftMatchesBase(env, revision)) {
+    await discardCalendarDraft(env, actor, input);
+    return;
+  }
   const lessons = await lessonsForProgram(env, revision.programId); const slots = await slotsForRevision(env, revision.id); const active = slots.filter((slot) => slot.status === "scheduled");
   const publishableProgram = await env.DB.prepare(`SELECT program.id FROM curriculum_program AS program
     WHERE program.id = ? AND (

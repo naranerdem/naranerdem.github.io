@@ -102,6 +102,14 @@ Records should preserve enough history to explain current state, especially for 
 
 The teacher interface is for daily operational work by a nontechnical user. It should optimize for a few obvious Mongolian-language actions instead of exposing database state, reconciliation adapter names, API concepts, database terminology, deployment settings, or complex configuration.
 
+Teacher Program and Schedule editing use a durable batch model. Individual
+changes persist into an internal working revision so the teacher can reload and
+resume safely. The ordinary final action is `Хадгалах`; it alone advances the
+published/current state while retaining prior immutable history. A page-level
+`Болих` confirms before deleting the full unsaved batch, while an inline
+`Болих` only abandons the small form currently being entered. No-op saves must
+not create duplicate revisions.
+
 It should emphasize:
 
 - what needs attention today
