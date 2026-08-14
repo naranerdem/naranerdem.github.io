@@ -243,13 +243,21 @@ async function selectedOccurrenceWithRoster(env: WorkerEnv, slotId: string): Pro
   return { ...occurrence, roster: await rosterForOccurrence(env, occurrence) };
 }
 
+async function occurrenceSummary(env: WorkerEnv, occurrence: OccurrenceRow) {
+  const roster = await rosterForOccurrence(env, occurrence);
+  return {
+    rosterCount: roster.length,
+    markedCount: roster.filter((entry) => entry.attendanceStatus !== null).length,
+  };
+}
+
 export async function getCourseAttendanceDay(env: WorkerEnv, actor: StaffPrincipal, localDate = localToday(), selectedSlotId = "") {
   requireCapability(actor, "attendance.view");
   if (!validDate(localDate)) throw new CourseAttendanceError("invalid");
   const result = await env.DB.prepare(`${OCCURRENCE_SELECT} AND slot.local_date = ?
     GROUP BY slot.id
     ORDER BY slot.start_time, offering.title, class_session.stage_code, slot.id`).bind(localDate).all<OccurrenceRow>();
-  const occurrences = result.results.map((occurrence) => ({
+  const occurrences = await Promise.all(result.results.map(async (occurrence) => ({
     slotId: occurrence.slotId,
     classSessionId: occurrence.classSessionId,
     startTime: occurrence.startTime,
@@ -259,7 +267,8 @@ export async function getCourseAttendanceDay(env: WorkerEnv, actor: StaffPrincip
     lessonSequence: occurrence.lessonSequence,
     lessonTitle: occurrence.lessonTitle,
     holidayLabel: occurrence.holidayLabel,
-  }));
+    ...await occurrenceSummary(env, occurrence),
+  })));
   const selected = selectedSlotId && result.results.some((occurrence) => occurrence.slotId === selectedSlotId)
     ? await selectedOccurrenceWithRoster(env, selectedSlotId)
     : null;

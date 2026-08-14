@@ -1650,27 +1650,6 @@ textarea:focus {
   margin-top: 0.5rem;
 }
 
-.staff-access-summary {
-  display: grid;
-  gap: 0.65rem;
-  margin-top: 0.25rem;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  padding: 1rem 0;
-}
-
-.staff-access-summary h2 {
-  margin: 0;
-  font-size: 1.2rem;
-}
-
-.staff-access-summary ul {
-  display: grid;
-  gap: 0.5rem;
-  margin: 0;
-  padding-left: 1.25rem;
-}
-
 .staff-settings-link {
   justify-self: start;
   color: var(--blue-deep);
@@ -1682,6 +1661,29 @@ textarea:focus {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.65rem;
   margin-top: 1rem;
+}
+
+.staff-tool-section {
+  margin-top: 1.25rem;
+}
+
+.staff-tool-section h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.15rem;
+}
+
+.staff-tool-section .eyebrow {
+  margin: 0;
+}
+
+.staff-tool-section-secondary {
+  border-top: 1px solid var(--line);
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+}
+
+.staff-tool-grid-daily {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .staff-tool-link {
@@ -2322,7 +2324,7 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 0.65rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.8rem;
 }
 
 .staff-attendance-date-form label {
@@ -2351,12 +2353,16 @@ textarea:focus {
   align-items: center;
   gap: 0.7rem;
   border-top: 1px solid var(--line);
-  padding: 0.7rem 0;
+  padding: 0.65rem 0;
 }
 
 .staff-attendance-occurrence:first-child,
 .staff-attendance-roster > article:first-child {
   border-top: 0;
+}
+
+.staff-attendance-roster > article {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .staff-attendance-occurrence.selected {
@@ -2377,9 +2383,14 @@ textarea:focus {
 }
 
 .staff-attendance-detail {
-  margin-top: 1.2rem;
+  margin-top: 1rem;
   border-top: 1px solid var(--line);
   padding-top: 1rem;
+}
+
+.staff-attendance-detail .staff-section-heading h2 {
+  font-size: 1.45rem;
+  line-height: 1.2;
 }
 
 .staff-attendance-summary {
@@ -2409,15 +2420,13 @@ textarea:focus {
 }
 
 .staff-attendance-statuses {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.35rem;
 }
 
-.staff-attendance-status,
-.staff-attendance-clear {
-  min-height: 40px;
+.staff-attendance-status {
+  min-height: 42px;
   border: 1px solid #cbd3df;
   border-radius: 6px;
   background: #fff;
@@ -2426,6 +2435,7 @@ textarea:focus {
   font: inherit;
   font-size: 0.84rem;
   font-weight: 750;
+  touch-action: manipulation;
 }
 
 .staff-attendance-status.selected {
@@ -2434,16 +2444,30 @@ textarea:focus {
   color: var(--blue-deep);
 }
 
-.staff-attendance-clear {
-  color: var(--muted);
+.staff-attendance-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
 }
 
-.staff-attendance-notice-row {
-  display: flex;
-  flex-wrap: wrap;
+.staff-attendance-notice-toggle {
+  display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  margin-top: 0.25rem;
+  gap: 0.3rem;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.staff-attendance-notice-toggle input {
+  accent-color: var(--blue);
+  block-size: 1rem;
+  inline-size: 1rem;
+  margin: 0;
+  touch-action: manipulation;
 }
 
 .staff-attendance-notice {
@@ -2452,26 +2476,62 @@ textarea:focus {
   font-weight: 750;
 }
 
-.staff-attendance-notice-form {
-  display: grid;
-  gap: 0.45rem;
-  margin-top: 0.45rem;
+.staff-attendance-menu {
+  position: relative;
 }
 
-.staff-attendance-notice-form label {
-  display: grid;
-  gap: 0.25rem;
-  font-size: 0.86rem;
-  font-weight: 750;
+.staff-attendance-menu summary {
+  align-items: center;
+  block-size: 2rem;
+  color: var(--blue-deep);
+  cursor: pointer;
+  display: flex;
+  font-size: 1.25rem;
+  justify-content: center;
+  list-style: none;
+  touch-action: manipulation;
+  width: 2rem;
 }
 
-.staff-attendance-notice-form textarea {
-  min-height: 4.5rem;
+.staff-attendance-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.staff-attendance-menu-actions {
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: 0 0.4rem 1rem rgba(13, 39, 73, 0.12);
+  display: grid;
+  min-inline-size: 10rem;
+  padding: 0.25rem;
+  position: absolute;
+  right: 0;
+  top: 2rem;
+  z-index: 2;
+}
+
+.staff-attendance-menu-actions button {
+  background: #fff;
+  border: 0;
+  color: var(--ink);
+  font: inherit;
+  padding: 0.55rem 0.6rem;
+  text-align: left;
 }
 
 .staff-attendance-future-note {
   max-width: 14rem;
   text-align: right;
+}
+
+.staff-attendance-row-pending {
+  opacity: 0.72;
+}
+
+.staff-attendance-row-error {
+  color: #a11919 !important;
+  font-size: 0.8rem !important;
+  margin-top: 0.35rem !important;
 }
 
 .staff-calendar-actions {
@@ -2529,6 +2589,11 @@ textarea:focus {
   .staff-section-heading {
     align-items: start;
     flex-direction: column;
+  }
+
+  .staff-page-heading h1 {
+    font-size: 1.7rem;
+    line-height: 1.1;
   }
 
   .staff-section-heading > label {

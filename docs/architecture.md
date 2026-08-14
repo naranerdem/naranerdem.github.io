@@ -110,6 +110,12 @@ published/current state while retaining prior immutable history. A page-level
 `Болих` only abandons the small form currently being entered. No-op saves must
 not create duplicate revisions.
 
+Attendance is the primary daily teacher workflow and appears before occasional
+program, calendar, holiday, and settings tools. Individual attendance changes
+use immediate local feedback with per-student rollback on failure; the Worker
+remains authoritative for each audited mutation and the page does not reload
+the full roster after every tap.
+
 It should emphasize:
 
 - what needs attention today

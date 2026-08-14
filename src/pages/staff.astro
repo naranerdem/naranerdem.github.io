@@ -78,17 +78,25 @@ import "../styles/global.css";
         <p class="eyebrow">Ажилтны хэсэг</p>
         <h1 id="staff-home-title">Сайн байна уу</h1>
         <p id="staff-welcome" class="staff-muted"></p>
-        <div class="staff-access-summary" aria-labelledby="staff-access-title">
-          <h2 id="staff-access-title">Таны ажиллах хэсэг</h2>
-          <ul id="staff-capability-list"></ul>
-        </div>
-        <nav id="staff-tool-links" class="staff-tool-grid" aria-label="Ажиллах хэрэгсэл" hidden>
-          <a class="staff-tool-link staff-tool-primary" href="/staff/offerings/"><strong>Сургалт, арга хэмжээ</strong><span>Жилийн болон зуны сургалт, нэг удаагийн арга хэмжээ</span></a>
-          <a class="staff-tool-link" href="/staff/attendance/"><strong>Ирц</strong><span>Өнөөдрийн хичээл, сурагчдын ирц</span></a>
-          <a class="staff-tool-link" href="/staff/programs/"><strong>Хөтөлбөр</strong><span>Хичээлүүдийг бэлтгэх</span></a>
-          <a class="staff-tool-link" href="/staff/schedule/"><strong>Хуваарь</strong><span>Анги, цаг, огноотой хуваарь</span></a>
-          <a class="staff-tool-link" href="/staff/holidays/"><strong>Амралтын хуваарь</strong><span>Жилийн амралтын хугацаа</span></a>
-          <a class="staff-tool-link" href="/staff/settings/"><strong>Тохиргоо</strong><span>Ерөнхий, ховор тохиргоо</span></a>
+        <nav id="staff-tool-links" aria-label="Ажиллах хэрэгсэл" hidden>
+          <section class="staff-tool-section" aria-labelledby="staff-daily-title">
+            <p class="eyebrow">Өдөр тутмын ажил</p>
+            <h2 id="staff-daily-title">Өнөөдөр</h2>
+            <div class="staff-tool-grid staff-tool-grid-daily">
+              <a class="staff-tool-link staff-tool-primary" href="/staff/attendance/"><strong>Ирц</strong><span>Өнөөдрийн хичээл, сурагчдын ирц</span></a>
+            </div>
+          </section>
+          <section class="staff-tool-section staff-tool-section-secondary" aria-labelledby="staff-setup-title">
+            <p class="eyebrow">Сургалтын тохиргоо</p>
+            <h2 id="staff-setup-title">Сургалт ба хуваарь</h2>
+            <div class="staff-tool-grid">
+              <a class="staff-tool-link" href="/staff/offerings/"><strong>Сургалт, арга хэмжээ</strong><span>Жилийн болон зуны сургалт, нэг удаагийн арга хэмжээ</span></a>
+              <a class="staff-tool-link" href="/staff/programs/"><strong>Хөтөлбөр</strong><span>Хичээлүүдийг бэлтгэх</span></a>
+              <a class="staff-tool-link" href="/staff/schedule/"><strong>Хуваарь</strong><span>Анги, цаг, огноотой хуваарь</span></a>
+              <a class="staff-tool-link" href="/staff/holidays/"><strong>Амралтын хуваарь</strong><span>Жилийн амралтын хугацаа</span></a>
+              <a class="staff-tool-link" href="/staff/settings/"><strong>Тохиргоо</strong><span>Ерөнхий, ховор тохиргоо</span></a>
+            </div>
+          </section>
         </nav>
       </section>
     </main>
@@ -99,7 +107,6 @@ import "../styles/global.css";
       const emailInput = document.getElementById("staff-email");
       const formError = document.getElementById("staff-form-error");
       const welcome = document.getElementById("staff-welcome");
-      const capabilityList = document.getElementById("staff-capability-list");
       const toolLinks = document.getElementById("staff-tool-links");
       let pollTimer = 0;
       let polling = false;
@@ -116,26 +123,9 @@ import "../styles/global.css";
         if (id !== "staff-waiting") stopPolling();
       }
 
-      function accessLabels(capabilities) {
-        const labels = [];
-        if (capabilities.includes("calendar.view") || capabilities.includes("program.view")) labels.push("Хөтөлбөр ба хуваарь");
-        if (capabilities.includes("attendance.view")) labels.push("Ирц");
-        if (capabilities.includes("registration.view")) labels.push("Бүртгэл");
-        if (capabilities.includes("payment.view")) labels.push("Төлбөрийн мэдээлэл");
-        if (capabilities.includes("accountant.call_queue.view")) labels.push("Залгах шаардлагатай");
-        if (capabilities.includes("admin.staff.manage")) labels.push("Ажилтны эрх");
-        return [...new Set(labels)];
-      }
-
       function showAuthenticated(session) {
         welcome.textContent = `${session.displayName}, таны нэвтрэх эрх баталгаажлаа.`;
         const capabilities = session.capabilities || [];
-        const labels = accessLabels(capabilities);
-        capabilityList.replaceChildren(...labels.map((label) => {
-          const item = document.createElement("li");
-          item.textContent = label;
-          return item;
-        }));
         toolLinks.hidden = !(capabilities.includes("program.manage") && capabilities.includes("calendar.manage"));
         show("staff-home");
       }

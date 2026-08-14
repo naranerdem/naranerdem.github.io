@@ -166,6 +166,8 @@ try {
 
   const day = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today");
   assert.equal(day.occurrences.length, 1, "daily attendance lists scheduled course occurrences only");
+  assert.equal(day.occurrences[0].rosterCount, 2, "daily occurrence list includes its compact roster count");
+  assert.equal(day.occurrences[0].markedCount, 0, "daily occurrence list includes its compact marked count");
   assert.equal(day.selected.rosterCount, 2, "confirmed students are rostered for the occurrence");
   assert.equal(day.selected.holidayLabel, "Тест амралт", "a restored school-calendar date keeps its warning");
   assert.equal(day.selected.markedCount, 0);
@@ -244,11 +246,17 @@ try {
   assert.match(source, /Бүгд ирсэн/);
   assert.match(source, /Одоогоор тэмдэглээгүй/);
   assert.match(source, /Тэмдэглэгээг арилгах/);
-  assert.match(source, /Ирэхгүйг мэдэгдэх/);
+  assert.match(source, /Урьдчилж мэдэгдсэн/);
+  assert.match(source, /createOptimisticRosterMutator/, "individual attendance updates are optimistic");
+  assert.match(source, /data-staff-action-menu/, "clearing a mark uses the compact row action menu");
+  assert.doesNotMatch(source, /Ирэхгүйг мэдэгдэх/, "teacher roster uses completed-notice wording");
+  assert.doesNotMatch(source, /await refresh\(success\)/, "individual mutations do not refetch the full roster");
   assert.doesNotMatch(source, /Хадгалах<\/button>/, "attendance has no page-level save action");
   assert.doesNotMatch(source, /Ноорог|Нийтлэх|Хувилбар/, "attendance has no calendar draft terminology");
   assert.doesNotMatch(source, /window\.confirm/, "bulk attendance uses an in-page Mongolian confirmation");
   assert.match(staffHome, /href="\/staff\/attendance\/"/, "staff home links to daily attendance");
+  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Ирц[\s\S]*?Сургалтын тохиргоо/, "staff home places attendance before setup tools");
+  assert.doesNotMatch(staffHome, /Таны ажиллах хэсэг/, "staff home has no redundant capability list");
   assert.doesNotMatch(renderedAttendance, /Анударь|Билгүүн|Тест амралт/, "the static attendance page ships no roster or curriculum data");
 
   console.log("ok course attendance identity, history, notice, roster, protection, and staff UI tests");
