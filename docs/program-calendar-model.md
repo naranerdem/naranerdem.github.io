@@ -232,9 +232,12 @@ surface.
 starts with a neutral list of scheduled annual/summer course occurrences for a
 selected `Asia/Ulaanbaatar` date. `Нээх` explicitly reveals that class roster;
 there is no arbitrary first class, page-level save, draft, publish, or revision
-language. `Ирсэн`, `Хоцорсон`, and `Ирээгүй` save immediately, while `Бүгд
-ирсэн` affects only unmarked students after confirmation. Future occurrences
-accept a separate prior absence notice, but reject attendance marks server-side.
+language. `Ирсэн` and `Хоцорсон` are compact checkboxes; late implies present,
+and `Бүгд ирсэн` affects only unmarked students after confirmation. Before an
+occurrence ends, unchecked means not yet marked. After its scheduled end,
+unchecked is effectively absent without automatically creating an explicit
+absent row. Future occurrences accept a separate prior absence notice but
+reject attendance marks server-side.
 
 The durable semantic occurrence is `class_session_id + curriculum_lesson_id`.
 `course_attendance` is unique by enrollment plus that occurrence and retains a
@@ -242,7 +245,9 @@ calendar slot/local-date snapshot only as provenance. A later calendar revision
 therefore cannot invalidate a saved mark. `course_attendance_change` records
 every real transition, including clearing back to unmarked; same-status taps
 create no duplicate history. A cleared row does not contribute to calendar
-protection.
+protection. Stored attendance and effective attendance are distinct: historical
+explicit absent rows remain valid, while downstream make-up logic must later
+use post-occurrence effective absence and must never act before class end.
 
 `course_absence_notice` is deliberately distinct from attendance and currently
 has only the teacher-created `staff_manual` source. It may have an optional
@@ -283,6 +288,10 @@ The protected Mongolian setup is organized around concrete work:
 - `/staff/attendance/` is the daily teacher/admin roster for annual and summer
   course occurrences. It is intentionally separate from schedule editing and
   is unavailable to accountants.
+- Selected Program and published class-calendar details can be printed/saved as
+  PDF or copied as TSV for Excel. Schedule also provides a current annual
+  Stage 1-3 consolidated timetable. These reports are built only after the
+  authenticated D1 response; private content is absent from static output.
 
 Unused classes expose `Анги устгах` only in their edit/details view. Durable
 references suppress the action and server checks remain authoritative. Every

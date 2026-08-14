@@ -114,7 +114,9 @@ Attendance is the primary daily teacher workflow and appears before occasional
 program, calendar, holiday, and settings tools. Individual attendance changes
 use immediate local feedback with per-student rollback on failure; the Worker
 remains authoritative for each audited mutation and the page does not reload
-the full roster after every tap.
+the full roster after every tap. Present and late are the ordinary controls;
+late implies present. Unchecked is neutral until the scheduled end and becomes
+effective absence afterward without inserting absent rows automatically.
 
 It should emphasize:
 
@@ -272,8 +274,10 @@ basis and payment-plan terms exist.
 
 Course attendance is now editable operational bookkeeping for normal annual and
 summer course occurrences. `/staff/attendance/` is a simple phone-first daily
-roster with present, late, absent, and a separate teacher-recorded prior
-absence notice. Each tap saves immediately; corrections and clearing remain
+roster with present/late checkboxes and a separate teacher-recorded prior
+absence notice. After class end an unchecked student is effectively absent;
+before then the student remains unmarked and creates no downstream absence
+consequence. Each tap saves immediately; corrections and clearing remain
 auditable and no attendance action creates a calendar revision. Attendance uses
 the stable class-plus-immutable-lesson identity rather than a revision-scoped
 calendar slot. Events, parent-submitted notices, make-up decisions, and
@@ -321,9 +325,16 @@ The future copyable Messenger payment message should contain only appropriate pa
 
 Migrations 0007 and 0008 implement separate staff identity, role, challenge, login-attempt, session-policy, and session foundations. Known roles are `admin`, `teacher`, and `accountant`; future scoped roles remain possible, but `assistant_teacher` is not a current role. Staff and guardian challenges, sessions, and cookies are deliberately non-interchangeable. Email links carry a random token in the URL fragment, while an initiating browser holds a separate short-lived claim secret in an `HttpOnly` cookie; D1 stores only SHA-256 hashes. A scanner or browser `GET` cannot consume the link. A same-origin `POST` approves the 15-minute attempt, but only the context with the matching claim cookie can create the staff session. A different email-reading context confirms approval and directs the person back to the original window or optional installed web app.
 
-Public login-start responses are generic for active, unknown, guardian-only, and disabled addresses. Only an active staff account can queue email. Per-email and per-IP hourly limits plus a resend cooldown provide a basic abuse boundary; a future production rollout should add Cloudflare Turnstile and stronger edge rate limiting before enabling `STAFF_AUTH_EMAIL_ENABLED`. Staging reuses the mandatory safe-recipient override, keeping the fake intended staff identity separate from the actual test inbox. Production staff email remains disabled.
+Public login-start responses are generic for active, unknown, guardian-only, and disabled addresses. Only an active staff account can queue email. Per-email and per-IP hourly limits plus a resend cooldown provide a basic abuse boundary; a future production rollout should add Cloudflare Turnstile and stronger edge rate limiting before enabling `STAFF_AUTH_EMAIL_ENABLED`. Fake staging staff continue to use the mandatory safe-recipient override. An explicitly provisioned, non-test staging staff identity may receive its own login email; public/parent test mail and fake staff never bypass the override. Production staff email remains disabled.
 
 Staff sessions are persistent trusted-device cookies backed by server-authoritative role policy. Teacher defaults are 30 days of inactivity and 90 days absolute; accountant defaults are 14/60 days and admin defaults are 7/30 days. Multi-role sessions use the shortest applicable limits, the absolute deadline never slides, and meaningful `last_seen_at` writes are limited to once every six hours. Policy shortening permanently expires already-over-limit sessions. Protected requests reload current status and roles, so disabling an account or replacing its roles takes effect immediately; disabling also revokes existing sessions. Routine logout is omitted from the staff home, while audited one-session/all-session revocation remains a backend/admin operation. Privileged mutations must use non-GET methods, server-side session and capability checks, and same-origin `Origin`/`Referer` validation or a future explicit CSRF token.
+
+`/staff/team/` is the admin-only `Ажилтнууд` surface. It creates and edits the
+existing normalized staff identities, enables/disables access, and revokes all
+sessions. Email changes revoke sessions and pending links; role and status
+changes are audited and immediately authoritative. The final active admin
+cannot be disabled or demoted. Staging and production identities and sessions
+are independently provisioned and are never copied between environments.
 
 The first accountant surface should be intentionally narrow: `Залгах шаардлагатай`. It is a derived live queue of overdue, teacher-approved receivables showing only the guardian, phone, relevant child/children, approved amount, effective due date/days overdue, and recent contact/reminder status. It disappears when its reason disappears, such as reconciliation, approved extension, cancellation/removal, or other approved resolution; underlying history remains.
 
@@ -400,7 +411,11 @@ Important boundaries:
 
 ### Export/reporting layer
 
-CSV export is the minimum portable future requirement. The teacher-facing UI should eventually present one extremely simple Mongolian action such as `Excel файл татах`, even if the implementation internally produces CSV, XLSX, or another spreadsheet-compatible representation.
+CSV export is the minimum portable future requirement. Current private Program
+and schedule reports provide `Хэвлэх / PDF` and `Excel-д хуулах`; the latter
+copies human-readable TSV from the same report model. A future downloadable
+operational export should still present one simple action such as `Excel файл
+татах`, even if it internally produces CSV, XLSX, or another compatible format.
 
 XLSX export may later provide cleaner workbook views for:
 

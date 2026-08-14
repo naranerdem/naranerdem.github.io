@@ -1,0 +1,146 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#073aaf" />
+    <title>Ажилтнууд | {siteIdentity.name}</title>
+  </head>
+  <body class="staff-page" data-staff-team-surface="booting">
+    <header class="site-header">
+      <a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг">
+        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
+        <span><strong>{siteIdentity.name}</strong><span>Ажилтны хэсэг</span></span>
+      </a>
+    </header>
+    <main class="staff-shell" aria-live="polite">
+      <section id="team-booting" class="staff-state"><p class="eyebrow">Удирдлага</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
+      <section id="team-denied" class="staff-state" hidden><p class="eyebrow">Ажилтнууд</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="team-app" class="staff-state" hidden>
+        <div class="staff-page-heading"><div><p class="eyebrow">Удирдлага</p><h1>Ажилтнууд</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <div class="staff-section-heading"><p class="staff-muted">Нэвтрэх и-мэйл, эрх, идэвхтэй төлөвийг удирдана.</p><button id="team-add" class="button primary" type="button">Ажилтан нэмэх</button></div>
+        <p id="team-message" class="staff-error" role="status" hidden></p>
+        <form id="team-form" class="staff-team-form" hidden>
+          <input id="team-id" type="hidden" />
+          <div class="staff-form-grid">
+            <label>Нэр <input id="team-name" type="text" autocomplete="name" maxlength="120" required /></label>
+            <label>И-мэйл <input id="team-email" type="email" inputmode="email" autocomplete="email" maxlength="254" required /></label>
+            <label>Эрх
+              <select id="team-role" required>
+                <option value="teacher">Багш</option>
+                <option value="accountant">Нягтлан</option>
+                <option value="admin">Админ</option>
+              </select>
+            </label>
+          </div>
+          <div class="staff-inline-actions"><button id="team-form-cancel" class="button secondary" type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div>
+        </form>
+        <div id="team-list" class="staff-team-list"></div>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      const state = { accounts: [] };
+      const q = (selector) => document.querySelector(selector);
+      const escape = (value) => String(value ?? "").replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
+      const roleLabel = (role) => ({ admin: "Админ", teacher: "Багш", accountant: "Нягтлан" })[role] || role;
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state")) node.hidden = node.id !== id; document.body.dataset.staffTeamSurface = id.replace("team-", ""); };
+      const message = (text = "", success = false) => { const node = q("#team-message"); node.textContent = text; node.classList.toggle("staff-success", success); node.hidden = !text; };
+
+      async function request(method, body) {
+        const response = await fetch("/api/staff/team", {
+          method,
+          headers: body ? { "Content-Type": "application/json", Accept: "application/json" } : { Accept: "application/json" },
+          credentials: "same-origin",
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result?.error?.message || "Ажилтны мэдээллийг хадгалж чадсангүй.");
+        return result;
+      }
+
+      function closeForm() {
+        q("#team-form").hidden = true;
+        q("#team-form").reset();
+        q("#team-id").value = "";
+      }
+
+      function openForm(account = null) {
+        message();
+        q("#team-id").value = account?.id || "";
+        q("#team-name").value = account?.displayName || "";
+        q("#team-email").value = account?.email || "";
+        q("#team-role").value = account?.roles?.[0] || "teacher";
+        q("#team-form").hidden = false;
+        q("#team-name").focus();
+      }
+
+      function render() {
+        q("#team-list").innerHTML = state.accounts.length ? state.accounts.map((account) => `<article class="staff-team-row ${account.status === "disabled" ? "disabled" : ""}"><div><strong>${escape(account.displayName)}</strong><p>${escape(account.email)}</p><p>${escape(roleLabel(account.roles[0]))} · ${account.status === "active" ? "Идэвхтэй" : "Идэвхгүй"}${account.isTest ? " · Тест" : ""}${account.activeSessionCount ? ` · ${account.activeSessionCount} нэвтэрсэн төхөөрөмж` : ""}</p></div><div class="staff-team-actions"><button class="button secondary" type="button" data-edit="${escape(account.id)}">Засах</button><button class="button secondary" type="button" data-status="${escape(account.id)}" data-next-status="${account.status === "active" ? "disabled" : "active"}">${account.status === "active" ? "Идэвхгүй болгох" : "Идэвхжүүлэх"}</button><button class="staff-text-action" type="button" data-revoke="${escape(account.id)}">Бүх төхөөрөмжөөс гаргах</button></div></article>`).join("") : `<p class="staff-empty">Ажилтан бүртгэгдээгүй байна.</p>`;
+      }
+
+      async function refresh() {
+        const result = await request("GET");
+        state.accounts = result.accounts || [];
+        render();
+      }
+
+      q("#team-add").onclick = () => openForm();
+      q("#team-form-cancel").onclick = closeForm;
+      q("#team-form").onsubmit = async (event) => {
+        event.preventDefault();
+        if (!event.currentTarget.reportValidity()) return;
+        const button = event.currentTarget.querySelector("button[type='submit']");
+        button.disabled = true;
+        try {
+          const payload = { displayName: q("#team-name").value, email: q("#team-email").value, role: q("#team-role").value };
+          const staffAccountId = q("#team-id").value;
+          const result = staffAccountId
+            ? await request("PUT", { action: "update", staffAccountId, ...payload })
+            : await request("POST", payload);
+          if (result.reauthenticationRequired) { location.assign("/staff/"); return; }
+          closeForm();
+          await refresh();
+          message("Ажилтны мэдээллийг хадгаллаа.", true);
+        } catch (error) { message(error.message); }
+        finally { button.disabled = false; }
+      };
+
+      q("#team-list").onclick = async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const account = state.accounts.find((entry) => entry.id === (button.dataset.edit || button.dataset.status || button.dataset.revoke));
+        if (!account) return;
+        if (button.dataset.edit) { openForm(account); return; }
+        const disabling = button.dataset.nextStatus === "disabled";
+        const prompt = button.dataset.revoke
+          ? `${account.displayName}-ийг бүх төхөөрөмжөөс гаргах уу?`
+          : disabling ? `${account.displayName}-ийн нэвтрэх эрхийг идэвхгүй болгох уу?` : "Энэ ажилтны нэвтрэх эрхийг идэвхжүүлэх үү?";
+        if (!window.confirm(prompt)) return;
+        button.disabled = true;
+        try {
+          const result = button.dataset.revoke
+            ? await request("PUT", { action: "revoke-sessions", staffAccountId: account.id })
+            : await request("PUT", { action: "status", staffAccountId: account.id, status: button.dataset.nextStatus });
+          if (result.reauthenticationRequired) { location.assign("/staff/"); return; }
+          await refresh();
+          message(button.dataset.revoke ? "Бүх нэвтэрсэн төхөөрөмжөөс гаргалаа." : "Ажилтны төлөвийг шинэчиллээ.", true);
+        } catch (error) { message(error.message); }
+        finally { button.disabled = false; }
+      };
+
+      (async () => {
+        const response = await fetch("/api/staff/session", { credentials: "same-origin" });
+        const session = await response.json();
+        if (!session.authenticated || !(session.capabilities || []).includes("admin.staff.manage")) { show("team-denied"); return; }
+        await refresh();
+        show("team-app");
+      })().catch(() => show("team-denied"));
+    </script>
+  </body>
+</html>

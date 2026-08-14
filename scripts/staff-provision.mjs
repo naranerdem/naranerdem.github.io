@@ -26,6 +26,7 @@ const email = normalizeEmail(option("email"));
 const displayName = option("name").normalize("NFKC").trim();
 const role = option("role");
 const productionConfirmed = process.argv.includes("--confirm-production");
+const realStagingConfirmed = process.argv.includes("--allow-real-email");
 
 if (!new Set(["staging", "production"]).has(environment)) {
   throw new Error("Choose an explicit environment with --env=staging or --env=production.");
@@ -45,13 +46,13 @@ if (!displayName || displayName.length > 120) {
 if (!allowedRoles.has(role)) {
   throw new Error("Choose --role=admin, --role=teacher, or --role=accountant.");
 }
-if (environment === "staging" && !email.endsWith("@example.invalid")) {
-  throw new Error("Staging staff fixtures must use an @example.invalid intended address.");
+if (environment === "staging" && !email.endsWith("@example.invalid") && !realStagingConfirmed) {
+  throw new Error("Real staging staff email requires --allow-real-email.");
 }
 
 const now = new Date().toISOString();
 const accountId = randomUUID();
-const isTest = environment === "staging" ? 1 : 0;
+const isTest = email.endsWith("@example.invalid") ? 1 : 0;
 const testRunId = isTest ? "staging-staff-fixture" : null;
 const auditStem = createHash("sha256").update(`${environment}/${email}`).digest("hex").slice(0, 32);
 const sql = `

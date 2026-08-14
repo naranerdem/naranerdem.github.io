@@ -2459,6 +2459,7 @@ textarea:focus {
   block-size: 1.05rem;
   inline-size: 1.05rem;
   margin: 0;
+  min-height: 1.05rem;
 }
 
 .staff-attendance-check.selected {
@@ -2516,6 +2517,7 @@ textarea:focus {
   block-size: 1rem;
   inline-size: 1rem;
   margin: 0;
+  min-height: 1rem;
   touch-action: manipulation;
 }
 
@@ -2595,6 +2597,145 @@ textarea:focus {
 .staff-settings-list {
   display: grid;
   gap: 0;
+}
+
+.staff-team-form {
+  display: grid;
+  gap: 0.8rem;
+  border-block: 1px solid var(--line);
+  margin: 0.8rem 0;
+  padding: 0.9rem 0;
+}
+
+.staff-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.staff-form-grid label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 750;
+}
+
+.staff-team-list {
+  display: grid;
+}
+
+.staff-team-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.8rem;
+  border-top: 1px solid var(--line);
+  padding: 0.8rem 0;
+}
+
+.staff-team-row:first-child {
+  border-top: 0;
+}
+
+.staff-team-row.disabled > div:first-child {
+  opacity: 0.65;
+}
+
+.staff-team-row p {
+  color: var(--muted);
+  font-size: 0.84rem;
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.staff-team-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: 25rem;
+}
+
+.staff-text-action {
+  border: 0;
+  background: transparent;
+  color: var(--blue-deep);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 750;
+  padding: 0.45rem;
+  touch-action: manipulation;
+}
+
+.staff-text-action:focus-visible {
+  outline: 3px solid rgba(7, 58, 175, 0.2);
+  outline-offset: 1px;
+}
+
+.staff-report-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.staff-print-report {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 14mm;
+    size: auto;
+  }
+
+  body.staff-print-mode > :not(.staff-print-report) {
+    display: none !important;
+  }
+
+  body.staff-print-mode .staff-print-report {
+    display: block;
+    color: #111;
+    font-family: Arial, sans-serif;
+    font-size: 10pt;
+  }
+
+  .staff-print-report header {
+    margin-bottom: 1rem;
+  }
+
+  .staff-print-report h1,
+  .staff-print-report p {
+    margin: 0 0 0.25rem;
+  }
+
+  .staff-print-report h1 {
+    font-size: 17pt;
+  }
+
+  .staff-print-report table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+
+  .staff-print-report th,
+  .staff-print-report td {
+    border: 1px solid #aaa;
+    padding: 0.35rem;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .staff-print-report thead {
+    display: table-header-group;
+  }
+
+  .staff-print-report tr {
+    break-inside: avoid;
+  }
 }
 
 .staff-settings-secondary {
@@ -2760,6 +2901,23 @@ textarea:focus {
 
   .staff-policy-row h2 {
     grid-column: 1 / -1;
+  }
+
+  .staff-form-grid,
+  .staff-team-row {
+    grid-template-columns: 1fr;
+  }
+
+  .staff-team-actions {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .staff-report-actions {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
   }
 
   .staff-attendance-occurrence,

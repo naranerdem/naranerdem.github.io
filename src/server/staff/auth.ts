@@ -1,7 +1,7 @@
 import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { normalizeEmail, validEmail } from "../auth/email-address";
 import { randomToken, sha256 } from "../auth/crypto";
-import { resolveDeliveryAddress } from "../email/delivery-policy";
+import { resolveStaffDeliveryAddress } from "../email/delivery-policy";
 import type { EmailProvider } from "../email/provider";
 import { createResendProvider } from "../email/resend";
 import { EmailConfigurationError, deliverQueuedEmail } from "../email/service";
@@ -261,20 +261,21 @@ export async function startStaffLogin(
   if (!env.RESEND_API_KEY && !options.provider) {
     throw new EmailConfigurationError("resend_api_key_missing");
   }
-  if (env.APP_ENV === "staging" && !env.STAGING_EMAIL_OVERRIDE_TO) {
-    throw new EmailConfigurationError("staging_override_missing");
-  }
-
   const staff = await env.DB.prepare(`
     SELECT id, email_normalized AS normalizedEmail, is_test AS isTest, test_run_id AS testRunId
     FROM staff_account
     WHERE email_normalized = ? AND status = 'active'
   `).bind(normalizedEmail).first<StaffAccountRow>();
 
-  let deliveryAddress: ReturnType<typeof resolveDeliveryAddress> | null = null;
+  let deliveryAddress: ReturnType<typeof resolveStaffDeliveryAddress> | null = null;
   if (staff) {
     try {
-      deliveryAddress = resolveDeliveryAddress(env.APP_ENV, normalizedEmail, env.STAGING_EMAIL_OVERRIDE_TO);
+      deliveryAddress = resolveStaffDeliveryAddress(
+        env.APP_ENV,
+        normalizedEmail,
+        Boolean(staff.isTest),
+        env.STAGING_EMAIL_OVERRIDE_TO,
+      );
     } catch {
       throw new EmailConfigurationError("staging_override_missing");
     }
@@ -286,7 +287,7 @@ export async function startStaffLogin(
     : options.rawClaimSecret ?? randomToken();
   const attemptId = reused?.id ?? crypto.randomUUID();
   const attemptExpiresAt = reused?.expiresAt ?? addSeconds(nowDate, STAFF_LOGIN_ATTEMPT_TTL_SECONDS);
-  const isTest = env.APP_ENV === "staging" ? 1 : staff?.isTest ?? 0;
+  const isTest = staff?.isTest ?? (env.APP_ENV === "staging" ? 1 : 0);
   const testRunId = isTest
     ? staff?.testRunId ?? `staff-login-attempt:${attemptId}`
     : null;

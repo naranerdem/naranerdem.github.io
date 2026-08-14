@@ -162,17 +162,22 @@ export async function startEmailVerification(
   return { challengeId, outboundEmailId, providerMessageId };
 }
 
-export async function verifyEmailToken(env: WorkerEnv, rawToken: string, existingSessionToken = "") {
+export async function verifyEmailToken(
+  env: WorkerEnv,
+  rawToken: string,
+  existingSessionToken = "",
+  nowDate = new Date(),
+) {
   if (!rawToken || rawToken.length > 256) throw new EmailVerificationError("invalid_or_expired_token");
 
   const tokenHash = await sha256(rawToken);
   const challenge = await challengeForTokenHash(env.DB, tokenHash);
   if (!challenge) throw new EmailVerificationError("invalid_or_expired_token");
-  if (challenge.status !== "pending" || challenge.expiresAt <= new Date().toISOString() || challenge.invalidatedAt) {
+  if (challenge.status !== "pending" || challenge.expiresAt <= nowDate.toISOString() || challenge.invalidatedAt) {
     if (
       challenge.status === "used"
       && challenge.registrationDraftId
-      && await sessionOwnsDraft(env.DB, existingSessionToken, challenge.registrationDraftId)
+      && await sessionOwnsDraft(env.DB, existingSessionToken, challenge.registrationDraftId, nowDate)
     ) {
       return {
         sessionId: null,
@@ -186,7 +191,6 @@ export async function verifyEmailToken(env: WorkerEnv, rawToken: string, existin
   const rawSessionToken = randomToken();
   const sessionTokenHash = await sha256(rawSessionToken);
   const sessionId = crypto.randomUUID();
-  const nowDate = new Date();
   const now = nowDate.toISOString();
   const expiresAt = addSeconds(nowDate, VERIFIED_EMAIL_SESSION_TTL_SECONDS);
 

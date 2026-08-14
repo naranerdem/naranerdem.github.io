@@ -344,13 +344,14 @@ try {
     "2026-08-13T10:00:00.000Z",
     "2026-08-14T10:00:00.000Z",
   );
-  const firstVerification = await verifyEmailToken(env(database), replayChallenge.rawToken);
+  const verificationTime = new Date("2026-08-13T10:01:00.000Z");
+  const firstVerification = await verifyEmailToken(env(database), replayChallenge.rawToken, "", verificationTime);
   assert.match(firstVerification.redirectUrl, /status=confirmed/);
   const sessionToken = decodeURIComponent(firstVerification.cookie.match(/^naran_verified_email=([^;]+)/)[1]);
-  const friendlyReplay = await verifyEmailToken(env(database), replayChallenge.rawToken, sessionToken);
+  const friendlyReplay = await verifyEmailToken(env(database), replayChallenge.rawToken, sessionToken, verificationTime);
   assert.match(friendlyReplay.redirectUrl, /status=already-verified/);
   await assert.rejects(
-    verifyEmailToken(env(database), replayChallenge.rawToken),
+    verifyEmailToken(env(database), replayChallenge.rawToken, "", verificationTime),
     (error) => error.code === "invalid_or_expired_token",
   );
   const storedChallenge = database.query("SELECT token_hash AS tokenHash FROM email_verification_challenge WHERE id = ?", [replayChallenge.id])[0];

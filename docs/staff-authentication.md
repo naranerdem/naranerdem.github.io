@@ -53,15 +53,24 @@ The static manifest names the optional app `Наран Эрдэм`, starts at `/
 
 ## Email Safety
 
-Staff email uses the existing provider interface, Resend adapter, `outbound_email` ledger, sender domain plan at `mail.naranerdem.com`, and stable idempotency keys. Staging requires `STAGING_EMAIL_OVERRIDE_TO`: the fake `@example.invalid` staff address remains `intended_to_email`, while only the safe inbox becomes `actual_delivery_email`. Missing staging override fails closed. `STAGING_AUTH_TEST_KEY` is unrelated to ordinary staff login and is never accepted as staff authentication.
+Staff email uses the existing provider interface, Resend adapter, `outbound_email` ledger, sender domain plan at `mail.naranerdem.com`, and stable idempotency keys. Fake staging identities keep their `@example.invalid` address as `intended_to_email` and require `STAGING_EMAIL_OVERRIDE_TO` as the only actual recipient. An active non-test staff identity explicitly entered by an administrator may receive its own staging login email. Unknown, disabled, public, and parent identities never use that direct path. `STAGING_AUTH_TEST_KEY` is unrelated to ordinary staff login and is never accepted as staff authentication.
 
 Production keeps `STAFF_AUTH_EMAIL_ENABLED=false`. Before enabling a public production login-start sender, add Cloudflare Turnstile with server-side verification and stronger edge/cooldown monitoring while retaining generic non-enumerating responses.
 
 ## Provisioning And Audit
 
-Use `npm run staff:create` with explicit `--env`, `--email`, `--name`, and `--role`. Staging permits only `@example.invalid` intended identities. Production additionally requires `--confirm-production`. The command is idempotent for an existing email/role, writes no credentials, and records account-creation and role-assignment audit events.
+Use `/staff/team/` for ordinary account, role, status, email, and all-session
+administration. The final active admin is protected, and address changes or
+disable actions invalidate pending access and active sessions. The CLI remains
+the recovery/bootstrap path: `npm run staff:create` requires explicit `--env`,
+`--email`, `--name`, and `--role`; production additionally requires
+`--confirm-production`, while a real staging address requires the deliberate
+`--allow-real-email` flag. It writes no credentials and audits provisioning.
 
-Future staff-management routes must call the administration service so role replacement and enable/disable actions are capability checked and audited. Successful login, policy changes, and revocation are also audited. Raw tokens, API keys, and noisy failed-login details are excluded.
+Staff-management routes call the administration service so creation, edits,
+role replacement, enable/disable actions, and revocation are capability checked
+and audited. Successful login and policy changes are also audited. Raw tokens,
+API keys, and noisy failed-login details are excluded.
 
 ## Mutation Safety
 

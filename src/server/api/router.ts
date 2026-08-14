@@ -29,9 +29,17 @@ import {
   readStaffAttemptCookie,
   readStaffCookie,
   revokeStaffSession,
+  revokeAllStaffSessions,
   startStaffLogin,
   verifyStaffLogin,
 } from "../staff/auth";
+import {
+  createStaffAccount,
+  listStaffAccounts,
+  setStaffAccountStatus,
+  StaffAdministrationError,
+  updateStaffAccount,
+} from "../staff/administration";
 import { requireSameOrigin, StaffRequestSecurityError } from "../staff/request-security";
 import {
   listStaffSessionPolicies,
@@ -221,6 +229,17 @@ function courseAttendanceError(caught: unknown): Response {
   if (caught.code === "not_enrolled") return error("invalid_request", "Энэ сурагч тухайн хичээлийн бүртгэлтэй жагсаалтад алга.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "future_occurrence") return error("invalid_request", "Ирцийг хичээл болох өдрөөс эхэлж тэмдэглэнэ.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function staffAdministrationError(caught: unknown): Response {
+  if (!(caught instanceof StaffAdministrationError)) {
+    return error("internal_error", "Ажилтны мэдээллийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "staff_not_found") return error("not_found", "Сонгосон ажилтан олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "email_conflict") return error("invalid_request", "Энэ и-мэйл хаяг өөр ажилтанд бүртгэлтэй байна.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "last_active_admin") return error("invalid_request", "Сүүлийн идэвхтэй админы эрхийг хасах боломжгүй.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Нэр, и-мэйл хаяг, эрхийг шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 export async function handleApiRequest(
@@ -588,6 +607,61 @@ export async function handleApiRequest(
       expiresAt: principal.sessionExpiresAt,
       absoluteExpiresAt: principal.sessionAbsoluteExpiresAt,
     }, 200, { "Cache-Control": "no-store" });
+  }
+
+  if (path === "/api/staff/team") {
+    const rawSessionToken = readStaffCookie(request);
+    const principal = await resolveStaffPrincipal(env, rawSessionToken);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    if (!hasStaffCapability(principal, "admin.staff.manage")) {
+      return error("forbidden", "Ажилтны мэдээллийг харах эрх алга.", 403, { "Cache-Control": "no-store" });
+    }
+    if (request.method === "GET") {
+      return json({ accounts: await listStaffAccounts(env, principal) }, 200, { "Cache-Control": "no-store" });
+    }
+    if (!new Set(["POST", "PUT"]).has(request.method)) return methodNotAllowed("GET, POST, PUT");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    try {
+      const payload = await request.json() as Record<string, unknown>;
+      if (request.method === "POST") {
+        const created = await createStaffAccount(env, principal, {
+          displayName: payload.displayName,
+          email: payload.email,
+          role: payload.role,
+        });
+        return json({ ok: true, ...created }, 201, { "Cache-Control": "no-store" });
+      }
+      const staffAccountId = String(payload.staffAccountId ?? "");
+      if (payload.action === "update") {
+        const result = await updateStaffAccount(env, principal, staffAccountId, {
+          displayName: payload.displayName,
+          email: payload.email,
+          role: payload.role,
+        });
+        const headers = new Headers({ "Cache-Control": "no-store" });
+        if (result.reauthenticationRequired) headers.append("Set-Cookie", clearStaffSessionCookie(true));
+        return json({ ok: true, ...result }, 200, headers);
+      }
+      if (payload.action === "status") {
+        const status = payload.status === "active" ? "active" : payload.status === "disabled" ? "disabled" : null;
+        if (!status) throw new StaffAdministrationError("staff_not_found");
+        await setStaffAccountStatus(env, principal, staffAccountId, status);
+      } else if (payload.action === "revoke-sessions") {
+        await revokeAllStaffSessions(env, principal, staffAccountId);
+      } else {
+        return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+      }
+      const currentPrincipal = await resolveStaffPrincipal(env, rawSessionToken, new Date(), "passive");
+      const headers = new Headers({ "Cache-Control": "no-store" });
+      if (!currentPrincipal) headers.append("Set-Cookie", clearStaffSessionCookie(true));
+      return json({ ok: true, reauthenticationRequired: !currentPrincipal }, 200, headers);
+    } catch (caught) {
+      return staffAdministrationError(caught);
+    }
   }
 
   if (path === "/api/staff/settings/auth") {

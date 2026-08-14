@@ -22,6 +22,7 @@ import "../../styles/global.css";
     <script>
       // @ts-nocheck
       import { createStaffActionMenuController } from "../../scripts/staff-action-menus.js";
+      import { buildProgramReport, copyReportToClipboard, printReport } from "../../scripts/staff-reports.js";
       import { escape, getOverview, hasSetupAccess, postOverviewAction, stageLabel } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
@@ -95,9 +96,12 @@ import "../../styles/global.css";
           return;
         }
         if (!state.edit) {
-          box.innerHTML = `<div class="staff-section-heading"><div><span class="staff-kind-label">${escape(family.kind === "annual_course" ? "Жилийн сургалт" : "Зуны хөтөлбөр")}</span><h2>${escape(label(family))}</h2></div><div class="staff-inline-actions"><button id="program-close" class="button secondary" type="button">Хаах</button><button id="program-edit" class="button secondary" type="button">Засах</button></div></div><p>${program.lessons.length} хичээл</p><ol class="staff-program-preview">${rows(program)}</ol>${family.history?.length ? `<details><summary>Өмнөх хувилбарууд</summary><ul class="staff-program-preview">${family.history.map((entry) => `<li><span>${escape(entry.displayName)}</span><span>${entry.lessons.length} хичээл${entry.offeringCount ? ` · ${entry.offeringCount} сургалт ашиглаж байна` : ""}</span></li>`).join("")}</ul></details>` : ""}`;
+          box.innerHTML = `<div class="staff-section-heading"><div><span class="staff-kind-label">${escape(family.kind === "annual_course" ? "Жилийн сургалт" : "Зуны хөтөлбөр")}</span><h2>${escape(label(family))}</h2></div><div class="staff-inline-actions"><button id="program-close" class="button secondary" type="button">Хаах</button><button id="program-edit" class="button secondary" type="button">Засах</button></div></div><p>${program.lessons.length} хичээл</p><div class="staff-report-actions"><button id="program-print" class="button secondary" type="button">Хэвлэх / PDF</button><button id="program-copy" class="button secondary" type="button">Excel-д хуулах</button></div><ol class="staff-program-preview">${rows(program)}</ol>${family.history?.length ? `<details><summary>Өмнөх хувилбарууд</summary><ul class="staff-program-preview">${family.history.map((entry) => `<li><span>${escape(entry.displayName)}</span><span>${entry.lessons.length} хичээл${entry.offeringCount ? ` · ${entry.offeringCount} сургалт ашиглаж байна` : ""}</span></li>`).join("")}</ul></details>` : ""}`;
           q("#program-close").onclick = () => { state.familyId = ""; state.edit = false; history.replaceState(null, "", location.pathname); renderEditor(); };
           q("#program-edit").onclick = () => run(async () => { await postOverviewAction("program.edit", { programFamilyId: family.id }); state.edit = true; });
+          const report = () => buildProgramReport(family, program, label(family));
+          q("#program-print").onclick = () => printReport(report());
+          q("#program-copy").onclick = async () => { try { await copyReportToClipboard(report()); message("Excel-д хуулах хүснэгтийг хууллаа.", true); } catch { message("Хүснэгтийг хуулж чадсангүй."); } };
           return;
         }
         const dirty = hasSavedProgramChanges(family);

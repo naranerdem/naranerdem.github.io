@@ -20,3 +20,15 @@ export function resolveDeliveryAddress(
 
   return { actualEmail: intendedEmail, deliveryMode: "production" };
 }
+
+export function resolveStaffDeliveryAddress(
+  environment: AppEnvironment,
+  intendedEmail: string,
+  isTestStaff: boolean,
+  stagingOverride?: string,
+): DeliveryAddress {
+  if (environment === "staging" && !isTestStaff) {
+    return { actualEmail: intendedEmail, deliveryMode: "production" };
+  }
+  return resolveDeliveryAddress(environment, intendedEmail, stagingOverride);
+}
