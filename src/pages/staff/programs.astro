@@ -21,11 +21,13 @@ import "../../styles/global.css";
     </main>
     <script>
       // @ts-nocheck
+      import { createStaffActionMenuController } from "../../scripts/staff-action-menus.js";
       import { escape, getOverview, hasSetupAccess, postOverviewAction, stageLabel } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
       const state = { data: null, familyId: params.get("program") || params.get("family") || "", creating: false, edit: false, editingLessonId: "", insertingBeforeLessonId: "", appendingLesson: false, discarding: false };
       const q = (selector) => document.querySelector(selector);
+      const actionMenus = createStaffActionMenuController(document);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const families = () => (state.data?.programFamilies || []).filter((family) => family.status === "active");
       const selected = () => families().find((family) => family.id === state.familyId);
@@ -54,7 +56,7 @@ import "../../styles/global.css";
       }
       function lessonRow(lesson, index, lessonCount) {
         if (state.editingLessonId === lesson.id) return titleEditor(lesson);
-        const actions = `<details class="staff-lesson-menu"><summary aria-label="${lesson.sequenceNumber}-р хичээлийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-insert-before="${escape(lesson.id)}">Өмнө нь хичээл оруулах</button>${index > 0 ? `<button type="button" data-move="up" data-lesson="${escape(lesson.id)}">Дээш зөөх</button>` : ""}${index < lessonCount - 1 ? `<button type="button" data-move="down" data-lesson="${escape(lesson.id)}">Доош зөөх</button>` : ""}<button type="button" data-delete="${escape(lesson.id)}">Хасах</button></div></details>`;
+        const actions = `<details class="staff-lesson-menu" data-staff-action-menu><summary aria-label="${lesson.sequenceNumber}-р хичээлийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-staff-action-menu-item data-insert-before="${escape(lesson.id)}">Өмнө нь хичээл оруулах</button>${index > 0 ? `<button type="button" data-staff-action-menu-item data-move="up" data-lesson="${escape(lesson.id)}">Дээш зөөх</button>` : ""}${index < lessonCount - 1 ? `<button type="button" data-staff-action-menu-item data-move="down" data-lesson="${escape(lesson.id)}">Доош зөөх</button>` : ""}<button type="button" data-staff-action-menu-item data-delete="${escape(lesson.id)}">Хасах</button></div></details>`;
         return `<li class="staff-lesson-row"><span class="staff-order">${lesson.sequenceNumber}</span><button class="staff-lesson-title" type="button" data-edit-title="${escape(lesson.id)}">${escape(lesson.title)}</button>${actions}</li>`;
       }
       function lessonRows(program) {
@@ -82,6 +84,7 @@ import "../../styles/global.css";
         }, "Өөрчлөлтийг устгалаа.");
       }
       function renderEditor() {
+        actionMenus.close();
         const family = selected(); const box = q("#program-editor"); if (!family) { box.hidden = true; return; } box.hidden = false;
         const program = state.edit ? family.draftProgram : family.currentProgram;
         if (!program) {

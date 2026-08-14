@@ -188,6 +188,8 @@ try {
   assert.ok(programsPage.indexOf("Зуны хөтөлбөр") < programsPage.lastIndexOf("Зуны хөтөлбөр нэмэх"), "the summer-program action remains inside the later summer section");
   assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
   assert.match(programsPage, /Өмнө нь хичээл оруулах/, "the Program row menu supports insertion before a lesson");
+  assert.match(programsPage, /data-staff-action-menu/, "Program row menus opt into the shared one-menu controller");
+  assert.match(programsPage, /createStaffActionMenuController/, "Program page initializes shared action-menu behavior");
   assert.doesNotMatch(programsPage, /Эндээс өмнө хичээл оруулах/, "the Program row menu uses concise teacher wording");
   assert.match(programsPage, /Хичээл нэмэх/, "the Program editor keeps one append action");
   assert.doesNotMatch(programsPage, /<form id="program-form"/, "Program inline lesson forms are not nested inside an outer form");
@@ -212,6 +214,8 @@ try {
   assert.doesNotMatch(offeringsPage, /offering-break|Сургалтын завсарлага|Завсарлага нэмэх/, "Offering metadata editing does not expose break controls");
   assert.match(schedulePage, />Хадгалах</, "calendar save uses ordinary teacher wording");
   assert.match(schedulePage, /data-calendar-action/, "future lessons use compact row actions");
+  assert.match(schedulePage, /data-staff-action-menu/, "Schedule row menus opt into the shared one-menu controller");
+  assert.match(schedulePage, /createStaffActionMenuController/, "Schedule page initializes shared action-menu behavior");
   assert.match(schedulePage, /Нэмэлт хичээл оруулах/, "extra lessons are secondary schedule work");
   assert.doesNotMatch(schedulePage, /Өөрчлөх ноорог эхлүүлэх|Хуваарь нийтлэх|Ноорог хуваарь|Нийтлэгдсэн хуваарь|calendar-date-action|Өдөр, цаг өөрчлөх|replacement:/, "ordinary schedule editing hides draft, publish, and arbitrary date-move machinery");
   assert.match(schedulePage, /Энэ өдөр хичээллэх/, "a school-calendar skip has a natural class-level restore action");

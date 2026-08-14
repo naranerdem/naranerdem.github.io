@@ -19,11 +19,13 @@ import "../../styles/global.css";
     </main>
     <script>
       // @ts-nocheck
+      import { createStaffActionMenuController } from "../../scripts/staff-action-menus.js";
       import { escape, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
       const state = { data: null, contextOfferingId: params.get("offering") || "", selectedClassId: params.get("class") || "", editingOfferingBreakId: "", calendarAction: null, discardingCalendar: false };
       const q = (selector) => document.querySelector(selector);
+      const actionMenus = createStaffActionMenuController(document);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active" && entry.kind !== "event");
       const visibleOfferings = () => state.contextOfferingId ? offerings().filter((entry) => entry.id === state.contextOfferingId) : offerings();
@@ -50,7 +52,7 @@ import "../../styles/global.css";
       }
       function calendarFor(classSessionId) { const revisions = (state.data?.revisions || []).filter((entry) => entry.classSessionId === classSessionId); return revisions.find((entry) => entry.status === "draft") || revisions.find((entry) => entry.status === "published") || null; }
       function calendarSpan(calendar) { const active = (calendar?.slots || []).filter((slot) => slot.status === "scheduled"); const first = active[0]; const last = active.at(-1); return calendar ? `${active.length} хичээл${first && last ? ` · ${formatDate(first.localDate)} – ${formatDate(last.localDate)}` : ""}` : "Хуваарь үүсгээгүй"; }
-      function selectClass(classSessionId) { state.selectedClassId = classSessionId; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", `?class=${encodeURIComponent(classSessionId)}`); render(); q("#schedule-detail").scrollIntoView({ behavior: "smooth", block: "start" }); }
+      function selectClass(classSessionId) { actionMenus.close(); state.selectedClassId = classSessionId; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", `?class=${encodeURIComponent(classSessionId)}`); render(); q("#schedule-detail").scrollIntoView({ behavior: "smooth", block: "start" }); }
       function renderOverview() {
         const rows = visibleOfferings().map((offering) => `<section class="staff-schedule-overview-group"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2>${escape(offering.title)}</h2></div></div>${classes(offering.id).length ? `<div class="staff-schedule-overview-list">${classes(offering.id).map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${calendarSpan(calendarFor(entry.id))}</p></div><button class="button secondary" type="button" data-open-class="${escape(entry.id)}">Нээх</button></article>`).join("")}</div>` : `<p class="staff-empty">Анги оруулаагүй байна. <a href="/staff/offerings/?offering=${encodeURIComponent(offering.id)}">Сургалтаас анги нэмнэ үү.</a></p>`}</section>`).join("");
         q("#schedule-overview").innerHTML = `<section class="staff-operation-section" aria-labelledby="schedule-overview-title"><div class="staff-section-heading"><div><p class="staff-kind-label">Огноотой хуваарь</p><h2 id="schedule-overview-title">Ангиудын хуваарь</h2></div></div>${rows || `<p class="staff-empty">Эхлээд сургалт нэмнэ үү.</p>`}</section>`;
@@ -83,7 +85,7 @@ import "../../styles/global.css";
       }
       function rowActions(slot) {
         const action = slot.status === "scheduled" ? "Хичээлгүй болгох" : slot.holidayWarnings?.length ? "Энэ өдөр хичээллэх" : "Хичээлтэй болгох";
-        return `<details class="staff-calendar-menu"><summary aria-label="Хуваарийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-calendar-action="${slot.status === "scheduled" ? "cancel" : "restore"}" data-slot-key="${escape(calendarSlotKey(slot))}">${action}</button></div></details>`;
+        return `<details class="staff-calendar-menu" data-staff-action-menu><summary aria-label="Хуваарийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-staff-action-menu-item data-calendar-action="${slot.status === "scheduled" ? "cancel" : "restore"}" data-slot-key="${escape(calendarSlotKey(slot))}">${action}</button></div></details>`;
       }
       function actionEditor(slot, revision) {
         const action = state.calendarAction;
@@ -131,6 +133,7 @@ import "../../styles/global.css";
           || !sameCalendarEntries(calendar.overrides || [], base.overrides || [], ["localDate", "behavior", "reasonLabel"]);
       }
       function renderCalendarView(container, calendar, offering, selected, editable) {
+        actionMenus.close();
         const rows = calendar.slots.map((slot) => calendarRow(slot, calendar)).join("");
         const dirty = editable && hasSavedCalendarChanges(calendar);
         const calendarActions = state.discardingCalendar
