@@ -164,13 +164,23 @@ try {
         ('enrollment-b', 'application-b', 'student-b', 'year', 'class-a', 'confirmed', '${confirmedAt}', 1, 'attendance-test', '${now}', '${now}');
   `);
 
-  const day = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today");
+  const beforeClassEnd = new Date(`${today}T09:30:00+08:00`);
+  const afterClassEnd = new Date(`${today}T12:00:00+08:00`);
+  const day = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today", beforeClassEnd);
   assert.equal(day.occurrences.length, 1, "daily attendance lists scheduled course occurrences only");
   assert.equal(day.occurrences[0].rosterCount, 2, "daily occurrence list includes its compact roster count");
   assert.equal(day.occurrences[0].markedCount, 0, "daily occurrence list includes its compact marked count");
   assert.equal(day.selected.rosterCount, 2, "confirmed students are rostered for the occurrence");
   assert.equal(day.selected.holidayLabel, "Тест амралт", "a restored school-calendar date keeps its warning");
   assert.equal(day.selected.markedCount, 0);
+  assert.equal(day.selected.occurrenceEnded, false);
+  assert.equal(day.selected.roster[0].recordedAttendanceStatus, null);
+  assert.equal(day.selected.roster[0].effectiveAttendanceStatus, null, "unchecked attendance is not absent before class end");
+  const endedDay = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today", afterClassEnd);
+  assert.equal(endedDay.selected.occurrenceEnded, true);
+  assert.equal(endedDay.selected.progressCount, 2, "an ended occurrence is conceptually complete");
+  assert.ok(endedDay.selected.roster.every((entry) => entry.effectiveAttendanceStatus === "absent"), "unchecked roster members are effectively absent after class end");
+  assert.equal(count(database, "course_attendance"), 0, "derived absence does not create explicit attendance rows");
   await assert.rejects(() => attendance.getCourseAttendanceDay(runtime, actor("accountant"), today), /Course attendance/, "accountants cannot view attendance");
 
   const marked = await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-today", enrollmentId: "enrollment-a", status: "present" });
@@ -181,9 +191,17 @@ try {
   ) VALUES ('duplicate-attendance', 'enrollment-a', 'class-a', 'lesson-2', 'late', '${today}', '${now}', '${now}', 'teacher-staff', 'teacher-staff', 1, 'attendance-test', '${now}');`), /UNIQUE constraint failed/, "one enrollment has at most one current record for a class lesson");
   assert.equal((await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-today", enrollmentId: "enrollment-a", status: "present" })).changed, false, "same status is a no-op");
   await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-today", enrollmentId: "enrollment-a", status: "late" });
+  const lateDay = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today", afterClassEnd);
+  assert.equal(lateDay.selected.roster.find((entry) => entry.enrollmentId === "enrollment-a").effectiveAttendanceStatus, "late");
   await attendance.clearCourseAttendance(runtime, actor(), { slotId: "slot-today", enrollmentId: "enrollment-a" });
   assert.equal(database.query("SELECT attendance_status AS status FROM course_attendance WHERE enrollment_id = 'enrollment-a'")[0].status, null, "clear returns the current attendance state to unmarked");
   assert.equal(count(database, "course_attendance_change", "course_attendance_id = (SELECT id FROM course_attendance WHERE enrollment_id = 'enrollment-a')"), 3, "mark, correction, and clear remain auditable");
+  const clearedAfterEnd = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today", afterClassEnd);
+  assert.equal(clearedAfterEnd.selected.roster.find((entry) => entry.enrollmentId === "enrollment-a").effectiveAttendanceStatus, "absent", "removing present after class returns to effective absence");
+  await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-today", enrollmentId: "enrollment-a", status: "present" });
+  const correctedAfterEnd = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today", afterClassEnd);
+  assert.equal(correctedAfterEnd.selected.roster.find((entry) => entry.enrollmentId === "enrollment-a").effectiveAttendanceStatus, "present", "teacher can later correct derived absence to present");
+  await attendance.clearCourseAttendance(runtime, actor(), { slotId: "slot-today", enrollmentId: "enrollment-a" });
   assert.throws(() => sqlite("DELETE FROM course_attendance_change WHERE id = (SELECT id FROM course_attendance_change LIMIT 1);"), /course attendance history is append-only/, "attendance history cannot be deleted");
   assert.equal(await attendance.attendanceProtectedThroughSequence(runtime, "class-a", "program"), 0, "clearing removes the attendance-derived schedule lock");
 
@@ -212,6 +230,10 @@ try {
   await assert.rejects(() => attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-future", enrollmentId: "enrollment-a", status: "present" }), /Course attendance/, "future attendance is rejected server-side");
   await attendance.saveCourseAbsenceNotice(runtime, actor(), { slotId: "slot-future", enrollmentId: "enrollment-b", note: "Тест мэдэгдэл" });
   assert.equal(database.query("SELECT status, note FROM course_absence_notice WHERE enrollment_id = 'enrollment-b' AND curriculum_lesson_id = 'lesson-3'")[0].status, "active", "future notice is separate from attendance");
+  const futureDay = await attendance.getCourseAttendanceDay(runtime, actor(), future, "slot-future", afterClassEnd);
+  const notifiedFuture = futureDay.selected.roster.find((entry) => entry.enrollmentId === "enrollment-b");
+  assert.equal(notifiedFuture.effectiveAttendanceStatus, null, "future unchecked attendance remains not applicable");
+  assert.equal(notifiedFuture.hasAbsenceNotice, true, "prior notice remains independent from attendance");
   await attendance.cancelCourseAbsenceNotice(runtime, actor(), { slotId: "slot-future", enrollmentId: "enrollment-b" });
   assert.equal(database.query("SELECT status FROM course_absence_notice WHERE enrollment_id = 'enrollment-b' AND curriculum_lesson_id = 'lesson-3'")[0].status, "cancelled", "notice cancellation keeps the durable row");
   assert.equal(count(database, "course_absence_notice_change"), 2, "notice creation and cancellation retain history");
@@ -245,10 +267,11 @@ try {
   const renderedAttendance = readFileSync("dist/staff/attendance/index.html", "utf8");
   assert.match(source, /Бүгд ирсэн/);
   assert.match(source, /Одоогоор тэмдэглээгүй/);
-  assert.match(source, /Тэмдэглэгээг арилгах/);
-  assert.match(source, /Урьдчилж мэдэгдсэн/);
+  assert.match(source, /data-attendance-control="\$\{value\}"/, "the roster uses compact present and late checkboxes");
+  assert.match(source, /Мэдэгдсэн/);
   assert.match(source, /createOptimisticRosterMutator/, "individual attendance updates are optimistic");
-  assert.match(source, /data-staff-action-menu/, "clearing a mark uses the compact row action menu");
+  assert.doesNotMatch(source, /data-mark-status|Ирээгүй гэж тэмдэглэх|Үлдсэнийг ирээгүй болгох/, "ordinary attendance has no explicit absent action");
+  assert.doesNotMatch(source, /Тэмдэглэгээг арилгах/, "unchecking present is the compact clear interaction");
   assert.doesNotMatch(source, /Ирэхгүйг мэдэгдэх/, "teacher roster uses completed-notice wording");
   assert.doesNotMatch(source, /await refresh\(success\)/, "individual mutations do not refetch the full roster");
   assert.doesNotMatch(source, /Хадгалах<\/button>/, "attendance has no page-level save action");

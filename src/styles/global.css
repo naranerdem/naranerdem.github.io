@@ -2419,18 +2419,67 @@ textarea:focus {
   min-width: 0;
 }
 
+.staff-attendance-student > strong {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.staff-attendance-checklist {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
+}
+
 .staff-attendance-statuses {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 0.35rem;
 }
 
-.staff-attendance-status {
-  min-height: 42px;
+.staff-attendance-check {
+  align-items: center;
   border: 1px solid #cbd3df;
   border-radius: 6px;
   background: #fff;
-  padding: 0.45rem 0.55rem;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 0.35rem;
+  min-height: 40px;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.84rem;
+  font-weight: 750;
+  touch-action: manipulation;
+}
+
+.staff-attendance-check input {
+  accent-color: var(--blue);
+  block-size: 1.05rem;
+  inline-size: 1.05rem;
+  margin: 0;
+}
+
+.staff-attendance-check.selected {
+  border-color: var(--blue);
+  background: rgba(7, 58, 175, 0.08);
+  color: var(--blue-deep);
+}
+
+.staff-attendance-effective-absent {
+  color: #8f2424;
+  font-size: 0.8rem;
+  font-weight: 750;
+  padding-inline: 0.2rem;
+}
+
+.staff-attendance-status {
+  min-height: 40px;
+  border: 1px solid #cbd3df;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0.4rem 0.55rem;
   color: var(--ink);
   font: inherit;
   font-size: 0.84rem;

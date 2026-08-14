@@ -37,8 +37,14 @@ import "../../styles/global.css";
     </main>
     <script>
       // @ts-nocheck
-      import { createStaffActionMenuController } from "../../scripts/staff-action-menus.js";
-      import { createOptimisticRosterMutator, markedRosterCount } from "../../scripts/attendance-optimistic.js";
+      import {
+        attendanceCheckboxState,
+        attendanceProgressCount,
+        attendanceStatusAfterToggle,
+        createOptimisticRosterMutator,
+        effectiveAttendanceStatus,
+        markedRosterCount,
+      } from "../../scripts/attendance-optimistic.js";
       import { escape, formatDate, getAttendanceDay, hasAttendanceAccess, postAttendanceAction } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
@@ -49,8 +55,6 @@ import "../../styles/global.css";
       const isFuture = () => state.data && state.data.localDate > state.data.today;
       const isPast = () => state.data && state.data.localDate < state.data.today;
       const dateQuery = () => { const next = new URLSearchParams({ date: state.date }); if (state.selectedSlotId) next.set("occurrence", state.selectedSlotId); return `?${next.toString()}`; };
-      createStaffActionMenuController(document);
-
       const optimistic = createOptimisticRosterMutator({
         onChange(entry) { patchRosterRow(entry.enrollmentId); },
         onError(entry, error) {
@@ -72,7 +76,7 @@ import "../../styles/global.css";
         const container = q("#attendance-list");
         const entries = state.data.occurrences || [];
         if (!entries.length) { container.innerHTML = `<p class="staff-empty">Энэ өдөр хичээлгүй.</p>`; return; }
-        container.innerHTML = entries.map((entry) => `<article class="staff-attendance-occurrence ${entry.slotId === state.selectedSlotId ? "selected" : ""}"><div><strong>${escape(entry.startTime)}–${escape(entry.endTime)} · ${escape(entry.offeringTitle)}</strong><p>${entry.lessonSequence}. ${escape(entry.lessonTitle)}</p><p>${entry.markedCount} / ${entry.rosterCount} тэмдэглэсэн${entry.holidayLabel ? ` · <span class="staff-calendar-warning-inline">${escape(entry.holidayLabel)}</span>` : ""}</p></div><button class="button secondary" type="button" data-open-occurrence="${escape(entry.slotId)}">Нээх</button></article>`).join("");
+        container.innerHTML = entries.map((entry) => `<article class="staff-attendance-occurrence ${entry.slotId === state.selectedSlotId ? "selected" : ""}"><div><strong>${escape(entry.startTime)}–${escape(entry.endTime)} · ${escape(entry.offeringTitle)}</strong><p>${entry.lessonSequence}. ${escape(entry.lessonTitle)}</p><p>${entry.progressCount} / ${entry.rosterCount} ${entry.occurrenceEnded ? "ирц бүрдсэн · Дууссан" : "тэмдэглэсэн"}${entry.holidayLabel ? ` · <span class="staff-calendar-warning-inline">${escape(entry.holidayLabel)}</span>` : ""}</p></div><button class="button secondary" type="button" data-open-occurrence="${escape(entry.slotId)}">Нээх</button></article>`).join("");
         container.querySelectorAll("[data-open-occurrence]").forEach((button) => button.onclick = () => {
           state.selectedSlotId = button.dataset.openOccurrence;
           state.bulkConfirm = false;
@@ -83,31 +87,28 @@ import "../../styles/global.css";
 
       function attendanceControls(entry) {
         if (isFuture()) return `<p class="staff-muted staff-attendance-future-note">Ирцийг хичээл болох өдрөөс эхэлж тэмдэглэнэ.</p>`;
-        const status = entry.attendanceStatus || "";
+        const status = entry.recordedAttendanceStatus || "";
+        const checked = attendanceCheckboxState(status);
         const pending = optimistic.isPending(entry.enrollmentId);
-        const control = (value, label) => `<button class="staff-attendance-status ${status === value ? "selected" : ""}" type="button" data-mark-status="${value}" data-enrollment="${escape(entry.enrollmentId)}" aria-pressed="${status === value}" ${pending ? "disabled" : ""}>${label}</button>`;
-        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}${control("absent", "Ирээгүй")}</div>`;
+        const effective = effectiveAttendanceStatus(status, state.data.selected.occurrenceEnded);
+        const control = (value, label) => `<label class="staff-attendance-check ${checked[value] ? "selected" : ""}"><input type="checkbox" data-attendance-control="${value}" data-enrollment="${escape(entry.enrollmentId)}" ${checked[value] ? "checked" : ""} ${pending ? "disabled" : ""} />${label}</label>`;
+        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}${effective === "absent" ? `<span class="staff-attendance-effective-absent">Ирээгүй</span>` : ""}</div>`;
       }
 
       function noticeControls(entry) {
-        if (isPast()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Урьдчилж мэдэгдсэн</span>` : "";
+        if (isPast()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
         const pending = optimistic.isPending(entry.enrollmentId);
-        return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Урьдчилж мэдэгдсэн</label>`;
-      }
-
-      function rowActions(entry) {
-        if (!entry.attendanceStatus || isFuture()) return "";
-        return `<details class="staff-attendance-menu" data-staff-action-menu><summary aria-label="${escape(entry.displayName)}-ийн нэмэлт үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-attendance-menu-actions"><button type="button" data-staff-action-menu-item data-clear-attendance="${escape(entry.enrollmentId)}" ${optimistic.isPending(entry.enrollmentId) ? "disabled" : ""}>Тэмдэглэгээг арилгах</button></div></details>`;
+        return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Мэдэгдсэн</label>`;
       }
 
       function rosterRow(entry) {
         const pending = optimistic.isPending(entry.enrollmentId);
         const error = state.rowErrorEnrollmentId === entry.enrollmentId ? `<p class="staff-attendance-row-error" role="status">${escape(state.rowErrorMessage)}</p>` : "";
-        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><strong>${escape(entry.displayName)}</strong>${attendanceControls(entry)}<div class="staff-attendance-row-actions">${noticeControls(entry)}${rowActions(entry)}</div>${error}</div></article>`;
+        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><strong>${escape(entry.displayName)}</strong><div class="staff-attendance-checklist">${attendanceControls(entry)}${noticeControls(entry)}</div>${error}</div></article>`;
       }
 
       function bulkMarkup(selected) {
-        const unmarked = selected.rosterCount - selected.markedCount;
+        const unmarked = selected.rosterCount - markedRosterCount(selected.roster);
         if (isFuture() || unmarked <= 0) return "";
         if (state.bulkPending) return `<span class="staff-muted">Тэмдэглэж байна…</span>`;
         if (state.bulkConfirm) return `<div class="staff-attendance-bulk-confirm"><p>Одоогоор тэмдэглээгүй ${unmarked} сурагчийг ирсэн гэж тэмдэглэх үү?</p><div class="staff-inline-actions"><button id="attendance-bulk-cancel" class="button secondary" type="button">Болих</button><button id="attendance-bulk-confirm" class="button primary" type="button">Бүгд ирсэн</button></div></div>`;
@@ -119,10 +120,13 @@ import "../../styles/global.css";
         const summary = q("#attendance-summary");
         if (!selected || !summary) return;
         selected.markedCount = markedRosterCount(selected.roster);
+        selected.progressCount = attendanceProgressCount(selected.roster, selected.occurrenceEnded);
         const occurrence = state.data.occurrences.find((entry) => entry.slotId === selected.slotId);
-        if (occurrence) occurrence.markedCount = selected.markedCount;
-        const complete = selected.rosterCount > 0 && selected.markedCount === selected.rosterCount;
-        summary.innerHTML = `<strong>${selected.markedCount} / ${selected.rosterCount} тэмдэглэсэн${complete ? " · Дууссан" : ""}</strong>${bulkMarkup(selected)}`;
+        if (occurrence) {
+          occurrence.markedCount = selected.markedCount;
+          occurrence.progressCount = selected.progressCount;
+        }
+        summary.innerHTML = `<strong>${selected.progressCount} / ${selected.rosterCount} ${selected.occurrenceEnded ? "ирц бүрдсэн · Дууссан" : "тэмдэглэсэн"}</strong>${bulkMarkup(selected)}`;
       }
 
       function patchRosterRow(enrollmentId) {
@@ -151,16 +155,16 @@ import "../../styles/global.css";
         if (saved) message(success, true);
       }
 
-      async function markAttendance(enrollmentId, status) {
+      async function setAttendance(enrollmentId, status) {
         const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === enrollmentId);
-        if (!entry || entry.attendanceStatus === status) return;
-        await mutateRow(enrollmentId, { attendanceStatus: status }, "attendance.mark", { status }, "Ирцийг тэмдэглэлээ.");
-      }
-
-      async function clearAttendance(enrollmentId) {
-        const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === enrollmentId);
-        if (!entry || !entry.attendanceStatus) return;
-        await mutateRow(enrollmentId, { attendanceStatus: null }, "attendance.clear", {}, "Тэмдэглэгээг арилгалаа.");
+        if (!entry || entry.recordedAttendanceStatus === status) return;
+        await mutateRow(
+          enrollmentId,
+          { recordedAttendanceStatus: status },
+          status ? "attendance.mark" : "attendance.clear",
+          status ? { status } : {},
+          "Ирцийг хадгаллаа.",
+        );
       }
 
       async function toggleNotice(enrollmentId, checked) {
@@ -176,7 +180,7 @@ import "../../styles/global.css";
         renderSummary();
         try {
           await postAttendanceAction("attendance.bulk-present", { slotId: state.selectedSlotId });
-          selected.roster.filter((entry) => !entry.attendanceStatus).forEach((entry) => { entry.attendanceStatus = "present"; patchRosterRow(entry.enrollmentId); });
+          selected.roster.filter((entry) => !entry.recordedAttendanceStatus).forEach((entry) => { entry.recordedAttendanceStatus = "present"; patchRosterRow(entry.enrollmentId); });
           state.bulkConfirm = false;
           message("Бүгдийг ирсэн гэж тэмдэглэлээ.", true);
         } catch (error) {
@@ -194,11 +198,13 @@ import "../../styles/global.css";
         if (target.id === "attendance-bulk-present") { state.bulkConfirm = true; renderSummary(); return; }
         if (target.id === "attendance-bulk-cancel") { state.bulkConfirm = false; renderSummary(); return; }
         if (target.id === "attendance-bulk-confirm") { bulkPresent(); return; }
-        if (target.dataset.markStatus) markAttendance(target.dataset.enrollment, target.dataset.markStatus);
-        if (target.dataset.clearAttendance) clearAttendance(target.dataset.clearAttendance);
       });
       q("#attendance-detail").addEventListener("change", (event) => {
         const target = event.target;
+        if (target.matches("[data-attendance-control]")) {
+          const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === target.dataset.enrollment);
+          if (entry) setAttendance(entry.enrollmentId, attendanceStatusAfterToggle(entry.recordedAttendanceStatus, target.dataset.attendanceControl, target.checked));
+        }
         if (target.matches("[data-toggle-notice]")) toggleNotice(target.dataset.toggleNotice, target.checked);
       });
 

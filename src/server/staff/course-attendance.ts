@@ -73,15 +73,37 @@ function optionalText(value: unknown, max = 600): string | null {
   return text(value, max) || null;
 }
 
-function localToday(): string {
+function localDateTime(at = new Date()): { date: string; time: string } {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Ulaanbaatar",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(at);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    time: `${values.hour}:${values.minute}`,
+  };
+}
+
+function localToday(at = new Date()): string {
+  return localDateTime(at).date;
+}
+
+export function courseOccurrenceHasEnded(localDate: string, endTime: string, at = new Date()): boolean {
+  const current = localDateTime(at);
+  return localDate < current.date || (localDate === current.date && endTime <= current.time);
+}
+
+export function effectiveCourseAttendanceStatus(
+  recordedStatus: CourseAttendanceStatus | null,
+  occurrenceEnded: boolean,
+): CourseAttendanceStatus | null {
+  return recordedStatus ?? (occurrenceEnded ? "absent" : null);
 }
 
 function localDateBounds(value: string): { startsAt: string; endsAt: string } {
@@ -211,16 +233,18 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): P
   return result.results;
 }
 
-function serializeOccurrence(occurrence: AttendanceOccurrence) {
+function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
+  const occurrenceEnded = courseOccurrenceHasEnded(occurrence.localDate, occurrence.endTime, at);
   const roster = occurrence.roster.map((entry) => ({
     enrollmentId: entry.enrollmentId,
     studentId: entry.studentId,
     displayName: `${entry.surname} ${entry.givenName}`.trim(),
-    attendanceStatus: entry.attendanceStatus,
+    recordedAttendanceStatus: entry.attendanceStatus,
+    effectiveAttendanceStatus: effectiveCourseAttendanceStatus(entry.attendanceStatus, occurrenceEnded),
     hasAbsenceNotice: Boolean(entry.absenceNoticeId),
     absenceNoticeNote: entry.absenceNoticeNote,
   }));
-  const markedCount = roster.filter((entry) => entry.attendanceStatus !== null).length;
+  const markedCount = roster.filter((entry) => entry.recordedAttendanceStatus !== null).length;
   return {
     slotId: occurrence.slotId,
     classSessionId: occurrence.classSessionId,
@@ -234,7 +258,9 @@ function serializeOccurrence(occurrence: AttendanceOccurrence) {
     holidayLabel: occurrence.holidayLabel,
     roster,
     markedCount,
+    progressCount: occurrenceEnded ? roster.length : markedCount,
     rosterCount: roster.length,
+    occurrenceEnded,
   };
 }
 
@@ -243,15 +269,25 @@ async function selectedOccurrenceWithRoster(env: WorkerEnv, slotId: string): Pro
   return { ...occurrence, roster: await rosterForOccurrence(env, occurrence) };
 }
 
-async function occurrenceSummary(env: WorkerEnv, occurrence: OccurrenceRow) {
+async function occurrenceSummary(env: WorkerEnv, occurrence: OccurrenceRow, at: Date) {
   const roster = await rosterForOccurrence(env, occurrence);
+  const markedCount = roster.filter((entry) => entry.attendanceStatus !== null).length;
+  const occurrenceEnded = courseOccurrenceHasEnded(occurrence.localDate, occurrence.endTime, at);
   return {
     rosterCount: roster.length,
-    markedCount: roster.filter((entry) => entry.attendanceStatus !== null).length,
+    markedCount,
+    progressCount: occurrenceEnded ? roster.length : markedCount,
+    occurrenceEnded,
   };
 }
 
-export async function getCourseAttendanceDay(env: WorkerEnv, actor: StaffPrincipal, localDate = localToday(), selectedSlotId = "") {
+export async function getCourseAttendanceDay(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  localDate = localToday(),
+  selectedSlotId = "",
+  at = new Date(),
+) {
   requireCapability(actor, "attendance.view");
   if (!validDate(localDate)) throw new CourseAttendanceError("invalid");
   const result = await env.DB.prepare(`${OCCURRENCE_SELECT} AND slot.local_date = ?
@@ -267,16 +303,16 @@ export async function getCourseAttendanceDay(env: WorkerEnv, actor: StaffPrincip
     lessonSequence: occurrence.lessonSequence,
     lessonTitle: occurrence.lessonTitle,
     holidayLabel: occurrence.holidayLabel,
-    ...await occurrenceSummary(env, occurrence),
+    ...await occurrenceSummary(env, occurrence, at),
   })));
   const selected = selectedSlotId && result.results.some((occurrence) => occurrence.slotId === selectedSlotId)
     ? await selectedOccurrenceWithRoster(env, selectedSlotId)
     : null;
   return {
     localDate,
-    today: localToday(),
+    today: localToday(at),
     occurrences,
-    selected: selected ? serializeOccurrence(selected) : null,
+    selected: selected ? serializeOccurrence(selected, at) : null,
   };
 }
 
@@ -307,14 +343,14 @@ export async function recordCourseAttendance(
   env: WorkerEnv,
   actor: StaffPrincipal,
   input: { slotId: string; enrollmentId: string; status: unknown },
-): Promise<{ changed: boolean }> {
+): Promise<{ changed: boolean; recordedAttendanceStatus: CourseAttendanceStatus }> {
   requireCapability(actor, "attendance.manage");
   assertAttendanceStatus(input.status);
   const occurrence = await occurrenceForSlot(env, text(input.slotId, 120));
   assertNotFuture(occurrence);
   await rosterEntryForEnrollment(env, occurrence, text(input.enrollmentId, 120));
   const existing = await attendanceForOccurrence(env, occurrence, input.enrollmentId);
-  if (existing?.attendanceStatus === input.status) return { changed: false };
+  if (existing?.attendanceStatus === input.status) return { changed: false, recordedAttendanceStatus: input.status };
   const time = now();
   const provenance = flags(occurrence);
   const attendanceId = existing?.id ?? id();
@@ -349,20 +385,20 @@ export async function recordCourseAttendance(
     }, occurrence, time),
   );
   await env.DB.batch(statements);
-  return { changed: true };
+  return { changed: true, recordedAttendanceStatus: input.status };
 }
 
 export async function clearCourseAttendance(
   env: WorkerEnv,
   actor: StaffPrincipal,
   input: { slotId: string; enrollmentId: string },
-): Promise<{ changed: boolean }> {
+): Promise<{ changed: boolean; recordedAttendanceStatus: null }> {
   requireCapability(actor, "attendance.manage");
   const occurrence = await occurrenceForSlot(env, text(input.slotId, 120));
   assertNotFuture(occurrence);
   await rosterEntryForEnrollment(env, occurrence, text(input.enrollmentId, 120));
   const existing = await attendanceForOccurrence(env, occurrence, input.enrollmentId);
-  if (!existing?.attendanceStatus) return { changed: false };
+  if (!existing?.attendanceStatus) return { changed: false, recordedAttendanceStatus: null };
   const time = now();
   const provenance = flags(occurrence);
   await env.DB.batch([
@@ -383,7 +419,7 @@ export async function clearCourseAttendance(
       from: existing.attendanceStatus,
     }, occurrence, time),
   ]);
-  return { changed: true };
+  return { changed: true, recordedAttendanceStatus: null };
 }
 
 export async function markUnmarkedRosterPresent(

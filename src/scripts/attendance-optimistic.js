@@ -2,8 +2,30 @@ function snapshot(entry, next) {
   return Object.fromEntries(Object.keys(next).map((key) => [key, entry[key]]));
 }
 
+export function effectiveAttendanceStatus(recordedStatus, occurrenceEnded) {
+  if (recordedStatus === "present" || recordedStatus === "late" || recordedStatus === "absent") return recordedStatus;
+  return occurrenceEnded ? "absent" : null;
+}
+
+export function attendanceCheckboxState(recordedStatus) {
+  return {
+    present: recordedStatus === "present" || recordedStatus === "late",
+    late: recordedStatus === "late",
+  };
+}
+
+export function attendanceStatusAfterToggle(recordedStatus, control, checked) {
+  if (control === "late") return checked ? "late" : (recordedStatus === "late" ? "present" : recordedStatus);
+  if (control === "present") return checked ? "present" : null;
+  return recordedStatus;
+}
+
 export function markedRosterCount(roster) {
-  return roster.filter((entry) => entry.attendanceStatus !== null && entry.attendanceStatus !== "").length;
+  return roster.filter((entry) => entry.recordedAttendanceStatus !== null && entry.recordedAttendanceStatus !== "").length;
+}
+
+export function attendanceProgressCount(roster, occurrenceEnded) {
+  return occurrenceEnded ? roster.length : markedRosterCount(roster);
 }
 
 export function createOptimisticRosterMutator({ onChange, onError }) {
