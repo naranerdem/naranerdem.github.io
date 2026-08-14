@@ -168,6 +168,11 @@ from dates/current configured school-year logic. Annual and summer courses are a
 default and may be made paid. These modes do not yet create prices, payment
 schedules, or obligations.
 
+A paid Offering may be created and scheduled before pricing exists, but future
+public registration must remain closed until it has a valid pricing basis and
+required payment-plan terms. That future configuration belongs in Offering
+detail under `Төлбөрийн нөхцөл`, not in compact Offering creation.
+
 ### ClassSession
 
 A `ClassSession` is a concrete registration time/cohort inside a course

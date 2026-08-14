@@ -645,6 +645,9 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
         ? breaks.results.filter((period) => period.academicYearId === classSession.academicYearId && period.status === "active")
           .map((period) => ({ ...period, excludesHabitualSlots: Boolean(period.excludesHabitualSlots) }))
         : [];
+      const sharedOfferingBreaks = classSession?.offeringId
+        ? (offeringSetup.offeringBreaks as Array<{ offeringId: string; startsOn: string; endsOn: string }>).filter((period) => period.offeringId === classSession.offeringId)
+        : [];
       const revisionSlots = slotsByRevision.get(revision.id) ?? [];
       const warnings = classSession
         ? calendarWarnings(revisionSlots.map(toSlot), {
@@ -658,14 +661,15 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
         warnings,
         slots: revisionSlots.map((slot) => ({
           ...slot,
-          holidayWarnings: slot.status === "scheduled"
-            ? schoolCalendarPeriods.filter((period) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label)
-            : [],
+          holidayWarnings: schoolCalendarPeriods.filter((period) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label),
           isHistorical: slot.localDate < today,
           canCancel: revision.status === "draft"
             && slot.status === "scheduled"
             && slot.localDate >= today
             && (slot.lessonSequence ?? 0) > revision.lockedThroughSequence,
+          canRestore: slot.status === "no_class"
+            && slot.localDate >= today
+            && !sharedOfferingBreaks.some((period) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn),
         })),
       };
     }),
@@ -1393,6 +1397,12 @@ async function rebuiltDraftSchedule(
     overrides = [...overrides.filter((entry) => entry.localDate !== proposedOverride.localDate), proposedOverride];
   }
   const oldSlots = await slotsForRevision(env, revision.id);
+  const cancelledSlots = oldSlots.filter((slot) => slot.status === "cancelled").map(toSlot);
+  const cancelledHabitualDates = new Set(oldSlots.filter((slot) => slot.status === "cancelled" && slot.slotSource !== "manual_extra").map((slot) => slot.localDate));
+  overrides = [
+    ...overrides.filter((entry) => !cancelledHabitualDates.has(entry.localDate)),
+    ...[...cancelledHabitualDates].map((localDate) => ({ id: `cancelled-${localDate}`, localDate, behavior: "exclude" as const })),
+  ];
   const extraSlots: ExtraTeachingSlot[] = oldSlots.filter((slot) => slot.slotSource === "manual_extra" && slot.status === "scheduled").map((slot) => ({ id: slot.id, localDate: slot.localDate, startTime: slot.startTime, endTime: slot.endTime, reasonLabel: slot.reasonLabel ?? undefined }));
   if (addedExtra) extraSlots.push(addedExtra);
   let rebuilt: CalendarSlot[];
@@ -1401,6 +1411,9 @@ async function rebuiltDraftSchedule(
   } catch (caught) {
     mapPlanningError(caught);
   }
+  const cancelledTimes = new Set(cancelledSlots.map((slot) => `${slot.localDate}|${slot.startTime}|${slot.endTime}`));
+  rebuilt = [...rebuilt.filter((slot) => !cancelledTimes.has(`${slot.localDate}|${slot.startTime}|${slot.endTime}`)), ...cancelledSlots]
+    .sort((left, right) => left.localDate.localeCompare(right.localDate) || left.startTime.localeCompare(right.startTime) || left.endTime.localeCompare(right.endTime));
   for (const protectedSlot of oldSlots.filter((slot) => slot.status === "scheduled" && (slot.lessonSequence ?? 0) <= revision.lockedThroughSequence)) {
     const match = rebuilt.find((slot) => slot.status === "scheduled" && slot.lesson?.id === protectedSlot.lessonId);
     if (!match || match.localDate !== protectedSlot.localDate || match.startTime !== protectedSlot.startTime || match.endTime !== protectedSlot.endTime) {
@@ -1416,6 +1429,8 @@ export async function changeCalendarDraft(env: WorkerEnv, actor: StaffPrincipal,
   const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft") throw new ProgramCalendarError("immutable"); if (revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const classSession = await classForCalendar(env, revision.calendarId); const time = now(); const flags = operationFlags(env, revision);
   if (revision.basedOnRevisionId && input.localDate < localToday()) throw new ProgramCalendarError("immutable");
+  const sharedOfferingBreaks = classSession.offeringId ? await offeringBreaksForOffering(env, classSession.offeringId) : [];
+  if (input.kind === "restore" && sharedOfferingBreaks.some((period) => period.startsOn <= input.localDate && input.localDate <= period.endsOn)) throw new ProgramCalendarError("immutable");
   if (input.kind === "extra" && (!validTime(input.startTime ?? "") || !validTime(input.endTime ?? "") || (input.startTime ?? "") >= (input.endTime ?? ""))) throw new ProgramCalendarError("invalid");
   let extra: ExtraTeachingSlot | undefined;
   let proposedOverride: CalendarOverride | undefined;
@@ -1443,21 +1458,19 @@ export async function setCalendarDeliveredPrefix(env: WorkerEnv, actor: StaffPri
   ]); if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
-export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string; slotId: string; replacement?: { localDate: string; startTime: string; endTime: string; reasonLabel?: string | null } }): Promise<void> {
+export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string; slotId: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft" || revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const classSession = await classForCalendar(env, revision.calendarId); const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson); const schoolCalendarPeriods = await applicableBreaks(env, classSession); const offeringBreaks = classSession.offeringId ? await offeringBreaksForOffering(env, classSession.offeringId) : []; const overrides = await overridesForRevision(env, revision.id); const slots = (await slotsForRevision(env, revision.id)).map(toSlot);
   const target = slots.find((slot) => slot.id === input.slotId);
   if (!target || target.localDate < localToday()) throw new ProgramCalendarError("immutable");
-  const replacementSlots = input.replacement ? [{ id: id(), localDate: input.replacement.localDate, startTime: input.replacement.startTime, endTime: input.replacement.endTime, reasonLabel: optionalText(input.replacement.reasonLabel) ?? undefined }] : undefined;
-  if (replacementSlots && (!validDate(replacementSlots[0].localDate) || !validTime(replacementSlots[0].startTime) || !validTime(replacementSlots[0].endTime) || replacementSlots[0].startTime >= replacementSlots[0].endTime)) throw new ProgramCalendarError("invalid");
   let result;
   try {
-    result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks, overrides, existingSlots: slots, lockedThroughSequence: revision.lockedThroughSequence, cancelSlotId: input.slotId, replacementSlots });
+    result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks, overrides, existingSlots: slots, lockedThroughSequence: revision.lockedThroughSequence, cancelSlotId: input.slotId });
   } catch (caught) {
     mapPlanningError(caught);
   }
-  await replaceDraftSlots(env, revision, result.slots, actor, "calendar_future_slot_cancelled", { slotId: input.slotId, changedFutureLessonAssignments: result.changedFutureLessonAssignments, newFinalLessonDate: result.newFinalLessonDate, hasReplacement: Boolean(replacementSlots?.length) });
+  await replaceDraftSlots(env, revision, result.slots, actor, "calendar_future_slot_cancelled", { slotId: input.slotId, changedFutureLessonAssignments: result.changedFutureLessonAssignments, newFinalLessonDate: result.newFinalLessonDate });
 }
 
 export async function publishCalendarDraft(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string }): Promise<void> {

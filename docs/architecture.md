@@ -191,13 +191,18 @@ existing Offerings retain their pinned historical revision. Lesson titles are
 edited inline, while insert-before, append, delete, and move actions keep the
 ordered sequence contiguous without a teacher entering sequence numbers.
 
-The Schedule screen leads with the selected class's compact chronological
-calendar, summary, and warnings. A future row's `⋯` actions create or resume
-the internal change draft automatically, give a short consequence preview, and
-use ordinary `Хадгалах`; teacher UI does not expose draft, publish, revision,
-or sequence-lock terminology. Offering-wide course pauses are managed as a
-compact `Тусгай өөрчлөлт` on that screen. They affect every class in the
-Offering, while a one-class change remains on that class's schedule.
+The Program screen begins as a neutral annual/summer list and shows an
+explicitly opened Program detail below both lists. The Schedule screen likewise
+begins with a compact class/calendar overview, then shows one explicitly opened
+class's chronological calendar below it. A future row's `⋯` actions create or
+resume the internal change draft automatically, give a short consequence
+preview, and use ordinary `Хадгалах`; teacher UI does not expose draft,
+publish, revision, or sequence-lock terminology. Normal rescheduling is
+structural: make one active slot no-class, add another slot if needed, and let
+the ordered lesson-to-slot mapping reflow. A school-calendar skip can be
+restored for one class with its named warning retained. Offering-wide course
+pauses remain a compact `Тусгай өөрчлөлт`; they affect every class in the
+Offering and cannot be silently overridden per class.
 
 Ordinary post-publication drafts automatically protect the greater of the
 stored internal lock and all published lesson assignments whose local teaching
@@ -217,6 +222,11 @@ Human class labels are generated from annual stage/weekday/time or summer
 period/time. An unused class exposes deletion only in its edit details; durable
 references suppress hard deletion. Accountant capability has no access, and
 the Worker enforces every permission and same-origin mutation request.
+
+An Offering may be paid, scheduled, and registration-closed before pricing is
+configured. Future pricing belongs in Offering detail under `Төлбөрийн нөхцөл`,
+not compact creation. Public registration must remain closed until valid price
+basis and payment-plan terms exist.
 
 Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
 

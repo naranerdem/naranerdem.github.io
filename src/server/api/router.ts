@@ -814,7 +814,6 @@ export async function handleApiRequest(
         case "calendar.cancel":
           await cancelFutureCalendarSlot(env, principal, {
             revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), slotId: String(payload.slotId ?? ""),
-            replacement: payload.replacement && typeof payload.replacement === "object" ? payload.replacement as { localDate: string; startTime: string; endTime: string; reasonLabel?: string | null } : undefined,
           });
           break;
         case "calendar.publish":

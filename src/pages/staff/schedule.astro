@@ -13,46 +13,57 @@ import "../../styles/global.css";
       <section id="tool-app" hidden>
         <div class="staff-page-heading"><div><p class="eyebrow">Огноотой хуваарь</p><h1>Хуваарь</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <label class="staff-year-picker">Сургалт, арга хэмжээ <select id="offering-select"></select></label>
-        <div id="schedule-content"></div>
+        <div id="schedule-overview"></div>
+        <div id="schedule-detail"></div>
       </section>
     </main>
     <script>
       // @ts-nocheck
-      import { escape, fillSelect, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
+      import { escape, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
 
-      const state = { data: null, offeringId: new URLSearchParams(location.search).get("offering") || "", selectedClassId: "", editingClass: "", editingOfferingBreakId: "", calendarAction: null };
+      const params = new URLSearchParams(location.search);
+      const state = { data: null, contextOfferingId: params.get("offering") || "", selectedClassId: params.get("class") || "", editingClass: "", editingOfferingId: "", editingOfferingBreakId: "", calendarAction: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
-      const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active");
-      const selectedOffering = () => offerings().find((entry) => entry.id === state.offeringId);
-      const classes = () => (state.data?.classes || []).filter((entry) => entry.offeringId === state.offeringId);
-      const offeringBreaks = () => (state.data?.offeringBreaks || []).filter((entry) => entry.offeringId === state.offeringId);
+      const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active" && entry.kind !== "event");
+      const visibleOfferings = () => state.contextOfferingId ? offerings().filter((entry) => entry.id === state.contextOfferingId) : offerings();
+      const classes = (offeringId) => (state.data?.classes || []).filter((entry) => entry.offeringId === offeringId);
+      const selectedClass = () => (state.data?.classes || []).find((entry) => entry.id === state.selectedClassId);
+      const selectedOffering = () => {
+        const entry = selectedClass();
+        return entry ? offerings().find((offering) => offering.id === entry.offeringId) : offerings().find((offering) => offering.id === state.editingOfferingId);
+      };
+      const offeringBreaks = (offeringId) => (state.data?.offeringBreaks || []).filter((entry) => entry.offeringId === offeringId);
       const kindLabel = (kind) => ({ annual_course: "Жилийн сургалт", summer_course: "Зуны сургалт", event: "Арга хэмжээ" })[kind] || "";
       const recurrenceLabel = (kind) => ({ weekly: "7 хоног бүр", weekdays: "Ажлын өдрүүдэд", daily: "Өдөр бүр" })[kind] || "";
       function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
       async function refresh(success = "") {
         state.data = await getOverview();
-        if (!offerings().some((entry) => entry.id === state.offeringId)) state.offeringId = offerings()[0]?.id || "";
-        if (!classes().some((entry) => entry.id === state.selectedClassId)) state.selectedClassId = classes()[0]?.id || "";
+        if (state.contextOfferingId && !offerings().some((entry) => entry.id === state.contextOfferingId)) state.contextOfferingId = "";
+        if (state.selectedClassId && !selectedClass()) state.selectedClassId = "";
+        if (state.editingOfferingId && !offerings().some((entry) => entry.id === state.editingOfferingId)) state.editingOfferingId = "";
         render(); message(success, Boolean(success));
       }
       function render() {
-        fillSelect(q("#offering-select"), offerings(), state.offeringId, (entry) => `${kindLabel(entry.kind)} · ${entry.title}`);
+        renderOverview();
         const offering = selectedOffering();
-        if (!offering) { q("#schedule-content").innerHTML = `<p class="staff-empty">Эхлээд сургалт эсвэл арга хэмжээ нэмнэ үү.</p>`; return; }
-        if (offering.kind === "event") { renderEvent(offering); return; }
+        if (!offering) { q("#schedule-detail").innerHTML = ""; return; }
         renderCourse(offering);
       }
-      function renderEvent(offering) {
-        const occurrence = (state.data.eventOccurrences || []).find((entry) => entry.offeringId === offering.id);
-        q("#schedule-content").innerHTML = `<section class="staff-operation-section"><div class="staff-section-heading"><div><span class="staff-kind-label">Арга хэмжээ</span><h2>${escape(offering.title)}</h2></div><a class="button secondary" href="/staff/offerings/">Засах</a></div>${occurrence ? `<dl class="staff-event-summary"><div><dt>Өдөр</dt><dd>${formatDate(occurrence.localDate)}</dd></div><div><dt>Цаг</dt><dd>${escape(occurrence.startTime)}–${escape(occurrence.endTime)}</dd></div><div><dt>Суудал</dt><dd>${occurrence.capacity}</dd></div><div><dt>Төлбөр</dt><dd>${offering.chargeMode === "free" ? "Үнэгүй" : "Төлбөртэй"}</dd></div><div><dt>Бүртгэл</dt><dd>${occurrence.registrationOpen ? "Нээлттэй" : "Хаалттай"}</dd></div></dl>` : `<p class="staff-empty">Арга хэмжээний огноо оруулаагүй байна.</p>`}</section>`;
+      function calendarFor(classSessionId) { const revisions = (state.data?.revisions || []).filter((entry) => entry.classSessionId === classSessionId); return revisions.find((entry) => entry.status === "draft") || revisions.find((entry) => entry.status === "published") || null; }
+      function calendarSpan(calendar) { const active = (calendar?.slots || []).filter((slot) => slot.status === "scheduled"); const first = active[0]; const last = active.at(-1); return calendar ? `${active.length} хичээл${first && last ? ` · ${formatDate(first.localDate)} – ${formatDate(last.localDate)}` : ""}` : "Хуваарь үүсгээгүй"; }
+      function selectClass(classSessionId) { state.selectedClassId = classSessionId; state.editingClass = ""; state.editingOfferingId = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", `?class=${encodeURIComponent(classSessionId)}`); render(); q("#schedule-detail").scrollIntoView({ behavior: "smooth", block: "start" }); }
+      function renderOverview() {
+        const rows = visibleOfferings().map((offering) => `<section class="staff-schedule-overview-group"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2>${escape(offering.title)}</h2></div><button class="button secondary" type="button" data-add-class="${escape(offering.id)}">Анги нэмэх</button></div>${classes(offering.id).length ? `<div class="staff-schedule-overview-list">${classes(offering.id).map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${calendarSpan(calendarFor(entry.id))}</p></div><button class="button secondary" type="button" data-open-class="${escape(entry.id)}">Нээх</button></article>`).join("")}</div>` : `<p class="staff-empty">Анги оруулаагүй байна.</p>`}</section>`).join("");
+        q("#schedule-overview").innerHTML = `<section class="staff-operation-section" aria-labelledby="schedule-overview-title"><div class="staff-section-heading"><div><p class="staff-kind-label">Огноотой хуваарь</p><h2 id="schedule-overview-title">Ангиудын хуваарь</h2></div></div>${rows || `<p class="staff-empty">Эхлээд сургалт нэмнэ үү.</p>`}</section>`;
+        q("#schedule-overview").querySelectorAll("[data-open-class]").forEach((button) => button.onclick = () => selectClass(button.dataset.openClass));
+        q("#schedule-overview").querySelectorAll("[data-add-class]").forEach((button) => button.onclick = () => { state.selectedClassId = ""; state.editingClass = "new"; state.editingOfferingId = button.dataset.addClass; state.editingOfferingBreakId = ""; state.calendarAction = null; render(); q("#class-recurrence")?.focus(); });
       }
       function renderCourse(offering) {
-        q("#schedule-content").innerHTML = `<section class="staff-operation-section" aria-labelledby="calendar-title"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2 id="calendar-title">Хичээлийн хуваарь</h2></div><label>Анги <select id="calendar-class"></select></label></div><div id="calendar-editor"></div></section><div id="offering-breaks"></div><section class="staff-operation-section" aria-labelledby="classes-title"><div class="staff-section-heading"><div><h2 id="classes-title">Ангиуд</h2><p class="staff-muted">${escape(offering.title)}</p></div><button id="add-class" class="button secondary" type="button">Анги нэмэх</button></div><div id="class-editor"></div><div id="class-list" class="staff-record-list"></div></section>`;
+        q("#schedule-detail").innerHTML = `<section class="staff-operation-section" aria-labelledby="calendar-title"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2 id="calendar-title">Хичээлийн хуваарь</h2></div><button id="close-calendar" class="button secondary" type="button">Хаах</button></div><div id="calendar-editor"></div></section><div id="offering-breaks"></div><section class="staff-operation-section" aria-labelledby="classes-title"><div class="staff-section-heading"><div><h2 id="classes-title">Ангиуд</h2><p class="staff-muted">${escape(offering.title)}</p></div><button id="add-class" class="button secondary" type="button">Анги нэмэх</button></div><div id="class-editor"></div><div id="class-list" class="staff-record-list"></div></section>`;
         renderCalendar(offering); renderOfferingBreaks(offering); renderClasses(offering);
+        q("#close-calendar").onclick = () => { state.selectedClassId = ""; state.editingClass = ""; state.editingOfferingId = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", location.pathname); render(); };
         q("#add-class").onclick = () => { state.editingClass = "new"; renderClasses(offering); q("#class-recurrence")?.focus(); };
-        q("#calendar-class").onchange = (event) => { state.selectedClassId = event.target.value; state.calendarAction = null; renderCalendar(offering); };
       }
       function classForm(entry, offering) {
         const recurrence = entry?.recurrenceKind || (offering.kind === "summer_course" ? "daily" : "weekly");
@@ -61,9 +72,9 @@ import "../../styles/global.css";
       }
       function updateRecurrenceField() { const weekly = q("#class-recurrence")?.value === "weekly"; const field = q("#weekly-field"); const select = q("#class-weekday"); if (field) field.hidden = !weekly; if (select) select.disabled = !weekly; }
       function renderClasses(offering) {
-        const editing = classes().find((entry) => entry.id === state.editingClass);
+        const offeringClasses = classes(offering.id); const editing = offeringClasses.find((entry) => entry.id === state.editingClass);
         q("#class-editor").innerHTML = state.editingClass ? classForm(editing, offering) : "";
-        q("#class-list").innerHTML = classes().length ? classes().map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${recurrenceLabel(entry.recurrenceKind)} · ${escape(entry.startTime)}–${escape(entry.endTime)} · ${entry.capacity} суудал · ${entry.registrationOpen ? "Бүртгэл нээлттэй" : "Бүртгэл хаалттай"}</p></div><button class="button secondary" type="button" data-class-edit="${escape(entry.id)}">Засах</button></article>`).join("") : `<p class="staff-empty">Анги оруулаагүй байна.</p>`;
+        q("#class-list").innerHTML = offeringClasses.length ? offeringClasses.map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${recurrenceLabel(entry.recurrenceKind)} · ${escape(entry.startTime)}–${escape(entry.endTime)} · ${entry.capacity} суудал · ${entry.registrationOpen ? "Бүртгэл нээлттэй" : "Бүртгэл хаалттай"}</p></div><button class="button secondary" type="button" data-class-edit="${escape(entry.id)}">Засах</button></article>`).join("") : `<p class="staff-empty">Анги оруулаагүй байна.</p>`;
         q("#class-editor form")?.addEventListener("submit", (event) => saveClass(event, offering));
         q("#class-editor [data-class-cancel]")?.addEventListener("click", () => { state.editingClass = ""; renderClasses(offering); });
         q("#class-recurrence")?.addEventListener("change", updateRecurrenceField); updateRecurrenceField();
@@ -80,7 +91,7 @@ import "../../styles/global.css";
         return `<form id="offering-break-form" class="staff-compact-form"><label class="staff-wide">Нэр <input id="offering-break-label" required maxlength="160" value="${escape(entry?.label || "")}" /></label><label>Эхлэх өдөр <input id="offering-break-start" type="date" required value="${escape(entry?.startsOn || "")}" /></label><label>Дуусах өдөр <input id="offering-break-end" type="date" required value="${escape(entry?.endsOn || "")}" /></label><label class="staff-wide">Тэмдэглэл <input id="offering-break-note" maxlength="500" value="${escape(entry?.note || "")}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" data-break-cancel type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div></form>`;
       }
       function renderOfferingBreaks(offering) {
-        const container = q("#offering-breaks"); const breaks = offeringBreaks(); const editing = breaks.find((entry) => entry.id === state.editingOfferingBreakId);
+        const container = q("#offering-breaks"); const breaks = offeringBreaks(offering.id); const editing = breaks.find((entry) => entry.id === state.editingOfferingBreakId);
         container.innerHTML = `<details class="staff-schedule-changes" ${state.editingOfferingBreakId ? "open" : ""}><summary>Тусгай өөрчлөлт</summary><div class="staff-schedule-changes-content"><p class="staff-muted">Энд оруулсан хугацаанд энэ сургалтын бүх ангид хичээл орохгүй. Нэг ангид хийх өөрчлөлтийг доорх тухайн ангийн хуваарьт оруулна.</p><button class="button secondary" data-add-offering-break type="button">Бүх ангид хичээлгүй хугацаа оруулах</button>${state.editingOfferingBreakId ? offeringBreakForm(editing) : ""}${breaks.length ? `<div class="staff-record-list">${breaks.map((entry) => `<article><div><strong>${escape(entry.label)}</strong><p>${formatDate(entry.startsOn)} – ${formatDate(entry.endsOn)}${entry.note ? ` · ${escape(entry.note)}` : ""}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-break-edit="${escape(entry.id)}">Засах</button><button class="button secondary" type="button" data-break-remove="${escape(entry.id)}">Устгах</button></div></article>`).join("")}</div>` : ""}</div></details>`;
         container.querySelector("[data-add-offering-break]").onclick = () => { state.editingOfferingBreakId = "new"; renderOfferingBreaks(offering); q("#offering-break-label")?.focus(); };
         container.querySelector("[data-break-cancel]")?.addEventListener("click", () => { state.editingOfferingBreakId = ""; renderOfferingBreaks(offering); });
@@ -97,24 +108,24 @@ import "../../styles/global.css";
         return `<div class="staff-calendar-summary"><p><strong>${scheduled.length} хичээл</strong>${first && last ? ` · ${formatDate(first.localDate)} – ${formatDate(last.localDate)}` : ""}</p><p>Хөтөлбөр: <strong>${escape(offering.programName || "")}</strong></p></div>`;
       }
       function rowActions(slot) {
-        return `<details class="staff-calendar-menu"><summary aria-label="${slot.lessonSequence}-р хичээлийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-calendar-action="cancel" data-slot-key="${escape(calendarSlotKey(slot))}">Хичээлгүй болгох</button><button type="button" data-calendar-action="move" data-slot-key="${escape(calendarSlotKey(slot))}">Өдөр, цаг өөрчлөх</button></div></details>`;
+        const action = slot.status === "scheduled" ? "Хичээлгүй болгох" : slot.holidayWarnings?.length ? "Энэ өдөр хичээллэх" : "Хичээлтэй болгох";
+        return `<details class="staff-calendar-menu"><summary aria-label="Хуваарийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-calendar-action="${slot.status === "scheduled" ? "cancel" : "restore"}" data-slot-key="${escape(calendarSlotKey(slot))}">${action}</button></div></details>`;
       }
       function actionEditor(slot, revision) {
         const action = state.calendarAction; const laterCount = scheduledSlots(revision).filter((entry) => (entry.lessonSequence || 0) > (slot.lessonSequence || 0) && !entry.isHistorical).length;
         const consequence = `Дараагийн ${laterCount} хичээлийн огноо шилжинэ.`;
-        if (action.kind === "move") return `<li class="staff-calendar-action-row"><form id="calendar-row-action" class="staff-compact-form"><input type="hidden" id="row-action-slot" value="${escape(slot.id)}" /><label>Өдөр <input id="row-action-date" type="date" required value="${escape(slot.localDate)}" /></label><label>Эхлэх цаг <input id="row-action-start" type="time" required value="${escape(slot.startTime)}" /></label><label>Дуусах цаг <input id="row-action-end" type="time" required value="${escape(slot.endTime)}" /></label><p class="staff-muted staff-wide">${consequence}</p><div class="staff-form-actions staff-wide"><button class="button secondary" data-calendar-action-cancel type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div></form></li>`;
+        if (action.kind === "restore") return `<li class="staff-calendar-action-row"><div><strong>${formatDate(slot.localDate)}-ний хичээл хуваарьт орно.</strong><p class="staff-muted">${consequence}</p></div><div class="staff-inline-actions"><button class="button secondary" data-calendar-action-cancel type="button">Болих</button><button class="button primary" data-calendar-restore-confirm="${escape(slot.localDate)}" type="button">Хадгалах</button></div></li>`;
         return `<li class="staff-calendar-action-row"><div><strong>${formatDate(slot.localDate)}-ний хичээл хичээлгүй болно.</strong><p class="staff-muted">${consequence}</p></div><div class="staff-inline-actions"><button class="button secondary" data-calendar-action-cancel type="button">Болих</button><button class="button primary" data-calendar-cancel-confirm="${escape(slot.id)}" type="button">Хадгалах</button></div></li>`;
       }
       function calendarRow(slot, revision) {
         const action = state.calendarAction; const isActionRow = action?.slotKey === calendarSlotKey(slot);
         if (isActionRow && revision.status === "draft") return actionEditor(slot, revision);
         const number = slot.lessonSequence || slot.cancelledLessonSequence || "–";
-        const editable = slot.status === "scheduled" && !slot.isHistorical;
-        return `<li class="staff-calendar-row ${slot.status === "scheduled" ? "" : "staff-calendar-exception"}"><span class="staff-order">${number}</span><div><strong>${formatDate(slot.localDate)} · ${escape(slot.startTime)}</strong><p>${slotText(slot)}</p>${(slot.holidayWarnings || []).map((label) => `<small class="staff-calendar-warning">Анхааруулга: ${escape(label)} хугацаанд орж байна.</small>`).join("")}</div>${editable ? rowActions(slot) : slot.isHistorical ? `<span class="staff-history-label">Өнгөрсөн</span>` : ""}</li>`;
+        const editable = (slot.status === "scheduled" && !slot.isHistorical) || (slot.status === "no_class" && slot.canRestore);
+        return `<li class="staff-calendar-row ${slot.status === "scheduled" ? "" : "staff-calendar-exception"}"><span class="staff-order">${number}</span><div><strong>${formatDate(slot.localDate)} · ${escape(slot.startTime)}</strong><p>${slotText(slot)}</p>${(slot.holidayWarnings || []).map((label) => `<small class="staff-calendar-warning">Анхааруулга: ${escape(label)} хугацаанд.</small>`).join("")}</div>${editable ? rowActions(slot) : slot.isHistorical ? `<span class="staff-history-label">Өнгөрсөн</span>` : ""}</li>`;
       }
       function renderCalendar(offering) {
-        const availableClasses = classes(); fillSelect(q("#calendar-class"), availableClasses, state.selectedClassId, (entry) => entry.displayLabel);
-        const container = q("#calendar-editor"); const selected = availableClasses.find((entry) => entry.id === state.selectedClassId);
+        const availableClasses = classes(offering.id); const container = q("#calendar-editor"); const selected = availableClasses.find((entry) => entry.id === state.selectedClassId);
         if (!selected) { container.innerHTML = `<p class="staff-empty">Эхлээд анги нэмнэ үү.</p>`; return; }
         const revisions = (state.data.revisions || []).filter((entry) => entry.classSessionId === selected.id);
         const draft = revisions.find((entry) => entry.status === "draft"); const published = revisions.find((entry) => entry.status === "published");
@@ -141,12 +152,11 @@ import "../../styles/global.css";
         container.querySelectorAll("[data-calendar-action]").forEach((button) => button.onclick = () => beginCalendarAction(selected, editable ? calendar : null, button.dataset.slotKey, button.dataset.calendarAction));
         container.querySelectorAll("[data-calendar-action-cancel]").forEach((button) => button.onclick = () => { state.calendarAction = null; renderCalendar(offering); });
         container.querySelector("[data-calendar-cancel-confirm]")?.addEventListener("click", (event) => run(() => postOverviewAction("calendar.cancel", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt, slotId: event.currentTarget.dataset.calendarCancelConfirm }), "Хичээлийг хичээлгүй болголоо."));
-        container.querySelector("#calendar-row-action")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("calendar.cancel", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt, slotId: q("#row-action-slot").value, replacement: { localDate: q("#row-action-date").value, startTime: q("#row-action-start").value, endTime: q("#row-action-end").value } }), "Өдөр, цагийг өөрчиллөө."); });
+        container.querySelector("[data-calendar-restore-confirm]")?.addEventListener("click", (event) => run(() => postOverviewAction("calendar.change", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt, kind: "restore", localDate: event.currentTarget.dataset.calendarRestoreConfirm }), "Энэ өдрийг хичээлтэй болголоо."));
         container.querySelector("#calendar-extra")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("calendar.change", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt, kind: "extra", localDate: q("#extra-date").value, startTime: q("#extra-start").value, endTime: q("#extra-end").value, reasonLabel: q("#extra-reason").value }), "Нэмэлт хичээл орууллаа."); });
         container.querySelector("#calendar-save")?.addEventListener("click", () => run(async () => { await postOverviewAction("calendar.publish", { revisionId: calendar.id, expectedUpdatedAt: calendar.updatedAt }); state.calendarAction = null; }, "Хуваарийг хадгаллаа."));
       }
       async function run(work, success) { message(); try { await work(); state.editingClass = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
-      q("#offering-select").onchange = (event) => { state.offeringId = event.target.value; state.selectedClassId = ""; state.editingClass = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", `?offering=${encodeURIComponent(state.offeringId)}`); render(); };
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>

@@ -28,7 +28,7 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `academic_year`: public label and registration status for a year/session without hard-coding unsupplied year details.
 - `curriculum_program_family`: stable logical annual stage or named summer Program identity, with one current published revision pointer.
 - `curriculum_program`: immutable historical revision beneath a Program family; its ordered lessons are the taught content.
-- `activity_offering`: one annual course, summer course, or event, with typed period/context, pinned program revision, break policy, charge mode, shared Facebook group, status, and provenance.
+- `activity_offering`: one annual course, summer course, or event, with typed period/context, pinned program revision, break policy, charge mode, optional shared Facebook group, status, and provenance. Its `facebook_group_url` is the sole operational write authority.
 - `class_session`: concrete course cohort/time option attached to an Offering, with capacity, registration availability, and test provenance. Legacy annual stage/weekday/time and stored label fields remain for current catalog compatibility.
 - `class_meeting_rule`: authoritative weekly, weekdays, or daily generation rule and local period/time for one course class.
 - `offering_event_occurrence`: narrow programless one-off event date/time, capacity, and registration state.
@@ -162,7 +162,7 @@ Migration `0006_program_and_calendar_foundation.sql` implements class-level prog
 - `class_calendar` belongs one-to-one to a `class_session` and fixes `Asia/Ulaanbaatar` as its teaching-time timezone.
 - `class_calendar_revision` is a draft/publish snapshot associated with the matching stage/year program. Only one published revision exists per calendar. The internal `locked_through_sequence` is retained as one input to historical schedule protection; it is not exposed as teacher-confirmed attendance or delivery.
 - `class_calendar_revision_override` gives one class a dated `exclude` or `restore` planning decision.
-- `class_calendar_slot` is the explicit dated result. It has a unique class/date/time, permits each lesson at most once per revision, and distinguishes `scheduled`, `no_class`, and `cancelled`. Cancellations retain a lesson number/title snapshot rather than deleting the public history.
+- `class_calendar_slot` is the explicit dated result. It has a unique class/date/time, permits each lesson at most once per revision, and distinguishes `scheduled`, `no_class`, and `cancelled`. Cancellations retain a lesson number/title snapshot rather than deleting the public history; later structural changes keep those rows while recalculating the ordered active slot sequence.
 
 Database triggers allow lessons, overrides, and entries only while their parent is a draft, require program/year/stage compatibility, and prevent deletion or identity edits of published program/calendar history.
 

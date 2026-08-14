@@ -18,6 +18,10 @@ An event may have no program at all.
 `annual_course`, `summer_course`, or `event`. It owns the run's period, optional
 year/stage compatibility context, selected published program, `free`/`paid`
 charge mode, calendar guidance, and optional Facebook group URL.
+`activity_offering.facebook_group_url` is the sole operational communication
+authority: it is optional at creation, can be changed later in Offering details,
+and is shared by every class in that Offering. Legacy class/stage values are
+compatibility/history only.
 
 `class_session` remains the concrete registration cohort/time option within a
 course Offering. Existing annual stage/year and weekday/time columns remain for
@@ -157,11 +161,15 @@ normal future schedule edits from rewriting published history until attendance
 provides a stronger operational source. The teacher UI does not expose a
 completed-lesson number, raw sequence lock, or confirmation checkbox.
 
-Cancelling a safe future scheduled slot retains the original date as a
-`cancelled` entry with the lesson number/title snapshot. Later lessons reflow
-chronologically and may produce a planned-period overrun warning. Past
-corrections, if later required, belong to an exceptional audited admin workflow
-rather than the normal teacher surface.
+The active teaching sequence is always chronological. Ordered Program lessons
+pair one-to-one with those active slots; teachers do not assign a lesson number
+to a date. Cancelling a safe future scheduled slot retains the original date as
+a `cancelled` entry with the lesson number/title snapshot, removes it from the
+active sequence, and reflows later lessons. Adding an extra slot inserts it
+into the same ordered sequence. A restored school-holiday slot is active again
+but keeps its named holiday warning. Past corrections, if later required,
+belong to an exceptional audited admin workflow rather than the normal teacher
+surface.
 
 ## Staff Setup Surface
 
@@ -169,25 +177,28 @@ The protected Mongolian setup is organized around concrete work:
 
 - `/staff/offerings/` (`Сургалт, арга хэмжээ`) creates and edits annual courses,
   summer courses, and events.
-- `/staff/programs/` presents the three annual Program identities and named
-  summer Programs. `Засах` opens existing work or copies the current content
+- `/staff/programs/` opens as a neutral annual/summer Program list. `Нээх`
+  explicitly selects a Program and shows its detail below both lists; `Хаах`
+  returns to the list-only view. `Засах` opens existing work or copies the current content
   internally; `Хадгалах` atomically advances the family pointer and rejects
   stale work. Teachers edit titles inline and insert-before, append, delete,
   or move lessons without sequence numbers. Only unreferenced summer drafts
   can be deleted.
-- `/staff/schedule/` begins with the selected class, its compact chronological
-  calendar, summary, and concise warnings. A future lesson's `⋯` menu opens
-  its specific no-class or date/time edit and a consequence preview; the
-  internal change draft is created or resumed automatically. `Хадгалах`
-  preserves immutable-revision semantics without exposing them. Extra lessons
-  and offering-wide `Тусгай өөрчлөлт` remain secondary controls; the latter
-  clearly affects every class in the Offering.
+- `/staff/schedule/` opens as a compact overview of available classes and
+  calendar spans. `Нээх` explicitly selects one class and shows its compact
+  chronological calendar, summary, and concise warnings below that overview.
+  A future lesson's `⋯` menu can make it no-class; a restorable school/class
+  skip can make that date teaching again. There is no ordinary arbitrary
+  date/time reassignment. The internal change draft is created or resumed
+  automatically, while `Хадгалах` preserves immutable-revision semantics
+  without exposing them. Extra lessons and offering-wide `Тусгай өөрчлөлт`
+  remain secondary controls; the latter clearly affects every class in the
+  Offering.
 - `/staff/holidays/` records annual school-calendar periods with either an
   initial exclusion or a warning-only behavior, and lists only real dated
   school years rather than internal compatibility records.
-- `/staff/settings/` stores typed operational settings, currently the
-  Offering-level Facebook group URL, the admin-only annual-start month/day
-  default, and separate admin authentication settings.
+- `/staff/settings/` stores genuinely global typed settings: the admin-only
+  annual-start month/day default and separate admin authentication settings.
 
 Unused classes expose `Анги устгах` only in their edit/details view. Durable
 references suppress the action and server checks remain authoritative. Every
@@ -222,6 +233,12 @@ email, capacity, and an appropriate FIFO waitlist. Courses are always paid and
 will require common future pricing/payment machinery. A free event can
 eventually confirm after email verification and capacity confirmation without a
 payment-only 24-hour hold.
+
+A paid Offering may be created, scheduled, and kept registration-closed before
+pricing exists. Future fee configuration belongs in Offering detail under
+`Төлбөрийн нөхцөл`, not in compact Offering creation. Public registration must
+not open for a paid Offering until valid pricing basis and required payment-plan
+terms exist.
 
 `GET /api/calendar/published` continues to expose only published course
 schedule details and no family data. Production may safely return no rows until

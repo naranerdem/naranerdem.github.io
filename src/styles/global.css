@@ -1874,6 +1874,40 @@ textarea:focus {
   padding: 0.45rem 0.65rem;
 }
 
+.staff-schedule-overview-group + .staff-schedule-overview-group {
+  border-top: 1px solid var(--line);
+  margin-top: 0.5rem;
+  padding-top: 1.25rem;
+}
+
+.staff-schedule-overview-group > .staff-section-heading {
+  align-items: center;
+}
+
+.staff-schedule-overview-group > .staff-section-heading h2 {
+  font-size: 1.05rem;
+}
+
+.staff-schedule-overview-list {
+  display: grid;
+  margin-top: 0.15rem;
+}
+
+.staff-schedule-overview-list article {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.7rem 0;
+}
+
+.staff-schedule-overview-list p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0.18rem 0 0;
+}
+
 .staff-inline-actions {
   display: flex;
   flex-wrap: wrap;

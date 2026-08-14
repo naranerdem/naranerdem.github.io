@@ -179,6 +179,10 @@ try {
   const legacyPage = readFileSync("src/pages/staff/program-calendar.astro", "utf8");
   const routerSource = readFileSync("src/server/api/router.ts", "utf8");
   assert.match(programsPage, />Хадгалах</, "program tool presents ordinary save wording");
+  assert.match(programsPage, /params\.get\("program"\) \|\| params\.get\("family"\)/, "Program selection is carried explicitly in the URL");
+  assert.doesNotMatch(programsPage, /families\(\)\[0\]/, "Program list does not arbitrarily select its first entry");
+  assert.match(programsPage, /id="program-close"/, "a selected Program detail can return to the neutral list");
+  assert.ok(programsPage.indexOf('id="program-list"') < programsPage.indexOf('id="program-editor"'), "Program detail remains below the complete Program lists");
   assert.match(programsPage, /Зуны хөтөлбөр нэмэх/, "ordinary program setup only creates summer program families");
   assert.ok(programsPage.indexOf("Зуны хөтөлбөр") < programsPage.lastIndexOf("Зуны хөтөлбөр нэмэх"), "the summer-program action remains inside the later summer section");
   assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
@@ -193,22 +197,30 @@ try {
   assert.match(holidaysPage, /Амралтын хугацаа нэмэх/, "holiday tool is a separate focused screen");
   assert.match(holidaysPage, /offering\.kind === "annual_course" && offering\.academicYearId === year\.id/, "teacher holiday choices exclude internal academic-year compatibility records");
   assert.match(schedulePage, /Анги нэмэх/);
+  assert.match(schedulePage, /id="schedule-overview"/, "Schedule opens with a class overview");
+  assert.match(schedulePage, /data-open-class/, "Schedule overview opens one explicit class");
+  assert.match(schedulePage, /params\.get\("class"\)/, "Schedule selection is carried explicitly in the URL");
+  assert.doesNotMatch(schedulePage, /offerings\(\)\[0\]|classes\(\)\[0\]/, "Schedule does not arbitrarily select its first Offering or class");
   assert.match(schedulePage, /Бүх ангид хичээлгүй хугацаа оруулах/, "Offering-wide breaks are managed from Schedule");
   assert.match(schedulePage, /offering-break\.save/, "Schedule uses the existing Offering-break domain operation");
   assert.doesNotMatch(offeringsPage, /offering-break|Сургалтын завсарлага|Завсарлага нэмэх/, "Offering metadata editing does not expose break controls");
   assert.match(schedulePage, />Хадгалах</, "calendar save uses ordinary teacher wording");
   assert.match(schedulePage, /data-calendar-action/, "future lessons use compact row actions");
   assert.match(schedulePage, /Нэмэлт хичээл оруулах/, "extra lessons are secondary schedule work");
-  assert.doesNotMatch(schedulePage, /Өөрчлөх ноорог эхлүүлэх|Хуваарь нийтлэх|Ноорог хуваарь|Нийтлэгдсэн хуваарь|calendar-date-action/, "ordinary schedule editing hides draft, publish, and permanent date-form machinery");
+  assert.doesNotMatch(schedulePage, /Өөрчлөх ноорог эхлүүлэх|Хуваарь нийтлэх|Ноорог хуваарь|Нийтлэгдсэн хуваарь|calendar-date-action|Өдөр, цаг өөрчлөх|replacement:/, "ordinary schedule editing hides draft, publish, and arbitrary date-move machinery");
+  assert.match(schedulePage, /Энэ өдөр хичээллэх/, "a school-calendar skip has a natural class-level restore action");
   assert.doesNotMatch(schedulePage, /Ангийн нэр|Facebook бүлгийн холбоос|value="draft"|value="cancelled"|calendar-program|calendar-lock|Дууссан хичээл|баталж байна/, "ordinary schedule editing hides legacy program, lock, and technical fields");
   assert.match(schedulePage, /staff-danger-zone/, "unused class deletion lives inside class details");
-  assert.match(settingsPage, /Сургалт бүрийн Facebook бүлэг/, "Facebook configuration is offering scoped");
+  assert.doesNotMatch(settingsPage, /Facebook бүлгийн|offering-facebook\.save|facebook-form/, "Settings has no duplicate Offering Facebook editor");
   assert.match(settingsPage, /Жилийн сургалтын эхлэх өдрийн анхны утга/, "the global annual start default is an admin-only secondary setting");
   assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");
+  assert.match(offeringsPage, /Facebook бүлгийн холбоос/, "Offering creation and editing own the Facebook-group value");
+  assert.match(offeringsPage, /Хоосон орхиж болно\./, "an Offering Facebook group is explicitly optional");
   assert.match(legacyPage, /url=\/staff\/schedule\//, "old bookmark redirects to the schedule tool");
   assert.match(routerSource, /"programId" in payload \|\| "firstCandidateDate" in payload/, "calendar generation rejects caller-selected program and start-date substitutions");
   assert.doesNotMatch(routerSource, /curriculumProgramId/, "ordinary Offering writes cannot select a raw curriculum revision");
   assert.doesNotMatch(routerSource, /stage-setting\.save/, "legacy stage settings have no competing mutation endpoint");
+  assert.doesNotMatch(routerSource, /replacement: payload\.replacement/, "calendar cancellation no longer accepts arbitrary replacement slots");
 
   const originalAnnualDefault = await annualDefaultService.getAnnualCourseStartDefault(runtime);
   assert.deepEqual({ month: originalAnnualDefault.month, day: originalAnnualDefault.day }, { month: 10, day: 1 }, "annual Offering start defaults to October 1");
@@ -248,6 +260,7 @@ try {
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1", startsOn: "2025-09-01", endsOn: "2026-06-01" });
   const annualDefault = database.query("SELECT charge_mode AS chargeMode, use_academic_year_breaks AS useBreaks FROM activity_offering WHERE academic_year_id = 'year-2025' AND stage_code = 'stage_1'")[0];
   assert.equal(annualDefault.chargeMode, "paid", "annual course charge defaults to paid");
+  assert.equal(database.query("SELECT facebook_group_url AS facebookGroupUrl FROM activity_offering WHERE academic_year_id = 'year-2025' AND stage_code = 'stage_1'")[0].facebookGroupUrl, null, "an Offering may be created with no Facebook group");
   assert.equal(annualDefault.useBreaks, 1, "annual courses apply academic-year breaks by default");
 
   await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Туршилтын зуны сургалт", startsOn: "2027-06-01", endsOn: "2027-06-26" }), /Offering operation/, "summer offerings require an existing published program");
@@ -278,6 +291,7 @@ try {
   await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: summerDailyClass.id });
   assert.equal(database.query(`SELECT COUNT(*) AS count FROM class_calendar_slot AS slot INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = ${quote(summerDailyClass.id)} AND slot.local_date IN ('2027-06-05', '2027-06-06') AND slot.status = 'scheduled'`)[0].count, 2, "daily summer recurrence includes Saturday and Sunday");
   assert.equal(count(database, "class_calendar_slot", `local_date BETWEEN '2027-06-07' AND '2027-06-08' AND status = 'scheduled'`), 0, "the Offering break applies to both summer classes");
+  await assert.rejects(() => service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: summerDraftRevision.id, expectedUpdatedAt: summerDraftRevision.updatedAt, kind: "restore", localDate: "2027-06-07" }), /Program and calendar/, "one class cannot silently restore an Offering-wide break");
   await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: summerDraftRevision.id, expectedUpdatedAt: summerDraftRevision.updatedAt, kind: "exclude", localDate: "2027-06-11", reasonLabel: "Анги А" });
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(summerDraftRevision.id)} AND local_date = '2027-06-11' AND status = 'scheduled'`), 0, "a class-specific exception changes only Class A");
   assert.equal(count(database, "class_calendar_slot", `local_date = '2027-06-11' AND status = 'scheduled'`), 1, "Class B remains scheduled after Class A's exclusion");
@@ -380,14 +394,27 @@ try {
   assert.equal(database.query("SELECT facebook_group_url AS url FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0].url, "https://facebook.com/groups/after-publication", "a harmless Offering communication edit remains possible after calendar publication");
   const usedOfferingAfterCommunication = database.query("SELECT updated_at AS updatedAt FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0];
   await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { id: "offering-annual-stage-1", expectedUpdatedAt: usedOfferingAfterCommunication.updatedAt, kind: "annual_course", startsOn: "2026-09-02", curriculumProgramId: usedOffering.programId, useAcademicYearBreaks: true, chargeMode: "paid" }), /Offering operation/, "a used Offering period cannot invalidate calendar history");
+  sqlite(`INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('school-restore-break', 'year-2026', 'Өвлийн амралт', '2026-09-12', '2026-09-12', 1, 'active', 1, 'staff-program-test', '${now}', '${now}');`);
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt, revision.locked_through_sequence AS protectedThrough FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
   assert.equal(draft.protectedThrough, 1, "an existing stored historical prefix remains protected even without a teacher lock control");
+  await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, kind: "restore", localDate: "2026-09-12" });
+  draft = database.query(`SELECT id, updated_at AS updatedAt, locked_through_sequence AS protectedThrough FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
+  assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND local_date = '2026-09-12' AND status = 'scheduled'`), 1, "a teacher may restore a school-calendar skipped date for one class");
+  const restoredOverview = await service.getProgramCalendarOverview(runtime);
+  assert.ok(restoredOverview.revisions.find((entry) => entry.id === draft.id).slots.find((slot) => slot.localDate === "2026-09-12").holidayWarnings.includes("Өвлийн амралт"), "a restored school-holiday lesson keeps its warning");
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   assert.equal(count(database, "class_calendar_revision", "status = 'draft' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1, "a later row action resumes the existing internal calendar draft");
   const futureSlot = database.query(`SELECT slot.id FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND lesson.sequence_number = 2`)[0];
   await service.cancelFutureCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: futureSlot.id });
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`), 1, "future cancellation remains visible history");
+  const reflowedLesson = database.query(`SELECT lesson.sequence_number AS sequenceNumber, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND slot.status = 'scheduled' ORDER BY lesson.sequence_number`);
+  assert.deepEqual(reflowedLesson.map((entry) => entry.sequenceNumber), [1, 2, 3], "removing an active slot preserves the ordered Program lesson sequence");
+  const changedDraft = database.query(`SELECT updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
+  await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: changedDraft.updatedAt, kind: "extra", localDate: "2026-09-16", startTime: "10:00", endTime: "11:20", reasonLabel: "Нөхөх хичээл" });
+  const addedSlot = database.query(`SELECT lesson.sequence_number AS sequenceNumber, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND slot.status = 'scheduled' ORDER BY slot.local_date, slot.start_time`);
+  assert.equal(addedSlot.find((entry) => entry.localDate === "2026-09-16")?.sequenceNumber, 2, "an extra dated slot joins chronological order and receives the next lesson automatically");
   await service.startProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1" });
   const staleDraft = database.query("SELECT id, updated_at AS updatedAt FROM curriculum_program WHERE program_family_id = 'annual-program-stage_1' AND status = 'draft' AND based_on_program_id IS NOT NULL")[0];
   sqlite(`
