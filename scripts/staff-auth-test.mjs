@@ -39,9 +39,12 @@ const {
 } = await import(pathToFileURL(authBundle).href);
 const { hasStaffCapability, resolveStaffPrincipal } = await import(pathToFileURL(authorizationBundle).href);
 const {
+  addStaffAccountEmail,
   createStaffAccount,
   listStaffAccounts,
+  removeStaffAccountEmail,
   replaceStaffRoles,
+  setPrimaryStaffAccountEmail,
   setStaffAccountStatus,
   updateStaffAccount,
 } = await import(pathToFileURL(administrationBundle).href);
@@ -168,6 +171,9 @@ function staff(database, id, email, name, roles, status = "active", isTest = 1) 
       is_test, test_run_id, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [id, email, name, status, status === "disabled" ? now : null, isTest, isTest ? "staff-auth-test" : null, now, now]);
+  database.query(`INSERT INTO staff_account_email (
+    id, staff_account_id, email, email_normalized, is_primary, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, 1, ?, ?)`, [`email-${id}`, id, email, email, now, now]);
   for (const role of Array.isArray(roles) ? roles : [roles]) {
     database.query(`
       INSERT INTO staff_account_role (staff_account_id, role_code, assigned_at)
@@ -244,17 +250,34 @@ try {
   assert.match(teamPage, /<html lang="mn">/);
   assert.match(teamPage, /Ажилтнууд/);
   assert.match(teamSource, /\/api\/staff\/team/);
+  assert.match(teamSource, /Имэйл нэмэх/);
+  assert.match(teamSource, /email-primary/);
+  assert.match(teamSource, /email-remove/);
+  assert.doesNotMatch(teamSource, /account\?\.email/, "profile editing no longer exposes a second single-email authority");
   assert.doesNotMatch(teamPage, /@example\.invalid/, "staff fixture addresses are not shipped in the admin page");
   assert.equal(manifest.start_url, "/staff/");
   assert.equal(manifest.display, "standalone");
   assert.equal(manifest.name, "Наран Эрдэм");
 
-  const migrations = readdirSync(path.resolve("migrations"))
+  const migrationFiles = readdirSync(path.resolve("migrations"))
     .filter((name) => /^\d{4}_.+\.sql$/.test(name))
-    .sort()
-    .map((name) => readFileSync(path.resolve("migrations", name), "utf8"))
-    .join("\n");
-  sqlite(migrations);
+    .sort();
+  const aliasMigrationIndex = migrationFiles.indexOf("0017_staff_email_aliases.sql");
+  assert.ok(aliasMigrationIndex > 0, "migration 0017 is present");
+  sqlite(migrationFiles.slice(0, aliasMigrationIndex).map((name) => readFileSync(path.resolve("migrations", name), "utf8")).join("\n"));
+  sqlite(`
+    INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-staff', 'legacy@example.invalid', 'Хуучин Багш', 'active', 1, 'staff-auth-test', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    INSERT INTO staff_account_role (staff_account_id, role_code, assigned_at)
+      VALUES ('legacy-staff', 'teacher', '2026-01-01T00:00:00.000Z');
+    INSERT INTO staff_session (id, staff_account_id, session_token_hash, created_at, expires_at, is_test, test_run_id, last_seen_at)
+      VALUES ('legacy-session', 'legacy-staff', '${"a".repeat(64)}', '2026-01-01T00:00:00.000Z', '2030-01-01T00:00:00.000Z', 1, 'staff-auth-test', '2026-01-01T00:00:00.000Z');
+  `);
+  sqlite(migrationFiles.slice(aliasMigrationIndex).map((name) => readFileSync(path.resolve("migrations", name), "utf8")).join("\n"));
+  assert.deepEqual(JSON.parse(sqlite(`SELECT staff_account_id AS staffAccountId, email_normalized AS email, is_primary AS isPrimary FROM staff_account_email WHERE staff_account_id = 'legacy-staff';`, true)), [
+    { staffAccountId: "legacy-staff", email: "legacy@example.invalid", isPrimary: 1 },
+  ], "0017 backfills the existing address as primary");
+  assert.equal(count(new SqliteD1(), "staff_session", "id = 'legacy-session' AND revoked_at IS NULL"), 1, "0017 preserves existing sessions");
   const database = new SqliteD1();
   const env = testEnv(database);
   const baseTime = new Date();
@@ -352,28 +375,58 @@ try {
   assert.equal(adminLogin.verified.claimed, true);
   assert.equal(adminLogin.verified.principal.displayName, "Тест Админ");
   assert.ok(hasStaffCapability(adminLogin.verified.principal, "admin.settings.manage"));
+  await assert.rejects(
+    addStaffAccountEmail(env, claimedInA.principal, "staff-teacher", "teacher-two@example.invalid"),
+    (error) => error.code === "forbidden",
+    "teachers cannot manage staff login aliases",
+  );
 
-  // Admin CRUD uses existing staff/auth tables and protects the last active admin.
+  // Admin CRUD keeps person/profile authority separate from login aliases.
   const created = await createStaffAccount(env, adminLogin.verified.principal, {
     displayName: "Шинэ Тест",
     email: "new-staff@example.invalid",
     role: "teacher",
   }, new Date(baseTime.getTime() + 61_000));
-  assert.ok((await listStaffAccounts(env, adminLogin.verified.principal)).some((entry) => entry.id === created.id && entry.isTest));
+  assert.ok((await listStaffAccounts(env, adminLogin.verified.principal)).some((entry) => entry.id === created.id && entry.isTest && entry.emails.length === 1 && entry.emails[0].isPrimary));
   await assert.rejects(createStaffAccount(env, adminLogin.verified.principal, {
     displayName: "Давхардсан",
     email: "new-staff@example.invalid",
     role: "teacher",
   }), (error) => error.code === "email_conflict");
   const createdLogin = await sameContextLogin(env, "new-staff@example.invalid", "new-staff", new Date(baseTime.getTime() + 62_000));
+  const secondAlias = await addStaffAccountEmail(env, adminLogin.verified.principal, created.id, "new-staff-two@example.invalid", new Date(baseTime.getTime() + 62_100));
+  const thirdAlias = await addStaffAccountEmail(env, adminLogin.verified.principal, created.id, "new-staff-three@example.invalid", new Date(baseTime.getTime() + 62_200));
+  await assert.rejects(
+    addStaffAccountEmail(env, adminLogin.verified.principal, created.id, "new-staff-four@example.invalid"),
+    (error) => error.code === "email_limit",
+  );
+  await assert.rejects(createStaffAccount(env, adminLogin.verified.principal, {
+    displayName: "Өөр хүн", email: " NEW-STAFF-THREE@example.invalid ", role: "teacher",
+  }), (error) => error.code === "email_conflict");
+  const aliasLogin = await sameContextLogin(env, "new-staff-two@example.invalid", "new-staff-two", new Date(baseTime.getTime() + 62_300));
+  assert.equal(aliasLogin.verified.principal.staffAccountId, created.id, "a secondary alias authenticates the same staff account");
+  assert.equal(aliasLogin.provider.sent[0].message.to, "safe-inbox@example.test", "a fake staging alias retains the safe recipient override");
+  const pendingAlias = await begin(env, "new-staff-two@example.invalid", {
+    rawToken: "alias-pending-magic", rawClaimSecret: "alias-pending-claim",
+    now: new Date(baseTime.getTime() + 123_400), clientIp: "192.0.2.121", provider: provider(),
+  });
+  assert.ok(pendingAlias.attemptCookie);
+  await setPrimaryStaffAccountEmail(env, adminLogin.verified.principal, created.id, thirdAlias.id, new Date(baseTime.getTime() + 123_500));
+  assert.equal(database.query("SELECT email_normalized AS email FROM staff_account WHERE id = ?", [created.id])[0].email, "new-staff-three@example.invalid", "primary alias updates the compatibility email");
+  await removeStaffAccountEmail(env, adminLogin.verified.principal, created.id, secondAlias.id, new Date(baseTime.getTime() + 123_600));
+  assert.ok(await resolveStaffPrincipal(env, aliasLogin.rawSession, new Date(baseTime.getTime() + 123_700)), "removing an alias does not revoke its existing account session");
+  assert.equal(database.query("SELECT status FROM staff_login_attempt WHERE claim_secret_hash = ?", [createHash("sha256").update("alias-pending-claim").digest("hex")])[0].status, "cancelled", "removing an alias cancels its pending login attempt");
+  assert.equal(database.query("SELECT status FROM staff_login_challenge WHERE token_hash = ?", [createHash("sha256").update("alias-pending-magic").digest("hex")])[0].status, "invalidated", "removing an alias invalidates its pending challenge");
+  const removedProvider = provider();
+  await begin(env, "new-staff-two@example.invalid", { now: new Date(baseTime.getTime() + 184_800), rawClaimSecret: "removed-alias-claim", clientIp: "192.0.2.122", provider: removedProvider });
+  assert.equal(removedProvider.sent.length, 0, "a removed alias no longer queues login email");
+  await assert.rejects(removeStaffAccountEmail(env, adminLogin.verified.principal, created.id, thirdAlias.id), (error) => error.code === "primary_email");
   await updateStaffAccount(env, adminLogin.verified.principal, created.id, {
     displayName: "Шинэ Нягтлан",
-    email: "new-accountant@example.invalid",
     role: "accountant",
-  }, new Date(baseTime.getTime() + 63_000));
-  assert.equal(await resolveStaffPrincipal(env, createdLogin.rawSession, new Date(baseTime.getTime() + 64_000)), null, "email change revokes existing sessions");
+  }, new Date(baseTime.getTime() + 185_000));
+  assert.ok(await resolveStaffPrincipal(env, createdLogin.rawSession, new Date(baseTime.getTime() + 186_000)), "profile and role editing does not revoke an otherwise valid session");
   assert.deepEqual(database.query("SELECT role_code AS role FROM staff_account_role WHERE staff_account_id = ?", [created.id]).map((row) => row.role), ["accountant"]);
-  assert.equal(database.query("SELECT email_normalized AS email FROM staff_account WHERE id = ?", [created.id])[0].email, "new-accountant@example.invalid");
 
   await replaceStaffRoles(env, adminLogin.verified.principal, "staff-multirole", ["teacher"], new Date(baseTime.getTime() + 65_000));
   await assert.rejects(
@@ -414,14 +467,15 @@ try {
     now: baseTime, rawClaimSecret: "missing-override-claim", clientIp: "192.0.2.15", provider: provider(),
   }));
   staff(database, "staff-real-staging", "real-staff@example.com", "Бодит Тест Ажилтан", "teacher", "active", 0);
+  await addStaffAccountEmail(env, adminLogin.verified.principal, "staff-real-staging", "real-staff-two@example.com", new Date(baseTime.getTime() + 68_500));
   const directProvider = provider();
-  await begin(testEnv(database, { STAGING_EMAIL_OVERRIDE_TO: undefined }), "real-staff@example.com", {
+  await begin(testEnv(database, { STAGING_EMAIL_OVERRIDE_TO: undefined }), "real-staff-two@example.com", {
     now: new Date(baseTime.getTime() + 69_000), rawToken: "real-staging-magic",
     rawClaimSecret: "real-staging-claim", clientIp: "192.0.2.17", provider: directProvider,
   });
-  assert.equal(directProvider.sent[0].message.to, "real-staff@example.com", "explicit real staging staff receives its own login email");
+  assert.equal(directProvider.sent[0].message.to, "real-staff-two@example.com", "an explicit real staging staff alias receives its own login email");
   const directOutbound = database.query("SELECT actual_delivery_email AS actualEmail, delivery_mode AS deliveryMode FROM outbound_email WHERE staff_account_id = 'staff-real-staging'")[0];
-  assert.deepEqual(directOutbound, { actualEmail: "real-staff@example.com", deliveryMode: "production" });
+  assert.deepEqual(directOutbound, { actualEmail: "real-staff-two@example.com", deliveryMode: "production" });
   const disabledGateProvider = provider();
   const disabledGate = await begin(testEnv(database, { STAFF_AUTH_EMAIL_ENABLED: "false" }), "accountant@example.invalid", {
     now: baseTime, clientIp: "192.0.2.16", provider: disabledGateProvider,
@@ -561,6 +615,13 @@ try {
     body: { displayName: "API Ажилтан", email: "api-created@example.invalid", role: "teacher" },
   });
   assert.equal(teamCreate.status, 201);
+  const teamCreatedId = (await teamCreate.clone().json()).id;
+  const teamAliasAdd = await api(env, "/api/staff/team", {
+    method: "PUT", headers: { Cookie: adminCookie, Origin: env.APP_ORIGIN },
+    body: { action: "email-add", staffAccountId: teamCreatedId, email: "api-created-two@example.invalid" },
+  });
+  assert.equal(teamAliasAdd.status, 200);
+  assert.equal(count(database, "staff_account_email", `staff_account_id = '${teamCreatedId}'`), 2);
   assert.notEqual((await api(env, "/api/staff/team", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=teacher-session` } })).status, 200);
   assert.equal((await api(env, "/api/staff/team", { method: "DELETE", headers: { Cookie: adminCookie } })).status, 405);
   const settingsGet = await api(env, "/api/staff/settings/auth", { headers: { Cookie: adminCookie } });

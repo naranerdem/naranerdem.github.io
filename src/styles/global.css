@@ -2649,6 +2649,90 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.staff-team-summary {
+  min-width: 0;
+}
+
+.staff-team-emails {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.65rem;
+}
+
+.staff-team-emails > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.staff-team-emails ul {
+  display: grid;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.staff-team-emails li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+  border-bottom: 1px solid rgba(205, 211, 222, 0.65);
+  padding: 0.25rem 0;
+  font-size: 0.84rem;
+}
+
+.staff-team-emails li > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.staff-primary-email {
+  color: var(--blue-deep);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.staff-team-email-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.staff-text-action.danger-text {
+  color: #8f2424;
+}
+
+.staff-team-email-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.staff-team-email-form label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.staff-team-email-form input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+}
+
+.staff-team-email-limit {
+  font-size: 0.78rem !important;
+}
+
 .staff-team-actions {
   display: flex;
   align-items: center;
@@ -2911,6 +2995,20 @@ textarea:focus {
   .staff-team-actions {
     justify-content: flex-start;
     max-width: none;
+  }
+
+  .staff-team-emails li {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+
+  .staff-team-email-actions {
+    margin-left: -0.45rem;
+  }
+
+  .staff-team-email-form {
+    grid-template-columns: 1fr;
   }
 
   .staff-report-actions {

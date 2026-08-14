@@ -262,9 +262,11 @@ export async function startStaffLogin(
     throw new EmailConfigurationError("resend_api_key_missing");
   }
   const staff = await env.DB.prepare(`
-    SELECT id, email_normalized AS normalizedEmail, is_test AS isTest, test_run_id AS testRunId
-    FROM staff_account
-    WHERE email_normalized = ? AND status = 'active'
+    SELECT staff_account.id, staff_account_email.email_normalized AS normalizedEmail,
+      staff_account.is_test AS isTest, staff_account.test_run_id AS testRunId
+    FROM staff_account_email
+    INNER JOIN staff_account ON staff_account.id = staff_account_email.staff_account_id
+    WHERE staff_account_email.email_normalized = ? AND staff_account.status = 'active'
   `).bind(normalizedEmail).first<StaffAccountRow>();
 
   let deliveryAddress: ReturnType<typeof resolveStaffDeliveryAddress> | null = null;

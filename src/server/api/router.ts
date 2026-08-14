@@ -34,8 +34,11 @@ import {
   verifyStaffLogin,
 } from "../staff/auth";
 import {
+  addStaffAccountEmail,
   createStaffAccount,
   listStaffAccounts,
+  removeStaffAccountEmail,
+  setPrimaryStaffAccountEmail,
   setStaffAccountStatus,
   StaffAdministrationError,
   updateStaffAccount,
@@ -238,6 +241,8 @@ function staffAdministrationError(caught: unknown): Response {
   if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
   if (caught.code === "staff_not_found") return error("not_found", "Сонгосон ажилтан олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "email_conflict") return error("invalid_request", "Энэ и-мэйл хаяг өөр ажилтанд бүртгэлтэй байна.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "email_limit") return error("invalid_request", "Нэг ажилтанд хамгийн ихдээ 3 и-мэйл хаяг нэмнэ.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "primary_email") return error("invalid_request", "Үндсэн и-мэйлийг хасахын өмнө өөр хаягийг үндсэн болгоно уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "last_active_admin") return error("invalid_request", "Сүүлийн идэвхтэй админы эрхийг хасах боломжгүй.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Нэр, и-мэйл хаяг, эрхийг шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
@@ -637,16 +642,17 @@ export async function handleApiRequest(
       }
       const staffAccountId = String(payload.staffAccountId ?? "");
       if (payload.action === "update") {
-        const result = await updateStaffAccount(env, principal, staffAccountId, {
+        await updateStaffAccount(env, principal, staffAccountId, {
           displayName: payload.displayName,
-          email: payload.email,
           role: payload.role,
         });
-        const headers = new Headers({ "Cache-Control": "no-store" });
-        if (result.reauthenticationRequired) headers.append("Set-Cookie", clearStaffSessionCookie(true));
-        return json({ ok: true, ...result }, 200, headers);
-      }
-      if (payload.action === "status") {
+      } else if (payload.action === "email-add") {
+        await addStaffAccountEmail(env, principal, staffAccountId, payload.email);
+      } else if (payload.action === "email-primary") {
+        await setPrimaryStaffAccountEmail(env, principal, staffAccountId, String(payload.emailId ?? ""));
+      } else if (payload.action === "email-remove") {
+        await removeStaffAccountEmail(env, principal, staffAccountId, String(payload.emailId ?? ""));
+      } else if (payload.action === "status") {
         const status = payload.status === "active" ? "active" : payload.status === "disabled" ? "disabled" : null;
         if (!status) throw new StaffAdministrationError("staff_not_found");
         await setStaffAccountStatus(env, principal, staffAccountId, status);

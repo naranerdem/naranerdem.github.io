@@ -64,8 +64,18 @@ INSERT INTO staff_account (
   ${quote(accountId)}, ${quote(email)}, ${quote(displayName)}, 'active',
   ${isTest}, ${quote(testRunId)}, ${quote(now)}, ${quote(now)}
 WHERE NOT EXISTS (
-  SELECT 1 FROM staff_account WHERE email_normalized = ${quote(email)}
+  SELECT 1 FROM staff_account_email WHERE email_normalized = ${quote(email)}
 );
+
+INSERT OR IGNORE INTO staff_account_email (
+  id, staff_account_id, email, email_normalized, is_primary,
+  created_by_staff_account_id, created_at, updated_at
+)
+SELECT
+  ${quote(randomUUID())}, id, ${quote(email)}, ${quote(email)}, 1,
+  NULL, ${quote(now)}, ${quote(now)}
+FROM staff_account
+WHERE email_normalized = ${quote(email)};
 
 INSERT OR IGNORE INTO staff_account_role (
   staff_account_id, role_code, assigned_by_staff_account_id, assigned_at

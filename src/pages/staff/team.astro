@@ -29,7 +29,7 @@ import "../../styles/global.css";
           <input id="team-id" type="hidden" />
           <div class="staff-form-grid">
             <label>Нэр <input id="team-name" type="text" autocomplete="name" maxlength="120" required /></label>
-            <label>И-мэйл <input id="team-email" type="email" inputmode="email" autocomplete="email" maxlength="254" required /></label>
+            <label id="team-email-field">Үндсэн и-мэйл <input id="team-email" type="email" inputmode="email" autocomplete="email" maxlength="254" required /></label>
             <label>Эрх
               <select id="team-role" required>
                 <option value="teacher">Багш</option>
@@ -45,7 +45,7 @@ import "../../styles/global.css";
     </main>
     <script>
       // @ts-nocheck
-      const state = { accounts: [] };
+      const state = { accounts: [], addingEmailAccountId: "" };
       const q = (selector) => document.querySelector(selector);
       const escape = (value) => String(value ?? "").replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
       const roleLabel = (role) => ({ admin: "Админ", teacher: "Багш", accountant: "Нягтлан" })[role] || role;
@@ -68,20 +68,30 @@ import "../../styles/global.css";
         q("#team-form").hidden = true;
         q("#team-form").reset();
         q("#team-id").value = "";
+        q("#team-email-field").hidden = false;
+        q("#team-email").required = true;
       }
 
       function openForm(account = null) {
         message();
         q("#team-id").value = account?.id || "";
         q("#team-name").value = account?.displayName || "";
-        q("#team-email").value = account?.email || "";
+        q("#team-email").value = "";
+        q("#team-email-field").hidden = Boolean(account);
+        q("#team-email").required = !account;
         q("#team-role").value = account?.roles?.[0] || "teacher";
         q("#team-form").hidden = false;
         q("#team-name").focus();
       }
 
       function render() {
-        q("#team-list").innerHTML = state.accounts.length ? state.accounts.map((account) => `<article class="staff-team-row ${account.status === "disabled" ? "disabled" : ""}"><div><strong>${escape(account.displayName)}</strong><p>${escape(account.email)}</p><p>${escape(roleLabel(account.roles[0]))} · ${account.status === "active" ? "Идэвхтэй" : "Идэвхгүй"}${account.isTest ? " · Тест" : ""}${account.activeSessionCount ? ` · ${account.activeSessionCount} нэвтэрсэн төхөөрөмж` : ""}</p></div><div class="staff-team-actions"><button class="button secondary" type="button" data-edit="${escape(account.id)}">Засах</button><button class="button secondary" type="button" data-status="${escape(account.id)}" data-next-status="${account.status === "active" ? "disabled" : "active"}">${account.status === "active" ? "Идэвхгүй болгох" : "Идэвхжүүлэх"}</button><button class="staff-text-action" type="button" data-revoke="${escape(account.id)}">Бүх төхөөрөмжөөс гаргах</button></div></article>`).join("") : `<p class="staff-empty">Ажилтан бүртгэгдээгүй байна.</p>`;
+        q("#team-list").innerHTML = state.accounts.length ? state.accounts.map((account) => {
+          const emails = (account.emails || []).map((email) => `<li><span>${escape(email.email)}${email.isPrimary ? ` <strong class="staff-primary-email">Үндсэн</strong>` : ""}</span><span class="staff-team-email-actions">${email.isPrimary ? "" : `<button class="staff-text-action" type="button" data-primary-email="${escape(email.id)}" data-account="${escape(account.id)}">Үндсэн болгох</button><button class="staff-text-action danger-text" type="button" data-remove-email="${escape(email.id)}" data-account="${escape(account.id)}">Хасах</button>`}</span></li>`).join("");
+          const adding = state.addingEmailAccountId === account.id
+            ? `<form class="staff-team-email-form" data-email-form="${escape(account.id)}"><label>Шинэ и-мэйл <input type="email" inputmode="email" autocomplete="email" maxlength="254" required data-new-email /></label><div class="staff-inline-actions"><button class="button secondary" type="button" data-cancel-email>Болих</button><button class="button primary" type="submit">Нэмэх</button></div></form>`
+            : (account.emails || []).length < 3 ? `<button class="staff-text-action" type="button" data-add-email="${escape(account.id)}">+ Имэйл нэмэх</button>` : `<p class="staff-muted staff-team-email-limit">3 и-мэйл бүртгэлтэй</p>`;
+          return `<article class="staff-team-row ${account.status === "disabled" ? "disabled" : ""}"><div class="staff-team-summary"><strong>${escape(account.displayName)}</strong><p>${escape(roleLabel(account.roles[0]))} · ${account.status === "active" ? "Идэвхтэй" : "Идэвхгүй"}${account.isTest ? " · Тест" : ""}${account.activeSessionCount ? ` · ${account.activeSessionCount} нэвтэрсэн төхөөрөмж` : ""}</p><div class="staff-team-emails"><span>Имэйл</span><ul>${emails}</ul>${adding}</div></div><div class="staff-team-actions"><button class="button secondary" type="button" data-edit="${escape(account.id)}">Нэр, эрх засах</button><button class="button secondary" type="button" data-status="${escape(account.id)}" data-next-status="${account.status === "active" ? "disabled" : "active"}">${account.status === "active" ? "Идэвхгүй болгох" : "Идэвхжүүлэх"}</button><button class="staff-text-action" type="button" data-revoke="${escape(account.id)}">Бүх төхөөрөмжөөс гаргах</button></div></article>`;
+        }).join("") : `<p class="staff-empty">Ажилтан бүртгэгдээгүй байна.</p>`;
       }
 
       async function refresh() {
@@ -98,11 +108,11 @@ import "../../styles/global.css";
         const button = event.currentTarget.querySelector("button[type='submit']");
         button.disabled = true;
         try {
-          const payload = { displayName: q("#team-name").value, email: q("#team-email").value, role: q("#team-role").value };
+          const payload = { displayName: q("#team-name").value, role: q("#team-role").value };
           const staffAccountId = q("#team-id").value;
           const result = staffAccountId
             ? await request("PUT", { action: "update", staffAccountId, ...payload })
-            : await request("POST", payload);
+            : await request("POST", { ...payload, email: q("#team-email").value });
           if (result.reauthenticationRequired) { location.assign("/staff/"); return; }
           closeForm();
           await refresh();
@@ -114,9 +124,27 @@ import "../../styles/global.css";
       q("#team-list").onclick = async (event) => {
         const button = event.target.closest("button");
         if (!button) return;
-        const account = state.accounts.find((entry) => entry.id === (button.dataset.edit || button.dataset.status || button.dataset.revoke));
+        if (button.dataset.addEmail) { state.addingEmailAccountId = button.dataset.addEmail; render(); q("[data-new-email]")?.focus(); return; }
+        if (button.dataset.cancelEmail !== undefined) { state.addingEmailAccountId = ""; render(); return; }
+        const accountId = button.dataset.account || button.dataset.edit || button.dataset.status || button.dataset.revoke;
+        const account = state.accounts.find((entry) => entry.id === accountId);
         if (!account) return;
         if (button.dataset.edit) { openForm(account); return; }
+        if (button.dataset.primaryEmail) {
+          button.disabled = true;
+          try { await request("PUT", { action: "email-primary", staffAccountId: account.id, emailId: button.dataset.primaryEmail }); await refresh(); message("Үндсэн и-мэйлийг шинэчиллээ.", true); }
+          catch (error) { message(error.message); }
+          finally { button.disabled = false; }
+          return;
+        }
+        if (button.dataset.removeEmail) {
+          if (!window.confirm("Энэ и-мэйлээр дахин нэвтрэх боломжгүй болно. Хасах уу?")) return;
+          button.disabled = true;
+          try { await request("PUT", { action: "email-remove", staffAccountId: account.id, emailId: button.dataset.removeEmail }); await refresh(); message("И-мэйлийг хаслаа.", true); }
+          catch (error) { message(error.message); }
+          finally { button.disabled = false; }
+          return;
+        }
         const disabling = button.dataset.nextStatus === "disabled";
         const prompt = button.dataset.revoke
           ? `${account.displayName}-ийг бүх төхөөрөмжөөс гаргах уу?`
@@ -130,6 +158,22 @@ import "../../styles/global.css";
           if (result.reauthenticationRequired) { location.assign("/staff/"); return; }
           await refresh();
           message(button.dataset.revoke ? "Бүх нэвтэрсэн төхөөрөмжөөс гаргалаа." : "Ажилтны төлөвийг шинэчиллээ.", true);
+        } catch (error) { message(error.message); }
+        finally { button.disabled = false; }
+      };
+
+      q("#team-list").onsubmit = async (event) => {
+        const form = event.target.closest("[data-email-form]");
+        if (!form) return;
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        const button = form.querySelector("button[type='submit']");
+        button.disabled = true;
+        try {
+          await request("PUT", { action: "email-add", staffAccountId: form.dataset.emailForm, email: form.querySelector("[data-new-email]").value });
+          state.addingEmailAccountId = "";
+          await refresh();
+          message("Нэвтрэх и-мэйл нэмлээ.", true);
         } catch (error) { message(error.message); }
         finally { button.disabled = false; }
       };

@@ -14,6 +14,8 @@ export class StaffAdministrationError extends Error {
     | "invalid_name"
     | "invalid_role"
     | "email_conflict"
+    | "email_limit"
+    | "primary_email"
     | "last_active_admin"
     | "staff_not_found") {
     super("Staff administration failed.");
@@ -37,9 +39,23 @@ interface StaffListRow extends StaffAuditTarget {
   updatedAt: string;
 }
 
+interface StaffEmailRow {
+  id: string;
+  staffAccountId: string;
+  email: string;
+  emailNormalized: string;
+  isPrimary: number;
+  createdAt: string;
+}
+
 export interface StaffAccountInput {
   displayName: unknown;
   email: unknown;
+  role: unknown;
+}
+
+export interface StaffAccountProfileInput {
+  displayName: unknown;
   role: unknown;
 }
 
@@ -132,7 +148,8 @@ async function assertNotLastActiveAdmin(
 
 export async function listStaffAccounts(env: WorkerEnv, actor: StaffPrincipal) {
   requireStaffAdmin(actor);
-  const rows = await env.DB.prepare(`SELECT staff_account.id,
+  const [accountResult, emailResult] = await Promise.all([
+    env.DB.prepare(`SELECT staff_account.id,
       staff_account.email_normalized AS emailNormalized,
       staff_account.display_name AS displayName, staff_account.status,
       staff_account.disabled_at AS disabledAt, staff_account.is_test AS isTest,
@@ -144,10 +161,26 @@ export async function listStaffAccounts(env: WorkerEnv, actor: StaffPrincipal) {
     FROM staff_account
     LEFT JOIN staff_account_role ON staff_account_role.staff_account_id = staff_account.id
     GROUP BY staff_account.id
-    ORDER BY staff_account.status, staff_account.display_name COLLATE NOCASE, staff_account.email_normalized`).all<StaffListRow>();
-  return rows.results.map((row) => ({
+    ORDER BY staff_account.status, staff_account.display_name COLLATE NOCASE, staff_account.email_normalized`).all<StaffListRow>(),
+    env.DB.prepare(`SELECT id, staff_account_id AS staffAccountId, email,
+      email_normalized AS emailNormalized, is_primary AS isPrimary, created_at AS createdAt
+      FROM staff_account_email
+      ORDER BY staff_account_id, is_primary DESC, created_at, id`).all<StaffEmailRow>(),
+  ]);
+  const emailsByAccount = new Map<string, StaffEmailRow[]>();
+  for (const email of emailResult.results) {
+    const entries = emailsByAccount.get(email.staffAccountId) ?? [];
+    entries.push(email);
+    emailsByAccount.set(email.staffAccountId, entries);
+  }
+  return accountResult.results.map((row) => ({
     id: row.id,
     email: row.emailNormalized,
+    emails: (emailsByAccount.get(row.id) ?? []).map((email) => ({
+      id: email.id,
+      email: email.email,
+      isPrimary: Boolean(email.isPrimary),
+    })),
     displayName: row.displayName,
     status: row.status,
     disabledAt: row.disabledAt,
@@ -168,7 +201,7 @@ export async function createStaffAccount(
   const name = displayName(input.displayName);
   const email = staffEmail(input.email);
   const role = staffRole(input.role);
-  if (await env.DB.prepare("SELECT 1 AS value FROM staff_account WHERE email_normalized = ?").bind(email).first()) {
+  if (await env.DB.prepare("SELECT 1 AS value FROM staff_account_email WHERE email_normalized = ?").bind(email).first()) {
     throw new StaffAdministrationError("email_conflict");
   }
   const now = nowDate.toISOString();
@@ -184,6 +217,12 @@ export async function createStaffAccount(
     env.DB.prepare(`INSERT INTO staff_account_role (
       staff_account_id, role_code, assigned_by_staff_account_id, assigned_at
     ) VALUES (?, ?, ?, ?)`).bind(id, role, actor.staffAccountId, now),
+    env.DB.prepare(`INSERT INTO staff_account_email (
+      id, staff_account_id, email, email_normalized, is_primary,
+      created_by_staff_account_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`).bind(
+      crypto.randomUUID(), id, email, email, actor.staffAccountId, now, now,
+    ),
     auditStatement(env, actor, target, "staff_account_created", { role }, now),
     auditStatement(env, actor, target, "staff_role_assigned", { role }, now),
   ]);
@@ -194,39 +233,131 @@ export async function updateStaffAccount(
   env: WorkerEnv,
   actor: StaffPrincipal,
   staffAccountId: string,
-  input: StaffAccountInput,
+  input: StaffAccountProfileInput,
   nowDate = new Date(),
-): Promise<{ reauthenticationRequired: boolean }> {
+): Promise<void> {
   requireStaffAdmin(actor);
   const target = await targetForAudit(env, staffAccountId);
   const name = displayName(input.displayName);
-  const email = staffEmail(input.email);
   const role = staffRole(input.role);
-  const duplicate = await env.DB.prepare(`SELECT id FROM staff_account
-    WHERE email_normalized = ? AND id <> ?`).bind(email, staffAccountId).first<{ id: string }>();
-  if (duplicate) throw new StaffAdministrationError("email_conflict");
   await assertNotLastActiveAdmin(env, target, target.status, [role]);
   const now = nowDate.toISOString();
-  const provenance = testFlags(env, email);
-  const emailChanged = email !== target.emailNormalized;
   const statements: D1PreparedStatement[] = [
-    env.DB.prepare(`UPDATE staff_account SET email_normalized = ?, display_name = ?,
-      is_test = ?, test_run_id = ?, updated_at = ? WHERE id = ?`).bind(
-      email, name, provenance.isTest, provenance.testRunId, now, staffAccountId,
-    ),
+    env.DB.prepare(`UPDATE staff_account SET display_name = ?, updated_at = ? WHERE id = ?`)
+      .bind(name, now, staffAccountId),
     env.DB.prepare("DELETE FROM staff_account_role WHERE staff_account_id = ?").bind(staffAccountId),
     env.DB.prepare(`INSERT INTO staff_account_role (
       staff_account_id, role_code, assigned_by_staff_account_id, assigned_at
     ) VALUES (?, ?, ?, ?)`).bind(staffAccountId, role, actor.staffAccountId, now),
   ];
-  if (emailChanged) statements.push(...revokeAccessStatements(env, staffAccountId, now));
   statements.push(auditStatement(env, actor, target, "staff_account_updated", {
-    emailChanged,
     displayNameChanged: name !== target.displayName,
     role,
   }, now));
   await env.DB.batch(statements);
-  return { reauthenticationRequired: emailChanged && actor.staffAccountId === staffAccountId };
+}
+
+function assertAliasProvenance(env: WorkerEnv, target: StaffAuditTarget, email: string): void {
+  const emailIsTest = email.endsWith("@example.invalid");
+  if (env.APP_ENV === "production" && emailIsTest) throw new StaffAdministrationError("invalid_email");
+  if (env.APP_ENV === "staging" && Boolean(target.isTest) !== emailIsTest) {
+    throw new StaffAdministrationError("invalid_email");
+  }
+}
+
+async function staffEmailEntry(
+  env: WorkerEnv,
+  staffAccountId: string,
+  emailId: string,
+): Promise<StaffEmailRow> {
+  const entry = await env.DB.prepare(`SELECT id, staff_account_id AS staffAccountId, email,
+    email_normalized AS emailNormalized, is_primary AS isPrimary, created_at AS createdAt
+    FROM staff_account_email WHERE id = ? AND staff_account_id = ?`).bind(
+    emailId, staffAccountId,
+  ).first<StaffEmailRow>();
+  if (!entry) throw new StaffAdministrationError("staff_not_found");
+  return entry;
+}
+
+export async function addStaffAccountEmail(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  staffAccountId: string,
+  value: unknown,
+  nowDate = new Date(),
+): Promise<{ id: string }> {
+  requireStaffAdmin(actor);
+  const target = await targetForAudit(env, staffAccountId);
+  const email = staffEmail(value);
+  assertAliasProvenance(env, target, email);
+  const existing = await env.DB.prepare(`SELECT staff_account_id AS staffAccountId
+    FROM staff_account_email WHERE email_normalized = ?`).bind(email).first<{ staffAccountId: string }>();
+  if (existing) throw new StaffAdministrationError("email_conflict");
+  const count = await env.DB.prepare(`SELECT COUNT(*) AS value FROM staff_account_email
+    WHERE staff_account_id = ?`).bind(staffAccountId).first<{ value: number }>();
+  if ((count?.value ?? 0) >= 3) throw new StaffAdministrationError("email_limit");
+  const now = nowDate.toISOString();
+  const emailId = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO staff_account_email (
+      id, staff_account_id, email, email_normalized, is_primary,
+      created_by_staff_account_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)`).bind(
+      emailId, staffAccountId, email, email, actor.staffAccountId, now, now,
+    ),
+    auditStatement(env, actor, target, "staff_login_email_added", { email }, now),
+  ]);
+  return { id: emailId };
+}
+
+export async function setPrimaryStaffAccountEmail(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  staffAccountId: string,
+  emailId: string,
+  nowDate = new Date(),
+): Promise<void> {
+  requireStaffAdmin(actor);
+  const target = await targetForAudit(env, staffAccountId);
+  const entry = await staffEmailEntry(env, staffAccountId, emailId);
+  if (entry.isPrimary) return;
+  const now = nowDate.toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE staff_account_email SET is_primary = 0, updated_at = ?
+      WHERE staff_account_id = ? AND is_primary = 1`).bind(now, staffAccountId),
+    env.DB.prepare(`UPDATE staff_account_email SET is_primary = 1, updated_at = ?
+      WHERE id = ? AND staff_account_id = ?`).bind(now, emailId, staffAccountId),
+    auditStatement(env, actor, target, "staff_primary_login_email_changed", { email: entry.emailNormalized }, now),
+  ]);
+}
+
+export async function removeStaffAccountEmail(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  staffAccountId: string,
+  emailId: string,
+  nowDate = new Date(),
+): Promise<void> {
+  requireStaffAdmin(actor);
+  const target = await targetForAudit(env, staffAccountId);
+  const entry = await staffEmailEntry(env, staffAccountId, emailId);
+  if (entry.isPrimary) throw new StaffAdministrationError("primary_email");
+  const now = nowDate.toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE staff_login_attempt SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+      WHERE status IN ('pending', 'approved') AND id IN (
+        SELECT login_attempt_id FROM staff_login_challenge
+        WHERE staff_account_id = ? AND normalized_email = ? AND login_attempt_id IS NOT NULL
+      )`).bind(now, now, staffAccountId, entry.emailNormalized),
+    env.DB.prepare(`UPDATE staff_login_challenge
+      SET status = 'invalidated', invalidated_at = ?, updated_at = ?
+      WHERE staff_account_id = ? AND normalized_email = ? AND status = 'pending'`).bind(
+      now, now, staffAccountId, entry.emailNormalized,
+    ),
+    env.DB.prepare(`DELETE FROM staff_account_email
+      WHERE id = ? AND staff_account_id = ? AND is_primary = 0`).bind(emailId, staffAccountId),
+    auditStatement(env, actor, target, "staff_login_email_removed", { email: entry.emailNormalized }, now),
+  ]);
 }
 
 export async function replaceStaffRoles(

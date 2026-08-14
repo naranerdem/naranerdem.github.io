@@ -4,7 +4,7 @@
 
 Staff identity is separate from parent identity. A staff email address never creates, looks up, or links a `guardian_account`; parent verification cookies cannot authenticate staff routes, and staff cookies cannot authorize parent registration routes.
 
-The public `/staff/` page is Mongolian and phone-first. Before session bootstrap completes it shows only a neutral loading state. Unknown, guardian-only, disabled, and active addresses receive the same public login-start response. Only an active `staff_account` queues an email.
+The public `/staff/` page is Mongolian and phone-first. Before session bootstrap completes it shows only a neutral loading state. Unknown, guardian-only, disabled, and active addresses receive the same public login-start response. Only an email attached to an active `staff_account` queues an email. One staff account may have up to three globally unique login addresses; every address authenticates the same account, roles, and sessions.
 
 ## Roles And Capabilities
 
@@ -59,18 +59,24 @@ Production keeps `STAFF_AUTH_EMAIL_ENABLED=false`. Before enabling a public prod
 
 ## Provisioning And Audit
 
-Use `/staff/team/` for ordinary account, role, status, email, and all-session
-administration. The final active admin is protected, and address changes or
-disable actions invalidate pending access and active sessions. The CLI remains
+Use `/staff/team/` for ordinary account, role, status, login-address, and
+all-session administration. One address is marked primary for display and
+legacy compatibility. Adding an address or changing the primary address does
+not revoke account-scoped sessions. Removing an address invalidates only its
+pending login links; disabling the account revokes all sessions. The final
+active admin remains protected. The CLI remains
 the recovery/bootstrap path: `npm run staff:create` requires explicit `--env`,
 `--email`, `--name`, and `--role`; production additionally requires
 `--confirm-production`, while a real staging address requires the deliberate
 `--allow-real-email` flag. It writes no credentials and audits provisioning.
 
-Staff-management routes call the administration service so creation, edits,
-role replacement, enable/disable actions, and revocation are capability checked
-and audited. Successful login and policy changes are also audited. Raw tokens,
-API keys, and noisy failed-login details are excluded.
+Staff-management routes call the administration service so creation, profile
+edits, address changes, role replacement, enable/disable actions, and revocation
+are capability checked and audited. Fake staging accounts accept only
+`@example.invalid` aliases; real staging accounts accept only real addresses.
+Staging and production accounts remain independently provisioned. Successful
+login and policy changes are also audited. Raw tokens, API keys, and noisy
+failed-login details are excluded.
 
 ## Mutation Safety
 

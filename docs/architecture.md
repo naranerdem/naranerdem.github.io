@@ -331,10 +331,15 @@ Staff sessions are persistent trusted-device cookies backed by server-authoritat
 
 `/staff/team/` is the admin-only `Ажилтнууд` surface. It creates and edits the
 existing normalized staff identities, enables/disables access, and revokes all
-sessions. Email changes revoke sessions and pending links; role and status
-changes are audited and immediately authoritative. The final active admin
-cannot be disabled or demoted. Staging and production identities and sessions
-are independently provisioned and are never copied between environments.
+sessions. Migration 0017 gives one account up to three globally unique login
+addresses. Any alias authenticates the same account; one is primary only for
+display and compatibility. Adding an alias or changing the primary address
+does not revoke account-scoped sessions. Removing an alias invalidates pending
+links for that address, while disabling an account revokes all sessions. Role,
+address, and status changes are audited and immediately authoritative. The
+final active admin cannot be disabled or demoted. Staging and production
+identities, aliases, and sessions are independently provisioned and are never
+copied between environments.
 
 The first accountant surface should be intentionally narrow: `Залгах шаардлагатай`. It is a derived live queue of overdue, teacher-approved receivables showing only the guardian, phone, relevant child/children, approved amount, effective due date/days overdue, and recent contact/reminder status. It disappears when its reason disappears, such as reconciliation, approved extension, cancellation/removal, or other approved resolution; underlying history remains.
 

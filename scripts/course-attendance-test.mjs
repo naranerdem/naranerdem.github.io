@@ -117,6 +117,9 @@ try {
     INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('teacher-staff', 'teacher@example.invalid', 'Тест Багш', 'active', 1, 'attendance-test', '${now}', '${now}'),
         ('accountant-staff', 'accountant@example.invalid', 'Тест Нягтлан', 'active', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO staff_account_email (id, staff_account_id, email, email_normalized, is_primary, created_at, updated_at)
+      VALUES ('teacher-email', 'teacher-staff', 'teacher@example.invalid', 'teacher@example.invalid', 1, '${now}', '${now}'),
+        ('accountant-email', 'accountant-staff', 'accountant@example.invalid', 'accountant@example.invalid', 1, '${now}', '${now}');
     INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
       VALUES ('year', 'Ирцийн тест', 'closed', '${addCivilDays(today, -90)}', '${addCivilDays(today, 90)}', 1, 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO curriculum_program_family (id, kind, display_name, annual_stage_code, status, is_test, test_run_id, created_at, updated_at)
