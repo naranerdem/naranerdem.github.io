@@ -209,6 +209,7 @@ Ordinary post-publication changes automatically protect at least the greater of:
 
 - the revision's existing internal `locked_through_sequence`
 - the highest lesson sequence on a published teaching date already in the past
+- the highest current attendance mark for that class and pinned Program
 
 This does not claim a past lesson was attended or delivered. It only prevents
 normal future schedule edits from rewriting published history until attendance
@@ -224,6 +225,32 @@ into the same ordered sequence. A restored school-holiday slot is active again
 but keeps its named holiday warning. Past corrections, if later required,
 belong to an exceptional audited admin workflow rather than the normal teacher
 surface.
+
+## Course Attendance
+
+`/staff/attendance/` is a protected phone-first daily operational page. It
+starts with a neutral list of scheduled annual/summer course occurrences for a
+selected `Asia/Ulaanbaatar` date. `Нээх` explicitly reveals that class roster;
+there is no arbitrary first class, page-level save, draft, publish, or revision
+language. `Ирсэн`, `Хоцорсон`, and `Ирээгүй` save immediately, while `Бүгд
+ирсэн` affects only unmarked students after confirmation. Future occurrences
+accept a separate prior absence notice, but reject attendance marks server-side.
+
+The durable semantic occurrence is `class_session_id + curriculum_lesson_id`.
+`course_attendance` is unique by enrollment plus that occurrence and retains a
+calendar slot/local-date snapshot only as provenance. A later calendar revision
+therefore cannot invalidate a saved mark. `course_attendance_change` records
+every real transition, including clearing back to unmarked; same-status taps
+create no duplicate history. A cleared row does not contribute to calendar
+protection.
+
+`course_absence_notice` is deliberately distinct from attendance and currently
+has only the teacher-created `staff_manual` source. It may have an optional
+note, can be corrected or cancelled without hard deletion, and never changes an
+attendance status automatically. Neither events nor parent absence reporting
+are part of this foundation. Attendance roster membership uses the supportable
+confirmed/cancelled enrollment timestamp interval, while existing attendance
+history remains visible for later correction after withdrawal.
 
 ## Staff Setup Surface
 
@@ -253,6 +280,9 @@ The protected Mongolian setup is organized around concrete work:
   school years rather than internal compatibility records.
 - `/staff/settings/` stores genuinely global typed settings: the admin-only
   annual-start month/day default and separate admin authentication settings.
+- `/staff/attendance/` is the daily teacher/admin roster for annual and summer
+  course occurrences. It is intentionally separate from schedule editing and
+  is unavailable to accountants.
 
 Unused classes expose `Анги устгах` only in their edit/details view. Durable
 references suppress the action and server checks remain authoritative. Every

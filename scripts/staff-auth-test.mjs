@@ -523,6 +523,22 @@ try {
     headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` },
   });
   assert.equal(accountantPrograms.status, 403, "accountants cannot retrieve curriculum data through the staff API");
+  const accountantAttendance = await api(env, "/api/staff/proof/attendance", {
+    headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` },
+  });
+  assert.equal(accountantAttendance.status, 403, "accountants cannot view course attendance");
+  staff(database, "staff-attendance-teacher", "attendance-teacher@example.invalid", "Ирцийн Багш", "teacher");
+  const attendanceTeacher = await sameContextLogin(env, "attendance-teacher@example.invalid", "attendance-teacher", new Date(baseTime.getTime() + 432_500));
+  const teacherAttendance = await api(env, "/api/staff/proof/attendance", {
+    headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}` },
+  });
+  assert.equal(teacherAttendance.status, 200, "teachers can view course attendance");
+  const teacherAttendanceMutation = await api(env, "/api/staff/proof/attendance-mutation", {
+    method: "POST", headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}`, Origin: env.APP_ORIGIN },
+  });
+  assert.equal(teacherAttendanceMutation.status, 200, "teachers can manage course attendance");
+  assert.equal((await api(env, "/api/staff/attendance?date=2026-08-12")).status, 401, "attendance roster is never public");
+  assert.equal((await api(env, "/api/staff/attendance", { method: "PUT" })).status, 405, "unsupported attendance methods are rejected");
   await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "disabled", new Date(baseTime.getTime() + 433_000));
   assert.equal(await resolveStaffPrincipal(env, roleLogin.rawSession, new Date(baseTime.getTime() + 434_000)), null);
   await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "active", new Date(baseTime.getTime() + 435_000));

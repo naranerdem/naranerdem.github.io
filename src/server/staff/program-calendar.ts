@@ -17,6 +17,7 @@ import {
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { getAnnualCourseStartDefault } from "./annual-course-start-default";
 import { getOfferingOverview } from "./offerings";
+import { attendanceProtectedThroughSequence } from "./course-attendance";
 
 const STAGES = ["stage_1", "stage_2", "stage_3"] as const;
 type StageCode = typeof STAGES[number];
@@ -1427,6 +1428,9 @@ export async function createCalendarChangeDraft(env: WorkerEnv, actor: StaffPrin
   const pastPublishedSequence = oldSlots
     .filter((slot) => slot.status === "scheduled" && slot.localDate < localToday())
     .reduce((highest, slot) => Math.max(highest, slot.lessonSequence ?? 0), 0);
+  const attendanceProtectedSequence = await attendanceProtectedThroughSequence(env, input.classSessionId, current.programId);
+  // Attendance is an immediately correctable operational fact. Keep it as a
+  // dynamic protection input instead of baking a cleared mark into a draft.
   const protectedThroughSequence = Math.max(current.lockedThroughSequence, pastPublishedSequence);
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, based_on_revision_id, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`)
@@ -1438,7 +1442,8 @@ export async function createCalendarChangeDraft(env: WorkerEnv, actor: StaffPrin
     audit(env, actor, "calendar_change_draft_created", "class_calendar_revision", revisionId, {
       basedOnRevisionId: current.id,
       protectedHistoricalSequence: protectedThroughSequence,
-      protectionBasis: "stored_lock_and_past_published_dates",
+      attendanceProtectedSequence,
+      protectionBasis: "stored_lock_past_published_dates_and_current_attendance",
     }, flags, time),
   ]);
 }
@@ -1450,6 +1455,8 @@ async function rebuiltDraftSchedule(
   proposedOverride?: CalendarOverride,
 ): Promise<CalendarSlot[]> {
   const classSession = await classForCalendar(env, revision.calendarId);
+  const attendanceProtectedSequence = await attendanceProtectedThroughSequence(env, classSession.id, revision.programId);
+  const protectedThroughSequence = Math.max(revision.lockedThroughSequence, attendanceProtectedSequence);
   const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson);
   const schoolCalendarPeriods = await applicableBreaks(env, classSession);
   const offeringBreaks = classSession.offeringId ? await offeringBreaksForOffering(env, classSession.offeringId) : [];
@@ -1475,7 +1482,7 @@ async function rebuiltDraftSchedule(
   const cancelledTimes = new Set(cancelledSlots.map((slot) => `${slot.localDate}|${slot.startTime}|${slot.endTime}`));
   rebuilt = [...rebuilt.filter((slot) => !cancelledTimes.has(`${slot.localDate}|${slot.startTime}|${slot.endTime}`)), ...cancelledSlots]
     .sort((left, right) => left.localDate.localeCompare(right.localDate) || left.startTime.localeCompare(right.startTime) || left.endTime.localeCompare(right.endTime));
-  for (const protectedSlot of oldSlots.filter((slot) => slot.status === "scheduled" && (slot.lessonSequence ?? 0) <= revision.lockedThroughSequence)) {
+  for (const protectedSlot of oldSlots.filter((slot) => slot.status === "scheduled" && (slot.lessonSequence ?? 0) <= protectedThroughSequence)) {
     const match = rebuilt.find((slot) => slot.status === "scheduled" && slot.lesson?.id === protectedSlot.lessonId);
     if (!match || match.localDate !== protectedSlot.localDate || match.startTime !== protectedSlot.startTime || match.endTime !== protectedSlot.endTime) {
       throw new ProgramCalendarError("immutable");
@@ -1525,9 +1532,10 @@ export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrinc
   const classSession = await classForCalendar(env, revision.calendarId); const lessons = (await lessonsForProgram(env, revision.programId)).map(toProgramLesson); const schoolCalendarPeriods = await applicableBreaks(env, classSession); const offeringBreaks = classSession.offeringId ? await offeringBreaksForOffering(env, classSession.offeringId) : []; const overrides = await overridesForRevision(env, revision.id); const slots = (await slotsForRevision(env, revision.id)).map(toSlot);
   const target = slots.find((slot) => slot.id === input.slotId);
   if (!target || target.localDate < localToday()) throw new ProgramCalendarError("immutable");
+  const attendanceProtectedSequence = await attendanceProtectedThroughSequence(env, classSession.id, revision.programId);
   let result;
   try {
-    result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks, overrides, existingSlots: slots, lockedThroughSequence: revision.lockedThroughSequence, cancelSlotId: input.slotId });
+    result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks, overrides, existingSlots: slots, lockedThroughSequence: Math.max(revision.lockedThroughSequence, attendanceProtectedSequence), cancelSlotId: input.slotId });
   } catch (caught) {
     mapPlanningError(caught);
   }

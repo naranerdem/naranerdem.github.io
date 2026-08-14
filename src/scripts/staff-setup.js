@@ -43,12 +43,45 @@ export async function postOverviewAction(action, payload = {}) {
   }
 }
 
+export async function getAttendanceDay(date, occurrence = "") {
+  const params = new URLSearchParams({ date });
+  if (occurrence) params.set("occurrence", occurrence);
+  const response = await fetch(`/api/staff/attendance?${params.toString()}`, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error("Ирцийн мэдээллийг авч чадсангүй.");
+  return response.json();
+}
+
+export async function postAttendanceAction(action, payload = {}) {
+  const response = await fetch("/api/staff/attendance", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error?.message || "Ирцийн мэдээллийг хадгалж чадсангүй.");
+  }
+  return response.json();
+}
+
 export async function hasSetupAccess() {
   const response = await fetch("/api/staff/session", { credentials: "same-origin" });
   if (!response.ok) return false;
   const session = await response.json();
   const capabilities = session.capabilities || [];
   return Boolean(session.authenticated && capabilities.includes("program.manage") && capabilities.includes("calendar.manage"));
+}
+
+export async function hasAttendanceAccess() {
+  const response = await fetch("/api/staff/session", { credentials: "same-origin" });
+  if (!response.ok) return false;
+  const session = await response.json();
+  const capabilities = session.capabilities || [];
+  return Boolean(session.authenticated && capabilities.includes("attendance.view") && capabilities.includes("attendance.manage"));
 }
 
 export function currentYearId(data, selectedId) {

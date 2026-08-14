@@ -12,8 +12,8 @@ The normalized roles are exactly `admin`, `teacher`, and `accountant`. There is 
 
 | Role | Current capability groups |
 | --- | --- |
-| `admin` | all current admin, program, calendar, registration, payment, and accountant capabilities |
-| `teacher` | program/calendar view and management; registration view and management; payment view, management, and extension |
+| `admin` | all current admin, program, calendar, attendance, registration, payment, and accountant capabilities |
+| `teacher` | program/calendar and attendance view/management; registration view and management; payment view, management, and extension |
 | `accountant` | payment view; call-queue view; contact recording |
 
 Protected Worker routes resolve the staff session and then reload the account's active status and current roles. Server capability checks are authoritative; UI labels are only a convenience. The proof routes under `/api/staff/proof/*` demonstrate 401, 403, and allowed behavior without implementing business mutations.

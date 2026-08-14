@@ -213,10 +213,10 @@ and extra-slot decisions remain available.
 
 After publication, cancellation preserves the original dated entry and only
 reflows safe future assignments. Normal changes automatically protect past
-published dates plus any stronger stored internal boundary; the teacher does
-not enter a completed-lesson sequence. This protection does not claim that a
-past lesson was delivered or attended. Attendance remains the future stronger
-source. Planned Offering/class end dates are soft operational guidance: a
+published dates, any stronger stored internal boundary, and current recorded
+attendance. The teacher does not enter a completed-lesson sequence. This
+protection does not claim that a past lesson was delivered. Planned
+Offering/class end dates are soft operational guidance: a
 complete draft may extend beyond them with a warning, rather than silently
 dropped lessons. Read-only class schedules expose no registration data. Details are in
 [program-calendar-model.md](program-calendar-model.md).
@@ -228,9 +228,13 @@ operational surface. Accountants cannot open or mutate it.
 
 A missed Lesson 7 can be made up only through another suitable occurrence of Lesson 7, not by joining Lesson 8 because it has space. Future make-up suggestions require the same curriculum lesson, a suitable future occurrence with capacity, an unresolved absence, and teacher consideration. Suggestions never automatically invite parents; the teacher approves/rejects and can override them. A teacher may create one extra non-standard occurrence when normal occurrences are unavailable.
 
-### Future Attendance and Absence Notice
+### Attendance and Future Parent Absence Notice
 
-Attendance is future editable operational bookkeeping for a `LessonOccurrence`, with simple concepts such as present, late, absent, and a separate advance-absence notice. The teacher needs a phone-first roster and can correct an earlier entry later; material corrections require audit/history rather than silently erasing the original state.
+Course attendance is now protected staff-only operational bookkeeping for a
+stable class/lesson occurrence, with present, late, absent, and a separate
+teacher-recorded prior absence notice. The teacher has a phone-first roster and
+can correct or clear an earlier entry while retaining audit/history. It does not
+yet create make-up, credit, payment, or parent-portal behavior.
 
 The future parent action `Хичээлд ирж чадахгүйгээ мэдэгдэх` selects one upcoming occurrence and may include a short note. Advance notice may favor make-up consideration but guarantees nothing. An uninformed absence gives no automatic make-up entitlement or credit.
 

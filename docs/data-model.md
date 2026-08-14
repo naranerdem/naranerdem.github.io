@@ -272,7 +272,26 @@ families, makes unchanged content a no-op, and creates a new immutable revision
 for changed content without moving existing Offering pins. It rejects stale or
 incompatible targets and requires explicit confirmation for production.
 
-Attendance, absence notice, make-up, accountant workflow, payment-reminder, and settlement tables remain deferred. Future schema design should keep these distinctions explicit:
+Migration `0016_course_attendance_foundation.sql` adds current course attendance
+and history without changing enrollment, calendar, or curriculum rows.
+`course_attendance` is unique on `(enrollment_id, class_session_id,
+curriculum_lesson_id)` and permits only `present`, `late`, `absent`, or a
+cleared current status. The immutable lesson/class pair is its semantic
+occurrence; `recorded_calendar_slot_id` and `scheduled_local_date` are retained
+provenance snapshots. Restrictive foreign keys and database triggers verify
+that the enrollment belongs to the class and the lesson belongs to its annual
+or summer Offering program. `course_attendance_change` is append-only for a
+mark, correction, or clear.
+
+`course_absence_notice` is separate, currently supports only `staff_manual`,
+and has its own append-only change table. Its optional note and cancellation
+history do not imply an attendance result. These tables use restrictive
+references so attendance remains after calendar revision, enrollment
+cancellation, or class closure. Event attendance, parent notice submission,
+make-up, accountant workflow, payment-reminder, and settlement tables remain
+deferred.
+
+Future schema design should keep these distinctions explicit:
 
 - attendance bookkeeping and prior absence notice: editable operational records attached to a concrete occurrence, with auditable correction history.
 - make-up consideration/invitation/agreement: teacher-mediated records attached to the same curriculum lesson, not automatic credits or generic free-class access.

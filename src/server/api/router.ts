@@ -41,6 +41,15 @@ import {
 } from "../staff/session-policy";
 import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
 import {
+  CourseAttendanceError,
+  cancelCourseAbsenceNotice,
+  clearCourseAttendance,
+  getCourseAttendanceDay,
+  markUnmarkedRosterPresent,
+  recordCourseAttendance,
+  saveCourseAbsenceNotice,
+} from "../staff/course-attendance";
+import {
   ProgramCalendarError,
   cancelFutureCalendarSlot,
   changeCalendarDraft,
@@ -200,6 +209,17 @@ function programCalendarError(caught: unknown): Response {
   if (caught.code === "immutable") return error("invalid_request", "Хэвлэгдсэн эсвэл ашиглагдаж буй мэдээллийг шууд өөрчилж болохгүй. Шинэ ноорог үүсгэнэ үү.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "referenced") return error("invalid_request", "Энэ анги бүртгэл эсвэл хуваарьт ашиглагдсан тул устгаж болохгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "insufficient_slots") return error("invalid_request", "Хөтөлбөрийн бүх хичээл сонгосон хугацаанд багтахгүй байна. Хугацааг сунгах, давтамжийг өөрчлөх эсвэл нэмэлт өдөр оруулна уу.", 422, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function courseAttendanceError(caught: unknown): Response {
+  if (!(caught instanceof CourseAttendanceError)) {
+    return error("internal_error", "Ирцийн мэдээллийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("invalid_request", "Сонгосон хичээл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "not_enrolled") return error("invalid_request", "Энэ сурагч тухайн хичээлийн бүртгэлтэй жагсаалтад алга.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "future_occurrence") return error("invalid_request", "Ирцийг хичээл болох өдрөөс эхэлж тэмдэглэнэ.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
@@ -653,6 +673,96 @@ export async function handleApiRequest(
     return denied ?? json({ ok: true, capability: "calendar.manage", changed: false }, 200, {
       "Cache-Control": "no-store",
     });
+  }
+
+  if (path === "/api/staff/proof/attendance") {
+    if (request.method !== "GET") return methodNotAllowed();
+    const denied = await requireStaffCapability(request, env, "attendance.view");
+    return denied ?? json({ ok: true, capability: "attendance.view" }, 200, { "Cache-Control": "no-store" });
+  }
+
+  if (path === "/api/staff/proof/attendance-mutation") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const denied = await requireStaffCapability(request, env, "attendance.manage");
+    return denied ?? json({ ok: true, capability: "attendance.manage", changed: false }, 200, {
+      "Cache-Control": "no-store",
+    });
+  }
+
+  if (path === "/api/staff/attendance") {
+    if (request.method === "GET") {
+      const denied = await requireStaffCapability(request, env, "attendance.view");
+      if (denied) return denied;
+      const url = new URL(request.url);
+      try {
+        const principal = await staffPrincipalForRequest(request, env);
+        if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+        return json(await getCourseAttendanceDay(
+          env,
+          principal,
+          url.searchParams.get("date") || undefined,
+          url.searchParams.get("occurrence") || "",
+        ), 200, { "Cache-Control": "no-store" });
+      } catch (caught) {
+        return courseAttendanceError(caught);
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    if (!hasStaffCapability(principal, "attendance.manage")) {
+      return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+    }
+    let payload: Record<string, unknown>;
+    try {
+      payload = await request.json() as Record<string, unknown>;
+      if (!payload || typeof payload.action !== "string") throw new Error("invalid payload");
+    } catch {
+      return error("invalid_request", "Хүсэлтийн мэдээллийг шалгана уу.", 400, { "Cache-Control": "no-store" });
+    }
+    try {
+      let result: Record<string, unknown>;
+      switch (payload.action) {
+        case "attendance.mark":
+          result = await recordCourseAttendance(env, principal, {
+            slotId: String(payload.slotId ?? ""), enrollmentId: String(payload.enrollmentId ?? ""), status: payload.status,
+          });
+          break;
+        case "attendance.clear":
+          result = await clearCourseAttendance(env, principal, {
+            slotId: String(payload.slotId ?? ""), enrollmentId: String(payload.enrollmentId ?? ""),
+          });
+          break;
+        case "attendance.bulk-present":
+          result = await markUnmarkedRosterPresent(env, principal, { slotId: String(payload.slotId ?? "") });
+          break;
+        case "absence-notice.save":
+          result = await saveCourseAbsenceNotice(env, principal, {
+            slotId: String(payload.slotId ?? ""), enrollmentId: String(payload.enrollmentId ?? ""), note: payload.note,
+          });
+          break;
+        case "absence-notice.cancel":
+          result = await cancelCourseAbsenceNotice(env, principal, {
+            slotId: String(payload.slotId ?? ""), enrollmentId: String(payload.enrollmentId ?? ""),
+          });
+          break;
+        default:
+          return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+      }
+      return json({ ok: true, ...result }, 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return courseAttendanceError(caught);
+    }
   }
 
   if (path === "/api/staff/program-calendar") {

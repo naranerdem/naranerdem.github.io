@@ -26,6 +26,7 @@
     "test:private-config": "node scripts/private-program-config-test.mjs",
     "test:staff:program-calendar": "node scripts/staff-program-calendar-test.mjs",
     "test:staff-calendar": "node scripts/staff-program-calendar-test.mjs",
+    "test:attendance": "npm run build && node scripts/course-attendance-test.mjs",
     "test:registration": "node scripts/registration-hold-test.mjs",
     "test:calendar": "node scripts/calendar-domain-test.mjs",
     "test:schedule:preview": "npm run build && node scripts/schedule-preview-test.mjs",

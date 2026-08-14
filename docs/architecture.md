@@ -241,16 +241,16 @@ unexpected-cancellation surface will reuse the same calendar-change domain
 operation while keeping their teacher entry points distinct.
 
 Ordinary post-publication drafts automatically protect the greater of the
-stored internal lock and all published lesson assignments whose local teaching
-date is already past. This is historical schedule protection, not a claim that
-the lesson was attended or delivered. The teacher no longer sees or confirms a
-raw completed-sequence boundary. Safe future cancellation retains history and
+stored internal lock, all published lesson assignments whose local teaching
+date is already past, and the highest current attendance mark for that class's
+pinned Program. This is historical schedule protection, not a claim that the
+lesson was delivered. The teacher no longer sees or confirms a raw
+completed-sequence boundary. Safe future cancellation retains history and
 reflows only future lessons. A summer Offering's planned end is soft guidance:
 an overrun is warned rather than silently dropping a lesson. An annual
 Offering instead derives its actual end from the explicit calendar. The annual
 start date is editable per Offering but prepopulated from the typed, admin-only
-global month/day default (initially October 1). Attendance will later be the
-stronger delivered state source. See
+global month/day default (initially October 1). See
 [program-calendar-model.md](program-calendar-model.md).
 
 New course classes and event occurrences always start with registration closed.
@@ -264,7 +264,14 @@ configured. Future pricing belongs in Offering detail under `Төлбөрийн 
 not compact creation. Public registration must remain closed until valid price
 basis and payment-plan terms exist.
 
-Future attendance is editable operational bookkeeping. For a concrete occurrence, the teacher should have a very simple phone-first roster with concepts such as present, late, and absent, plus a separate prior-absence-notice flag. Records must remain correctable after class and meaningful corrections must retain audit/history; they are not frozen immediately when a lesson ends.
+Course attendance is now editable operational bookkeeping for normal annual and
+summer course occurrences. `/staff/attendance/` is a simple phone-first daily
+roster with present, late, absent, and a separate teacher-recorded prior
+absence notice. Each tap saves immediately; corrections and clearing remain
+auditable and no attendance action creates a calendar revision. Attendance uses
+the stable class-plus-immutable-lesson identity rather than a revision-scoped
+calendar slot. Events, parent-submitted notices, make-up decisions, and
+attendance-derived financial conclusions are still not implemented.
 
 Event attendance is a separate, simpler future record: `attended`, `did not
 attend`, and an optional short note. It must not be forced through course
