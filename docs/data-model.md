@@ -233,9 +233,8 @@ exists, so this exception cannot create new drift.
 Migration `0012_offering_breaks_and_calendar_guidance.sql` classifies Programs
 as annual or summer, enforces the matching course Program kind, and enforces
 that annual/summer Offerings are paid while annual school guidance remains on.
-It adds `activity_offering_break` for a shared course-specific break and
-`academic_year_break.generation_behavior` for `exclude_by_default` versus
-`warn_only` school-period guidance. It also creates
+It adds `activity_offering_break` for a shared course-specific break and the
+legacy `academic_year_break.generation_behavior` compatibility field. It also creates
 `operational_default_import`, which records stable source-template imports.
 The Schedule surface manages this shared all-class break; school-calendar
 periods remain separate annual guidance in Holidays.
@@ -246,13 +245,22 @@ periods remain unchanged; their actual lesson end continues to come from the
 explicit calendar. The default is an administrative setup preference rather
 than a teacher-facing daily control.
 
+Migration `0015_independent_school_calendar_guidance.sql` makes school guidance
+orthogonal with `academic_year_break.exclude_from_generation` and
+`academic_year_break.warn_on_overlap`. It backfills legacy
+`exclude_by_default` rows to `1/1` and legacy `warn_only` rows to `0/1`; the
+legacy enum remains compatibility-only. It also repairs an invalid historical
+Program-family state where an interrupted defaults import superseded the
+revision still named by the family's current pointer.
+
 Approved non-private startup Programs and school-calendar periods live in
 `src/config/operational-defaults.mjs`. The baseline contains the three annual
 logical Program families with 30, 30, and 23 ordered lessons and the explicit
 2026–2027 Ulaanbaatar VI–IX operational calendar template from Ministry of
 Education Order A/211 (2026-07-08), Annex 1. Its six inclusive initial
-exclusions include Republic Day (11/26) and International Women's Day (3/8);
-winter guidance starts on 12/26. There is no generic summer-vacation record.
+exclusions and warnings include Republic Day (11/26) and International Women's
+Day (3/8); winter guidance starts on 12/26. There is no generic
+summer-vacation record.
 Import is explicit and idempotent:
 
 ```sh

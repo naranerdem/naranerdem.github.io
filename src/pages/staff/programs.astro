@@ -54,7 +54,7 @@ import "../../styles/global.css";
       }
       function lessonRow(lesson, index, lessonCount) {
         if (state.editingLessonId === lesson.id) return titleEditor(lesson);
-        const actions = `<details class="staff-lesson-menu"><summary aria-label="${lesson.sequenceNumber}-р хичээлийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-insert-before="${escape(lesson.id)}">Эндээс өмнө хичээл оруулах</button>${index > 0 ? `<button type="button" data-move="up" data-lesson="${escape(lesson.id)}">Дээш зөөх</button>` : ""}${index < lessonCount - 1 ? `<button type="button" data-move="down" data-lesson="${escape(lesson.id)}">Доош зөөх</button>` : ""}<button type="button" data-delete="${escape(lesson.id)}">Хасах</button></div></details>`;
+        const actions = `<details class="staff-lesson-menu"><summary aria-label="${lesson.sequenceNumber}-р хичээлийн үйлдэл" title="Үйлдэл">⋯</summary><div class="staff-lesson-menu-actions"><button type="button" data-insert-before="${escape(lesson.id)}">Өмнө нь хичээл оруулах</button>${index > 0 ? `<button type="button" data-move="up" data-lesson="${escape(lesson.id)}">Дээш зөөх</button>` : ""}${index < lessonCount - 1 ? `<button type="button" data-move="down" data-lesson="${escape(lesson.id)}">Доош зөөх</button>` : ""}<button type="button" data-delete="${escape(lesson.id)}">Хасах</button></div></details>`;
         return `<li class="staff-lesson-row"><span class="staff-order">${lesson.sequenceNumber}</span><button class="staff-lesson-title" type="button" data-edit-title="${escape(lesson.id)}">${escape(lesson.title)}</button>${actions}</li>`;
       }
       function lessonRows(program) {

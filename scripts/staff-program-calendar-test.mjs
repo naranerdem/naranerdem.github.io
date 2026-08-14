@@ -187,7 +187,8 @@ try {
   assert.match(programsPage, /Зуны хөтөлбөр нэмэх/, "ordinary program setup only creates summer program families");
   assert.ok(programsPage.indexOf("Зуны хөтөлбөр") < programsPage.lastIndexOf("Зуны хөтөлбөр нэмэх"), "the summer-program action remains inside the later summer section");
   assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
-  assert.match(programsPage, /Эндээс өмнө хичээл оруулах/, "the Program row menu supports insertion before a lesson");
+  assert.match(programsPage, /Өмнө нь хичээл оруулах/, "the Program row menu supports insertion before a lesson");
+  assert.doesNotMatch(programsPage, /Эндээс өмнө хичээл оруулах/, "the Program row menu uses concise teacher wording");
   assert.match(programsPage, /Хичээл нэмэх/, "the Program editor keeps one append action");
   assert.doesNotMatch(programsPage, /<form id="program-form"/, "Program inline lesson forms are not nested inside an outer form");
   assert.match(programsPage, /Хадгалаагүй өөрчлөлтүүдийг устгах уу\?/, "Program batch cancellation confirms before discarding persisted edits");
@@ -432,6 +433,14 @@ try {
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND local_date = '2026-09-12' AND status = 'scheduled'`), 1, "a teacher may restore a school-calendar skipped date for one class");
   const restoredOverview = await service.getProgramCalendarOverview(runtime);
   assert.ok(restoredOverview.revisions.find((entry) => entry.id === draft.id).slots.find((slot) => slot.localDate === "2026-09-12").holidayWarnings.includes("Өвлийн амралт"), "a restored school-holiday lesson keeps its warning");
+  const breakBeforeWarningChange = database.query("SELECT updated_at AS updatedAt FROM academic_year_break WHERE id = 'school-restore-break'")[0];
+  const calendarSlotsBeforeWarningChange = database.query(`SELECT id, status FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(draft.id)} ORDER BY id`);
+  await service.saveAcademicYearBreak(runtime, actor("teacher"), { id: "school-restore-break", expectedUpdatedAt: breakBeforeWarningChange.updatedAt, academicYearId: "year-2026", label: "Өвлийн амралт", startsOn: "2026-09-12", endsOn: "2026-09-12", excludeFromGeneration: true, warnOnOverlap: false });
+  const warningSuppressedOverview = await service.getProgramCalendarOverview(runtime);
+  assert.equal(warningSuppressedOverview.revisions.find((entry) => entry.id === draft.id).slots.find((slot) => slot.localDate === "2026-09-12").holidayWarnings.length, 0, "turning off overlap guidance removes the current warning without moving the lesson");
+  assert.deepEqual(database.query(`SELECT id, status FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(draft.id)} ORDER BY id`), calendarSlotsBeforeWarningChange, "holiday guidance changes never rewrite explicit calendar slots");
+  const breakBeforeRestoreWarning = database.query("SELECT updated_at AS updatedAt FROM academic_year_break WHERE id = 'school-restore-break'")[0];
+  await service.saveAcademicYearBreak(runtime, actor("teacher"), { id: "school-restore-break", expectedUpdatedAt: breakBeforeRestoreWarning.updatedAt, academicYearId: "year-2026", label: "Өвлийн амралт", startsOn: "2026-09-12", endsOn: "2026-09-12", excludeFromGeneration: true, warnOnOverlap: true });
   assert.equal(restoredOverview.revisions.find((entry) => entry.classSessionId === "class-1" && entry.status === "published").id !== draft.id, true, "a saved calendar stays current until the working change is finally saved");
   await service.discardCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt });
   assert.equal(count(database, "class_calendar_revision", `id = ${quote(draft.id)}`), 0, "whole calendar cancel removes the persisted working revision");

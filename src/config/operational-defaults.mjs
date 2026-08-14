@@ -14,10 +14,10 @@
  *
  * School-period shape:
  * { key, academicYearKey, label, startsOn, endsOn,
- *   generationBehavior: 'exclude_by_default' | 'warn_only' }
+ *   excludeFromGeneration: boolean, warnOnOverlap: boolean }
  */
 export const operationalDefaults = Object.freeze({
-  version: 3,
+  version: 4,
   academicYears: Object.freeze([
     Object.freeze({
       key: "2026-27",
@@ -51,11 +51,11 @@ export const operationalDefaults = Object.freeze({
   // буулгав. Эдгээр нь анхны үүсгэх үеийн удирдамж бөгөөд багш тухайн
   // ангийн өдрийг сэргээж, хадгалсан хуанлиа цаашид өөрөө удирдана.
   schoolCalendarPeriods: Object.freeze([
-    Object.freeze({ key: "2026-27-autumn-break", academicYearKey: "2026-27", label: "Намрын амралт", startsOn: "2026-10-31", endsOn: "2026-11-08", generationBehavior: "exclude_by_default" }),
-    Object.freeze({ key: "2026-27-winter-break", academicYearKey: "2026-27", label: "Өвлийн завсарлага", startsOn: "2026-12-26", endsOn: "2027-01-17", generationBehavior: "exclude_by_default" }),
-    Object.freeze({ key: "2026-27-tsagaan-sar-study", academicYearKey: "2026-27", label: "Цагаан сарын үеийн бие даалт", startsOn: "2027-02-08", endsOn: "2027-02-12", generationBehavior: "exclude_by_default" }),
-    Object.freeze({ key: "2026-27-spring-break", academicYearKey: "2026-27", label: "Хаврын амралт", startsOn: "2027-03-20", endsOn: "2027-03-28", generationBehavior: "exclude_by_default" }),
-    Object.freeze({ key: "2026-27-republic-day", academicYearKey: "2026-27", label: "Бүгд Найрамдах Улс тунхагласан өдөр", startsOn: "2026-11-26", endsOn: "2026-11-26", generationBehavior: "exclude_by_default" }),
-    Object.freeze({ key: "2026-27-womens-day", academicYearKey: "2026-27", label: "Олон улсын эмэгтэйчүүдийн өдөр", startsOn: "2027-03-08", endsOn: "2027-03-08", generationBehavior: "exclude_by_default" }),
+    Object.freeze({ key: "2026-27-autumn-break", academicYearKey: "2026-27", label: "Намрын амралт", startsOn: "2026-10-31", endsOn: "2026-11-08", excludeFromGeneration: true, warnOnOverlap: true }),
+    Object.freeze({ key: "2026-27-winter-break", academicYearKey: "2026-27", label: "Өвлийн завсарлага", startsOn: "2026-12-26", endsOn: "2027-01-17", excludeFromGeneration: true, warnOnOverlap: true }),
+    Object.freeze({ key: "2026-27-tsagaan-sar-study", academicYearKey: "2026-27", label: "Цагаан сарын үеийн бие даалт", startsOn: "2027-02-08", endsOn: "2027-02-12", excludeFromGeneration: true, warnOnOverlap: true }),
+    Object.freeze({ key: "2026-27-spring-break", academicYearKey: "2026-27", label: "Хаврын амралт", startsOn: "2027-03-20", endsOn: "2027-03-28", excludeFromGeneration: true, warnOnOverlap: true }),
+    Object.freeze({ key: "2026-27-republic-day", academicYearKey: "2026-27", label: "Бүгд Найрамдах Улс тунхагласан өдөр", startsOn: "2026-11-26", endsOn: "2026-11-26", excludeFromGeneration: true, warnOnOverlap: true }),
+    Object.freeze({ key: "2026-27-womens-day", academicYearKey: "2026-27", label: "Олон улсын эмэгтэйчүүдийн өдөр", startsOn: "2027-03-08", endsOn: "2027-03-08", excludeFromGeneration: true, warnOnOverlap: true }),
   ]),
 });

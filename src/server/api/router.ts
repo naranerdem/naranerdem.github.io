@@ -800,8 +800,9 @@ export async function handleApiRequest(
           await saveAcademicYearBreak(env, principal, {
             id: typeof payload.id === "string" ? payload.id : undefined,
             expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
-            academicYearId: String(payload.academicYearId ?? ""), label: String(payload.label ?? ""), startsOn: String(payload.startsOn ?? ""), endsOn: String(payload.endsOn ?? ""), sourceNote: typeof payload.sourceNote === "string" ? payload.sourceNote : null,
-            generationBehavior: typeof payload.generationBehavior === "string" ? payload.generationBehavior : undefined,
+            academicYearId: String(payload.academicYearId ?? ""), label: String(payload.label ?? ""), startsOn: String(payload.startsOn ?? ""), endsOn: String(payload.endsOn ?? ""),
+            excludeFromGeneration: typeof payload.excludeFromGeneration === "boolean" ? payload.excludeFromGeneration : undefined,
+            warnOnOverlap: typeof payload.warnOnOverlap === "boolean" ? payload.warnOnOverlap : undefined,
           });
           break;
         case "break.remove":

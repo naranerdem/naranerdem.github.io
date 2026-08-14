@@ -139,6 +139,8 @@ interface BreakRow {
   endsOn: string;
   excludesHabitualSlots: number;
   generationBehavior: "exclude_by_default" | "warn_only";
+  excludeFromGeneration: number;
+  warnOnOverlap: number;
   sourceNote: string | null;
   status: "active" | "archived";
   isTest: number;
@@ -210,8 +212,8 @@ export interface BreakSaveInput {
   label: string;
   startsOn: string;
   endsOn: string;
-  sourceNote?: string | null;
-  generationBehavior?: string;
+  excludeFromGeneration?: boolean;
+  warnOnOverlap?: boolean;
 }
 
 function requireCapability(actor: StaffPrincipal, capability: "program.manage" | "calendar.manage"): void {
@@ -464,11 +466,17 @@ async function breaksForYear(env: WorkerEnv, academicYearId: string): Promise<Ac
   const result = await env.DB.prepare(`
     SELECT id, label, starts_on AS startsOn, ends_on AS endsOn,
       excludes_habitual_slots AS excludesHabitualSlots,
-      generation_behavior AS generationBehavior
+      generation_behavior AS generationBehavior,
+      exclude_from_generation AS excludeFromGeneration,
+      warn_on_overlap AS warnOnOverlap
     FROM academic_year_break WHERE academic_year_id = ? AND status = 'active'
     ORDER BY starts_on, ends_on
   `).bind(academicYearId).all<AcademicYearBreak>();
-  return result.results.map((row) => ({ ...row, excludesHabitualSlots: Boolean(row.excludesHabitualSlots) }));
+  return result.results.map((row) => ({
+    ...row,
+    excludeFromGeneration: Boolean(row.excludeFromGeneration),
+    warnOnOverlap: Boolean(row.warnOnOverlap),
+  }));
 }
 
 async function offeringBreaksForOffering(env: WorkerEnv, offeringId: string): Promise<OfferingBreak[]> {
@@ -562,7 +570,9 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
         class_meeting_rule.first_date, class_meeting_rule.start_time`).all<ClassRow>(),
     env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn,
       ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots,
-      generation_behavior AS generationBehavior, source_note AS sourceNote,
+      generation_behavior AS generationBehavior,
+      exclude_from_generation AS excludeFromGeneration,
+      warn_on_overlap AS warnOnOverlap, source_note AS sourceNote,
       status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
       FROM academic_year_break ORDER BY academic_year_id, starts_on`).all<BreakRow>(),
     env.DB.prepare(`SELECT revision.id, revision.class_calendar_id AS calendarId,
@@ -643,7 +653,12 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
       const offering = classSession?.offeringId ? offeringById.get(classSession.offeringId) : undefined;
       const schoolCalendarPeriods = classSession?.offeringKind === "annual_course"
         ? breaks.results.filter((period) => period.academicYearId === classSession.academicYearId && period.status === "active")
-          .map((period) => ({ ...period, excludesHabitualSlots: Boolean(period.excludesHabitualSlots) }))
+          .map((period) => ({
+            ...period,
+            excludesHabitualSlots: Boolean(period.excludesHabitualSlots),
+            excludeFromGeneration: Boolean(period.excludeFromGeneration),
+            warnOnOverlap: Boolean(period.warnOnOverlap),
+          }))
         : [];
       const sharedOfferingBreaks = classSession?.offeringId
         ? (offeringSetup.offeringBreaks as Array<{ offeringId: string; startsOn: string; endsOn: string }>).filter((period) => period.offeringId === classSession.offeringId)
@@ -661,7 +676,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
         warnings,
         slots: revisionSlots.map((slot) => ({
           ...slot,
-          holidayWarnings: schoolCalendarPeriods.filter((period) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label),
+          holidayWarnings: schoolCalendarPeriods.filter((period) => period.warnOnOverlap && period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label),
           isHistorical: slot.localDate < today,
           canCancel: revision.status === "draft"
             && slot.status === "scheduled"
@@ -1329,23 +1344,24 @@ export async function deleteClassSession(env: WorkerEnv, actor: StaffPrincipal, 
 export async function saveAcademicYearBreak(env: WorkerEnv, actor: StaffPrincipal, input: BreakSaveInput): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const label = text(input.label); if (!label || !validDate(input.startsOn) || !validDate(input.endsOn) || input.endsOn < input.startsOn) throw new ProgramCalendarError("invalid");
-  const generationBehavior = text(input.generationBehavior, 40) || "exclude_by_default";
-  if (!["exclude_by_default", "warn_only"].includes(generationBehavior)) throw new ProgramCalendarError("invalid");
+  const excludeFromGeneration = input.excludeFromGeneration !== false;
+  const warnOnOverlap = input.warnOnOverlap !== false;
+  const generationBehavior = excludeFromGeneration ? "exclude_by_default" : "warn_only";
   await one<YearRow>(env, env.DB.prepare("SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn, is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId FROM academic_year WHERE id = ?").bind(input.academicYearId));
   const time = now();
   if (!input.id) {
     const flags = operationFlags(env); const breakId = id();
     await env.DB.batch([
-      env.DB.prepare(`INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, source_note, status, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
-        .bind(breakId, input.academicYearId, label, input.startsOn, input.endsOn, generationBehavior === "exclude_by_default" ? 1 : 0, generationBehavior, optionalText(input.sourceNote), flags.isTest, flags.testRunId, time, time),
+      env.DB.prepare(`INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, exclude_from_generation, warn_on_overlap, source_note, status, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, ?, ?)`)
+        .bind(breakId, input.academicYearId, label, input.startsOn, input.endsOn, excludeFromGeneration ? 1 : 0, generationBehavior, excludeFromGeneration ? 1 : 0, warnOnOverlap ? 1 : 0, flags.isTest, flags.testRunId, time, time),
       audit(env, actor, "academic_year_break_created", "academic_year_break", breakId, { academicYearId: input.academicYearId }, flags, time),
     ]);
     return;
   }
-  const existing = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, generation_behavior AS generationBehavior, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.id));
+  const existing = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, generation_behavior AS generationBehavior, exclude_from_generation AS excludeFromGeneration, warn_on_overlap AS warnOnOverlap, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.id));
   if (!input.expectedUpdatedAt || existing.updatedAt !== input.expectedUpdatedAt || existing.status !== "active") throw new ProgramCalendarError("conflict");
   const result = await env.DB.batch([
-    env.DB.prepare(`UPDATE academic_year_break SET label = ?, starts_on = ?, ends_on = ?, excludes_habitual_slots = ?, generation_behavior = ?, source_note = ?, updated_at = ? WHERE id = ? AND status = 'active' AND updated_at = ?`).bind(label, input.startsOn, input.endsOn, generationBehavior === "exclude_by_default" ? 1 : 0, generationBehavior, optionalText(input.sourceNote), time, existing.id, input.expectedUpdatedAt),
+    env.DB.prepare(`UPDATE academic_year_break SET label = ?, starts_on = ?, ends_on = ?, excludes_habitual_slots = ?, generation_behavior = ?, exclude_from_generation = ?, warn_on_overlap = ?, updated_at = ? WHERE id = ? AND status = 'active' AND updated_at = ?`).bind(label, input.startsOn, input.endsOn, excludeFromGeneration ? 1 : 0, generationBehavior, excludeFromGeneration ? 1 : 0, warnOnOverlap ? 1 : 0, time, existing.id, input.expectedUpdatedAt),
     audit(env, actor, "academic_year_break_saved", "academic_year_break", existing.id, {}, operationFlags(env, existing), time),
   ]);
   if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
@@ -1353,7 +1369,7 @@ export async function saveAcademicYearBreak(env: WorkerEnv, actor: StaffPrincipa
 
 export async function removeAcademicYearBreak(env: WorkerEnv, actor: StaffPrincipal, input: { breakId: string; expectedUpdatedAt: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
-  const current = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, generation_behavior AS generationBehavior, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.breakId));
+  const current = await one<BreakRow>(env, env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots, generation_behavior AS generationBehavior, exclude_from_generation AS excludeFromGeneration, warn_on_overlap AS warnOnOverlap, source_note AS sourceNote, status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt FROM academic_year_break WHERE id = ?`).bind(input.breakId));
   if (current.status !== "active" || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const time = now(); const result = await env.DB.batch([
     env.DB.prepare("UPDATE academic_year_break SET status = 'archived', updated_at = ? WHERE id = ? AND status = 'active' AND updated_at = ?").bind(time, current.id, input.expectedUpdatedAt),

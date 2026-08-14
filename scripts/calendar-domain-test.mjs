@@ -109,13 +109,20 @@ try {
   });
   assert.deepEqual(active(daily).map((slot) => slot.localDate), Array.from({ length: 12 }, (_, index) => `2027-06-${String(index + 15).padStart(2, "0")}`), "daily recurrence preserves local civil dates without a UTC shift");
 
-  const restoredSchoolPlan = generateCalendarPlan({
-    lessons: lessons(5, "school-restore"), recurrenceKind: "weekly", firstCandidateDate: "2026-10-04", habitualWeekday: "Ням", startTime: "10:00", endTime: "11:20",
-    schoolCalendarPeriods: [{ id: "winter", label: "Өвлийн амралт", startsOn: "2026-10-18", endsOn: "2026-10-18", excludesHabitualSlots: true, generationBehavior: "exclude_by_default" }],
-    overrides: [{ id: "restore", localDate: "2026-10-18", behavior: "restore" }],
-  });
-  assert.equal(restoredSchoolPlan.slots.find((slot) => slot.localDate === "2026-10-18")?.status, "scheduled", "a class may restore an initially excluded school date");
-  assert.deepEqual(restoredSchoolPlan.warnings, [{ kind: "school_period_overlap", label: "Өвлийн амралт", lessonCount: 1 }], "a restored school-break lesson remains visibly warned");
+  for (const { excludeFromGeneration, warnOnOverlap } of [
+    { excludeFromGeneration: true, warnOnOverlap: true },
+    { excludeFromGeneration: true, warnOnOverlap: false },
+    { excludeFromGeneration: false, warnOnOverlap: true },
+    { excludeFromGeneration: false, warnOnOverlap: false },
+  ]) {
+    const period = { id: "winter", label: "Өвлийн амралт", startsOn: "2026-10-18", endsOn: "2026-10-18", excludeFromGeneration, warnOnOverlap };
+    const input = { lessons: lessons(5, `school-${excludeFromGeneration}-${warnOnOverlap}`), recurrenceKind: "weekly", firstCandidateDate: "2026-10-04", habitualWeekday: "Ням", startTime: "10:00", endTime: "11:20", schoolCalendarPeriods: [period] };
+    const initial = generateCalendarPlan(input);
+    assert.equal(initial.slots.find((slot) => slot.localDate === "2026-10-18")?.status, excludeFromGeneration ? "no_class" : "scheduled", `initial generation follows only the exclusion flag (${excludeFromGeneration}/${warnOnOverlap})`);
+    const finalPlan = generateCalendarPlan(excludeFromGeneration ? { ...input, overrides: [{ id: "restore", localDate: "2026-10-18", behavior: "restore" }] } : input);
+    assert.equal(finalPlan.slots.find((slot) => slot.localDate === "2026-10-18")?.status, "scheduled", "a class may teach on a school-calendar date without changing the period");
+    assert.equal(finalPlan.warnings.some((warning) => warning.label === "Өвлийн амралт"), warnOnOverlap, `final overlap warning follows only its own flag (${excludeFromGeneration}/${warnOnOverlap})`);
+  }
 
   const realOperationalPeriods = operationalDefaults.schoolCalendarPeriods.map((period) => ({
     ...period, id: period.key, excludesHabitualSlots: true,
@@ -148,7 +155,7 @@ try {
 
   const summerVacationWarning = generateCalendarPlan({
     lessons: lessons(2, "annual-tail"), recurrenceKind: "weekly", firstCandidateDate: "2027-05-26", habitualWeekday: "Лхагва", startTime: "10:00", endTime: "11:20",
-    schoolCalendarPeriods: [{ id: "summer-vacation", label: "Зуны амралт", startsOn: "2027-06-01", endsOn: "2027-08-31", excludesHabitualSlots: false, generationBehavior: "warn_only" }],
+    schoolCalendarPeriods: [{ id: "summer-vacation", label: "Зуны амралт", startsOn: "2027-06-01", endsOn: "2027-08-31", excludeFromGeneration: false, warnOnOverlap: true }],
   });
   assert.equal(byLesson(summerVacationWarning.slots, 2).localDate, "2027-06-02", "warn-only school summer vacation never removes an annual final lesson");
   assert.equal(summerVacationWarning.warnings[0]?.label, "Зуны амралт", "the annual June lesson receives a school-period warning");

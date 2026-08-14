@@ -7,15 +7,18 @@ import { pathToFileURL } from "node:url";
 
 const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-offering-guidance-"));
 const databasePath = path.join(tempDir, "defaults.sqlite3");
+const backfillDatabasePath = path.join(tempDir, "backfill.sqlite3");
 
-function sqlite(sql, json = false) {
-  const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], {
+function sqliteAt(pathname, sql, json = false) {
+  const result = spawnSync("sqlite3", json ? ["-json", pathname] : [pathname], {
     input: `PRAGMA foreign_keys=ON;\n${sql}`,
     encoding: "utf8",
   });
   if (result.status !== 0) throw new Error(result.stderr);
   return result.stdout.trim();
 }
+
+function sqlite(sql, json = false) { return sqliteAt(databasePath, sql, json); }
 
 try {
   const importer = await import(pathToFileURL(path.resolve("scripts/import-operational-defaults.mjs")).href);
@@ -37,7 +40,7 @@ try {
     ["Бүгд Найрамдах Улс тунхагласан өдөр", "2026-11-26", "2026-11-26"],
     ["Олон улсын эмэгтэйчүүдийн өдөр", "2027-03-08", "2027-03-08"],
   ], "the approved Ulaanbaatar VI–IX operational calendar is exact");
-  assert.ok(operationalDefaults.schoolCalendarPeriods.every((period) => period.generationBehavior === "exclude_by_default"), "every approved operational date is skipped initially");
+  assert.ok(operationalDefaults.schoolCalendarPeriods.every((period) => period.excludeFromGeneration && period.warnOnOverlap), "every approved operational date is skipped initially and warned on overlap");
   assert.doesNotMatch(defaultsSource, /2026-12-21/, "winter guidance does not incorrectly begin on December 21");
   assert.doesNotMatch(defaultsSource, /@|facebook\.com/i, "default templates contain no personal data or Facebook URLs");
   const annualForm = offeringsPageSource.slice(offeringsPageSource.indexOf("function annualForm"), offeringsPageSource.indexOf("function summerForm"));
@@ -54,8 +57,10 @@ try {
   assert.doesNotMatch(schedulePageSource, /id="classes-title"/, "Schedule no longer repeats class management below the calendar");
   assert.doesNotMatch(schedulePageSource, /data-add-class/, "Schedule only opens existing class calendars");
   assert.match(holidaysPageSource, /!entry\.isTest/, "ordinary Holidays hides isolated staging-only break fixtures");
-  assert.match(holidaysPageSource, /Хуваарь үүсгэхдээ алгасана/, "school-period exclusions use teacher-facing wording");
-  assert.match(holidaysPageSource, /Давхацвал анхааруулна/, "school-period warnings use teacher-facing wording");
+  assert.match(holidaysPageSource, /id="break-exclude"/, "school-period exclusion uses an independent checkbox");
+  assert.match(holidaysPageSource, /id="break-warn"/, "school-period warnings use an independent checkbox");
+  assert.doesNotMatch(holidaysPageSource, /break-behavior|Imported operational default/, "teacher Holidays UI hides the legacy behavior selector and import provenance");
+  assert.ok(offeringsPageSource.indexOf('id="offering-list"') < offeringsPageSource.indexOf('id="add-offering"'), "existing Offerings appear before the creation action");
   assert.doesNotMatch(deploymentScripts, /deploy[^\n]*seed:operational-defaults/, "operational-default imports never run during deployment");
 
   const fixture = {
@@ -68,7 +73,7 @@ try {
     }],
     schoolCalendarPeriods: [{
       key: "winter", academicYearKey: "2027-28", label: "Туршилтын өвлийн амралт",
-      startsOn: "2027-12-20", endsOn: "2028-01-10", generationBehavior: "exclude_by_default",
+      startsOn: "2027-12-20", endsOn: "2028-01-10", excludeFromGeneration: true, warnOnOverlap: true,
     }],
   };
   const sql = importer.buildOperationalDefaultsImport(fixture, "2026-08-13T00:00:00.000Z");
@@ -77,6 +82,36 @@ try {
   assert.doesNotMatch(sql, /facebook\.com/i, "template import does not manage Facebook URLs");
   const migrations = readdirSync("migrations").filter((file) => file.endsWith(".sql")).sort();
   sqlite(migrations.map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
+  const guidanceMigration = "0015_independent_school_calendar_guidance.sql";
+  const guidanceIndex = migrations.indexOf(guidanceMigration);
+  sqliteAt(backfillDatabasePath, migrations.slice(0, guidanceIndex).map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
+  sqliteAt(backfillDatabasePath, `
+    INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-year', 'Legacy', 'draft', '2026-09-01', '2027-06-01', 0, 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-other-year', 'Legacy other', 'draft', '2027-09-01', '2028-06-01', 0, 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, source_note, status, is_test, test_run_id, created_at, updated_at) VALUES
+      ('legacy-exclude', 'legacy-year', 'Алгасах', '2026-10-01', '2026-10-01', 1, 'exclude_by_default', NULL, 'active', 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z'),
+      ('legacy-warn', 'legacy-year', 'Анхааруулах', '2026-10-02', '2026-10-02', 0, 'warn_only', NULL, 'active', 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    INSERT INTO curriculum_program_family (id, kind, display_name, annual_stage_code, current_published_program_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-family', 'annual_course', 'Legacy program', 'stage_2', NULL, 'active', 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    INSERT INTO curriculum_program (id, program_family_id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-current', 'legacy-family', 'legacy-year', 'stage_2', 1, 'Current', 'annual_course', 'draft', NULL, 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    INSERT INTO curriculum_lesson (id, curriculum_program_id, sequence_number, title, status, is_test, test_run_id, created_at, updated_at) VALUES
+      ('legacy-current-lesson', 'legacy-current', 1, 'Current lesson', 'active', 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    UPDATE curriculum_program SET status = 'published' WHERE id = 'legacy-current';
+    UPDATE curriculum_program_family SET current_published_program_id = 'legacy-current' WHERE id = 'legacy-family';
+    INSERT INTO curriculum_program (id, program_family_id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-other', 'legacy-family', 'legacy-other-year', 'stage_2', 2, 'Other', 'annual_course', 'draft', 'legacy-current', 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    INSERT INTO curriculum_lesson (id, curriculum_program_id, sequence_number, title, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-other-lesson', 'legacy-other', 1, 'Other lesson', 'active', 0, NULL, '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z');
+    UPDATE curriculum_program SET status = 'published' WHERE id = 'legacy-other';
+    UPDATE curriculum_program SET status = 'superseded' WHERE id = 'legacy-current';
+  `);
+  sqliteAt(backfillDatabasePath, readFileSync(path.join("migrations", guidanceMigration), "utf8"));
+  const backfill = JSON.parse(sqliteAt(backfillDatabasePath, `SELECT id, exclude_from_generation AS excluded, warn_on_overlap AS warned FROM academic_year_break ORDER BY id;`, true));
+  assert.deepEqual(backfill, [{ id: "legacy-exclude", excluded: 1, warned: 1 }, { id: "legacy-warn", excluded: 0, warned: 1 }], "0015 backfills both legacy guidance meanings without losing records");
+  assert.deepEqual(JSON.parse(sqliteAt(backfillDatabasePath, `SELECT id, status FROM curriculum_program WHERE id IN ('legacy-current', 'legacy-other') ORDER BY id;`, true)), [{ id: "legacy-current", status: "published" }, { id: "legacy-other", status: "superseded" }], "0015 restores a current Program pointer whose revision was incorrectly superseded");
   sqlite(sql); sqlite(sql);
   const counts = JSON.parse(sqlite(`SELECT
     (SELECT COUNT(*) FROM curriculum_program WHERE id = 'operational-default-program-annual-one') AS programs,

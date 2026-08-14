@@ -88,11 +88,12 @@ labels when two classes share a start time.
 ## Planning And Publishing
 
 Planning has three deliberately separate inputs. An `academic_year_break` is a
-named inclusive school-calendar period for annual courses. Its generation
-behavior is either `exclude_by_default`, which skips habitual candidates in an
-initial draft, or `warn_only`, which leaves them in place and marks the overlap
-for teacher review. School-calendar periods do not automatically apply to
-summer courses or events.
+named inclusive school-calendar period for annual courses. It has two
+independent flags: `exclude_from_generation` skips habitual candidates in an
+initial draft, while `warn_on_overlap` marks any final teaching slot inside the
+period for teacher review. School-calendar periods do not automatically apply
+to summer courses or events. The older `generation_behavior` enum is retained
+only as compatibility/history data and is no longer authoritative.
 
 An `activity_offering_break` is a course-specific inclusive period, such as a
 summer break on June 8-9. It excludes each class in that Offering without
@@ -107,7 +108,8 @@ school-calendar periods remain in Holidays.
 
 The checked-in 2026–2027 operational template is based on Ministry of
 Education Order A/211 (2026-07-08), Annex 1, the Ulaanbaatar VI–IX row. It
-imports six inclusive `exclude_by_default` planning periods: autumn break,
+imports six inclusive periods with both initial exclusion and overlap warnings:
+autumn break,
 winter break beginning on December 26, the Tsagaan Sar self-study period,
 spring break, Republic Day on November 26, and International Women's Day on
 March 8. The school self-study and break labels have the same initial planning
@@ -118,8 +120,16 @@ the named warning remains visible.
 Templates are imported explicitly into D1 and recorded with stable markers.
 They never run during deployment, never overwrite an imported period later
 edited by a teacher, and never retroactively alter an already generated or
-published calendar. The template is provenance and initialization input; D1 is
-the operational authority after import.
+published calendar. Changing exclusion guides only future generation; changing
+the warning flag changes current warning presentation without rewriting any
+calendar slots. The template is provenance and initialization input; D1 is the
+operational authority after import.
+
+School-calendar setup is annual planning. A planned one-class exception stays
+on that class's Schedule. A future weather, illness, or building cancellation
+will be entered from a daily teacher attention surface, but it will reuse the
+same safe structural calendar-change service and immutable history rather than
+introducing a second cancellation meaning.
 
 A calendar revision is drafted from the class's Offering-pinned program and meeting
 rule, then finalized internally. The caller cannot substitute another program

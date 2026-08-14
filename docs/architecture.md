@@ -190,8 +190,10 @@ publication. Raw revision IDs remain internal compatibility/history data.
 Annual and summer courses are always paid; events are normally free but
 the teacher may mark an event paid. The Offering owns that charge state, not
 the event occurrence. School-calendar periods apply automatically to annual
-courses only. Recurrence remains only a draft generator and never replaces
-explicit published dated occurrences.
+courses only. Each period independently controls initial candidate exclusion
+and overlap warnings; changing either never rewrites an explicit calendar.
+Recurrence remains only a draft generator and never replaces explicit published
+dated occurrences.
 
 Published program and calendar revisions remain immutable. Class-specific
 exclusions/restores and manual extra slots remain planning inputs. A published
@@ -215,9 +217,12 @@ preview, and use ordinary `Хадгалах`; teacher UI does not expose draft,
 publish, revision, or sequence-lock terminology. Normal rescheduling is
 structural: make one active slot no-class, add another slot if needed, and let
 the ordered lesson-to-slot mapping reflow. A school-calendar skip can be
-restored for one class with its named warning retained. Offering-wide course
-pauses remain a compact `Тусгай өөрчлөлт`; they affect every class in the
-Offering and cannot be silently overridden per class.
+restored for one class with a warning governed by that period's current
+guidance. Offering-wide course pauses remain a compact `Тусгай өөрчлөлт`; they
+affect every class in the Offering and cannot be silently overridden per class.
+Annual planning, one-class planned maintenance, and a future daily
+unexpected-cancellation surface will reuse the same calendar-change domain
+operation while keeping their teacher entry points distinct.
 
 Ordinary post-publication drafts automatically protect the greater of the
 stored internal lock and all published lesson assignments whose local teaching

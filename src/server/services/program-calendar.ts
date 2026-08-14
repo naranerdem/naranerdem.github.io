@@ -29,7 +29,12 @@ export interface AcademicYearBreak {
   label: string;
   startsOn: LocalDate;
   endsOn: LocalDate;
-  excludesHabitualSlots: boolean;
+  /** Whether routine candidate dates are omitted when a calendar is generated. */
+  excludeFromGeneration?: boolean;
+  /** Whether final teaching slots inside this period receive a teacher warning. */
+  warnOnOverlap?: boolean;
+  /** Compatibility data retained for records created before migration 0015. */
+  excludesHabitualSlots?: boolean;
   generationBehavior?: SchoolCalendarGenerationBehavior;
 }
 
@@ -224,12 +229,21 @@ function compareSlots(left: CalendarSlot, right: CalendarSlot): number {
     || left.id.localeCompare(right.id);
 }
 
-function schoolBehavior(period: AcademicYearBreak): SchoolCalendarGenerationBehavior {
-  return period.generationBehavior ?? (period.excludesHabitualSlots ? "exclude_by_default" : "warn_only");
+function excludesFromGeneration(period: AcademicYearBreak): boolean {
+  if (typeof period.excludeFromGeneration === "boolean") return period.excludeFromGeneration;
+  return period.generationBehavior
+    ? period.generationBehavior === "exclude_by_default"
+    : Boolean(period.excludesHabitualSlots);
+}
+
+function warnsOnOverlap(period: AcademicYearBreak): boolean {
+  if (typeof period.warnOnOverlap === "boolean") return period.warnOnOverlap;
+  // All pre-0015 behavior warned when a lesson overlapped a stored period.
+  return true;
 }
 
 function isInSchoolExclusion(localDate: LocalDate, periods: readonly AcademicYearBreak[]): AcademicYearBreak | undefined {
-  return periods.find((period) => schoolBehavior(period) === "exclude_by_default"
+  return periods.find((period) => excludesFromGeneration(period)
     && period.startsOn <= localDate
     && localDate <= period.endsOn);
 }
@@ -319,7 +333,8 @@ function validatePlanningInput(input: ScheduleGenerationInput): void {
     dateParts(period.endsOn);
     invariant(period.endsOn >= period.startsOn, `school period ${period.id} ends before it starts`);
     invariant(period.label.trim().length > 0, `school period ${period.id} needs a label`);
-    invariant(["exclude_by_default", "warn_only"].includes(schoolBehavior(period)), `unsupported school period behavior`);
+    invariant(typeof period.excludeFromGeneration !== "undefined" || typeof period.excludesHabitualSlots !== "undefined" || Boolean(period.generationBehavior), `school period ${period.id} needs generation guidance`);
+    invariant(typeof period.warnOnOverlap !== "undefined" || Boolean(period.generationBehavior) || typeof period.excludesHabitualSlots !== "undefined", `school period ${period.id} needs warning guidance`);
   }
   for (const period of input.offeringBreaks ?? []) {
     dateParts(period.startsOn);
@@ -382,6 +397,7 @@ export function calendarWarnings(
   const warnings: CalendarWarning[] = [];
   const scheduled = slots.filter((slot) => slot.status === "scheduled");
   for (const period of input.schoolCalendarPeriods ?? input.breaks ?? []) {
+    if (!warnsOnOverlap(period)) continue;
     const lessonCount = scheduled.filter((slot) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).length;
     if (lessonCount) warnings.push({ kind: "school_period_overlap", label: period.label, lessonCount });
   }
