@@ -21,13 +21,24 @@ try {
   const importer = await import(pathToFileURL(path.resolve("scripts/import-operational-defaults.mjs")).href);
   const defaultsSource = readFileSync("src/config/operational-defaults.mjs", "utf8");
   const offeringsPageSource = readFileSync("src/pages/staff/offerings.astro", "utf8");
+  const schedulePageSource = readFileSync("src/pages/staff/schedule.astro", "utf8");
   const holidaysPageSource = readFileSync("src/pages/staff/holidays.astro", "utf8");
   const deploymentScripts = readFileSync("package.json", "utf8");
   const { operationalDefaults } = await import(pathToFileURL(path.resolve("src/config/operational-defaults.mjs")).href);
   assert.equal(operationalDefaults.programs.length, 3, "the approved annual Program baseline has exactly three logical families");
   assert.deepEqual(operationalDefaults.programs.map((program) => program.lessons.length), [30, 30, 23], "the approved lesson counts are preserved exactly");
   assert.ok(operationalDefaults.programs.every((program) => program.publish === true && program.kind === "annual_course"), "the approved annual baseline publishes current revisions explicitly");
-  assert.match(defaultsSource, /schoolCalendarPeriods: Object\.freeze\(\[\]\)/, "no school-period dates were invented alongside the curriculum baseline");
+  assert.equal(operationalDefaults.academicYears.length, 1, "the real operational template has one explicit academic year");
+  assert.deepEqual(operationalDefaults.schoolCalendarPeriods.map((period) => [period.label, period.startsOn, period.endsOn]), [
+    ["Намрын амралт", "2026-10-31", "2026-11-08"],
+    ["Өвлийн завсарлага", "2026-12-26", "2027-01-17"],
+    ["Цагаан сарын үеийн бие даалт", "2027-02-08", "2027-02-12"],
+    ["Хаврын амралт", "2027-03-20", "2027-03-28"],
+    ["Бүгд Найрамдах Улс тунхагласан өдөр", "2026-11-26", "2026-11-26"],
+    ["Олон улсын эмэгтэйчүүдийн өдөр", "2027-03-08", "2027-03-08"],
+  ], "the approved Ulaanbaatar VI–IX operational calendar is exact");
+  assert.ok(operationalDefaults.schoolCalendarPeriods.every((period) => period.generationBehavior === "exclude_by_default"), "every approved operational date is skipped initially");
+  assert.doesNotMatch(defaultsSource, /2026-12-21/, "winter guidance does not incorrectly begin on December 21");
   assert.doesNotMatch(defaultsSource, /@|facebook\.com/i, "default templates contain no personal data or Facebook URLs");
   const annualForm = offeringsPageSource.slice(offeringsPageSource.indexOf("function annualForm"), offeringsPageSource.indexOf("function summerForm"));
   const summerForm = offeringsPageSource.slice(offeringsPageSource.indexOf("function summerForm"), offeringsPageSource.indexOf("function eventForm"));
@@ -38,12 +49,18 @@ try {
   assert.doesNotMatch(summerForm, /offering-charge|Хөтөлбөрийг шинээр/, "summer Offering creation has neither a charge selector nor inline Program creation");
   assert.doesNotMatch(offeringsPageSource, /Хөтөлбөрийг шинээр бэлтгэнэ/, "the obsolete inline Program-creation wording is absent");
   assert.match(offeringsPageSource, /Арга хэмжээ устгах/, "unused event deletion is kept in event details");
+  assert.match(offeringsPageSource, /function classManagement/, "Offering details own compact class management");
+  assert.match(offeringsPageSource, /data-add-class/, "an Offering can add a class from its selected detail");
+  assert.doesNotMatch(schedulePageSource, /id="classes-title"/, "Schedule no longer repeats class management below the calendar");
+  assert.doesNotMatch(schedulePageSource, /data-add-class/, "Schedule only opens existing class calendars");
+  assert.match(holidaysPageSource, /!entry\.isTest/, "ordinary Holidays hides isolated staging-only break fixtures");
   assert.match(holidaysPageSource, /Хуваарь үүсгэхдээ алгасана/, "school-period exclusions use teacher-facing wording");
   assert.match(holidaysPageSource, /Давхацвал анхааруулна/, "school-period warnings use teacher-facing wording");
   assert.doesNotMatch(deploymentScripts, /deploy[^\n]*seed:operational-defaults/, "operational-default imports never run during deployment");
 
   const fixture = {
     version: 1,
+    academicYears: [{ key: "2027-28", label: "Туршилтын жил", startsOn: "2027-09-01", endsOn: "2028-06-01" }],
     programs: [{
       key: "annual-one", kind: "annual_course", displayName: "Туршилтын хөтөлбөр",
       academicYear: { key: "2027-28", label: "Туршилтын жил", startsOn: "2027-09-01", endsOn: "2028-06-01" },
@@ -66,10 +83,13 @@ try {
     (SELECT COUNT(*) FROM curriculum_lesson WHERE curriculum_program_id = 'operational-default-program-annual-one') AS lessons,
     (SELECT COUNT(*) FROM academic_year_break WHERE id = 'operational-default-school-period-winter') AS periods,
     (SELECT COUNT(*) FROM operational_default_import) AS markers;`, true))[0];
-  assert.deepEqual(counts, { programs: 1, lessons: 2, periods: 1, markers: 2 }, "a repeated explicit import creates no duplicates");
+  assert.deepEqual(counts, { programs: 1, lessons: 2, periods: 1, markers: 3 }, "a repeated explicit import creates no duplicates");
   sqlite("UPDATE curriculum_program SET status = 'published', display_name = 'Баталсан нэр' WHERE id = 'operational-default-program-annual-one';");
   sqlite(sql);
-  assert.equal(JSON.parse(sqlite("SELECT display_name AS name, status FROM curriculum_program WHERE id = 'operational-default-program-annual-one';", true))[0].name, "Баталсан нэр", "later imports never overwrite published records");
+  assert.deepEqual(JSON.parse(sqlite("SELECT display_name AS name, status FROM curriculum_program WHERE id = 'operational-default-program-annual-one';", true))[0], { name: "Баталсан нэр", status: "published" }, "later imports never overwrite or supersede published records");
+  sqlite("UPDATE academic_year_break SET label = 'Багшийн зассан амралт' WHERE id = 'operational-default-school-period-winter';");
+  sqlite(sql);
+  assert.equal(JSON.parse(sqlite("SELECT label FROM academic_year_break WHERE id = 'operational-default-school-period-winter';", true))[0].label, "Багшийн зассан амралт", "later imports never overwrite teacher-edited operational periods");
   const baselineSql = importer.buildOperationalDefaultsImport(operationalDefaults, "2026-08-13T00:00:01.000Z");
   sqlite(baselineSql);
   const baseline = JSON.parse(sqlite(`SELECT family.annual_stage_code AS stageCode, program.status, COUNT(lesson.id) AS lessons

@@ -22,7 +22,7 @@ import "../../styles/global.css";
       import { escape, formatDate, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
-      const state = { data: null, contextOfferingId: params.get("offering") || "", selectedClassId: params.get("class") || "", editingClass: "", editingOfferingId: "", editingOfferingBreakId: "", calendarAction: null, discardingCalendar: false };
+      const state = { data: null, contextOfferingId: params.get("offering") || "", selectedClassId: params.get("class") || "", editingOfferingBreakId: "", calendarAction: null, discardingCalendar: false };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const offerings = () => (state.data?.offerings || []).filter((entry) => entry.status === "active" && entry.kind !== "event");
@@ -31,17 +31,15 @@ import "../../styles/global.css";
       const selectedClass = () => (state.data?.classes || []).find((entry) => entry.id === state.selectedClassId);
       const selectedOffering = () => {
         const entry = selectedClass();
-        return entry ? offerings().find((offering) => offering.id === entry.offeringId) : offerings().find((offering) => offering.id === state.editingOfferingId);
+        return entry ? offerings().find((offering) => offering.id === entry.offeringId) : null;
       };
       const offeringBreaks = (offeringId) => (state.data?.offeringBreaks || []).filter((entry) => entry.offeringId === offeringId);
       const kindLabel = (kind) => ({ annual_course: "Жилийн сургалт", summer_course: "Зуны сургалт", event: "Арга хэмжээ" })[kind] || "";
-      const recurrenceLabel = (kind) => ({ weekly: "7 хоног бүр", weekdays: "Ажлын өдрүүдэд", daily: "Өдөр бүр" })[kind] || "";
       function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
       async function refresh(success = "") {
         state.data = await getOverview();
         if (state.contextOfferingId && !offerings().some((entry) => entry.id === state.contextOfferingId)) state.contextOfferingId = "";
         if (state.selectedClassId && !selectedClass()) state.selectedClassId = "";
-        if (state.editingOfferingId && !offerings().some((entry) => entry.id === state.editingOfferingId)) state.editingOfferingId = "";
         render(); message(success, Boolean(success));
       }
       function render() {
@@ -52,40 +50,16 @@ import "../../styles/global.css";
       }
       function calendarFor(classSessionId) { const revisions = (state.data?.revisions || []).filter((entry) => entry.classSessionId === classSessionId); return revisions.find((entry) => entry.status === "draft") || revisions.find((entry) => entry.status === "published") || null; }
       function calendarSpan(calendar) { const active = (calendar?.slots || []).filter((slot) => slot.status === "scheduled"); const first = active[0]; const last = active.at(-1); return calendar ? `${active.length} хичээл${first && last ? ` · ${formatDate(first.localDate)} – ${formatDate(last.localDate)}` : ""}` : "Хуваарь үүсгээгүй"; }
-      function selectClass(classSessionId) { state.selectedClassId = classSessionId; state.editingClass = ""; state.editingOfferingId = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", `?class=${encodeURIComponent(classSessionId)}`); render(); q("#schedule-detail").scrollIntoView({ behavior: "smooth", block: "start" }); }
+      function selectClass(classSessionId) { state.selectedClassId = classSessionId; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", `?class=${encodeURIComponent(classSessionId)}`); render(); q("#schedule-detail").scrollIntoView({ behavior: "smooth", block: "start" }); }
       function renderOverview() {
-        const rows = visibleOfferings().map((offering) => `<section class="staff-schedule-overview-group"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2>${escape(offering.title)}</h2></div><button class="button secondary" type="button" data-add-class="${escape(offering.id)}">Анги нэмэх</button></div>${classes(offering.id).length ? `<div class="staff-schedule-overview-list">${classes(offering.id).map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${calendarSpan(calendarFor(entry.id))}</p></div><button class="button secondary" type="button" data-open-class="${escape(entry.id)}">Нээх</button></article>`).join("")}</div>` : `<p class="staff-empty">Анги оруулаагүй байна.</p>`}</section>`).join("");
+        const rows = visibleOfferings().map((offering) => `<section class="staff-schedule-overview-group"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2>${escape(offering.title)}</h2></div></div>${classes(offering.id).length ? `<div class="staff-schedule-overview-list">${classes(offering.id).map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${calendarSpan(calendarFor(entry.id))}</p></div><button class="button secondary" type="button" data-open-class="${escape(entry.id)}">Нээх</button></article>`).join("")}</div>` : `<p class="staff-empty">Анги оруулаагүй байна. <a href="/staff/offerings/?offering=${encodeURIComponent(offering.id)}">Сургалтаас анги нэмнэ үү.</a></p>`}</section>`).join("");
         q("#schedule-overview").innerHTML = `<section class="staff-operation-section" aria-labelledby="schedule-overview-title"><div class="staff-section-heading"><div><p class="staff-kind-label">Огноотой хуваарь</p><h2 id="schedule-overview-title">Ангиудын хуваарь</h2></div></div>${rows || `<p class="staff-empty">Эхлээд сургалт нэмнэ үү.</p>`}</section>`;
         q("#schedule-overview").querySelectorAll("[data-open-class]").forEach((button) => button.onclick = () => selectClass(button.dataset.openClass));
-        q("#schedule-overview").querySelectorAll("[data-add-class]").forEach((button) => button.onclick = () => { state.selectedClassId = ""; state.editingClass = "new"; state.editingOfferingId = button.dataset.addClass; state.editingOfferingBreakId = ""; state.calendarAction = null; render(); q("#class-recurrence")?.focus(); });
       }
       function renderCourse(offering) {
-        q("#schedule-detail").innerHTML = `<section class="staff-operation-section" aria-labelledby="calendar-title"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2 id="calendar-title">Хичээлийн хуваарь</h2></div><button id="close-calendar" class="button secondary" type="button">Хаах</button></div><div id="calendar-editor"></div></section><div id="offering-breaks"></div><section class="staff-operation-section" aria-labelledby="classes-title"><div class="staff-section-heading"><div><h2 id="classes-title">Ангиуд</h2><p class="staff-muted">${escape(offering.title)}</p></div><button id="add-class" class="button secondary" type="button">Анги нэмэх</button></div><div id="class-editor"></div><div id="class-list" class="staff-record-list"></div></section>`;
-        renderCalendar(offering); renderOfferingBreaks(offering); renderClasses(offering);
-        q("#close-calendar").onclick = () => { state.selectedClassId = ""; state.editingClass = ""; state.editingOfferingId = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", location.pathname); render(); };
-        q("#add-class").onclick = () => { state.editingClass = "new"; renderClasses(offering); q("#class-recurrence")?.focus(); };
-      }
-      function classForm(entry, offering) {
-        const recurrence = entry?.recurrenceKind || (offering.kind === "summer_course" ? "daily" : "weekly");
-        const firstDate = entry?.firstDate || offering.startsOn || "";
-        return `<form id="class-form" class="staff-compact-form"><input id="class-id" type="hidden" value="${escape(entry?.id || "")}" /><input id="class-updated" type="hidden" value="${escape(entry?.updatedAt || "")}" /><label>Давтамж <select id="class-recurrence"><option value="weekly" ${recurrence === "weekly" ? "selected" : ""}>7 хоног бүр</option><option value="weekdays" ${recurrence === "weekdays" ? "selected" : ""}>Ажлын өдрүүдэд</option><option value="daily" ${recurrence === "daily" ? "selected" : ""}>Өдөр бүр</option></select></label><label id="weekly-field">Гараг <select id="class-weekday">${(state.data.weekdays || []).map((weekday) => `<option value="${escape(weekday)}" ${entry?.weeklyWeekday === weekday || (!entry && weekday === "Бямба") ? "selected" : ""}>${escape(weekday)}</option>`).join("")}</select></label><label>Эхлэх өдөр <input id="class-first" type="date" required value="${escape(firstDate)}" /></label><label>Эхлэх цаг <input id="class-start" type="time" required value="${escape(entry?.startTime || "10:00")}" /></label><label>Дуусах цаг <input id="class-end" type="time" required value="${escape(entry?.endTime || "11:20")}" /></label><label>Суудлын тоо <input id="class-capacity" type="number" min="1" max="80" required value="${escape(entry?.capacity || "12")}" /></label>${entry ? `<label class="staff-check"><input id="class-open" type="checkbox" ${entry.registrationOpen ? "checked" : ""} /> Бүртгэл нээлттэй</label>` : `<p class="staff-muted">Шинэ ангийн бүртгэл анх хаалттай байна.</p>`}<div class="staff-form-actions staff-wide"><button class="button secondary" data-class-cancel type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div>${entry?.canDelete ? `<div class="staff-danger-zone staff-wide"><p>Энэ анги хуваарь, бүртгэлд ашиглагдаагүй байна.</p><button class="button danger" data-class-delete type="button">Анги устгах</button></div>` : ""}</form>`;
-      }
-      function updateRecurrenceField() { const weekly = q("#class-recurrence")?.value === "weekly"; const field = q("#weekly-field"); const select = q("#class-weekday"); if (field) field.hidden = !weekly; if (select) select.disabled = !weekly; }
-      function renderClasses(offering) {
-        const offeringClasses = classes(offering.id); const editing = offeringClasses.find((entry) => entry.id === state.editingClass);
-        q("#class-editor").innerHTML = state.editingClass ? classForm(editing, offering) : "";
-        q("#class-list").innerHTML = offeringClasses.length ? offeringClasses.map((entry) => `<article><div><strong>${escape(entry.displayLabel)}</strong><p>${recurrenceLabel(entry.recurrenceKind)} · ${escape(entry.startTime)}–${escape(entry.endTime)} · ${entry.capacity} суудал · ${entry.registrationOpen ? "Бүртгэл нээлттэй" : "Бүртгэл хаалттай"}</p></div><button class="button secondary" type="button" data-class-edit="${escape(entry.id)}">Засах</button></article>`).join("") : `<p class="staff-empty">Анги оруулаагүй байна.</p>`;
-        q("#class-editor form")?.addEventListener("submit", (event) => saveClass(event, offering));
-        q("#class-editor [data-class-cancel]")?.addEventListener("click", () => { state.editingClass = ""; renderClasses(offering); });
-        q("#class-recurrence")?.addEventListener("change", updateRecurrenceField); updateRecurrenceField();
-        q("#class-editor [data-class-delete]")?.addEventListener("click", () => {
-          if (editing && window.confirm(`${editing.displayLabel} ангийг бүрмөсөн устгах уу?`)) run(() => postOverviewAction("class.delete", { classSessionId: editing.id, expectedUpdatedAt: editing.updatedAt }), "Ангийг устгалаа.");
-        });
-        q("#class-list").querySelectorAll("[data-class-edit]").forEach((button) => button.onclick = () => { state.editingClass = button.dataset.classEdit; renderClasses(offering); q("#class-recurrence")?.focus(); });
-      }
-      function saveClass(event, offering) {
-        event.preventDefault(); if (!event.currentTarget.reportValidity()) return;
-        run(() => postOverviewAction("class.save", { id: q("#class-id").value || undefined, expectedUpdatedAt: q("#class-updated").value || undefined, offeringId: offering.id, recurrenceKind: q("#class-recurrence").value, firstDate: q("#class-first").value, lastDate: undefined, weeklyWeekday: q("#class-weekday").disabled ? null : q("#class-weekday").value, startTime: q("#class-start").value, endTime: q("#class-end").value, capacity: Number(q("#class-capacity").value), registrationOpen: Boolean(q("#class-open")?.checked) }), q("#class-id").value ? "Ангийг хадгаллаа." : "Ангийг үүслээ. Бүртгэл анх хаалттай байна.");
+        q("#schedule-detail").innerHTML = `<section class="staff-operation-section" aria-labelledby="calendar-title"><div class="staff-section-heading"><div><span class="staff-kind-label">${kindLabel(offering.kind)}</span><h2 id="calendar-title">Хичээлийн хуваарь</h2></div><button id="close-calendar" class="button secondary" type="button">Хаах</button></div><div id="calendar-editor"></div></section><div id="offering-breaks"></div>`;
+        renderCalendar(offering); renderOfferingBreaks(offering);
+        q("#close-calendar").onclick = () => { state.selectedClassId = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; history.replaceState(null, "", location.pathname); render(); };
       }
       function offeringBreakForm(entry) {
         return `<form id="offering-break-form" class="staff-compact-form"><label class="staff-wide">Нэр <input id="offering-break-label" required maxlength="160" value="${escape(entry?.label || "")}" /></label><label>Эхлэх өдөр <input id="offering-break-start" type="date" required value="${escape(entry?.startsOn || "")}" /></label><label>Дуусах өдөр <input id="offering-break-end" type="date" required value="${escape(entry?.endsOn || "")}" /></label><label class="staff-wide">Тэмдэглэл <input id="offering-break-note" maxlength="500" value="${escape(entry?.note || "")}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" data-break-cancel type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div></form>`;
@@ -179,7 +153,7 @@ import "../../styles/global.css";
           state.discardingCalendar = false; state.calendarAction = null;
         }, "Өөрчлөлтийг устгалаа."));
       }
-      async function run(work, success) { message(); try { await work(); state.editingClass = ""; state.editingOfferingBreakId = ""; state.calendarAction = null; state.discardingCalendar = false; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      async function run(work, success) { message(); try { await work(); state.editingOfferingBreakId = ""; state.calendarAction = null; state.discardingCalendar = false; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>

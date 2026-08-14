@@ -160,6 +160,13 @@ slot. A future Mongolian Content/Settings editor should support quick phone
 edits but remain desktop-comfortable for long rules. It must stay a collection
 of clear operational tools, not a generic heavyweight CMS.
 
+Schedule is for selecting and editing an existing class calendar. Class
+creation, edit, and safe deletion belong to the selected Offering detail under
+`Сургалт, арга хэмжээ`, so each class has one operational owner in the staff
+interface. The real 2026–2027 school-calendar defaults are source-controlled,
+explicitly imported planning guidance; staging fixtures remain visibly test
+data and do not clutter the normal Holidays list.
+
 ### Program, Offering, class, and calendar domain
 
 The durable hierarchy is `Program family -> CurriculumProgram revision ->

@@ -247,10 +247,13 @@ explicit calendar. The default is an administrative setup preference rather
 than a teacher-facing daily control.
 
 Approved non-private startup Programs and school-calendar periods live in
-`src/config/operational-defaults.mjs`. The owner-supplied 2024-2025 baseline
-contains the three annual logical Program families with 30, 30, and 23 ordered
-lessons; it deliberately contains no historical dates or school breaks. Import
-is explicit and idempotent:
+`src/config/operational-defaults.mjs`. The baseline contains the three annual
+logical Program families with 30, 30, and 23 ordered lessons and the explicit
+2026–2027 Ulaanbaatar VI–IX operational calendar template from Ministry of
+Education Order A/211 (2026-07-08), Annex 1. Its six inclusive initial
+exclusions include Republic Day (11/26) and International Women's Day (3/8);
+winter guidance starts on 12/26. There is no generic summer-vacation record.
+Import is explicit and idempotent:
 
 ```sh
 npm run seed:operational-defaults -- --env=staging

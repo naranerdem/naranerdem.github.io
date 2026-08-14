@@ -26,9 +26,16 @@ function validDate(value) {
 
 export function validateOperationalDefaults(defaults) {
   expect(defaults && Number.isInteger(defaults.version) && defaults.version > 0, "version is required");
-  expect(Array.isArray(defaults.programs) && Array.isArray(defaults.schoolCalendarPeriods), "programs and schoolCalendarPeriods must be arrays");
+  expect(Array.isArray(defaults.academicYears) && Array.isArray(defaults.programs) && Array.isArray(defaults.schoolCalendarPeriods), "academicYears, programs, and schoolCalendarPeriods must be arrays");
   const keys = new Set();
   const academicYears = new Map();
+  for (const year of defaults.academicYears) {
+    expect(year && typeof year.key === "string" && keyPattern.test(year.key), "each academic year needs a stable lowercase key");
+    expect(!academicYears.has(year.key), `duplicate academic-year key ${year.key}`);
+    expect(typeof year.label === "string" && year.label.trim(), `academic year ${year.key} needs a label`);
+    expect(validDate(year.startsOn) && validDate(year.endsOn) && year.endsOn >= year.startsOn, `academic year ${year.key} has an invalid period`);
+    academicYears.set(year.key, year);
+  }
   for (const program of defaults.programs) {
     expect(program && typeof program.key === "string" && keyPattern.test(program.key), "each program needs a stable lowercase key");
     expect(!keys.has(program.key), `duplicate program key ${program.key}`); keys.add(program.key);
@@ -55,6 +62,17 @@ export function validateOperationalDefaults(defaults) {
     expect(validDate(period.startsOn) && validDate(period.endsOn) && period.endsOn >= period.startsOn, `school period ${period.key} needs a valid period`);
     expect(schoolBehaviors.has(period.generationBehavior), `school period ${period.key} has an unsupported generationBehavior`);
   }
+}
+
+function academicYearSql(year, version, timestamp) {
+  const yearId = `operational-default-year-${year.key}`;
+  return [
+    `INSERT OR IGNORE INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
+      VALUES (${quote(yearId)}, ${quote(year.label)}, 'draft', ${quote(year.startsOn)}, ${quote(year.endsOn)}, 1, 0, NULL, ${quote(timestamp)}, ${quote(timestamp)});`,
+    `INSERT OR IGNORE INTO operational_default_import (template_key, template_version, template_kind, imported_at)
+      SELECT ${quote(`academic-year:${year.key}`)}, ${quote(version)}, 'school_calendar_period', ${quote(timestamp)}
+      WHERE EXISTS (SELECT 1 FROM academic_year WHERE id = ${quote(yearId)});`,
+  ];
 }
 
 function programSql(program, version, timestamp) {
@@ -88,13 +106,16 @@ function programSql(program, version, timestamp) {
     ...(publish ? [
       `UPDATE curriculum_program SET status = 'superseded', updated_at = ${quote(timestamp)}
         WHERE id = (SELECT current_published_program_id FROM curriculum_program_family WHERE id = ${quote(familyId)})
-          AND id != ${quote(programId)} AND status = 'published';`,
+          AND id != ${quote(programId)} AND status = 'published'
+          AND NOT EXISTS (SELECT 1 FROM operational_default_import WHERE template_key = ${quote(marker)});`,
       `UPDATE curriculum_program SET status = 'published', published_at = ${quote(timestamp)}, updated_at = ${quote(timestamp)}
         WHERE id = ${quote(programId)} AND status = 'draft'
-          AND EXISTS (SELECT 1 FROM curriculum_lesson WHERE curriculum_program_id = ${quote(programId)});`,
+          AND EXISTS (SELECT 1 FROM curriculum_lesson WHERE curriculum_program_id = ${quote(programId)})
+          AND NOT EXISTS (SELECT 1 FROM operational_default_import WHERE template_key = ${quote(marker)});`,
       `UPDATE curriculum_program_family SET current_published_program_id = ${quote(programId)}, updated_at = ${quote(timestamp)}
         WHERE id = ${quote(familyId)}
-          AND EXISTS (SELECT 1 FROM curriculum_program WHERE id = ${quote(programId)} AND status = 'published');`,
+          AND EXISTS (SELECT 1 FROM curriculum_program WHERE id = ${quote(programId)} AND status = 'published')
+          AND NOT EXISTS (SELECT 1 FROM operational_default_import WHERE template_key = ${quote(marker)});`,
     ] : []),
     `INSERT OR IGNORE INTO operational_default_import (template_key, template_version, template_kind, imported_at)
       SELECT ${quote(marker)}, ${version}, 'program', ${quote(timestamp)}
@@ -106,6 +127,7 @@ function programSql(program, version, timestamp) {
 export function buildOperationalDefaultsImport(defaults, timestamp = new Date().toISOString()) {
   validateOperationalDefaults(defaults);
   const lines = ["-- Explicit operational-default import. Never run automatically during deployment.", "PRAGMA foreign_keys = ON;"];
+  for (const year of defaults.academicYears) lines.push(...academicYearSql(year, defaults.version, timestamp));
   for (const program of defaults.programs) lines.push(...programSql(program, defaults.version, timestamp));
   for (const period of defaults.schoolCalendarPeriods) {
     const marker = `school-period:${period.key}`;

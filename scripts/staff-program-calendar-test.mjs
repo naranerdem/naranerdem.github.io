@@ -199,8 +199,9 @@ try {
   assert.match(offeringsPage, /Арга хэмжээ/);
   assert.match(offeringsPage, /Үнэгүй/);
   assert.match(holidaysPage, /Амралтын хугацаа нэмэх/, "holiday tool is a separate focused screen");
-  assert.match(holidaysPage, /offering\.kind === "annual_course" && offering\.academicYearId === year\.id/, "teacher holiday choices exclude internal academic-year compatibility records");
-  assert.match(schedulePage, /Анги нэмэх/);
+  assert.match(holidaysPage, /!year\.isTest \|\| \(state\.data\?\.breaks/, "teacher holiday choices exclude internal compatibility and isolated test records");
+  assert.match(offeringsPage, /Анги нэмэх/, "selected Offering details own class setup");
+  assert.doesNotMatch(schedulePage, /Анги нэмэх|id="classes-title"/, "Schedule does not duplicate class setup beneath a calendar");
   assert.match(schedulePage, /id="schedule-overview"/, "Schedule opens with a class overview");
   assert.match(schedulePage, /data-open-class/, "Schedule overview opens one explicit class");
   assert.match(schedulePage, /params\.get\("class"\)/, "Schedule selection is carried explicitly in the URL");
@@ -217,7 +218,7 @@ try {
   assert.match(schedulePage, /Хадгалаагүй хуваарийн өөрчлөлтүүдийг устгах уу\?/, "calendar batch cancellation confirms before discarding persisted edits");
   assert.match(schedulePage, /calendar\.discard/, "calendar batch cancellation uses the server-side draft discard operation");
   assert.doesNotMatch(schedulePage, /Ангийн нэр|Facebook бүлгийн холбоос|value="draft"|value="cancelled"|calendar-program|calendar-lock|Дууссан хичээл|баталж байна/, "ordinary schedule editing hides legacy program, lock, and technical fields");
-  assert.match(schedulePage, /staff-danger-zone/, "unused class deletion lives inside class details");
+  assert.match(offeringsPage, /staff-danger-zone/, "unused class deletion lives inside selected Offering details");
   assert.doesNotMatch(settingsPage, /Facebook бүлгийн|offering-facebook\.save|facebook-form/, "Settings has no duplicate Offering Facebook editor");
   assert.match(settingsPage, /Жилийн сургалтын эхлэх өдрийн анхны утга/, "the global annual start default is an admin-only secondary setting");
   assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");

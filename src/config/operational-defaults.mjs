@@ -5,6 +5,9 @@
  * or published D1 records. Annual curricula are logical, reusable Programs;
  * Offering dates determine the academic year in which they are used.
  *
+ * Academic-year shape:
+ * { key, label, startsOn, endsOn }
+ *
  * Program shape:
  * { key, kind: 'annual_course' | 'summer_course', displayName, stageCode?,
  *   publish?, lessons: [{ title, internalNote? }] }
@@ -14,7 +17,15 @@
  *   generationBehavior: 'exclude_by_default' | 'warn_only' }
  */
 export const operationalDefaults = Object.freeze({
-  version: 2,
+  version: 3,
+  academicYears: Object.freeze([
+    Object.freeze({
+      key: "2026-27",
+      label: "2026–2027 хичээлийн жил",
+      startsOn: "2026-09-01",
+      endsOn: "2027-06-01",
+    }),
+  ]),
   programs: Object.freeze([
     Object.freeze({
       key: "annual-stage-1", kind: "annual_course", displayName: "1-р шат", stageCode: "stage_1", publish: true,
@@ -35,5 +46,16 @@ export const operationalDefaults = Object.freeze({
       ].map((title) => Object.freeze({ title }))),
     }),
   ]),
-  schoolCalendarPeriods: Object.freeze([]),
+  // БШУЯ-ны 2026-07-08-ны А/211 тушаал, Хавсралт 1-ийн Улаанбаатар
+  // хотын VI–IX ангийн мөрийг Наран Эрдмийн хуваарийн удирдамж болгон
+  // буулгав. Эдгээр нь анхны үүсгэх үеийн удирдамж бөгөөд багш тухайн
+  // ангийн өдрийг сэргээж, хадгалсан хуанлиа цаашид өөрөө удирдана.
+  schoolCalendarPeriods: Object.freeze([
+    Object.freeze({ key: "2026-27-autumn-break", academicYearKey: "2026-27", label: "Намрын амралт", startsOn: "2026-10-31", endsOn: "2026-11-08", generationBehavior: "exclude_by_default" }),
+    Object.freeze({ key: "2026-27-winter-break", academicYearKey: "2026-27", label: "Өвлийн завсарлага", startsOn: "2026-12-26", endsOn: "2027-01-17", generationBehavior: "exclude_by_default" }),
+    Object.freeze({ key: "2026-27-tsagaan-sar-study", academicYearKey: "2026-27", label: "Цагаан сарын үеийн бие даалт", startsOn: "2027-02-08", endsOn: "2027-02-12", generationBehavior: "exclude_by_default" }),
+    Object.freeze({ key: "2026-27-spring-break", academicYearKey: "2026-27", label: "Хаврын амралт", startsOn: "2027-03-20", endsOn: "2027-03-28", generationBehavior: "exclude_by_default" }),
+    Object.freeze({ key: "2026-27-republic-day", academicYearKey: "2026-27", label: "Бүгд Найрамдах Улс тунхагласан өдөр", startsOn: "2026-11-26", endsOn: "2026-11-26", generationBehavior: "exclude_by_default" }),
+    Object.freeze({ key: "2026-27-womens-day", academicYearKey: "2026-27", label: "Олон улсын эмэгтэйчүүдийн өдөр", startsOn: "2027-03-08", endsOn: "2027-03-08", generationBehavior: "exclude_by_default" }),
+  ]),
 });

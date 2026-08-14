@@ -1,26 +1,20 @@
 -- Deliberately fake, non-PII records for the staging catalog API only.
 -- This file is idempotent and must never be applied to production.
 
-INSERT OR IGNORE INTO academic_year (
-  id, public_label, registration_status, starts_on, ends_on,
-  is_current, is_test, test_run_id, created_at, updated_at
-) VALUES (
-  'staging-fixture-2026-27', 'Туршилтын 2026–2027 хичээлийн жил', 'open',
-  '2026-09-01', '2027-06-01', 1, 1, 'staging-catalog-fixture',
-  '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
-);
+-- Run the explicit operational-default import first. The fake classes below
+-- deliberately use its real 2026–27 calendar guidance.
 
 INSERT OR IGNORE INTO academic_year_stage_setting (
   id, academic_year_id, stage_code, facebook_group_url, is_test, test_run_id,
   created_at, updated_at
 ) VALUES
-  ('staging-fixture-stage-setting-1', 'staging-fixture-2026-27', 'stage_1',
+  ('staging-fixture-stage-setting-1', 'operational-default-year-2026-27', 'stage_1',
     'https://example.invalid/naran-erdem/stage-1', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
-  ('staging-fixture-stage-setting-2', 'staging-fixture-2026-27', 'stage_2',
+  ('staging-fixture-stage-setting-2', 'operational-default-year-2026-27', 'stage_2',
     'https://example.invalid/naran-erdem/stage-2', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
-  ('staging-fixture-stage-setting-3', 'staging-fixture-2026-27', 'stage_3',
+  ('staging-fixture-stage-setting-3', 'operational-default-year-2026-27', 'stage_3',
     'https://example.invalid/naran-erdem/stage-3', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z');
 
@@ -29,18 +23,18 @@ INSERT OR IGNORE INTO activity_offering (
   curriculum_program_id, use_academic_year_breaks, charge_mode,
   facebook_group_url, status, is_test, test_run_id, created_at, updated_at
 ) VALUES
-  ('annual-offering-staging-fixture-2026-27-stage_1', 'annual_course',
-    'Туршилтын 2026–2027 хичээлийн жил · 1-р шат', 'staging-fixture-2026-27', 'stage_1',
+  ('annual-offering-operational-default-year-2026-27-stage_1', 'annual_course',
+    'Туршилтын 2026–2027 хичээлийн жил · 1-р шат', 'operational-default-year-2026-27', 'stage_1',
     '2026-09-01', '2027-06-01', NULL, 1, 'paid',
     'https://example.invalid/naran-erdem/stage-1', 'active', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
-  ('annual-offering-staging-fixture-2026-27-stage_2', 'annual_course',
-    'Туршилтын 2026–2027 хичээлийн жил · 2-р шат', 'staging-fixture-2026-27', 'stage_2',
+  ('annual-offering-operational-default-year-2026-27-stage_2', 'annual_course',
+    'Туршилтын 2026–2027 хичээлийн жил · 2-р шат', 'operational-default-year-2026-27', 'stage_2',
     '2026-09-01', '2027-06-01', NULL, 1, 'paid',
     'https://example.invalid/naran-erdem/stage-2', 'active', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'),
-  ('annual-offering-staging-fixture-2026-27-stage_3', 'annual_course',
-    'Туршилтын 2026–2027 хичээлийн жил · 3-р шат', 'staging-fixture-2026-27', 'stage_3',
+  ('annual-offering-operational-default-year-2026-27-stage_3', 'annual_course',
+    'Туршилтын 2026–2027 хичээлийн жил · 3-р шат', 'operational-default-year-2026-27', 'stage_3',
     '2026-09-01', '2027-06-01', NULL, 1, 'paid',
     'https://example.invalid/naran-erdem/stage-3', 'active', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z');
@@ -51,46 +45,46 @@ INSERT OR IGNORE INTO class_session (
   created_at, updated_at, activity_offering_id
 ) VALUES
   (
-    'staging-fixture-stage-1-saturday', 'staging-fixture-2026-27', 'stage_1',
+    'staging-fixture-stage-1-saturday', 'operational-default-year-2026-27', 'stage_1',
     'Туршилтын 1-р шат, Бямба 10:00', 'Бямба', '10:00', '11:20', 10,
     'available', 1, 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
-    'annual-offering-staging-fixture-2026-27-stage_1'
+    'annual-offering-operational-default-year-2026-27-stage_1'
   ),
   (
-    'staging-fixture-stage-1-afternoon', 'staging-fixture-2026-27', 'stage_1',
+    'staging-fixture-stage-1-afternoon', 'operational-default-year-2026-27', 'stage_1',
     'Туршилтын 1-р шат, Бямба 14:00', 'Бямба', '14:00', '15:20', 10,
     'full', 1, 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
-    'annual-offering-staging-fixture-2026-27-stage_1'
+    'annual-offering-operational-default-year-2026-27-stage_1'
   ),
   (
-    'staging-fixture-stage-2-sunday', 'staging-fixture-2026-27', 'stage_2',
+    'staging-fixture-stage-2-sunday', 'operational-default-year-2026-27', 'stage_2',
     'Туршилтын 2-р шат, Ням 10:00', 'Ням', '10:00', '11:20', 10,
     'available', 1, 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
-    'annual-offering-staging-fixture-2026-27-stage_2'
+    'annual-offering-operational-default-year-2026-27-stage_2'
   ),
   (
-    'staging-fixture-stage-2-tuesday', 'staging-fixture-2026-27', 'stage_2',
+    'staging-fixture-stage-2-tuesday', 'operational-default-year-2026-27', 'stage_2',
     'Туршилтын 2-р шат, Мягмар 16:00', 'Мягмар', '16:00', '17:20', 8,
     'available', 1, 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
-    'annual-offering-staging-fixture-2026-27-stage_2'
+    'annual-offering-operational-default-year-2026-27-stage_2'
   ),
   (
-    'staging-fixture-stage-3-sunday', 'staging-fixture-2026-27', 'stage_3',
+    'staging-fixture-stage-3-sunday', 'operational-default-year-2026-27', 'stage_3',
     'Туршилтын 3-р шат, Ням 13:00', 'Ням', '13:00', '15:00', 10,
     'full', 1, 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
-    'annual-offering-staging-fixture-2026-27-stage_3'
+    'annual-offering-operational-default-year-2026-27-stage_3'
   ),
   (
-    'staging-fixture-stage-3-tuesday', 'staging-fixture-2026-27', 'stage_3',
+    'staging-fixture-stage-3-tuesday', 'operational-default-year-2026-27', 'stage_3',
     'Туршилтын 3-р шат, Мягмар 18:00', 'Мягмар', '18:00', '19:20', 6,
     'available', 1, 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z',
-    'annual-offering-staging-fixture-2026-27-stage_3'
+    'annual-offering-operational-default-year-2026-27-stage_3'
   );
 
 UPDATE class_session
@@ -107,10 +101,11 @@ SET
   is_test_only = 1,
   is_test = 1,
   test_run_id = 'staging-catalog-fixture',
+  academic_year_id = 'operational-default-year-2026-27',
   activity_offering_id = CASE stage_code
-    WHEN 'stage_1' THEN 'annual-offering-staging-fixture-2026-27-stage_1'
-    WHEN 'stage_2' THEN 'annual-offering-staging-fixture-2026-27-stage_2'
-    ELSE 'annual-offering-staging-fixture-2026-27-stage_3'
+    WHEN 'stage_1' THEN 'annual-offering-operational-default-year-2026-27-stage_1'
+    WHEN 'stage_2' THEN 'annual-offering-operational-default-year-2026-27-stage_2'
+    ELSE 'annual-offering-operational-default-year-2026-27-stage_3'
   END,
   updated_at = '2026-08-10T00:00:00Z'
 WHERE id IN (
@@ -134,9 +129,20 @@ AND (
   OR is_test_only != 1
   OR is_test != 1
   OR test_run_id != 'staging-catalog-fixture'
+  OR academic_year_id != 'operational-default-year-2026-27'
   OR activity_offering_id IS NULL
   OR updated_at != '2026-08-10T00:00:00Z'
 );
+
+-- Earlier staging fixtures used their own synthetic school year. Once their
+-- classes are attached to the explicit operational year, the orphaned test
+-- Offerings are no longer useful in the ordinary staff lists.
+DELETE FROM activity_offering
+WHERE id IN (
+  'annual-offering-staging-fixture-2026-27-stage_1',
+  'annual-offering-staging-fixture-2026-27-stage_2',
+  'annual-offering-staging-fixture-2026-27-stage_3'
+) AND is_test = 1;
 
 INSERT OR IGNORE INTO class_meeting_rule (
   class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
@@ -185,7 +191,7 @@ INSERT OR IGNORE INTO pre_registration (
 )
 SELECT
   'staging-fixture-prereg-' || n, 'staging-fixture-guardian',
-  'staging-fixture-2026-27', 'submitted', 1, 'staging-catalog-fixture',
+  'operational-default-year-2026-27', 'submitted', 1, 'staging-catalog-fixture',
   '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
 FROM fixture_number;
 
@@ -234,7 +240,7 @@ SELECT
   'staging-fixture-enrollment-' || n,
   'staging-fixture-application-child-' || n,
   'staging-fixture-student-' || n,
-  'staging-fixture-2026-27',
+  'operational-default-year-2026-27',
   CASE
     WHEN n <= 4 THEN 'staging-fixture-stage-1-saturday'
     WHEN n <= 13 THEN 'staging-fixture-stage-2-sunday'

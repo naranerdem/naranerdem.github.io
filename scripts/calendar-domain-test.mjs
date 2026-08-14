@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { operationalDefaults } from "../src/config/operational-defaults.mjs";
 
 const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-calendar-domain-"));
 const bundlePath = path.join(tempDir, "program-calendar.mjs");
@@ -115,6 +116,35 @@ try {
   });
   assert.equal(restoredSchoolPlan.slots.find((slot) => slot.localDate === "2026-10-18")?.status, "scheduled", "a class may restore an initially excluded school date");
   assert.deepEqual(restoredSchoolPlan.warnings, [{ kind: "school_period_overlap", label: "Өвлийн амралт", lessonCount: 1 }], "a restored school-break lesson remains visibly warned");
+
+  const realOperationalPeriods = operationalDefaults.schoolCalendarPeriods.map((period) => ({
+    ...period, id: period.key, excludesHabitualSlots: true,
+  }));
+  const saturdayOperationalPlan = generateCalendarPlan({
+    lessons: lessons(8, "real-autumn"), recurrenceKind: "weekly", firstCandidateDate: "2026-10-24", habitualWeekday: "Бямба", startTime: "10:00", endTime: "11:20",
+    schoolCalendarPeriods: realOperationalPeriods,
+  });
+  assert.equal(saturdayOperationalPlan.slots.find((slot) => slot.localDate === "2026-10-24")?.status, "scheduled", "the autumn boundary leaves the preceding Saturday intact");
+  assert.equal(saturdayOperationalPlan.slots.find((slot) => slot.localDate === "2026-10-31")?.status, "no_class", "the inclusive autumn boundary skips the first Saturday");
+  assert.equal(saturdayOperationalPlan.slots.find((slot) => slot.localDate === "2026-11-07")?.status, "no_class", "the inclusive autumn boundary skips the final Saturday");
+  assert.equal(saturdayOperationalPlan.slots.find((slot) => slot.localDate === "2026-11-14")?.status, "scheduled", "the Saturday after autumn guidance remains active");
+  const decemberPlan = generateCalendarPlan({
+    lessons: lessons(3, "real-winter"), recurrenceKind: "weekly", firstCandidateDate: "2026-12-21", habitualWeekday: "Даваа", startTime: "10:00", endTime: "11:20",
+    schoolCalendarPeriods: realOperationalPeriods,
+  });
+  assert.equal(decemberPlan.slots.find((slot) => slot.localDate === "2026-12-21")?.status, "scheduled", "December 21 remains a teaching date before winter guidance begins");
+  assert.equal(decemberPlan.slots.find((slot) => slot.localDate === "2026-12-28")?.status, "no_class", "winter guidance begins on December 26 and includes its boundary weekend");
+  const republicPlan = generateCalendarPlan({
+    lessons: lessons(3, "republic-day"), recurrenceKind: "weekly", firstCandidateDate: "2026-11-19", habitualWeekday: "Пүрэв", startTime: "10:00", endTime: "11:20",
+    schoolCalendarPeriods: realOperationalPeriods,
+  });
+  assert.equal(republicPlan.slots.find((slot) => slot.localDate === "2026-11-26")?.status, "no_class", "Republic Day is an initial one-day exclusion");
+  const restoredRepublicPlan = generateCalendarPlan({
+    lessons: lessons(3, "republic-day-restore"), recurrenceKind: "weekly", firstCandidateDate: "2026-11-19", habitualWeekday: "Пүрэв", startTime: "10:00", endTime: "11:20",
+    schoolCalendarPeriods: realOperationalPeriods, overrides: [{ id: "restore-republic", localDate: "2026-11-26", behavior: "restore" }],
+  });
+  assert.equal(restoredRepublicPlan.slots.find((slot) => slot.localDate === "2026-11-26")?.status, "scheduled", "a one-day national holiday is restorable for one class");
+  assert.ok(restoredRepublicPlan.warnings.some((warning) => warning.label === "Бүгд Найрамдах Улс тунхагласан өдөр"), "a restored national holiday keeps its warning");
 
   const summerVacationWarning = generateCalendarPlan({
     lessons: lessons(2, "annual-tail"), recurrenceKind: "weekly", firstCandidateDate: "2027-05-26", habitualWeekday: "Лхагва", startTime: "10:00", endTime: "11:20",

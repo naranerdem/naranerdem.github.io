@@ -105,6 +105,22 @@ The teacher reaches this rare all-class control from the Schedule screen under
 `Тусгай өөрчлөлт`. A one-class change remains with that class's schedule, while
 school-calendar periods remain in Holidays.
 
+The checked-in 2026–2027 operational template is based on Ministry of
+Education Order A/211 (2026-07-08), Annex 1, the Ulaanbaatar VI–IX row. It
+imports six inclusive `exclude_by_default` planning periods: autumn break,
+winter break beginning on December 26, the Tsagaan Sar self-study period,
+spring break, Republic Day on November 26, and International Women's Day on
+March 8. The school self-study and break labels have the same initial planning
+effect for the center. There is deliberately no generic summer-vacation period
+or guessed lunar holiday. A teacher can restore any skipped date for one class;
+the named warning remains visible.
+
+Templates are imported explicitly into D1 and recorded with stable markers.
+They never run during deployment, never overwrite an imported period later
+edited by a teacher, and never retroactively alter an already generated or
+published calendar. The template is provenance and initialization input; D1 is
+the operational authority after import.
+
 A calendar revision is drafted from the class's Offering-pinned program and meeting
 rule, then finalized internally. The caller cannot substitute another program
 or start date during generation. Published programs, lessons, calendar
