@@ -191,19 +191,25 @@ existing Offerings retain their pinned historical revision. Lesson titles are
 edited inline, while insert-before, append, delete, and move actions keep the
 ordered sequence contiguous without a teacher entering sequence numbers.
 
-Offering-wide course pauses are managed as a compact `Тусгай өөрчлөлт` on the
-Schedule screen. They affect every class in that Offering. School-calendar
-periods remain the separate Holidays tool, and a one-class change remains on
-that class's schedule.
+The Schedule screen leads with the selected class's compact chronological
+calendar, summary, and warnings. A future row's `⋯` actions create or resume
+the internal change draft automatically, give a short consequence preview, and
+use ordinary `Хадгалах`; teacher UI does not expose draft, publish, revision,
+or sequence-lock terminology. Offering-wide course pauses are managed as a
+compact `Тусгай өөрчлөлт` on that screen. They affect every class in the
+Offering, while a one-class change remains on that class's schedule.
 
 Ordinary post-publication drafts automatically protect the greater of the
 stored internal lock and all published lesson assignments whose local teaching
 date is already past. This is historical schedule protection, not a claim that
 the lesson was attended or delivered. The teacher no longer sees or confirms a
 raw completed-sequence boundary. Safe future cancellation retains history and
-reflows only future lessons. Advertised/planned Offering dates are soft
-guidance: an overrun is warned in the draft rather than silently dropping a
-lesson. Attendance will later be the stronger delivered state source. See
+reflows only future lessons. A summer Offering's planned end is soft guidance:
+an overrun is warned rather than silently dropping a lesson. An annual
+Offering instead derives its actual end from the explicit calendar. The annual
+start date is editable per Offering but prepopulated from the typed, admin-only
+global month/day default (initially October 1). Attendance will later be the
+stronger delivered state source. See
 [program-calendar-model.md](program-calendar-model.md).
 
 New course classes and event occurrences always start with registration closed.

@@ -13,7 +13,7 @@ import "../../styles/global.css";
       <section id="tool-app" hidden>
         <div class="staff-page-heading"><div><p class="eyebrow">Заах хичээлүүд</p><h1>Хөтөлбөр</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <div class="staff-section-heading"><p class="staff-muted">Шатуудын үндсэн хөтөлбөрийг энд засварлана.</p><button id="add-summer" class="button primary" type="button">Зуны хөтөлбөр нэмэх</button></div>
+        <p class="staff-muted">Шатуудын үндсэн хөтөлбөрийг энд засварлана.</p>
         <div id="program-create"></div>
         <div id="program-list" class="staff-offering-list"></div>
         <section id="program-editor" class="staff-operation-section" hidden></section>
@@ -41,7 +41,8 @@ import "../../styles/global.css";
       function renderList() {
         const annual = families().filter((family) => family.kind === "annual_course"); const summer = families().filter((family) => family.kind === "summer_course");
         const familyRow = (family) => { const current = family.currentProgram; return `<article class="staff-offering-row"><div><span class="staff-kind-label">${family.kind === "annual_course" ? "Жилийн сургалт" : "Зуны хөтөлбөр"}</span><h2>${escape(label(family))}</h2><p>${current ? `${current.lessons.length} хичээл` : "Хичээл оруулаагүй байна"}</p></div><button class="button secondary" type="button" data-open="${escape(family.id)}">Нээх</button></article>`; };
-        q("#program-list").innerHTML = `${annual.length ? `<section class="staff-offering-group"><h2>Жилийн сургалт</h2>${annual.map(familyRow).join("")}</section>` : ""}${summer.length ? `<section class="staff-offering-group"><h2>Зуны хөтөлбөр</h2>${summer.map(familyRow).join("")}</section>` : ""}` || `<p class="staff-empty">Хөтөлбөр оруулаагүй байна.</p>`;
+        q("#program-list").innerHTML = `${annual.length ? `<section class="staff-offering-group"><h2>Жилийн сургалт</h2>${annual.map(familyRow).join("")}</section>` : ""}<section class="staff-offering-group"><h2>Зуны хөтөлбөр</h2>${summer.map(familyRow).join("") || `<p class="staff-empty">Зуны хөтөлбөр оруулаагүй байна.</p>`}<button id="add-summer" class="button secondary" type="button">Зуны хөтөлбөр нэмэх</button></section>`;
+        q("#add-summer").onclick = () => { state.creating = true; renderCreate(); q("#summer-name")?.focus(); };
         q("#program-list").querySelectorAll("[data-open]").forEach((button) => button.onclick = () => { state.familyId = button.dataset.open; state.edit = false; history.replaceState(null, "", `?family=${encodeURIComponent(state.familyId)}`); renderEditor(); q("#program-editor").scrollIntoView({ behavior: "smooth", block: "start" }); });
       }
       function titleEditor(lesson) {
@@ -93,7 +94,6 @@ import "../../styles/global.css";
       }
       function render() { renderCreate(); renderList(); renderEditor(); }
       async function run(work, success = "") { message(); try { await work(); state.creating = false; clearInlineEditor(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
-      q("#add-summer").onclick = () => { state.creating = true; renderCreate(); q("#summer-name")?.focus(); };
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>

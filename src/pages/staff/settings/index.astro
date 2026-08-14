@@ -14,6 +14,7 @@ import "../../../styles/global.css";
         <div class="staff-page-heading"><div><p class="eyebrow">Ажлын тохиргоо</p><h1>Тохиргоо</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <section class="staff-operation-section" aria-labelledby="facebook-title"><div class="staff-section-heading"><div><h2 id="facebook-title">Сургалт бүрийн Facebook бүлэг</h2><p class="staff-muted">Нэг сургалтын бүх анги ижил бүлгийг ашиглана.</p></div></div><form id="facebook-form" class="staff-settings-list"></form></section>
+        <section id="annual-start-setting" class="staff-operation-section" hidden></section>
         <a id="auth-link" class="staff-settings-link" href="/staff/settings/auth/" hidden>Нэвтрэх хугацааны тохиргоо</a>
       </section>
     </main>
@@ -30,6 +31,10 @@ import "../../../styles/global.css";
         const offerings = (state.data.offerings || []).filter((entry) => entry.status === "active");
         q("#facebook-form").innerHTML = offerings.length ? offerings.map((entry) => `<div class="staff-setting-row" data-offering="${escape(entry.id)}" data-updated="${escape(entry.updatedAt)}"><label>${escape(entry.title)} <input type="url" inputmode="url" maxlength="500" placeholder="https://facebook.com/groups/..." value="${escape(entry.facebookGroupUrl || "")}" /></label><button class="button secondary" type="submit">Хадгалах</button></div>`).join("") : `<p class="staff-empty">Эхлээд сургалт эсвэл арга хэмжээ нэмнэ үү.</p>`;
         q("#auth-link").hidden = !state.canManageAuth;
+        const annualStart = q("#annual-start-setting"); const setting = state.data?.annualCourseStartDefault;
+        annualStart.hidden = !state.canManageAuth || !setting;
+        annualStart.innerHTML = annualStart.hidden ? "" : `<details><summary>Жилийн сургалтын эхлэх өдрийн анхны утга</summary><form id="annual-start-form" class="staff-compact-form staff-settings-secondary"><label>Сар <input id="annual-start-month" type="number" min="1" max="12" required value="${setting.month}" /></label><label>Өдөр <input id="annual-start-day" type="number" min="1" max="31" required value="${setting.day}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;
+        q("#annual-start-form")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("annual-course-start-default.save", { month: Number(q("#annual-start-month").value), day: Number(q("#annual-start-day").value), expectedUpdatedAt: setting.updatedAt }), "Жилийн сургалтын эхлэх өдрийн анхны утгыг хадгаллаа."); });
       }
       q("#facebook-form").addEventListener("submit", (event) => {
         const button = event.submitter;

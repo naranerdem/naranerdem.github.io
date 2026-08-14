@@ -1,5 +1,6 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { getAnnualCourseStartDefault } from "./annual-course-start-default";
 
 export const OFFERING_KINDS = ["annual_course", "summer_course", "event"] as const;
 export const CHARGE_MODES = ["free", "paid"] as const;
@@ -193,13 +194,26 @@ async function currentAnnualProgramForStage(env: WorkerEnv, stageCode: string): 
   return currentProgramForFamily(env, "annual_course", family.id, stageCode);
 }
 
-async function academicYearForAnnualOffering(env: WorkerEnv, startsOn: string, endsOn: string): Promise<{ id: string; label: string }> {
-  const year = await env.DB.prepare(`SELECT id, public_label AS label FROM academic_year
+async function academicYearForAnnualOffering(env: WorkerEnv, startsOn: string): Promise<{ id: string; label: string; endsOn: string }> {
+  const year = await env.DB.prepare(`SELECT id, public_label AS label, ends_on AS endsOn FROM academic_year
     WHERE starts_on IS NOT NULL AND ends_on IS NOT NULL
       AND starts_on <= ? AND ends_on >= ?
-    ORDER BY is_current DESC, starts_on DESC LIMIT 1`).bind(startsOn, endsOn).first<{ id: string; label: string }>();
+    ORDER BY is_current DESC, starts_on DESC LIMIT 1`).bind(startsOn, startsOn).first<{ id: string; label: string; endsOn: string }>();
   if (!year) throw new OfferingError("invalid");
   return year;
+}
+
+async function defaultAnnualStartDate(env: WorkerEnv): Promise<string> {
+  const [setting, year] = await Promise.all([
+    getAnnualCourseStartDefault(env),
+    env.DB.prepare(`SELECT starts_on AS startsOn FROM academic_year
+      WHERE starts_on IS NOT NULL AND ends_on IS NOT NULL
+      ORDER BY is_current DESC, starts_on DESC LIMIT 1`).first<{ startsOn: string }>(),
+  ]);
+  if (!year?.startsOn) throw new OfferingError("invalid");
+  const date = `${year.startsOn.slice(0, 4)}-${String(setting.month).padStart(2, "0")}-${String(setting.day).padStart(2, "0")}`;
+  if (!validDate(date)) throw new OfferingError("invalid");
+  return date;
 }
 
 async function eventForOffering(env: WorkerEnv, offeringId: string): Promise<EventOccurrenceRow | null> {
@@ -340,13 +354,16 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
       return;
     }
 
-    const startsOn = optionalText(input.startsOn, 10);
-    const endsOn = optionalText(input.endsOn, 10);
-    if (!startsOn || !endsOn || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
+    const startsOn = kind === "annual_course"
+      ? (optionalText(input.startsOn, 10) || await defaultAnnualStartDate(env))
+      : optionalText(input.startsOn, 10);
+    if (!startsOn || !validDate(startsOn)) throw new OfferingError("invalid");
     const program = kind === "annual_course"
       ? await currentAnnualProgramForStage(env, text(input.annualStageCode, 30))
       : await currentProgramForFamily(env, "summer_course", text(input.programFamilyId, 100));
-    const annualYear = kind === "annual_course" ? await academicYearForAnnualOffering(env, startsOn, endsOn) : null;
+    const annualYear = kind === "annual_course" ? await academicYearForAnnualOffering(env, startsOn) : null;
+    const endsOn = kind === "annual_course" ? annualYear?.endsOn ?? null : optionalText(input.endsOn, 10);
+    if (!endsOn || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
     const title = kind === "annual_course"
       ? `${annualYear?.label} · ${stageLabel(program.stageCode)}`
       : text(input.title);
@@ -412,8 +429,8 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
   const program = current.curriculumProgramId ? await programById(env, current.curriculumProgramId) : null;
   if (!program) throw new OfferingError("invalid");
   const startsOn = text(input.startsOn) || current.startsOn || "";
-  const endsOn = text(input.endsOn) || current.endsOn || "";
-  const annualYear = current.kind === "annual_course" ? await academicYearForAnnualOffering(env, startsOn, endsOn) : null;
+  const annualYear = current.kind === "annual_course" ? await academicYearForAnnualOffering(env, startsOn) : null;
+  const endsOn = current.kind === "annual_course" ? annualYear?.endsOn ?? "" : (text(input.endsOn) || current.endsOn || "");
   const title = current.kind === "annual_course" ? `${annualYear?.label} · ${stageLabel(program.stageCode)}` : text(input.title);
   const useBreaks = defaultBreakPolicy(current.kind);
   if (!title || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");

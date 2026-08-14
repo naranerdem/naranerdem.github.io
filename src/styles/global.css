@@ -1938,6 +1938,92 @@ textarea:focus {
   font-weight: 750;
 }
 
+.staff-calendar-summary {
+  border-bottom: 1px solid var(--line);
+  padding: 0 0 0.7rem;
+}
+
+.staff-calendar-summary p {
+  margin: 0.15rem 0;
+}
+
+.staff-calendar-row {
+  display: grid !important;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  align-items: start !important;
+  gap: 0.55rem !important;
+  padding: 0.6rem 0 !important;
+}
+
+.staff-calendar-row > div > strong,
+.staff-calendar-row > div > p {
+  display: block;
+}
+
+.staff-calendar-row > div > p {
+  margin: 0.16rem 0 0;
+  color: var(--muted);
+}
+
+.staff-calendar-row small {
+  display: block;
+  margin-top: 0.22rem;
+}
+
+.staff-calendar-exception {
+  background: rgba(138, 61, 0, 0.045);
+}
+
+.staff-calendar-menu {
+  position: relative;
+}
+
+.staff-calendar-menu summary {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  list-style: none;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.15rem;
+}
+
+.staff-calendar-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.staff-calendar-menu .staff-lesson-menu-actions {
+  right: 0;
+  top: calc(100% - 0.2rem);
+}
+
+.staff-calendar-action-row {
+  background: rgba(7, 58, 175, 0.045);
+  border-top: 1px solid var(--line);
+  display: grid !important;
+  gap: 0.7rem !important;
+  padding: 0.7rem 0 !important;
+}
+
+.staff-calendar-action-row p {
+  margin: 0.25rem 0 0;
+}
+
+.staff-calendar-extra {
+  border-top: 1px solid var(--line);
+  margin-top: 0.55rem;
+  padding: 0.15rem 0 0.75rem;
+}
+
+.staff-calendar-extra summary {
+  color: var(--blue-deep);
+  cursor: pointer;
+  font-weight: 800;
+  min-height: 44px;
+  padding: 0.65rem 0;
+}
+
 .staff-kind-choices {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2198,6 +2284,10 @@ textarea:focus {
   gap: 0;
 }
 
+.staff-settings-secondary {
+  margin-top: 0.65rem;
+}
+
 .staff-setting-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2251,7 +2341,6 @@ textarea:focus {
   }
 
   .staff-record-list article,
-  .staff-calendar-list li,
   .staff-offering-row,
   .staff-danger-zone {
     align-items: start;
@@ -2273,6 +2362,10 @@ textarea:focus {
 
   .staff-setting-row {
     grid-template-columns: 1fr;
+  }
+
+  .staff-calendar-row {
+    grid-template-columns: 1.75rem minmax(0, 1fr) auto;
   }
 
   .staff-setting-row .button {

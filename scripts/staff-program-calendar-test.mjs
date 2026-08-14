@@ -9,6 +9,7 @@ const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-staff-program-calend
 const databasePath = path.join(tempDir, "staff-program-calendar.sqlite3");
 const bundlePath = path.join(tempDir, "staff-program-calendar.mjs");
 const offeringBundlePath = path.join(tempDir, "staff-offerings.mjs");
+const annualDefaultBundlePath = path.join(tempDir, "annual-course-start-default.mjs");
 const routerBundlePath = path.join(tempDir, "router.mjs");
 
 function quote(value) {
@@ -52,7 +53,7 @@ class SqliteD1 {
 }
 
 function count(database, table, where = "1 = 1") { return Number(database.query(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`)[0].count); }
-function actor(role) { return { staffAccountId: `${role}-staff`, displayName: role, roles: [role], capabilities: role === "accountant" ? ["payment.view"] : ["program.view", "program.manage", "calendar.view", "calendar.manage"], sessionId: "test", sessionExpiresAt: "2030-01-01T00:00:00.000Z", sessionAbsoluteExpiresAt: "2030-01-01T00:00:00.000Z" }; }
+function actor(role) { return { staffAccountId: `${role}-staff`, displayName: role, roles: [role], capabilities: role === "accountant" ? ["payment.view"] : role === "admin" ? ["program.view", "program.manage", "calendar.view", "calendar.manage", "admin.settings.manage"] : ["program.view", "program.manage", "calendar.view", "calendar.manage"], sessionId: "test", sessionExpiresAt: "2030-01-01T00:00:00.000Z", sessionAbsoluteExpiresAt: "2030-01-01T00:00:00.000Z" }; }
 function env(database) { return { APP_ENV: "staging", REGISTRATION_WRITE_ENABLED: "true", APP_ORIGIN: "https://staging.example.test", EMAIL_ENABLED: "true", AUTH_EMAIL_ENABLED: "true", STAFF_AUTH_EMAIL_ENABLED: "true", EMAIL_FROM: "test@example.invalid", DB: database }; }
 function ulaanbaatarToday() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -110,10 +111,13 @@ try {
   if (bundled.status !== 0) throw new Error(bundled.stderr);
   const offeringBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/offerings.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${offeringBundlePath}`], { encoding: "utf8" });
   if (offeringBundled.status !== 0) throw new Error(offeringBundled.stderr);
+  const annualDefaultBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/annual-course-start-default.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${annualDefaultBundlePath}`], { encoding: "utf8" });
+  if (annualDefaultBundled.status !== 0) throw new Error(annualDefaultBundled.stderr);
   const routerBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/api/router.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${routerBundlePath}`], { encoding: "utf8" });
   if (routerBundled.status !== 0) throw new Error(routerBundled.stderr);
   const service = await import(pathToFileURL(bundlePath).href);
   const offeringService = await import(pathToFileURL(offeringBundlePath).href);
+  const annualDefaultService = await import(pathToFileURL(annualDefaultBundlePath).href);
   const { handleApiRequest } = await import(pathToFileURL(routerBundlePath).href);
   const database = new SqliteD1(); const runtime = env(database); const now = "2026-08-12T01:00:00.000Z";
   const historyLesson13Date = addCivilDays(ulaanbaatarToday(), 1);
@@ -176,6 +180,7 @@ try {
   const routerSource = readFileSync("src/server/api/router.ts", "utf8");
   assert.match(programsPage, />Хадгалах</, "program tool presents ordinary save wording");
   assert.match(programsPage, /Зуны хөтөлбөр нэмэх/, "ordinary program setup only creates summer program families");
+  assert.ok(programsPage.indexOf("Зуны хөтөлбөр") < programsPage.lastIndexOf("Зуны хөтөлбөр нэмэх"), "the summer-program action remains inside the later summer section");
   assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
   assert.match(programsPage, /Эндээс өмнө хичээл оруулах/, "the Program row menu supports insertion before a lesson");
   assert.match(programsPage, /Хичээл нэмэх/, "the Program editor keeps one append action");
@@ -186,18 +191,31 @@ try {
   assert.match(offeringsPage, /Арга хэмжээ/);
   assert.match(offeringsPage, /Үнэгүй/);
   assert.match(holidaysPage, /Амралтын хугацаа нэмэх/, "holiday tool is a separate focused screen");
+  assert.match(holidaysPage, /offering\.kind === "annual_course" && offering\.academicYearId === year\.id/, "teacher holiday choices exclude internal academic-year compatibility records");
   assert.match(schedulePage, /Анги нэмэх/);
   assert.match(schedulePage, /Бүх ангид хичээлгүй хугацаа оруулах/, "Offering-wide breaks are managed from Schedule");
   assert.match(schedulePage, /offering-break\.save/, "Schedule uses the existing Offering-break domain operation");
   assert.doesNotMatch(offeringsPage, /offering-break|Сургалтын завсарлага|Завсарлага нэмэх/, "Offering metadata editing does not expose break controls");
-  assert.match(schedulePage, /Хуваарь нийтлэх/);
+  assert.match(schedulePage, />Хадгалах</, "calendar save uses ordinary teacher wording");
+  assert.match(schedulePage, /data-calendar-action/, "future lessons use compact row actions");
+  assert.match(schedulePage, /Нэмэлт хичээл оруулах/, "extra lessons are secondary schedule work");
+  assert.doesNotMatch(schedulePage, /Өөрчлөх ноорог эхлүүлэх|Хуваарь нийтлэх|Ноорог хуваарь|Нийтлэгдсэн хуваарь|calendar-date-action/, "ordinary schedule editing hides draft, publish, and permanent date-form machinery");
   assert.doesNotMatch(schedulePage, /Ангийн нэр|Facebook бүлгийн холбоос|value="draft"|value="cancelled"|calendar-program|calendar-lock|Дууссан хичээл|баталж байна/, "ordinary schedule editing hides legacy program, lock, and technical fields");
   assert.match(schedulePage, /staff-danger-zone/, "unused class deletion lives inside class details");
   assert.match(settingsPage, /Сургалт бүрийн Facebook бүлэг/, "Facebook configuration is offering scoped");
+  assert.match(settingsPage, /Жилийн сургалтын эхлэх өдрийн анхны утга/, "the global annual start default is an admin-only secondary setting");
+  assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");
   assert.match(legacyPage, /url=\/staff\/schedule\//, "old bookmark redirects to the schedule tool");
   assert.match(routerSource, /"programId" in payload \|\| "firstCandidateDate" in payload/, "calendar generation rejects caller-selected program and start-date substitutions");
   assert.doesNotMatch(routerSource, /curriculumProgramId/, "ordinary Offering writes cannot select a raw curriculum revision");
   assert.doesNotMatch(routerSource, /stage-setting\.save/, "legacy stage settings have no competing mutation endpoint");
+
+  const originalAnnualDefault = await annualDefaultService.getAnnualCourseStartDefault(runtime);
+  assert.deepEqual({ month: originalAnnualDefault.month, day: originalAnnualDefault.day }, { month: 10, day: 1 }, "annual Offering start defaults to October 1");
+  await assert.rejects(() => annualDefaultService.updateAnnualCourseStartDefault(runtime, actor("teacher"), { month: 9, day: 25, expectedUpdatedAt: originalAnnualDefault.updatedAt }), /Annual course start default/);
+  const changedAnnualDefault = await annualDefaultService.updateAnnualCourseStartDefault(runtime, actor("admin"), { month: 9, day: 25, expectedUpdatedAt: originalAnnualDefault.updatedAt });
+  assert.deepEqual({ month: changedAnnualDefault.month, day: changedAnnualDefault.day }, { month: 9, day: 25 }, "an admin can change the annual start default");
+  assert.equal(count(database, "audit_event", "action = 'annual_course_start_default_changed'"), 1, "a global default change is audited");
 
   await assert.rejects(() => service.startProgramFamilyDraft(runtime, actor("accountant"), { programFamilyId: "annual-program-stage_1" }), /Program and calendar/);
   const annualOfferingBeforeFacebook = database.query("SELECT updated_at AS updatedAt FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0];
@@ -361,10 +379,12 @@ try {
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { id: "offering-annual-stage-1", expectedUpdatedAt: usedOffering.updatedAt, kind: "annual_course", startsOn: usedOffering.startsOn, endsOn: usedOffering.endsOn, curriculumProgramId: usedOffering.programId, useAcademicYearBreaks: true, chargeMode: "paid", facebookGroupUrl: "https://facebook.com/groups/after-publication" });
   assert.equal(database.query("SELECT facebook_group_url AS url FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0].url, "https://facebook.com/groups/after-publication", "a harmless Offering communication edit remains possible after calendar publication");
   const usedOfferingAfterCommunication = database.query("SELECT updated_at AS updatedAt FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0];
-  await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { id: "offering-annual-stage-1", expectedUpdatedAt: usedOfferingAfterCommunication.updatedAt, kind: "annual_course", startsOn: usedOffering.startsOn, endsOn: "2027-06-02", curriculumProgramId: usedOffering.programId, useAcademicYearBreaks: true, chargeMode: "paid" }), /Offering operation/, "a used Offering period cannot invalidate calendar history");
+  await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { id: "offering-annual-stage-1", expectedUpdatedAt: usedOfferingAfterCommunication.updatedAt, kind: "annual_course", startsOn: "2026-09-02", curriculumProgramId: usedOffering.programId, useAcademicYearBreaks: true, chargeMode: "paid" }), /Offering operation/, "a used Offering period cannot invalidate calendar history");
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt, revision.locked_through_sequence AS protectedThrough FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
   assert.equal(draft.protectedThrough, 1, "an existing stored historical prefix remains protected even without a teacher lock control");
+  await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
+  assert.equal(count(database, "class_calendar_revision", "status = 'draft' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1, "a later row action resumes the existing internal calendar draft");
   const futureSlot = database.query(`SELECT slot.id FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND lesson.sequence_number = 2`)[0];
   await service.cancelFutureCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: futureSlot.id });
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`), 1, "future cancellation remains visible history");
@@ -384,6 +404,17 @@ try {
   const disposableSummer = database.query("SELECT id FROM curriculum_program_family WHERE display_name = 'Түр зуны ноорог'")[0];
   await service.deleteSummerProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: disposableSummer.id });
   assert.equal(count(database, "curriculum_program_family", `id = ${quote(disposableSummer.id)}`), 0, "an unreferenced summer draft family can be deleted safely");
+  sqlite(`
+    UPDATE academic_year SET is_current = 0 WHERE is_current = 1;
+    INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
+      VALUES ('year-default-start-test', 'Анхны өдрийн тест', 'draft', '2028-09-01', '2029-06-01', 1, 1, 'staff-program-test', '${now}', '${now}');
+  `);
+  await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1" });
+  const defaultStartOffering = database.query("SELECT id, starts_on AS startsOn, ends_on AS endsOn, updated_at AS updatedAt FROM activity_offering WHERE academic_year_id = 'year-default-start-test'")[0];
+  assert.equal(defaultStartOffering.startsOn, "2028-09-25", "a new annual Offering uses the admin-configured default start date");
+  assert.equal(defaultStartOffering.endsOn, "2029-06-01", "annual Offering end remains the derived academic-year compatibility value");
+  await offeringService.saveActivityOffering(runtime, actor("teacher"), { id: defaultStartOffering.id, expectedUpdatedAt: defaultStartOffering.updatedAt, kind: "annual_course", startsOn: "2028-10-05" });
+  assert.equal(database.query(`SELECT starts_on AS startsOn FROM activity_offering WHERE id = ${quote(defaultStartOffering.id)}`)[0].startsOn, "2028-10-05", "a teacher can override the prepopulated annual start date");
   assert.ok(count(database, "audit_event", "action LIKE 'program_%' OR action LIKE 'calendar_%'") >= 7, "meaningful staff actions are audited");
   const overview = await service.getProgramCalendarOverview(runtime);
   assert.equal(overview.classes.find((entry) => entry.id === "class-1").displayLabel, "1-р шат · Бямба 10:00–11:20", "teacher overview ignores a legacy manual class label");

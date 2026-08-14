@@ -39,6 +39,7 @@ import {
   updateStaffSessionPolicies,
   type StaffSessionPolicyInput,
 } from "../staff/session-policy";
+import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
 import {
   ProgramCalendarError,
   cancelFutureCalendarSlot,
@@ -819,11 +820,23 @@ export async function handleApiRequest(
         case "calendar.publish":
           await publishCalendarDraft(env, principal, { revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
           break;
+        case "annual-course-start-default.save":
+          await updateAnnualCourseStartDefault(env, principal, {
+            month: Number(payload.month), day: Number(payload.day), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         default:
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
       return json({ ok: true }, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
+      if (caught instanceof AnnualCourseStartDefaultError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Энэ тохиргоо өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "Эхлэх өдрийн утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
       return programCalendarError(caught);
     }
   }

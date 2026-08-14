@@ -38,12 +38,16 @@ date into UTC and accidentally move it by a day.
 
 ## Offering Kinds
 
-An annual course selects only `Шат` in the teacher form. The server resolves
-the logical annual Program family's current published revision and derives the
-Offering's academic year from its dates and configured school years. Raw
-revision IDs are never normal browser choices. The annual families are exactly
-`1-р шат`, `2-р шат`, and `3-р шат`; there is no Stage 4. Annual courses are
-always paid and apply school-calendar guidance automatically.
+An annual course teacher form contains only `Шат`, an editable prepopulated
+start date, and an optional Facebook group URL. The start date defaults from
+the admin-only typed `annual_course_start_default` month/day rule (initially
+October 1), while the server resolves the logical annual Program family's
+current published revision and derives the Offering's academic-year context
+from the selected date. Raw revision IDs and year selectors are never normal
+browser choices. The annual families are exactly `1-р шат`, `2-р шат`, and
+`3-р шат`; there is no Stage 4. Annual courses are always paid and apply
+school-calendar guidance automatically. Their actual final lesson date is
+derived from the explicit class calendar, not entered as an Offering end date.
 
 A summer course has a human title, planned period, and existing published summer
 Program from the dedicated `Хөтөлбөр` tool. It is always paid and does not apply
@@ -66,9 +70,12 @@ New course classes and event occurrences always start with registration closed.
 - `weekdays`: Monday through Friday
 - `daily`: every local calendar date
 
-It also stores first date, optional planned end date, and authoritative local
-start/end time. New summer classes default to `daily`, including Saturday and
-Sunday; `weekdays` remains available. Legacy `class_session` weekday/time values are mirrored only for
+It also stores first date, an optional compatibility planned end date, and
+authoritative local start/end time. Normal teacher setup does not ask for a
+class end date: the summer Offering's planned end is its soft planning
+guardrail, while an annual course ends when its explicit calendar ends. New
+summer classes default to `daily`, including Saturday and Sunday; `weekdays`
+remains available. Legacy `class_session` weekday/time values are mirrored only for
 existing registration and catalog compatibility. The service generates human
 labels such as `1-р шат · Бямба 10:00–11:20` and
 `6/1–6/16 · 10:00–11:30`; teachers do not type class names or see duplicate
@@ -95,11 +102,13 @@ The teacher reaches this rare all-class control from the Schedule screen under
 school-calendar periods remain in Holidays.
 
 A calendar revision is drafted from the class's Offering-pinned program and meeting
-rule, then published. The caller cannot substitute another program or start
-date during generation. Published programs, lessons, calendar revisions, slots,
-and overrides remain immutable. A later operational change uses a new draft
-revision based on the published one and publishing supersedes the earlier
-revision rather than rewriting it.
+rule, then finalized internally. The caller cannot substitute another program
+or start date during generation. Published programs, lessons, calendar
+revisions, slots, and overrides remain immutable. A later operational change
+uses a new draft revision based on the published one and finalizing it
+supersedes the earlier revision rather than rewriting it. Teacher UI calls this
+ordinary `Хадгалах`: it never presents a revision number, a start-draft step,
+or publish terminology.
 
 Existing Offerings and calendars never move when a newer Program revision is
 published. They remain valid with their pinned historical revision, including
@@ -124,13 +133,14 @@ The recurrence rule is a draft-planning convenience only:
 6. Assign ordered program lessons one-to-one.
 7. Continue habitual candidates until all lessons fit.
 
-The meeting rule's end date and an Offering's advertised/planned period are
-planning guidance, not a silent lesson-dropping limit. When lessons extend past
-that date, the draft remains complete and shows a concise overrun warning. The
-teacher can then accept the plan, adjust the period or recurrence, add a break
-or extra slot, or revise an unpublished program. The low-level generator still
-supports an explicit hard technical bound where a caller truly needs one; the
-normal staff setup does not use it for an advertised course end date.
+The summer Offering's advertised/planned end date is planning guidance, not a
+silent lesson-dropping limit. When lessons extend past it, the draft remains
+complete and shows a concise overrun warning. The teacher can then accept the
+plan, adjust the summer period or recurrence, add a break or extra slot, or
+revise an unpublished program. Annual courses have no comparable entered end
+date. The low-level generator still supports an explicit hard technical bound
+where a caller truly needs one; normal staff setup does not use it for an
+advertised course end date.
 
 Two cohorts can share one curriculum lesson while teaching it on different
 dates. There is no shared lesson-week abstraction.
@@ -165,12 +175,19 @@ The protected Mongolian setup is organized around concrete work:
   stale work. Teachers edit titles inline and insert-before, append, delete,
   or move lessons without sequence numbers. Only unreferenced summer drafts
   can be deleted.
-- `/staff/schedule/` chooses an Offering, manages its classes or event
-  occurrence, and generates course calendars without asking for Program again.
+- `/staff/schedule/` begins with the selected class, its compact chronological
+  calendar, summary, and concise warnings. A future lesson's `⋯` menu opens
+  its specific no-class or date/time edit and a consequence preview; the
+  internal change draft is created or resumed automatically. `Хадгалах`
+  preserves immutable-revision semantics without exposing them. Extra lessons
+  and offering-wide `Тусгай өөрчлөлт` remain secondary controls; the latter
+  clearly affects every class in the Offering.
 - `/staff/holidays/` records annual school-calendar periods with either an
-  initial exclusion or a warning-only behavior.
+  initial exclusion or a warning-only behavior, and lists only real dated
+  school years rather than internal compatibility records.
 - `/staff/settings/` stores typed operational settings, currently the
-  Offering-level Facebook group URL plus separate admin authentication settings.
+  Offering-level Facebook group URL, the admin-only annual-start month/day
+  default, and separate admin authentication settings.
 
 Unused classes expose `Анги устгах` only in their edit/details view. Durable
 references suppress the action and server checks remain authoritative. Every
@@ -189,6 +206,8 @@ annual school-guidance rules database-enforced rather than merely UI defaults.
 Migration 0013 adds logical Program families, groups old revisions beneath the
 right annual stage or separate summer identity, and keeps concrete Offering and
 calendar rows pinned to their historical revision.
+Migration 0014 adds only the typed singleton annual start-date default; it is
+not a generic settings registry and does not alter existing Offerings.
 
 ## Public And Future Use
 

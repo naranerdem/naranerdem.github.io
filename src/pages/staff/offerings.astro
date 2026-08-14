@@ -32,7 +32,7 @@ import "../../styles/global.css";
       const occurrenceFor = (offeringId) => (state.data?.eventOccurrences || []).find((entry) => entry.offeringId === offeringId);
       function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
       async function refresh(success = "") { state.data = await getOverview(); render(); message(success, Boolean(success)); }
-      function periodText(entry) { const occurrence = occurrenceFor(entry.id); return entry.kind === "event" ? (occurrence ? `${formatDate(occurrence.localDate)} · ${occurrence.startTime}–${occurrence.endTime}` : "Огноо оруулаагүй") : `${formatDate(entry.startsOn)} – ${formatDate(entry.endsOn)}`; }
+      function periodText(entry) { const occurrence = occurrenceFor(entry.id); return entry.kind === "event" ? (occurrence ? `${formatDate(occurrence.localDate)} · ${occurrence.startTime}–${occurrence.endTime}` : "Огноо оруулаагүй") : entry.kind === "annual_course" ? formatDate(entry.startsOn) : `${formatDate(entry.startsOn)} – ${formatDate(entry.endsOn)}`; }
       const programFamilies = () => (state.data?.programFamilies || []).filter((family) => family.status === "active");
       const selectableFamilies = (kind) => programFamilies().filter((family) => family.kind === kind && family.currentProgram);
       function courseProgramField(entry, kind) {
@@ -42,11 +42,15 @@ import "../../styles/global.css";
         if (kind === "annual_course") return `<label class="staff-wide">Шат <select id="offering-annual-stage" required><option value="">Сонгоно уу</option>${families.map((family) => `<option value="${escape(family.annualStageCode)}">${escape(stageLabel(family.annualStageCode))}</option>`).join("")}</select></label>`;
         return `<label class="staff-wide">Хөтөлбөр <select id="offering-program-family" required><option value="">Сонгоно уу</option>${families.map((family) => `<option value="${escape(family.id)}">${escape(family.displayName)}</option>`).join("")}</select></label>`;
       }
+      function annualDefaultDate() {
+        const year = (state.data?.years || []).find((entry) => entry.isCurrent && entry.startsOn && entry.endsOn);
+        const setting = state.data?.annualCourseStartDefault || { month: 10, day: 1 };
+        return year ? `${year.startsOn.slice(0, 4)}-${String(setting.month).padStart(2, "0")}-${String(setting.day).padStart(2, "0")}` : "";
+      }
       function courseFields(entry, kind) {
-        const currentYear = (state.data?.years || []).find((year) => year.isCurrent && year.startsOn && year.endsOn);
-        const startsOn = entry?.startsOn || (kind === "annual_course" ? currentYear?.startsOn || "" : "");
-        const endsOn = entry?.endsOn || (kind === "annual_course" ? currentYear?.endsOn || "" : "");
-        return `<label>Төлөвлөсөн эхлэх өдөр <input id="offering-starts" type="date" required value="${escape(startsOn)}" /></label><label>Төлөвлөсөн дуусах өдөр <input id="offering-ends" type="date" required value="${escape(endsOn)}" /></label><label class="staff-wide">Facebook бүлгийн холбоос <input id="offering-facebook" type="url" inputmode="url" value="${escape(entry?.facebookGroupUrl || "")}" /></label>`;
+        const startsOn = entry?.startsOn || (kind === "annual_course" ? annualDefaultDate() : "");
+        if (kind === "annual_course") return `<label>Эхлэх өдөр <input id="offering-starts" type="date" required value="${escape(startsOn)}" /></label><label class="staff-wide">Facebook бүлгийн холбоос <input id="offering-facebook" type="url" inputmode="url" value="${escape(entry?.facebookGroupUrl || "")}" /></label>`;
+        return `<label>Төлөвлөсөн эхлэх өдөр <input id="offering-starts" type="date" required value="${escape(startsOn)}" /></label><label>Төлөвлөсөн дуусах өдөр <input id="offering-ends" type="date" required value="${escape(entry?.endsOn || "")}" /></label><label class="staff-wide">Facebook бүлгийн холбоос <input id="offering-facebook" type="url" inputmode="url" value="${escape(entry?.facebookGroupUrl || "")}" /></label>`;
       }
       function annualForm(entry) { if (!entry && !selectableFamilies("annual_course").length) return `<p class="staff-empty">Эхлээд <a href="/staff/programs/">Хөтөлбөр</a> хэсэгт хөтөлбөр бэлтгэнэ үү.</p>`; return `<form id="offering-form" class="staff-compact-form"><input id="offering-id" type="hidden" value="${escape(entry?.id || "")}" /><input id="offering-updated" type="hidden" value="${escape(entry?.updatedAt || "")}" /><input id="offering-kind" type="hidden" value="annual_course" />${courseProgramField(entry, "annual_course")}${courseFields(entry, "annual_course")}${formActions()}</form>`; }
       function summerForm(entry) { if (!entry && !selectableFamilies("summer_course").length) return `<p class="staff-empty">Эхлээд <a href="/staff/programs/">Хөтөлбөр</a> хэсэгт хөтөлбөр бэлтгэнэ үү.</p>`; return `<form id="offering-form" class="staff-compact-form"><input id="offering-id" type="hidden" value="${escape(entry?.id || "")}" /><input id="offering-updated" type="hidden" value="${escape(entry?.updatedAt || "")}" /><input id="offering-kind" type="hidden" value="summer_course" /><label class="staff-wide">Нэр <input id="offering-title" maxlength="160" required value="${escape(entry?.title || "")}" placeholder="Зуны сургалт" /></label>${courseProgramField(entry, "summer_course")}${courseFields(entry, "summer_course")}${formActions()}</form>`; }

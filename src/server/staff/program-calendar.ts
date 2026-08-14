@@ -15,6 +15,7 @@ import {
   type ProgramLesson,
 } from "../services/program-calendar";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { getAnnualCourseStartDefault } from "./annual-course-start-default";
 import { getOfferingOverview } from "./offerings";
 
 const STAGES = ["stage_1", "stage_2", "stage_3"] as const;
@@ -534,7 +535,7 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup] = await Promise.all([
+  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
@@ -587,6 +588,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
       updated_at AS updatedAt FROM academic_year_stage_setting
       ORDER BY academic_year_id, stage_code`).all<StageSettingRow>(),
     getOfferingOverview(env),
+    getAnnualCourseStartDefault(env),
   ]);
   const lessonsByProgram = new Map<string, LessonRow[]>();
   for (const lesson of lessons.results) lessonsByProgram.set(lesson.programId, [...(lessonsByProgram.get(lesson.programId) ?? []), lesson]);
@@ -647,7 +649,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
       const warnings = classSession
         ? calendarWarnings(revisionSlots.map(toSlot), {
           schoolCalendarPeriods,
-          plannedEndDate: classSession.lastDate ?? offering?.endsOn ?? null,
+        plannedEndDate: offering?.kind === "summer_course" ? classSession.lastDate ?? offering.endsOn : null,
         })
         : [];
       return {
@@ -669,6 +671,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     }),
     stages: STAGES,
     weekdays: WEEKDAYS,
+    annualCourseStartDefault,
   };
 }
 
@@ -1353,7 +1356,8 @@ export async function generateCalendarDraft(env: WorkerEnv, actor: StaffPrincipa
 export async function createCalendarChangeDraft(env: WorkerEnv, actor: StaffPrincipal, input: { classSessionId: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const current = await one<RevisionRow>(env, env.DB.prepare(`SELECT revision.id, revision.class_calendar_id AS calendarId, revision.curriculum_program_id AS programId, revision.revision_number AS revisionNumber, revision.status, revision.first_candidate_date AS firstCandidateDate, revision.locked_through_sequence AS lockedThroughSequence, revision.based_on_revision_id AS basedOnRevisionId, revision.is_test AS isTest, revision.test_run_id AS testRunId, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar ON class_calendar.id = revision.class_calendar_id WHERE class_calendar.class_session_id = ? AND revision.status = 'published'`).bind(input.classSessionId));
-  const existingDraft = await env.DB.prepare("SELECT id FROM class_calendar_revision WHERE class_calendar_id = ? AND status = 'draft'").bind(current.calendarId).first<{ id: string }>(); if (existingDraft) throw new ProgramCalendarError("conflict");
+  const existingDraft = await env.DB.prepare("SELECT id FROM class_calendar_revision WHERE class_calendar_id = ? AND status = 'draft'").bind(current.calendarId).first<{ id: string }>();
+  if (existingDraft) return;
   const oldSlots = await slotsForRevision(env, current.id); const oldOverrides = await overridesForRevision(env, current.id); const time = now(); const flags = operationFlags(env, current); const revisionId = id();
   const pastPublishedSequence = oldSlots
     .filter((slot) => slot.status === "scheduled" && slot.localDate < localToday())

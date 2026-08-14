@@ -33,6 +33,7 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `class_meeting_rule`: authoritative weekly, weekdays, or daily generation rule and local period/time for one course class.
 - `offering_event_occurrence`: narrow programless one-off event date/time, capacity, and registration state.
 - `academic_year_stage_setting`: legacy 0009 annual Facebook setting retained for compatibility/history; new operational writes use `activity_offering.facebook_group_url`.
+- `annual_course_start_default`: one typed singleton month/day rule for the editable default start date of a new annual Offering; it is admin-managed, audited, and deliberately not a general key/value settings table.
 - `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children.
 - `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional generic `code_input`, payment-plan choice, and one selected concrete `class_session`.
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
@@ -238,6 +239,12 @@ It adds `activity_offering_break` for a shared course-specific break and
 `operational_default_import`, which records stable source-template imports.
 The Schedule surface manages this shared all-class break; school-calendar
 periods remain separate annual guidance in Holidays.
+
+Migration `0014_annual_course_start_default.sql` adds the small typed singleton
+used to prepopulate the start date of a new annual Offering. Existing Offering
+periods remain unchanged; their actual lesson end continues to come from the
+explicit calendar. The default is an administrative setup preference rather
+than a teacher-facing daily control.
 
 Approved non-private startup Programs and school-calendar periods live in
 `src/config/operational-defaults.mjs`. The owner-supplied 2024-2025 baseline

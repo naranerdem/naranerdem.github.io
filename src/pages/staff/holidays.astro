@@ -25,10 +25,7 @@ import "../../styles/global.css";
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const breaks = () => (state.data?.breaks || []).filter((entry) => entry.academicYearId === state.yearId && entry.status === "active");
-      const visibleYears = () => (state.data?.years || []).filter((year) => {
-        const linked = (state.data?.offerings || []).filter((offering) => offering.academicYearId === year.id);
-        return !linked.length || linked.some((offering) => offering.kind === "annual_course");
-      });
+      const visibleYears = () => (state.data?.years || []).filter((year) => year.startsOn && year.endsOn && (state.data?.offerings || []).some((offering) => offering.kind === "annual_course" && offering.academicYearId === year.id));
       function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
       async function refresh(success = "") { state.data = await getOverview(); const years = visibleYears(); state.yearId = years.some((year) => year.id === state.yearId) ? state.yearId : (years.find((year) => year.isCurrent)?.id || years[0]?.id || ""); render(); message(success, Boolean(success)); }
       function render() {
