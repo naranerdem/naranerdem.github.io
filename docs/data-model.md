@@ -288,13 +288,23 @@ and has its own append-only change table. Its optional note and cancellation
 history do not imply an attendance result. These tables use restrictive
 references so attendance remains after calendar revision, enrollment
 cancellation, or class closure. Event attendance, parent notice submission,
-make-up, accountant workflow, payment-reminder, and settlement tables remain
-deferred.
+accountant workflow, payment-reminder, and settlement tables remain deferred.
+
+Migration `0018_course_makeup_foundation.sql` adds teacher-mediated make-up
+history without creating another Enrollment or changing source attendance.
+`course_makeup_resolution` records an active `no_makeup` or `assigned` decision
+for one enrollment, source class, and immutable `CurriculumLesson`; invalidated
+rows remain historical. `course_makeup_assignment` points either to a normal
+target class plus that exact lesson or to a `course_makeup_special_occurrence`.
+Normal and special capacity checks run in D1, and only one active resolution and
+assignment can exist for a source. Raw unchecked attendance is not copied into
+these tables: the service derives effective absence after occurrence end and
+requires a teacher decision.
 
 Future schema design should keep these distinctions explicit:
 
 - attendance bookkeeping and prior absence notice: editable operational records attached to a concrete occurrence, with auditable correction history.
-- make-up consideration/invitation/agreement: teacher-mediated records attached to the same curriculum lesson, not automatic credits or generic free-class access.
+- make-up consideration and assignment: teacher-mediated records attached to the exact same curriculum lesson, not automatic credits or generic free-class access; invitation/agreement remains future work.
 - approved payment obligation and effective due date: later finance concepts that may feed a derived accountant call queue without erasing original deadlines, payments, or contact history.
 - settlement review: teacher-approved operational receivable supported by transparent advisory calculations; it must not be a silently authoritative attendance-derived debt.
 

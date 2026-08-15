@@ -339,6 +339,36 @@ async function attendanceForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow
   ).first<AttendanceRow>();
 }
 
+function invalidateActiveMakeupStatements(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  occurrence: OccurrenceRow,
+  enrollmentId: string,
+  time: string,
+): D1PreparedStatement[] {
+  return [
+    env.DB.prepare(`UPDATE course_makeup_assignment
+      SET status = 'cancelled', cancelled_at = ?, cancelled_by_staff_account_id = ?,
+        cancellation_reason = 'source_attendance_corrected', updated_at = ?
+      WHERE status = 'active' AND resolution_id IN (
+        SELECT id FROM course_makeup_resolution
+        WHERE source_enrollment_id = ? AND source_class_session_id = ?
+          AND source_curriculum_lesson_id = ? AND status = 'active'
+      )`).bind(
+      time, actor.staffAccountId, time,
+      enrollmentId, occurrence.classSessionId, occurrence.curriculumLessonId,
+    ),
+    env.DB.prepare(`UPDATE course_makeup_resolution
+      SET status = 'invalidated', invalidated_at = ?, invalidated_by_staff_account_id = ?,
+        invalidation_reason = 'source_attendance_corrected', updated_at = ?
+      WHERE source_enrollment_id = ? AND source_class_session_id = ?
+        AND source_curriculum_lesson_id = ? AND status = 'active'`).bind(
+      time, actor.staffAccountId, time,
+      enrollmentId, occurrence.classSessionId, occurrence.curriculumLessonId,
+    ),
+  ];
+}
+
 export async function recordCourseAttendance(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -379,6 +409,11 @@ export async function recordCourseAttendance(
       id(), attendanceId, existing?.attendanceStatus ?? null, input.status, actor.staffAccountId,
       time, provenance.isTest, provenance.testRunId, time,
     ),
+  );
+  if (input.status === "present" || input.status === "late") {
+    statements.push(...invalidateActiveMakeupStatements(env, actor, occurrence, input.enrollmentId, time));
+  }
+  statements.push(
     audit(env, actor, existing?.attendanceStatus ? "course_attendance_corrected" : "course_attendance_recorded", "course_attendance", attendanceId, {
       classSessionId: occurrence.classSessionId, curriculumLessonId: occurrence.curriculumLessonId,
       from: existing?.attendanceStatus ?? null, to: input.status,
@@ -462,6 +497,7 @@ export async function markUnmarkedRosterPresent(
     ) VALUES (?, ?, NULL, 'present', ?, ?, ?, ?, ?)`).bind(
       id(), attendanceId, actor.staffAccountId, time, provenance.isTest, provenance.testRunId, time,
     ));
+    statements.push(...invalidateActiveMakeupStatements(env, actor, occurrence, entry.enrollmentId, time));
   }
   statements.push(audit(env, actor, "course_attendance_bulk_present", "class_calendar_slot", occurrence.slotId, {
     classSessionId: occurrence.classSessionId,

@@ -1,0 +1,133 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#073aaf" />
+    <title>Нөхөх хичээл | {siteIdentity.name}</title>
+  </head>
+  <body class="staff-page" data-staff-tool-surface="booting">
+    <header class="site-header">
+      <a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг">
+        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
+        <span><strong>{siteIdentity.name}</strong><span>Нөхөх хичээл</span></span>
+      </a>
+    </header>
+    <main class="staff-shell" aria-live="polite">
+      <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Нөхөх хичээл</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-app" hidden>
+        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Нөхөх хичээл</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <p id="tool-message" class="staff-error" role="status" hidden></p>
+        <section aria-labelledby="makeup-open-title">
+          <div class="staff-section-heading"><div><h2 id="makeup-open-title">Шийдэх зүйл</h2><p class="staff-muted">Хичээл дууссаны дараах таслалтыг багш шийднэ.</p></div></div>
+          <div id="makeup-open-list" class="staff-makeup-list"></div>
+        </section>
+        <section id="makeup-detail" class="staff-makeup-detail" hidden></section>
+        <section aria-labelledby="makeup-scheduled-title" class="staff-makeup-scheduled-section">
+          <h2 id="makeup-scheduled-title">Товлосон нөхөх хичээл</h2>
+          <div id="makeup-scheduled-list" class="staff-makeup-list"></div>
+        </section>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      import { escape, formatDate, getCourseMakeups, hasMakeupAccess, postCourseMakeupAction } from "../../scripts/staff-setup.js";
+
+      const state = { data: null, selected: null, pending: false };
+      const q = (selector) => document.querySelector(selector);
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
+      const sourceAttrs = (entry) => `data-enrollment="${escape(entry.enrollmentId)}" data-class="${escape(entry.classSessionId)}" data-lesson="${escape(entry.curriculumLessonId)}"`;
+      const sourceFrom = (node) => ({ enrollmentId: node.dataset.enrollment, classSessionId: node.dataset.class, curriculumLessonId: node.dataset.lesson });
+
+      async function refresh() {
+        state.data = await getCourseMakeups(state.selected);
+        if (state.selected && !state.data.selected) state.selected = null;
+        render();
+      }
+
+      function renderOpen() {
+        const container = q("#makeup-open-list");
+        const entries = state.data.unresolved || [];
+        if (!entries.length) { container.innerHTML = `<p class="staff-empty">Одоогоор шийдэх нөхөх хичээл алга.</p>`; return; }
+        const groups = new Map();
+        for (const entry of entries) {
+          const key = entry.curriculumLessonId;
+          const group = groups.get(key) || { title: `${entry.programTitle} · ${entry.lessonSequence}-р хичээл`, entries: [] };
+          group.entries.push(entry); groups.set(key, group);
+        }
+        container.innerHTML = [...groups.values()].map((group) => `<section class="staff-makeup-group"><div class="staff-makeup-group-heading"><strong>${escape(group.title)}</strong><span>${group.entries.length} сурагч</span></div>${group.entries.map((entry) => `<article class="staff-makeup-row"><div><strong>${escape(entry.studentName)}</strong><p>${escape(entry.classLabel)} · ${escape(formatDate(entry.sourceLocalDate))} · Ирээгүй ${entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : ""}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-open-makeup ${sourceAttrs(entry)}>Нөхөх</button><button class="staff-text-action" type="button" data-no-makeup ${sourceAttrs(entry)}>Нөхөхгүй</button></div></article>`).join("")}</section>`).join("");
+      }
+
+      function renderDetail() {
+        const container = q("#makeup-detail");
+        const selected = state.data.selected;
+        if (!selected) { container.hidden = true; container.innerHTML = ""; return; }
+        const source = selected.source;
+        const sameLessonSources = state.data.unresolved.filter((entry) => entry.curriculumLessonId === source.curriculumLessonId);
+        const normal = selected.normalTargets.length
+          ? selected.normalTargets.map((target) => `<article class="staff-makeup-target"><div><strong>${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)}</strong><p>${escape(target.classLabel)} · Сул суудал: ${target.remainingCapacity}</p></div><button class="button secondary" type="button" data-assign-normal="${escape(target.classSessionId)}">Энд нөхөх</button></article>`).join("")
+          : `<p class="staff-empty">Тохирох энгийн анги одоогоор алга.</p>`;
+        const special = selected.specialTargets.map((target) => `<article class="staff-makeup-target"><div><strong>${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)}</strong><p>Тусгай нөхөх хичээл · Сул суудал: ${target.remainingCapacity}</p></div><button class="button secondary" type="button" data-assign-special="${escape(target.id)}">Энд нөхөх</button></article>`).join("");
+        container.hidden = false;
+        container.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(source.studentName)}</p><h2>${source.lessonSequence}. ${escape(source.lessonTitle)}</h2><p>${escape(source.classLabel)} · ${escape(formatDate(source.sourceLocalDate))}</p></div><button id="close-makeup" class="button secondary" type="button">Хаах</button></div><div class="staff-makeup-targets"><h3>Тохирох анги</h3>${normal}${special}</div><details class="staff-schedule-changes"><summary>Тусгай нөхөх хичээл үүсгэх</summary><form id="special-makeup-form" class="staff-makeup-special-form"><fieldset><legend>Энэ хичээлд орох сурагч</legend>${sameLessonSources.map((entry) => `<label><input type="checkbox" name="source" value="${escape(`${entry.enrollmentId}|${entry.classSessionId}|${entry.curriculumLessonId}`)}" ${entry.enrollmentId === source.enrollmentId && entry.classSessionId === source.classSessionId ? "checked" : ""} />${escape(entry.studentName)}</label>`).join("")}</fieldset><div class="staff-form-grid"><label>Өдөр<input name="localDate" type="date" required /></label><label>Эхлэх цаг<input name="startTime" type="time" required /></label><label>Дуусах цаг<input name="endTime" type="time" required /></label><label>Багтаамж<input name="capacity" type="number" min="1" max="100" value="${Math.max(1, sameLessonSources.length)}" required /></label></div><label>Тэмдэглэл<textarea name="note" rows="2"></textarea></label><button class="button primary" type="submit">Үүсгэж товлох</button></form></details>`;
+      }
+
+      function renderScheduled() {
+        const container = q("#makeup-scheduled-list");
+        const entries = state.data.scheduled || [];
+        if (!entries.length) { container.innerHTML = `<p class="staff-empty">Товлосон нөхөх хичээл алга.</p>`; return; }
+        const specialGroups = new Map();
+        const normal = [];
+        for (const entry of entries) {
+          if (entry.targetKind === "special") {
+            const group = specialGroups.get(entry.targetSpecialOccurrenceId) || { ...entry, students: [] };
+            group.students.push(entry.studentName); specialGroups.set(entry.targetSpecialOccurrenceId, group);
+          } else normal.push(entry);
+        }
+        const normalMarkup = normal.map((entry) => `<article class="staff-makeup-row"><div><strong>${escape(entry.studentName)} · ${entry.lessonSequence}. ${escape(entry.lessonTitle)}</strong><p>${entry.state === "scheduled" ? `${escape(formatDate(entry.targetLocalDate))} · ${escape(entry.targetStartTime)}–${escape(entry.targetEndTime)} · ${escape(entry.targetOfferingTitle || "")}` : "Дахин товлох шаардлагатай"}</p></div><button class="staff-text-action" type="button" data-cancel-assignment="${escape(entry.assignmentId)}">Буцаах</button></article>`).join("");
+        const specialMarkup = [...specialGroups.values()].map((entry) => `<article class="staff-makeup-row"><div><strong>Тусгай · ${entry.lessonSequence}. ${escape(entry.lessonTitle)}</strong><p>${escape(formatDate(entry.targetLocalDate))} · ${escape(entry.targetStartTime)}–${escape(entry.targetEndTime)}</p><p>${entry.students.map(escape).join(", ")}</p></div><button class="staff-text-action" type="button" data-cancel-special="${escape(entry.targetSpecialOccurrenceId)}">Хичээл цуцлах</button></article>`).join("");
+        container.innerHTML = normalMarkup + specialMarkup;
+      }
+
+      function render() { renderOpen(); renderDetail(); renderScheduled(); }
+
+      async function mutate(action, payload, success) {
+        if (state.pending) return;
+        state.pending = true; message("");
+        try { await postCourseMakeupAction(action, payload); state.selected = null; await refresh(); message(success, true); }
+        catch (error) { message(error.message || "Хадгалж чадсангүй."); }
+        finally { state.pending = false; }
+      }
+
+      q("#tool-app").addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button || button.type === "submit" || state.pending) return;
+        if (button.id === "close-makeup") { state.selected = null; refresh(); return; }
+        if (button.matches("[data-open-makeup]")) { state.selected = sourceFrom(button); refresh().then(() => q("#makeup-detail").scrollIntoView({ behavior: "smooth", block: "start" })); return; }
+        if (button.matches("[data-no-makeup]")) { mutate("makeup.no-makeup", sourceFrom(button), "Нөхөхгүй гэж тэмдэглэлээ."); return; }
+        const source = state.data.selected?.source;
+        if (button.dataset.assignNormal && source) { mutate("makeup.assign-normal", { ...source, targetClassSessionId: button.dataset.assignNormal }, "Нөхөх хичээлийг товлолоо."); return; }
+        if (button.dataset.assignSpecial && source) { mutate("makeup.assign-special", { ...source, specialOccurrenceId: button.dataset.assignSpecial }, "Нөхөх хичээлийг товлолоо."); return; }
+        if (button.dataset.cancelAssignment) { mutate("makeup.assignment-cancel", { assignmentId: button.dataset.cancelAssignment }, "Товыг буцаалаа."); return; }
+        if (button.dataset.cancelSpecial) { mutate("makeup.special-cancel", { specialOccurrenceId: button.dataset.cancelSpecial }, "Тусгай нөхөх хичээлийг цуцаллаа."); }
+      });
+
+      q("#tool-app").addEventListener("submit", (event) => {
+        if (event.target.id !== "special-makeup-form") return;
+        event.preventDefault();
+        const form = new FormData(event.target);
+        const sources = form.getAll("source").map((value) => { const [enrollmentId, classSessionId, curriculumLessonId] = String(value).split("|"); return { enrollmentId, classSessionId, curriculumLessonId }; });
+        mutate("makeup.special-create", { sources, localDate: form.get("localDate"), startTime: form.get("startTime"), endTime: form.get("endTime"), capacity: Number(form.get("capacity")), note: form.get("note") }, "Тусгай нөхөх хичээлийг товлолоо.");
+      });
+
+      (async () => { if (!(await hasMakeupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+    </script>
+  </body>
+</html>

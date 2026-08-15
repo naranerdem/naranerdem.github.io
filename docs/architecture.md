@@ -244,9 +244,11 @@ the ordered lesson-to-slot mapping reflow. A school-calendar skip can be
 restored for one class with a warning governed by that period's current
 guidance. Offering-wide course pauses remain a compact `Тусгай өөрчлөлт`; they
 affect every class in the Offering and cannot be silently overridden per class.
-Annual planning, one-class planned maintenance, and a future daily
-unexpected-cancellation surface will reuse the same calendar-change domain
-operation while keeping their teacher entry points distinct.
+Annual planning and one-class planned maintenance stay on Schedule.
+`/staff/day-changes/` is the separate daily entry point for unexpected
+cancellations, whole-day closures, replacement days, and extra dates. It
+preflights every affected class, writes whole-day changes all-or-none, and
+reuses the same immutable calendar-revision and ordered-slot behavior.
 
 Ordinary post-publication drafts automatically protect the greater of the
 stored internal lock, all published lesson assignments whose local teaching
@@ -280,8 +282,8 @@ before then the student remains unmarked and creates no downstream absence
 consequence. Each tap saves immediately; corrections and clearing remain
 auditable and no attendance action creates a calendar revision. Attendance uses
 the stable class-plus-immutable-lesson identity rather than a revision-scoped
-calendar slot. Events, parent-submitted notices, make-up decisions, and
-attendance-derived financial conclusions are still not implemented.
+calendar slot. Events, parent-submitted notices, and attendance-derived
+financial conclusions are still not implemented.
 
 Event attendance is a separate, simpler future record: `attended`, `did not
 attend`, and an optional short note. It must not be forced through course
@@ -289,9 +291,20 @@ absence-notice, same-lesson make-up, or make-up-invitation semantics.
 
 Parents may later use a simple action such as `Хичээлд ирж чадахгүйгээ мэдэгдэх` for one specific upcoming occurrence and an optional short note. Advance notice may favor teacher consideration of a make-up, but guarantees neither a make-up nor an automatic credit. An uninformed absence creates no automatic entitlement.
 
-The system may suggest a make-up only for a suitable future occurrence of the **same** `CurriculumLesson`, with capacity, unresolved absence, and teacher policy all considered. The teacher approves or rejects every suggestion and can override it. After approval, a later communication can be emailed, generated as concise `Messenger мессеж хуулах` text for human copy/paste, or recorded as a phone agreement. No Facebook API automation is planned. History should eventually distinguish emailed, manually Messenger-sent, phone-agreed, accepted, declined, and no-response states.
+`/staff/makeups/` derives its unresolved queue only from effective absences after
+the source occurrence ends. The teacher either chooses `Нөхөхгүй`, assigns the
+student to a future class occurrence of the exact same immutable
+`CurriculumLesson` with capacity, or creates a separate same-lesson special
+occurrence. Normal assignments use class plus lesson identity, so they follow a
+safe target-calendar date reflow. Correcting source attendance to present or
+late invalidates the active make-up decision without deleting history. This
+foundation changes neither enrollment nor source attendance and sends no
+message or financial consequence.
 
-When no standard occurrence remains, the teacher may create an extra non-standard occurrence of the same lesson and see an aggregate such as `Level 2 — Lesson 7: 5 unresolved absences`. Availability coordination remains a small teacher-led phone/Messenger process, not an automated polling system.
+When no standard occurrence remains, the teacher may group compatible
+same-lesson absences into one capacity-limited special occurrence. Parent
+acceptance, invitation delivery, completion attendance, and make-up finance
+remain future work.
 
 ### Future schedule communication policy
 
@@ -307,7 +320,7 @@ restore/exclusion, extra slots, and independent progress. A fake 12-lesson
 summer Offering exercises weekday and daily scheduling. Events are created only
 when needed and are isolated in service tests, not shown as routine list
 fixtures. Production is schema-only and receives none of these records.
-Attendance, absence, make-up,
+Parent-submitted absence, make-up communication/completion, event attendance,
 public summer/event registration, finance, and parent notification workflows
 remain separate future work.
 

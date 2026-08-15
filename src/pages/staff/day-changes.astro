@@ -1,0 +1,132 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#073aaf" />
+    <title>Өдрийн өөрчлөлт | {siteIdentity.name}</title>
+  </head>
+  <body class="staff-page" data-staff-tool-surface="booting">
+    <header class="site-header">
+      <a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг">
+        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
+        <span><strong>{siteIdentity.name}</strong><span>Өдрийн өөрчлөлт</span></span>
+      </a>
+    </header>
+    <main class="staff-shell" aria-live="polite">
+      <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Өдрийн өөрчлөлт</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-app" hidden>
+        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Өдрийн өөрчлөлт</h1><p class="staff-muted">Хичээл цуцлах, орлуулах өдөр, нэмэлт өдөр</p></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <p id="tool-message" class="staff-error" role="status" hidden></p>
+        <form id="day-date-form" class="staff-attendance-date-form"><label>Өдөр<input id="day-date" type="date" required /></label><button id="day-today" class="button secondary" type="button">Өнөөдөр</button></form>
+        <section aria-labelledby="day-list-title"><h2 id="day-list-title" class="staff-list-heading">Хичээлүүд</h2><div id="day-list" class="staff-day-list"></div></section>
+        <section id="day-operation" class="staff-day-operation"></section>
+        <section id="day-confirmation" class="staff-day-confirmation" hidden></section>
+        <details class="staff-schedule-changes staff-day-extra"><summary>Нэмэлт өдөр оруулах</summary><form id="day-extra-form" class="staff-compact-form"><label class="staff-wide">Анги<select id="day-extra-class" required></select></label><label>Өдөр<input id="day-extra-date" type="date" required /></label><label>Эхлэх цаг<input id="day-extra-start" type="time" /></label><label>Дуусах цаг<input id="day-extra-end" type="time" /></label><label class="staff-wide">Тэмдэглэл<input id="day-extra-note" maxlength="160" /></label><button class="button primary staff-wide" type="submit">Шалгах</button></form></details>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      import { escape, fillSelect, formatDate, getDailyChanges, hasDayChangeAccess, postDailyChange } from "../../scripts/staff-setup.js";
+
+      const state = { data: null, date: "", pending: false, confirmation: null };
+      const q = (selector) => document.querySelector(selector);
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
+
+      async function refresh(success = "") {
+        state.data = await getDailyChanges(state.date);
+        state.date = state.data.selectedDate;
+        q("#day-date").value = state.date;
+        history.replaceState(null, "", `?date=${encodeURIComponent(state.date)}`);
+        render();
+        if (success) message(success, true);
+      }
+
+      function selectedOccurrences() { return (state.data.occurrences || []).filter((entry) => entry.localDate === state.date); }
+
+      function row(entry) {
+        const blocked = entry.attendanceCount > 0;
+        const status = entry.status === "cancelled" ? `<span class="staff-day-cancelled">Цуцалсан</span>` : blocked ? `<span class="staff-muted">Ирц тэмдэглэсэн</span>` : "";
+        const action = entry.status === "scheduled" && !blocked
+          ? `<details class="staff-calendar-menu" data-staff-action-menu><summary aria-label="Хуваарийн үйлдэл" title="Үйлдэл">⋯</summary><form class="staff-day-single-form staff-lesson-menu-actions" data-single-cancel="${escape(entry.slotId)}"><p>Энэ хичээлийг цуцлах</p><label>Орлуулах өдөр <input name="replacementDate" type="date" /></label><small>Орлуулах өдөр одоогоор тодорхойгүй бол хоосон орхино.</small><button type="submit">Шалгах</button></form></details>`
+          : entry.status === "cancelled"
+            ? `<button class="staff-text-action" type="button" data-replace-class="${escape(entry.classSessionId)}">Орлуулах хичээл оруулах</button>` : "";
+        return `<article class="staff-day-row"><div><strong>${escape(entry.startTime)}–${escape(entry.endTime)} · ${escape(entry.classLabel)}</strong><p>${entry.lessonSequence}. ${escape(entry.lessonTitle)} · ${escape(entry.offeringTitle)}</p></div>${status}${action}</article>`;
+      }
+
+      function renderDay() {
+        const entries = selectedOccurrences();
+        q("#day-list").innerHTML = entries.length ? entries.map(row).join("") : `<p class="staff-empty">Энэ өдөр хичээлгүй.</p>`;
+        const scheduled = entries.filter((entry) => entry.status === "scheduled");
+        const cancelled = entries.filter((entry) => entry.status === "cancelled");
+        const operation = q("#day-operation");
+        if (scheduled.length) {
+          operation.innerHTML = `<details class="staff-schedule-changes"><summary>Өдрөөр өөрчлөх</summary><div class="staff-schedule-changes-content"><p>${scheduled.length} хичээл байна.</p><button id="cancel-whole-day" class="button secondary" type="button">Өдрийг бүхэлд нь цуцлах</button><form id="move-whole-day" class="staff-day-move-form"><label>Орлуулах өдөр<input name="replacementDate" type="date" required /></label><button class="button secondary" type="submit">Өдрийг шилжүүлэх</button></form></div></details>`;
+        } else if (cancelled.length) {
+          operation.innerHTML = `<details class="staff-schedule-changes"><summary>Орлуулах өдөр оруулах</summary><form id="replace-whole-day" class="staff-day-move-form"><label>Орлуулах өдөр<input name="replacementDate" type="date" required /></label><button class="button secondary" type="submit">Бүх ангид орлуулах өдөр оруулах</button></form></details>`;
+        } else operation.innerHTML = "";
+        fillSelect(q("#day-extra-class"), state.data.classes || [], "", (entry) => `${entry.offeringTitle} · ${entry.classLabel}`);
+      }
+
+      function renderConfirmation() {
+        const container = q("#day-confirmation");
+        const confirmation = state.confirmation;
+        if (!confirmation) { container.hidden = true; container.innerHTML = ""; return; }
+        const preview = confirmation.preview;
+        const shifted = preview.changedLessonCount ? ` Дараагийн ${preview.changedLessonCount} хичээлийн огноо шилжинэ.` : "";
+        container.hidden = false;
+        container.innerHTML = `<h2>${escape(confirmation.title)}</h2><p><strong>${preview.affectedClassCount} хичээлд өөрчлөлт орно.</strong>${shifted}</p><ul>${preview.classes.map((entry) => `<li>${escape(entry.offeringTitle)} · ${escape(entry.classLabel)}</li>`).join("")}</ul>${preview.warnings.length ? `<p class="staff-calendar-warning">Анхааруулга: ${preview.warnings.map(escape).join(", ")}</p>` : ""}<div class="staff-inline-actions"><button id="day-confirm-cancel" class="button secondary" type="button">Болих</button><button id="day-confirm-save" class="button primary" type="button">Хадгалах</button></div>`;
+        container.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      function render() { renderDay(); renderConfirmation(); }
+
+      async function preview(payload, title) {
+        if (state.pending) return;
+        state.pending = true; message("");
+        try { state.confirmation = { payload, title, preview: await postDailyChange("day-change.preview", payload) }; renderConfirmation(); }
+        catch (error) { message(error.message || "Өөрчлөлтийг шалгаж чадсангүй."); }
+        finally { state.pending = false; }
+      }
+
+      async function applyConfirmed() {
+        if (!state.confirmation || state.pending) return;
+        state.pending = true; message("");
+        try { await postDailyChange("day-change.apply", state.confirmation.payload); state.confirmation = null; await refresh("Өдрийн хуваарийн өөрчлөлтийг хадгаллаа."); }
+        catch (error) { message(error.message || "Өөрчлөлтийг хадгалж чадсангүй."); }
+        finally { state.pending = false; }
+      }
+
+      q("#tool-app").addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button || button.type === "submit") return;
+        if (button.id === "day-today") { state.date = state.data.today; state.confirmation = null; refresh(); return; }
+        if (button.id === "cancel-whole-day") { preview({ kind: "day-cancel", sourceDate: state.date }, `${formatDate(state.date)}-ний бүх хичээлийг цуцлах`); return; }
+        if (button.id === "day-confirm-cancel") { state.confirmation = null; renderConfirmation(); return; }
+        if (button.id === "day-confirm-save") { applyConfirmed(); return; }
+        if (button.dataset.replaceClass) { const entry = selectedOccurrences().find((item) => item.classSessionId === button.dataset.replaceClass); if (entry) { q("#day-extra-class").value = entry.classSessionId; q(".staff-day-extra").open = true; q("#day-extra-date").focus(); } }
+      });
+
+      q("#tool-app").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const form = event.target;
+        if (!form.reportValidity()) return;
+        if (form.id === "day-date-form") { state.date = q("#day-date").value; state.confirmation = null; refresh(); return; }
+        if (form.matches("[data-single-cancel]")) { const replacementDate = new FormData(form).get("replacementDate") || ""; preview({ kind: "single-cancel", slotId: form.dataset.singleCancel, replacementDate }, "Нэг хичээлийн хуваарийг өөрчлөх"); return; }
+        if (form.id === "move-whole-day") { preview({ kind: "day-move", sourceDate: state.date, replacementDate: new FormData(form).get("replacementDate") }, `${formatDate(state.date)}-ний хичээлүүдийг шилжүүлэх`); return; }
+        if (form.id === "replace-whole-day") { preview({ kind: "day-replace", sourceDate: state.date, replacementDate: new FormData(form).get("replacementDate") }, "Орлуулах өдөр оруулах"); return; }
+        if (form.id === "day-extra-form") { preview({ kind: "extra", classSessionId: q("#day-extra-class").value, localDate: q("#day-extra-date").value, startTime: q("#day-extra-start").value, endTime: q("#day-extra-end").value, note: q("#day-extra-note").value }, "Нэмэлт өдөр оруулах"); }
+      });
+
+      q("#day-date").addEventListener("change", () => { state.date = q("#day-date").value; state.confirmation = null; refresh(); });
+      (async () => { if (!(await hasDayChangeAccess())) { show("tool-denied"); return; } state.date = new URLSearchParams(location.search).get("date") || ""; await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+    </script>
+  </body>
+</html>

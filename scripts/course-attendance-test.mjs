@@ -266,12 +266,17 @@ try {
   assert.equal(count(database, "class_calendar_revision"), beforeDrafts + 1, "calendar drafting remains separate from attendance");
 
   const source = readFileSync("src/pages/staff/attendance.astro", "utf8");
+  const styles = readFileSync("src/styles/global.css", "utf8");
   const staffHome = readFileSync("src/pages/staff.astro", "utf8");
   const renderedAttendance = readFileSync("dist/staff/attendance/index.html", "utf8");
   assert.match(source, /Бүгд ирсэн/);
   assert.match(source, /Одоогоор тэмдэглээгүй/);
   assert.match(source, /data-attendance-control="\$\{value\}"/, "the roster uses compact present and late checkboxes");
   assert.match(source, /Мэдэгдсэн/);
+  assert.match(source, /if \(!isFuture\(\)\) return entry\.hasAbsenceNotice/, "today and past rows render notice only when one exists");
+  assert.match(source, /Урьдчилж мэдэгдсэн/, "future rows retain a compact notice action");
+  assert.match(styles, /staff-attendance-student[\s\S]*grid-template-columns: minmax\(5\.5rem, 1fr\) auto/, "student name and attendance controls share a compact row");
+  assert.doesNotMatch(styles, /staff-attendance-check \{[\s\S]{0,180}border:/, "attendance checkboxes are not button-like bordered cards");
   assert.match(source, /createOptimisticRosterMutator/, "individual attendance updates are optimistic");
   assert.doesNotMatch(source, /data-mark-status|Ирээгүй гэж тэмдэглэх|Үлдсэнийг ирээгүй болгох/, "ordinary attendance has no explicit absent action");
   assert.doesNotMatch(source, /Тэмдэглэгээг арилгах/, "unchecking present is the compact clear interaction");
@@ -281,7 +286,7 @@ try {
   assert.doesNotMatch(source, /Ноорог|Нийтлэх|Хувилбар/, "attendance has no calendar draft terminology");
   assert.doesNotMatch(source, /window\.confirm/, "bulk attendance uses an in-page Mongolian confirmation");
   assert.match(staffHome, /href="\/staff\/attendance\/"/, "staff home links to daily attendance");
-  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Ирц[\s\S]*?Сургалтын тохиргоо/, "staff home places attendance before setup tools");
+  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Ирц[\s\S]*?Нөхөх хичээл[\s\S]*?Өдрийн өөрчлөлт[\s\S]*?Сургалтын тохиргоо/, "staff home keeps the complete daily workflow before setup tools");
   assert.doesNotMatch(staffHome, /Таны ажиллах хэсэг/, "staff home has no redundant capability list");
   assert.doesNotMatch(renderedAttendance, /Анударь|Билгүүн|Тест амралт/, "the static attendance page ships no roster or curriculum data");
 

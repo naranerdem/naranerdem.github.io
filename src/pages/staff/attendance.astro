@@ -53,7 +53,6 @@ import "../../styles/global.css";
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
       const isFuture = () => state.data && state.data.localDate > state.data.today;
-      const isPast = () => state.data && state.data.localDate < state.data.today;
       const dateQuery = () => { const next = new URLSearchParams({ date: state.date }); if (state.selectedSlotId) next.set("occurrence", state.selectedSlotId); return `?${next.toString()}`; };
       const optimistic = createOptimisticRosterMutator({
         onChange(entry) { patchRosterRow(entry.enrollmentId); },
@@ -86,7 +85,7 @@ import "../../styles/global.css";
       }
 
       function attendanceControls(entry) {
-        if (isFuture()) return `<p class="staff-muted staff-attendance-future-note">Ирцийг хичээл болох өдрөөс эхэлж тэмдэглэнэ.</p>`;
+        if (isFuture()) return "";
         const status = entry.recordedAttendanceStatus || "";
         const checked = attendanceCheckboxState(status);
         const pending = optimistic.isPending(entry.enrollmentId);
@@ -96,15 +95,16 @@ import "../../styles/global.css";
       }
 
       function noticeControls(entry) {
-        if (isPast()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
+        if (!isFuture()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
         const pending = optimistic.isPending(entry.enrollmentId);
-        return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Мэдэгдсэн</label>`;
+        return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Урьдчилж мэдэгдсэн</label>`;
       }
 
       function rosterRow(entry) {
         const pending = optimistic.isPending(entry.enrollmentId);
         const error = state.rowErrorEnrollmentId === entry.enrollmentId ? `<p class="staff-attendance-row-error" role="status">${escape(state.rowErrorMessage)}</p>` : "";
-        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><strong>${escape(entry.displayName)}</strong><div class="staff-attendance-checklist">${attendanceControls(entry)}${noticeControls(entry)}</div>${error}</div></article>`;
+        const notice = noticeControls(entry);
+        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${error}</div></article>`;
       }
 
       function bulkMarkup(selected) {

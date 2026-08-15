@@ -61,6 +61,22 @@ import {
   saveCourseAbsenceNotice,
 } from "../staff/course-attendance";
 import {
+  assignCourseMakeupToNormalClass,
+  assignCourseMakeupToSpecialOccurrence,
+  cancelCourseMakeupAssignment,
+  cancelSpecialCourseMakeupOccurrence,
+  CourseMakeupError,
+  createSpecialCourseMakeupOccurrence,
+  getCourseMakeupOverview,
+  resolveCourseMakeupAsNotNeeded,
+} from "../staff/course-makeups";
+import {
+  applyDailyChange,
+  DayChangeError,
+  getDailyChangesOverview,
+  previewDailyChange,
+} from "../staff/day-changes";
+import {
   ProgramCalendarError,
   cancelFutureCalendarSlot,
   changeCalendarDraft,
@@ -232,6 +248,31 @@ function courseAttendanceError(caught: unknown): Response {
   if (caught.code === "not_enrolled") return error("invalid_request", "Энэ сурагч тухайн хичээлийн бүртгэлтэй жагсаалтад алга.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "future_occurrence") return error("invalid_request", "Ирцийг хичээл болох өдрөөс эхэлж тэмдэглэнэ.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function courseMakeupError(caught: unknown): Response {
+  if (!(caught instanceof CourseMakeupError)) {
+    return error("internal_error", "Нөхөх хичээлийн мэдээллийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Сонгосон нөхөх хичээл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "not_eligible") return error("invalid_request", "Энэ таслалт нөхөх хичээлд одоогоор тохирохгүй байна.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "capacity") return error("invalid_request", "Сонгосон хичээлийн сул суудал дүүрсэн байна.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", "Мэдээлэл өөрчлөгдсөн байна. Жагсаалтаа шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function dayChangeError(caught: unknown): Response {
+  if (!(caught instanceof DayChangeError)) {
+    return error("internal_error", "Өдрийн хуваарийн өөрчлөлтийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  const classContext = caught.blockingClassLabel ? `${caught.blockingClassLabel}: ` : "";
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Сонгосон өдрийн хичээл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "attendance_protected") return error("invalid_request", `${classContext}ирц тэмдэглэсэн тул цуцлах боломжгүй.`, 409, { "Cache-Control": "no-store" });
+  if (caught.code === "history_protected") return error("invalid_request", `${classContext}дууссан хичээлийн түүхийг өөрчлөх боломжгүй.`, 409, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", `${classContext}хуваарь бэлэн биш эсвэл сонгосон өдөр давхардсан байна. Хуваариа шалгана уу.`, 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Өдөр, анги, орлуулах огноогоо шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 function staffAdministrationError(caught: unknown): Response {
@@ -842,6 +883,104 @@ export async function handleApiRequest(
       return json({ ok: true, ...result }, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
       return courseAttendanceError(caught);
+    }
+  }
+
+  if (path === "/api/staff/makeups") {
+    if (request.method === "GET") {
+      const denied = await requireStaffCapability(request, env, "makeup.view");
+      if (denied) return denied;
+      const principal = await staffPrincipalForRequest(request, env);
+      if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+      const url = new URL(request.url);
+      try {
+        return json(await getCourseMakeupOverview(env, principal, {
+          enrollmentId: url.searchParams.get("enrollment") || "",
+          classSessionId: url.searchParams.get("class") || "",
+          curriculumLessonId: url.searchParams.get("lesson") || "",
+        }), 200, { "Cache-Control": "no-store" });
+      } catch (caught) {
+        return courseMakeupError(caught);
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    if (!hasStaffCapability(principal, "makeup.manage")) {
+      return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+    }
+    try {
+      const payload = await request.json() as Record<string, unknown>;
+      let result: Record<string, unknown> = {};
+      switch (payload.action) {
+        case "makeup.no-makeup":
+          result = await resolveCourseMakeupAsNotNeeded(env, principal, payload);
+          break;
+        case "makeup.assign-normal":
+          result = await assignCourseMakeupToNormalClass(env, principal, payload);
+          break;
+        case "makeup.assign-special":
+          result = await assignCourseMakeupToSpecialOccurrence(env, principal, payload);
+          break;
+        case "makeup.special-create":
+          result = await createSpecialCourseMakeupOccurrence(env, principal, payload);
+          break;
+        case "makeup.assignment-cancel":
+          await cancelCourseMakeupAssignment(env, principal, payload);
+          break;
+        case "makeup.special-cancel":
+          await cancelSpecialCourseMakeupOccurrence(env, principal, payload);
+          break;
+        default:
+          return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+      }
+      return json({ ok: true, ...result }, 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return courseMakeupError(caught);
+    }
+  }
+
+  if (path === "/api/staff/day-changes") {
+    if (request.method === "GET") {
+      const denied = await requireStaffCapability(request, env, "calendar.manage");
+      if (denied) return denied;
+      const principal = await staffPrincipalForRequest(request, env);
+      if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+      try {
+        return json(await getDailyChangesOverview(
+          env, principal, new URL(request.url).searchParams.get("date") || undefined,
+        ), 200, { "Cache-Control": "no-store" });
+      } catch (caught) {
+        return dayChangeError(caught);
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    if (!hasStaffCapability(principal, "calendar.manage")) {
+      return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+    }
+    try {
+      const payload = await request.json() as Record<string, unknown>;
+      if (payload.action === "day-change.preview") {
+        return json({ ok: true, ...await previewDailyChange(env, principal, payload) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "day-change.apply") {
+        return json({ ok: true, ...await applyDailyChange(env, principal, payload) }, 200, { "Cache-Control": "no-store" });
+      }
+      return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return dayChangeError(caught);
     }
   }
 

@@ -146,10 +146,10 @@ calendar slots. The template is provenance and initialization input; D1 is the
 operational authority after import.
 
 School-calendar setup is annual planning. A planned one-class exception stays
-on that class's Schedule. A future weather, illness, or building cancellation
-will be entered from a daily teacher attention surface, but it will reuse the
-same safe structural calendar-change service and immutable history rather than
-introducing a second cancellation meaning.
+on that class's Schedule. Weather, illness, or building cancellations are
+entered through `/staff/day-changes/`, which reuses the same safe structural
+calendar-change service and immutable history rather than introducing a second
+cancellation meaning.
 
 A calendar revision is drafted from the class's Offering-pinned program and meeting
 rule, then finalized internally. The caller cannot substitute another program
@@ -246,8 +246,8 @@ therefore cannot invalidate a saved mark. `course_attendance_change` records
 every real transition, including clearing back to unmarked; same-status taps
 create no duplicate history. A cleared row does not contribute to calendar
 protection. Stored attendance and effective attendance are distinct: historical
-explicit absent rows remain valid, while downstream make-up logic must later
-use post-occurrence effective absence and must never act before class end.
+explicit absent rows remain valid, while the make-up review service uses
+post-occurrence effective absence and never acts before class end.
 
 `course_absence_notice` is deliberately distinct from attendance and currently
 has only the teacher-created `staff_manual` source. It may have an optional
@@ -256,6 +256,24 @@ attendance status automatically. Neither events nor parent absence reporting
 are part of this foundation. Attendance roster membership uses the supportable
 confirmed/cancelled enrollment timestamp interval, while existing attendance
 history remains visible for later correction after withdrawal.
+
+## Course Make-up And Daily Changes
+
+`/staff/makeups/` is a teacher/admin daily queue derived from ended course
+occurrences. An unchecked or explicitly absent roster member may be reviewed;
+present/late and future unchecked rows may not. Prior notice is context only.
+The teacher records `Нөхөхгүй`, assigns a future normal class with capacity and
+the exact same `CurriculumLesson`, or creates a separate capacity-limited
+same-lesson occurrence. A normal assignment stores class plus lesson, so its
+display date follows safe target-calendar reflow. Source attendance correction
+invalidates the active decision and assignment while preserving history.
+
+`/staff/day-changes/` handles one-class cancellation, all-class course closure,
+replacement dates, whole-day moves, and class-specific extra dates. It excludes
+unrelated events, rejects attendance/history-protected occurrences, preflights
+all classes, and applies a whole-day operation atomically. Each action creates
+new immutable current calendar revisions and one coarse audit event; it does not
+change attendance, make-up identity, enrollment, or send notifications.
 
 ## Staff Setup Surface
 
@@ -288,6 +306,9 @@ The protected Mongolian setup is organized around concrete work:
 - `/staff/attendance/` is the daily teacher/admin roster for annual and summer
   course occurrences. It is intentionally separate from schedule editing and
   is unavailable to accountants.
+- `/staff/makeups/` resolves ended effective absences through teacher decisions;
+  `/staff/day-changes/` handles unexpected course-day changes through the same
+  authoritative calendar model. Both are unavailable to accountants.
 - Selected Program and published class-calendar details can be printed/saved as
   PDF or copied as TSV for Excel. Schedule also provides a current annual
   Stage 1-3 consolidated timetable. These reports are built only after the
@@ -339,6 +360,6 @@ real configuration is created. Staging fixtures are explicitly fake and cover
 annual plus summer weekday/daily calendar behavior. Events are exercised in
 isolated service tests rather than appearing as a routine staging list item.
 
-Attendance, parent absence notices, make-up eligibility, full finance,
-generalized public registration, schedule email jobs, and Facebook API
-integration remain deferred.
+Parent absence submission, make-up invitation/completion, event attendance,
+full finance, generalized public registration, schedule email jobs, and
+Facebook API integration remain deferred.

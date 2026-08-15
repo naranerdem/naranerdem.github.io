@@ -665,6 +665,18 @@ try {
   assert.equal(teacherAttendanceMutation.status, 200, "teachers can manage course attendance");
   assert.equal((await api(env, "/api/staff/attendance?date=2026-08-12")).status, 401, "attendance roster is never public");
   assert.equal((await api(env, "/api/staff/attendance", { method: "PUT" })).status, 405, "unsupported attendance methods are rejected");
+  assert.equal((await api(env, "/api/staff/makeups")).status, 401, "make-up student data is never public");
+  assert.equal((await api(env, "/api/staff/day-changes")).status, 401, "daily schedule operations are never public");
+  assert.equal((await api(env, "/api/staff/makeups", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` } })).status, 403, "accountants cannot view make-up student data");
+  assert.equal((await api(env, "/api/staff/day-changes", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` } })).status, 403, "accountants cannot manage course days");
+  assert.equal((await api(env, "/api/staff/makeups", { method: "PUT" })).status, 405, "unsupported make-up methods are rejected");
+  assert.equal((await api(env, "/api/staff/day-changes", { method: "PUT" })).status, 405, "unsupported daily-change methods are rejected");
+  assert.equal((await api(env, "/api/staff/makeups", {
+    method: "POST", headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}`, Origin: env.APP_ORIGIN }, body: { action: "unknown" },
+  })).status, 404, "unknown make-up actions are rejected");
+  assert.equal((await api(env, "/api/staff/day-changes", {
+    method: "POST", headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}`, Origin: env.APP_ORIGIN }, body: { action: "unknown" },
+  })).status, 404, "unknown daily-change actions are rejected");
   await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "disabled", new Date(baseTime.getTime() + 433_000));
   assert.equal(await resolveStaffPrincipal(env, roleLogin.rawSession, new Date(baseTime.getTime() + 434_000)), null);
   await setStaffAccountStatus(env, adminLogin.verified.principal, "staff-role-change", "active", new Date(baseTime.getTime() + 435_000));

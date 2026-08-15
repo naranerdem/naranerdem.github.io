@@ -2343,7 +2343,7 @@ textarea:focus {
 .staff-attendance-list,
 .staff-attendance-roster {
   display: grid;
-  gap: 0.5rem;
+  gap: 0;
 }
 
 .staff-attendance-occurrence,
@@ -2363,6 +2363,7 @@ textarea:focus {
 
 .staff-attendance-roster > article {
   grid-template-columns: minmax(0, 1fr);
+  padding: 0.45rem 0;
 }
 
 .staff-attendance-occurrence.selected {
@@ -2416,39 +2417,47 @@ textarea:focus {
 }
 
 .staff-attendance-student {
+  align-items: center;
+  display: grid;
+  gap: 0.25rem 0.7rem;
+  grid-template-columns: minmax(5.5rem, 1fr) auto;
   min-width: 0;
 }
 
-.staff-attendance-student > strong {
-  display: block;
-  margin-bottom: 0.35rem;
+.staff-attendance-student-name {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.4rem;
+  min-width: 0;
+}
+
+.staff-attendance-student-name strong {
+  overflow-wrap: anywhere;
 }
 
 .staff-attendance-checklist {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.35rem 0.55rem;
+  gap: 0.2rem 0.55rem;
+  justify-content: flex-end;
 }
 
 .staff-attendance-statuses {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.6rem;
 }
 
 .staff-attendance-check {
   align-items: center;
-  border: 1px solid #cbd3df;
-  border-radius: 6px;
-  background: #fff;
   color: var(--ink);
   cursor: pointer;
   display: inline-flex;
-  gap: 0.35rem;
-  min-height: 40px;
-  padding: 0.4rem 0.55rem;
+  gap: 0.3rem;
+  min-height: 36px;
+  padding: 0.2rem 0;
   font-size: 0.84rem;
   font-weight: 750;
   touch-action: manipulation;
@@ -2463,8 +2472,6 @@ textarea:focus {
 }
 
 .staff-attendance-check.selected {
-  border-color: var(--blue);
-  background: rgba(7, 58, 175, 0.08);
   color: var(--blue-deep);
 }
 
@@ -2510,6 +2517,8 @@ textarea:focus {
   cursor: pointer;
   font-size: 0.82rem;
   font-weight: 700;
+  min-height: 36px;
+  touch-action: manipulation;
 }
 
 .staff-attendance-notice-toggle input {
@@ -2522,9 +2531,12 @@ textarea:focus {
 }
 
 .staff-attendance-notice {
+  background: rgba(7, 58, 175, 0.08);
+  border-radius: 4px;
   color: var(--blue-deep);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 750;
+  padding: 0.1rem 0.25rem;
 }
 
 .staff-attendance-menu {
@@ -2582,7 +2594,171 @@ textarea:focus {
 .staff-attendance-row-error {
   color: #a11919 !important;
   font-size: 0.8rem !important;
-  margin-top: 0.35rem !important;
+  grid-column: 1 / -1;
+  margin-top: 0 !important;
+}
+
+.staff-makeup-list,
+.staff-makeup-group,
+.staff-makeup-targets,
+.staff-makeup-special-form {
+  display: grid;
+  gap: 0;
+}
+
+.staff-makeup-group + .staff-makeup-group,
+.staff-makeup-scheduled-section {
+  margin-top: 1.25rem;
+}
+
+.staff-makeup-group-heading {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.45rem 0;
+}
+
+.staff-makeup-group-heading span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.staff-makeup-row,
+.staff-makeup-target {
+  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.6rem 0;
+}
+
+.staff-makeup-row p,
+.staff-makeup-target p,
+.staff-makeup-detail p {
+  color: var(--muted);
+  font-size: 0.84rem;
+  margin: 0.15rem 0 0;
+}
+
+.staff-makeup-row .button,
+.staff-makeup-target .button {
+  min-height: 38px;
+  padding: 0.35rem 0.6rem;
+}
+
+.staff-makeup-detail {
+  border-block: 1px solid var(--line);
+  margin-top: 1.1rem;
+  padding: 1rem 0;
+}
+
+.staff-makeup-targets h3 {
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.staff-makeup-special-form {
+  gap: 0.7rem;
+  padding: 0 0 1rem;
+}
+
+.staff-makeup-special-form fieldset {
+  border: 0;
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+}
+
+.staff-makeup-special-form legend {
+  font-weight: 800;
+  margin-bottom: 0.25rem;
+}
+
+.staff-makeup-special-form fieldset label {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+  min-height: 36px;
+}
+
+.staff-day-list {
+  display: grid;
+  gap: 0;
+}
+
+.staff-day-row {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 0.6rem 0;
+}
+
+.staff-day-row p,
+.staff-day-operation p,
+.staff-day-confirmation p {
+  color: var(--muted);
+  font-size: 0.84rem;
+  margin: 0.15rem 0 0;
+}
+
+.staff-day-cancelled {
+  color: #8f2424;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.staff-day-single-form {
+  gap: 0.4rem;
+  min-inline-size: min(18rem, calc(100vw - 2rem));
+  padding: 0.6rem;
+}
+
+.staff-day-single-form label,
+.staff-day-move-form label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.staff-day-single-form small {
+  color: var(--muted);
+}
+
+.staff-day-operation,
+.staff-day-confirmation,
+.staff-day-extra {
+  margin-top: 1rem;
+}
+
+.staff-day-move-form {
+  align-items: end;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-bottom: 0.75rem;
+}
+
+.staff-day-confirmation {
+  border-left: 3px solid var(--blue);
+  padding: 0.3rem 0 0.3rem 0.8rem;
+}
+
+.staff-day-confirmation h2 {
+  font-size: 1.08rem;
+  margin-bottom: 0.25rem;
+}
+
+.staff-day-confirmation ul {
+  margin: 0.45rem 0;
+  padding-left: 1.1rem;
 }
 
 .staff-calendar-actions {
@@ -3018,19 +3194,13 @@ textarea:focus {
     width: 100%;
   }
 
-  .staff-attendance-occurrence,
-  .staff-attendance-roster > article {
+  .staff-attendance-occurrence {
     grid-template-columns: 1fr;
     align-items: start;
   }
 
-  .staff-attendance-occurrence > .button,
-  .staff-attendance-statuses {
+  .staff-attendance-occurrence > .button {
     justify-self: stretch;
-  }
-
-  .staff-attendance-statuses {
-    justify-content: flex-start;
   }
 
   .staff-attendance-summary {
@@ -3038,9 +3208,41 @@ textarea:focus {
     flex-direction: column;
   }
 
-  .staff-attendance-future-note {
-    max-width: none;
-    text-align: left;
+  .staff-attendance-student {
+    grid-template-columns: minmax(5.5rem, 1fr) auto;
+  }
+
+  .staff-makeup-row,
+  .staff-makeup-target {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .staff-makeup-row > .staff-inline-actions,
+  .staff-makeup-target > .button {
+    justify-self: start;
+  }
+
+  .staff-day-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .staff-day-row > div {
+    grid-row: span 2;
+  }
+
+  .staff-day-move-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 23rem) {
+  .staff-attendance-student {
+    grid-template-columns: 1fr;
+  }
+
+  .staff-attendance-checklist {
+    justify-content: flex-start;
   }
 }
 

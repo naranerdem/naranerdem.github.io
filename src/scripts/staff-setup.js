@@ -68,6 +68,67 @@ export async function postAttendanceAction(action, payload = {}) {
   return response.json();
 }
 
+export async function getCourseMakeups(source = null) {
+  const params = new URLSearchParams();
+  if (source) {
+    params.set("enrollment", source.enrollmentId);
+    params.set("class", source.classSessionId);
+    params.set("lesson", source.curriculumLessonId);
+  }
+  const response = await fetch(`/api/staff/makeups${params.size ? `?${params.toString()}` : ""}`, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error("Нөхөх хичээлийн мэдээллийг авч чадсангүй.");
+  return response.json();
+}
+
+export async function postCourseMakeupAction(action, payload = {}) {
+  const response = await fetch("/api/staff/makeups", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error?.message || "Нөхөх хичээлийг хадгалж чадсангүй.");
+  }
+  return response.json();
+}
+
+export async function getDailyChanges(date = "") {
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  const response = await fetch(`/api/staff/day-changes${params.size ? `?${params.toString()}` : ""}`, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new Error("Өдрийн хуваарийг авч чадсангүй.");
+  return response.json();
+}
+
+export async function postDailyChange(action, payload = {}) {
+  const response = await fetch("/api/staff/day-changes", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error?.message || "Өдрийн өөрчлөлтийг хадгалж чадсангүй.");
+  }
+  return response.json();
+}
+
+export async function hasDayChangeAccess() {
+  const response = await fetch("/api/staff/session", { credentials: "same-origin" });
+  if (!response.ok) return false;
+  const session = await response.json();
+  return Boolean(session.authenticated && (session.capabilities || []).includes("calendar.manage"));
+}
+
 export async function hasSetupAccess() {
   const response = await fetch("/api/staff/session", { credentials: "same-origin" });
   if (!response.ok) return false;
@@ -82,6 +143,14 @@ export async function hasAttendanceAccess() {
   const session = await response.json();
   const capabilities = session.capabilities || [];
   return Boolean(session.authenticated && capabilities.includes("attendance.view") && capabilities.includes("attendance.manage"));
+}
+
+export async function hasMakeupAccess() {
+  const response = await fetch("/api/staff/session", { credentials: "same-origin" });
+  if (!response.ok) return false;
+  const session = await response.json();
+  const capabilities = session.capabilities || [];
+  return Boolean(session.authenticated && capabilities.includes("makeup.view") && capabilities.includes("makeup.manage"));
 }
 
 export function currentYearId(data, selectedId) {
