@@ -51,20 +51,3 @@ export const classSessionConfig = {
     },
   ],
 };
-
-export const feeConfig = {
-  currentPricesConfigured: false,
-  standardPaymentPlans: [
-    {
-      id: "full-year",
-      label: "Бүтэн жилээр төлөх",
-      summary: "Нэг удаа төлөх стандарт сонголт. Нийт дүн бага байна.",
-    },
-    {
-      id: "two-part",
-      label: "2 хувааж төлөх",
-      summary: "Жилийн төлбөрийг хоёр хэсэгт хуваах стандарт сонголт.",
-    },
-  ],
-  ancillaryCharges: [],
-};

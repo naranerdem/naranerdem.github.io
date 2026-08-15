@@ -386,12 +386,19 @@ export async function getOfferingOverview(env: WorkerEnv): Promise<{
       offering.use_academic_year_breaks AS useAcademicYearBreaks,
       offering.charge_mode AS chargeMode, offering.facebook_group_url AS facebookGroupUrl,
       offering.default_class_duration_minutes AS defaultClassDurationMinutes,
+      pricing.one_time_amount_mnt AS oneTimeAmountMnt,
+      pricing.two_installment_enabled AS twoInstallmentEnabled,
+      pricing.first_installment_amount_mnt AS firstInstallmentAmountMnt,
+      pricing.second_installment_amount_mnt AS secondInstallmentAmountMnt,
+      pricing.second_installment_due_on AS secondInstallmentDueOn,
+      pricing.updated_at AS pricingUpdatedAt,
       offering.note, offering.status, offering.is_test AS isTest,
       offering.test_run_id AS testRunId, offering.updated_at AS updatedAt
       FROM activity_offering AS offering
       LEFT JOIN curriculum_program AS program ON program.id = offering.curriculum_program_id
       LEFT JOIN curriculum_program_family AS family ON family.id = program.program_family_id
       LEFT JOIN academic_year AS year ON year.id = offering.academic_year_id
+      LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
       WHERE offering.status = 'active'
       ORDER BY offering.starts_on DESC, offering.kind, offering.title`).all<Record<string, unknown>>(),
     env.DB.prepare(`SELECT id, activity_offering_id AS offeringId, local_date AS localDate,
@@ -408,6 +415,7 @@ export async function getOfferingOverview(env: WorkerEnv): Promise<{
     offerings: offerings.results.map((entry) => ({
       ...entry,
       useAcademicYearBreaks: Boolean(entry.useAcademicYearBreaks),
+      twoInstallmentEnabled: Boolean(entry.twoInstallmentEnabled),
     })),
     eventOccurrences: occurrences.results.map((entry) => ({
       ...entry,

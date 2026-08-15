@@ -1,8 +1,8 @@
-import { feeConfig } from "../../config/academic-year";
 import { rulesContent } from "../../content/rules";
 import { normalizeEmail, validEmail } from "../auth/email-address";
 import { randomToken, sha256 } from "../auth/crypto";
 import type { D1Database, D1Result, WorkerEnv } from "../env";
+import { getPaymentCollectionSettings, getPaymentCollectionSettingsFromDatabase, type CoursePaymentPlanCode } from "../staff/course-pricing";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -33,8 +33,8 @@ export interface RegistrationSubmissionInput {
     selectedClassSessionId?: string;
     preferredWaitlistClassSessionId?: string;
     codeInput?: string;
+    paymentPlanCode?: CoursePaymentPlanCode;
   }>;
-  paymentPlanCode: string;
   parentRulesAcknowledged: boolean;
   studentRulesAcknowledged: boolean;
   turnstileToken: string;
@@ -46,6 +46,12 @@ interface ClassRow {
   stageCode: StageCode;
   status: string;
   registrationStatus: string;
+  offeringId: string | null;
+  oneTimeAmountMnt: number | null;
+  twoInstallmentEnabled: number | null;
+  firstInstallmentAmountMnt: number | null;
+  secondInstallmentAmountMnt: number | null;
+  secondInstallmentDueOn: string | null;
 }
 
 interface ChallengeRow {
@@ -153,6 +159,7 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
       selectedClassSessionId: clean(source.selectedClassSessionId, 100),
       preferredWaitlistClassSessionId: clean(source.preferredWaitlistClassSessionId, 100),
       codeInput: clean(source.codeInput, 120),
+      paymentPlanCode: source.paymentPlanCode,
     };
     if (!child.surname || !child.givenName || !genders.has(child.gender) || !validDate(child.dateOfBirth)) {
       throw new RegistrationSubmissionError("invalid_child");
@@ -172,12 +179,12 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
     if (child.selectedClassSessionId && child.selectedClassSessionId === child.preferredWaitlistClassSessionId) {
       throw new RegistrationSubmissionError("duplicate_class_choice");
     }
+    if (child.paymentPlanCode && !(["single", "two_installment"] as const).includes(child.paymentPlanCode)) {
+      throw new RegistrationSubmissionError("invalid_payment_plan");
+    }
     return child;
   });
 
-  if (!feeConfig.standardPaymentPlans.some((plan) => plan.id === input.paymentPlanCode)) {
-    throw new RegistrationSubmissionError("invalid_payment_plan");
-  }
   if (!input.parentRulesAcknowledged || !input.studentRulesAcknowledged) {
     throw new RegistrationSubmissionError("rules_not_acknowledged");
   }
@@ -193,9 +200,18 @@ async function loadChosenClasses(database: D1Database, ids: string[]): Promise<C
       class_session.academic_year_id AS academicYearId,
       class_session.stage_code AS stageCode,
       class_session.status AS status,
-      academic_year.registration_status AS registrationStatus
+      academic_year.registration_status AS registrationStatus,
+      class_session.activity_offering_id AS offeringId,
+      pricing.one_time_amount_mnt AS oneTimeAmountMnt,
+      pricing.two_installment_enabled AS twoInstallmentEnabled,
+      pricing.first_installment_amount_mnt AS firstInstallmentAmountMnt,
+      pricing.second_installment_amount_mnt AS secondInstallmentAmountMnt,
+      pricing.second_installment_due_on AS secondInstallmentDueOn
     FROM class_session
     INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
+    INNER JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
+      AND offering.kind IN ('annual_course', 'summer_course') AND offering.status = 'active'
+    LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
     WHERE class_session.id IN (${placeholders})
       AND class_session.is_test = 1
       AND class_session.is_test_only = 1
@@ -291,6 +307,21 @@ export async function createRegistrationDraft(
       }
     }
   }
+  const paymentSettings = await getPaymentCollectionSettings(env);
+  const paymentSnapshots = input.children.map((child) => {
+    if (!child.selectedClassSessionId) return null;
+    const selected = classById.get(child.selectedClassSessionId);
+    if (!selected || !paymentSettings.complete || !selected.oneTimeAmountMnt || selected.oneTimeAmountMnt < 1) {
+      throw new RegistrationSubmissionError("pricing_unavailable");
+    }
+    if (child.paymentPlanCode === "single") return { code: "single" as const, initial: selected.oneTimeAmountMnt, second: null, due: null };
+    if (child.paymentPlanCode === "two_installment" && selected.twoInstallmentEnabled
+      && selected.firstInstallmentAmountMnt && selected.secondInstallmentAmountMnt && selected.secondInstallmentDueOn) {
+      return { code: "two_installment" as const, initial: selected.firstInstallmentAmountMnt,
+        second: selected.secondInstallmentAmountMnt, due: selected.secondInstallmentDueOn };
+    }
+    throw new RegistrationSubmissionError("invalid_payment_plan");
+  });
 
   const now = nowDate.toISOString();
   const provisionalDeadlineAt = addSeconds(nowDate, 20 * 60);
@@ -315,7 +346,7 @@ export async function createRegistrationDraft(
     draftId, accessTokenHash, [...yearIds][0], input.guardian.fullName,
     input.guardian.relationship, input.guardian.primaryPhone, input.guardian.secondaryPhone || null,
     input.guardian.email, normalizedEmail, input.guardian.facebookName || null,
-    input.guardian.homeAddress, input.paymentPlanCode, rulesContent.parent.version,
+    input.guardian.homeAddress, "per_child", rulesContent.parent.version,
     rulesContent.student.version, expiresAt, testRunId, now, now,
   )];
 
@@ -325,15 +356,17 @@ export async function createRegistrationDraft(
         id, registration_draft_id, position, surname, given_name, gender,
         date_of_birth, current_grade, current_school, returning_status,
         previous_stage_code, selected_stage_code, selected_class_session_id,
-        preferred_waitlist_class_session_id, code_input, status, is_test,
+        preferred_waitlist_class_session_id, code_input, payment_plan_code,
+        initial_payment_amount_mnt, second_payment_amount_mnt, second_payment_due_on, status, is_test,
         test_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
     `).bind(
       childIds[index], draftId, index, child.surname, child.givenName, child.gender,
       child.dateOfBirth, child.currentGrade, child.currentSchool || null,
       child.returningStatus, child.previousStageCode || null, child.selectedStageCode,
       child.selectedClassSessionId || null, child.preferredWaitlistClassSessionId || null,
-      child.codeInput || null, testRunId, now, now,
+      child.codeInput || null, paymentSnapshots[index]?.code ?? null, paymentSnapshots[index]?.initial ?? null,
+      paymentSnapshots[index]?.second ?? null, paymentSnapshots[index]?.due ?? null, testRunId, now, now,
     ));
   });
 
@@ -731,6 +764,10 @@ export async function registrationStatusForSession(
       registration_draft_child.given_name AS givenName,
       registration_draft_child.status,
       registration_draft_child.selected_stage_code AS selectedStageCode,
+      registration_draft_child.payment_plan_code AS paymentPlanCode,
+      registration_draft_child.initial_payment_amount_mnt AS initialPaymentAmountMnt,
+      registration_draft_child.second_payment_amount_mnt AS secondPaymentAmountMnt,
+      registration_draft_child.second_payment_due_on AS secondPaymentDueOn,
       selected_class.display_label AS selectedClassLabel,
       selected_class.weekday AS selectedClassWeekday,
       selected_class.start_time AS selectedClassStartTime,
@@ -754,7 +791,16 @@ export async function registrationStatusForSession(
     WHERE registration_draft_child.registration_draft_id = ?
     ORDER BY registration_draft_child.position
   `).bind(draft.id).all<Record<string, unknown>>();
-  return { ...draft, children: children.results, now: nowDate.toISOString() };
+  const hasActiveInitialPaymentHold = children.results.some((child) => child.holdType === "initial_payment"
+    && child.holdStatus === "active" && typeof child.holdDeadlineAt === "string" && child.holdDeadlineAt > nowDate.toISOString());
+  const paymentCollectionSettings = hasActiveInitialPaymentHold
+    ? await getPaymentCollectionSettingsFromDatabase(database)
+    : null;
+  return { ...draft, children: children.results, now: nowDate.toISOString(),
+    paymentCollection: paymentCollectionSettings?.complete ? {
+      bankName: paymentCollectionSettings.bankName, accountHolderName: paymentCollectionSettings.accountHolderName,
+      accountNumber: paymentCollectionSettings.accountNumber, transferInstruction: paymentCollectionSettings.transferInstruction,
+    } : null };
 }
 
 export async function joinOriginalClassWaitlist(

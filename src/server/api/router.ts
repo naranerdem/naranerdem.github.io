@@ -51,6 +51,7 @@ import {
   type StaffSessionPolicyInput,
 } from "../staff/session-policy";
 import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
+import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
 import {
   CourseAttendanceError,
   cancelCourseAbsenceNotice,
@@ -1171,6 +1172,26 @@ export async function handleApiRequest(
             month: Number(payload.month), day: Number(payload.day), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "offering-course-pricing.save":
+          await saveCoursePricing(env, principal, {
+            offeringId: String(payload.offeringId ?? ""),
+            oneTimeAmountMnt: Number(payload.oneTimeAmountMnt),
+            twoInstallmentEnabled: Boolean(payload.twoInstallmentEnabled),
+            firstInstallmentAmountMnt: payload.firstInstallmentAmountMnt == null ? null : Number(payload.firstInstallmentAmountMnt),
+            secondInstallmentAmountMnt: payload.secondInstallmentAmountMnt == null ? null : Number(payload.secondInstallmentAmountMnt),
+            secondInstallmentDueOn: typeof payload.secondInstallmentDueOn === "string" ? payload.secondInstallmentDueOn : null,
+            expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : null,
+          });
+          break;
+        case "payment-collection-settings.save":
+          await updatePaymentCollectionSettings(env, principal, {
+            bankName: typeof payload.bankName === "string" ? payload.bankName : null,
+            accountHolderName: typeof payload.accountHolderName === "string" ? payload.accountHolderName : null,
+            accountNumber: typeof payload.accountNumber === "string" ? payload.accountNumber : null,
+            transferInstruction: typeof payload.transferInstruction === "string" ? payload.transferInstruction : null,
+            expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         default:
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
@@ -1182,6 +1203,15 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Энэ тохиргоо өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Эхлэх өдрийн утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof CoursePricingError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        const message = caught.code === "forbidden" ? "Энэ төлбөрийн мэдээллийг өөрчлөх эрх алга."
+          : caught.code === "conflict" ? "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+            : caught.code === "payment_settings_incomplete" ? "Бүртгэл нээхийн өмнө банкны шилжүүлгийн мэдээллийг бүрэн тохируулна уу."
+              : caught.code === "not_ready" ? "Бүртгэл нээхийн өмнө төлбөрийн нөхцөлийг бүрэн тохируулна уу."
+                : "Төлбөрийн нөхцөлийн мэдээллийг шалгана уу.";
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", message, status, { "Cache-Control": "no-store" });
       }
       return programCalendarError(caught);
     }

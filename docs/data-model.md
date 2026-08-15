@@ -43,7 +43,9 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, configurable registration-confirmation expiry (currently 24 hours), linked outbound email, and test provenance. It never stores the raw magic-link token.
 - `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
 - `registration_draft`: seven-day server-side guardian/contact snapshot, rule versions, payment-plan/code input, hashed draft-access token, and registration lifecycle. Staging rows are explicitly test-marked.
-- `registration_draft_child`: per-child snapshot with one nullable current/fallback class and one nullable preferred FIFO target. It is deliberately separate from canonical `student` identity.
+- `registration_draft_child`: per-child snapshot with one nullable current/fallback class and one nullable preferred FIFO target, plus the accepted course payment plan and base amount snapshot when a class is selected. It is deliberately separate from canonical `student` identity.
+- `offering_course_pricing`: one annual/summer Offering-owned base pricing record: a required positive integer MNT one-time amount and an optional two-installment amount/due-date set. It has no event, discount, credit, evidence, or allocation role.
+- `payment_collection_settings`: a small admin-managed singleton for bank-transfer instructions. It is operational configuration, not a credential, and must be complete before course registration can open.
 - `registration_capacity_hold`: one per draft child, moving from a 20-minute `provisional_email_confirmation` deadline to a fresh 24-hour `initial_payment` deadline after verification.
 - `registration_draft_waitlist_entry`: one verified FIFO entry per draft child. Unverified waitlist intent remains only on `registration_draft_child`.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.

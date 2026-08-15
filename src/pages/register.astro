@@ -1,12 +1,11 @@
 ---
-import { feeConfig } from "../config/academic-year";
 import { contact } from "../content/contact";
 import { siteIdentity } from "../content/homepage";
 import { registrationFormCopy, registrationPrototype } from "../content/registration";
 import { rulesContent } from "../content/rules";
 import "../styles/global.css";
 
-const registrationData = { feeConfig, registrationFormCopy, rulesContent };
+const registrationData = { registrationFormCopy, rulesContent };
 const formCopy = registrationFormCopy;
 ---
 
@@ -103,22 +102,6 @@ const formCopy = registrationFormCopy;
         <section class="form-section" aria-labelledby="children-title">
           <h2 id="children-title" class="visually-hidden">{formCopy.child.title}</h2>
           <div id="children-list" class="children-list"></div>
-        </section>
-
-        <section class="form-section payment-section" aria-labelledby="payment-title">
-          <h2 id="payment-title">{formCopy.payment.title}</h2>
-          <p>{formCopy.payment.help}</p>
-          <fieldset class="payment-options">
-            <legend>{formCopy.payment.planLegend} <span class="required-marker" aria-hidden="true">*</span></legend>
-            {
-              feeConfig.standardPaymentPlans.map((plan) => (
-                <label>
-                  <input type="radio" name="paymentPlan" value={plan.id} required />
-                  <span><strong>{plan.label}</strong><small>{plan.summary}</small></span>
-                </label>
-              ))
-            }
-          </fieldset>
         </section>
 
         <div class="form-actions">
@@ -335,6 +318,29 @@ const formCopy = registrationFormCopy;
         status.classList.toggle("field-message-error", isError);
       }
 
+      function formatMnt(amount) { return `${new Intl.NumberFormat("en-US").format(amount)} ₮`; }
+      function formatLocalDate(value) { if (!value) return ""; const date = new Date(`${value}T00:00:00Z`); return `${date.getUTCMonth() + 1}-р сарын ${date.getUTCDate()}`; }
+
+      function renderPaymentChoices(card, session) {
+        const target = card.querySelector("[data-payment-choice]");
+        if (!target) return;
+        if (!session || session.availability !== "available" || !session.paymentOptions?.length) {
+          target.hidden = true; target.innerHTML = ""; delete card.dataset.paymentPlanCode; return;
+        }
+        const options = session.paymentOptions;
+        const selected = options.some((option) => option.code === card.dataset.paymentPlanCode)
+          ? card.dataset.paymentPlanCode : "single";
+        card.dataset.paymentPlanCode = selected;
+        if (options.length === 1) {
+          target.hidden = false;
+          target.innerHTML = `<p class="payment-summary"><strong>Төлбөр: ${escapeText(formatMnt(options[0].initialAmountMnt))}</strong><input type="hidden" data-child-payment-plan value="single"></p>`;
+          return;
+        }
+        target.hidden = false;
+        target.innerHTML = `<fieldset class="payment-options"><legend>Төлбөрийн хэлбэр ${requiredMarker()}</legend>${options.map((option) => `<label><input type="radio" name="child-${card.dataset.childIndex}-payment-plan" data-child-payment-plan value="${escapeText(option.code)}" required ${option.code === selected ? "checked" : ""}><span><strong>${option.code === "single" ? "Нэг удаа төлөх" : "2 хувааж төлөх"} — ${escapeText(formatMnt(option.totalAmountMnt))}</strong>${option.code === "two_installment" ? `<small>Эхний төлбөр ${escapeText(formatMnt(option.initialAmountMnt))}<br>Дараагийн төлбөр ${escapeText(formatMnt(option.secondAmountMnt))} · ${escapeText(formatLocalDate(option.secondDueOn))}</small>` : ""}</span></label>`).join("")}</fieldset>`;
+        target.querySelectorAll("[data-child-payment-plan]").forEach((input) => input.addEventListener("change", () => { card.dataset.paymentPlanCode = input.value; saveDraft(); }));
+      }
+
       function renderClasses(card) {
         const stage = card.querySelector("[data-child-stage]").value;
         const target = card.querySelector("[data-class-options]");
@@ -346,16 +352,19 @@ const formCopy = registrationFormCopy;
 
         if (!stage) {
           fieldset.hidden = true;
+          renderPaymentChoices(card, null);
           return;
         }
         fieldset.hidden = false;
         if (!catalog) {
+          renderPaymentChoices(card, null);
           setCatalogMessage(card, catalogState === "loading" ? formCopy.classChoice.loading : formCopy.classChoice.unavailable);
           return;
         }
 
         const sessions = sessionsForStage(stage);
         if (!sessions.length) {
+          renderPaymentChoices(card, null);
           setCatalogMessage(card, formCopy.classChoice.noSessions);
           return;
         }
@@ -395,6 +404,7 @@ const formCopy = registrationFormCopy;
         waitlistOnlyButton.addEventListener("click", () => {
           target.querySelectorAll("[data-child-class]").forEach((input) => { input.checked = false; });
           delete card.dataset.selectedClassId;
+          delete card.dataset.paymentPlanCode;
           updateWaitlistOnlyButton();
           setCatalogMessage(card, "");
           saveDraft();
@@ -420,11 +430,14 @@ const formCopy = registrationFormCopy;
         target.querySelectorAll("[data-child-class]").forEach((input) => {
           input.addEventListener("change", () => {
             card.dataset.selectedClassId = input.value;
+            delete card.dataset.paymentPlanCode;
+            renderPaymentChoices(card, sessionForId(input.value));
             updateWaitlistOnlyButton();
             setCatalogMessage(card, "");
             saveDraft();
           });
         });
+        renderPaymentChoices(card, sessionForId(selected));
       }
 
       function updatePreviousStageVisibility(card) {
@@ -479,6 +492,7 @@ const formCopy = registrationFormCopy;
               <div class="class-options" data-class-options></div>
               <p class="catalog-message" data-catalog-message aria-live="polite" tabindex="-1"></p>
             </fieldset>
+            <div data-payment-choice hidden></div>
           </div>
         `;
         childrenList.append(card);
@@ -494,12 +508,13 @@ const formCopy = registrationFormCopy;
           updateRecommendation(card);
           renderClasses(card);
         });
-        stage.addEventListener("change", () => {
+          stage.addEventListener("change", () => {
           const selection = userStageSelection(stage.value);
           card.dataset.stageSource = selection.source;
           stage.value = selection.value;
           delete card.dataset.selectedClassId;
           delete card.dataset.waitlistClassId;
+          delete card.dataset.paymentPlanCode;
           renderClasses(card);
         });
         card.querySelector("[data-add-child]")?.addEventListener("click", () => {
@@ -577,11 +592,6 @@ const formCopy = registrationFormCopy;
         return form.querySelector(selector)?.value.trim() || formCopy.messages.notSelected;
       }
 
-      function selectedPlan() {
-        const id = form.querySelector("[name='paymentPlan']:checked")?.value;
-        return registrationData.feeConfig.standardPaymentPlans.find((plan) => plan.id === id)?.label || formCopy.messages.notSelected;
-      }
-
       function availabilityText(session) {
         if (!session) return formCopy.classChoice.unavailable;
         if (session.availability === "available") return formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats);
@@ -596,12 +606,12 @@ const formCopy = registrationFormCopy;
           const session = sessionForId(classId);
           const waitlist = sessionForId(waitlistId);
           const code = card.querySelector("[data-child-code]").value.trim();
-          return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span>${session ? `<span>${escapeText(formCopy.review.selectedClassHeading)}: ${escapeText(`${classText(session)} · ${availabilityText(session)}`)}</span>` : ""}${waitlist ? `<span>${escapeText(formCopy.review.waitlistHeading)}: ${escapeText(classText(waitlist))}</span>` : ""}${code ? `<span>${escapeText(formCopy.review.codeHeading)}: ${escapeText(code)}</span>` : ""}</li>`;
+          const plan = session?.paymentOptions?.find((option) => option.code === card.querySelector("[data-child-payment-plan]")?.value);
+          return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span>${session ? `<span>${escapeText(formCopy.review.selectedClassHeading)}: ${escapeText(`${classText(session)} · ${availabilityText(session)}`)}</span>` : ""}${plan ? `<span>Төлбөр: ${escapeText(plan.code === "single" ? "Нэг удаа төлөх" : "2 хувааж төлөх")} · ${escapeText(formatMnt(plan.initialAmountMnt))}${plan.secondAmountMnt ? `; дараагийн ${escapeText(formatMnt(plan.secondAmountMnt))} · ${escapeText(formatLocalDate(plan.secondDueOn))}` : ""}</span>` : ""}${waitlist ? `<span>${escapeText(formCopy.review.waitlistHeading)}: ${escapeText(classText(waitlist))}</span>` : ""}${code ? `<span>${escapeText(formCopy.review.codeHeading)}: ${escapeText(code)}</span>` : ""}</li>`;
         }).join("");
         reviewSummary.innerHTML = `
           <section><h3>${escapeText(formCopy.review.guardianHeading)}</h3><p>${escapeText(value("#guardian-name"))} · ${escapeText(value("#guardian-phone"))}<br>${escapeText(value("#guardian-email"))}</p></section>
           <section><h3>${escapeText(formCopy.review.childHeading)}</h3><ul>${children}</ul></section>
-          <section><h3>${escapeText(formCopy.review.paymentHeading)}</h3><p>${escapeText(selectedPlan())}</p></section>
           <section><h3>${escapeText(formCopy.review.acknowledgementHeading)}</h3><p>${escapeText(formCopy.review.guardianAcknowledged)}<br>${escapeText(formCopy.review.studentAcknowledged)}</p></section>
         `;
       }
@@ -681,8 +691,8 @@ const formCopy = registrationFormCopy;
             selectedClassSessionId: card.querySelector("[data-child-class]:checked")?.value || undefined,
             preferredWaitlistClassSessionId: card.querySelector("[data-child-waitlist]:checked")?.value || undefined,
             codeInput: card.querySelector("[data-child-code]").value.trim(),
+            paymentPlanCode: card.querySelector("[data-child-payment-plan]")?.value || undefined,
           })),
-          paymentPlanCode: form.querySelector("[name='paymentPlan']:checked")?.value || "",
           parentRulesAcknowledged: parentAcknowledged,
           studentRulesAcknowledged: studentAcknowledged,
           turnstileToken,
@@ -813,13 +823,14 @@ const formCopy = registrationFormCopy;
             const alternatives = child.status === "seat_unavailable"
               ? sessionsForStage(child.selectedStageCode).filter((session) => session.availability === "available")
               : [];
-            return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.holdDeadlineAt > status.now ? `<span>Хадгалах хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
+            const payment = child.initialPaymentAmountMnt ? `<span>Одоо төлөх: <strong>${escapeText(formatMnt(child.initialPaymentAmountMnt))}</strong>${child.secondPaymentAmountMnt ? `<br>Дараагийн төлбөр: ${escapeText(formatMnt(child.secondPaymentAmountMnt))} · ${escapeText(formatLocalDate(child.secondPaymentDueOn))}` : ""}</span>` : "";
+            return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.holdDeadlineAt > status.now ? `<span>Хадгалах хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
           showResult(alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `
             ${hasPaymentHold ? `<p class="status-emphasis">${escapeText(formCopy.messages.paymentHold)}</p>` : ""}
             ${seatUnavailable ? `<p class="form-error">${escapeText(formCopy.messages.seatLost)}</p>` : ""}
             <ul class="status-children">${children}</ul>
-            <p>${escapeText(formCopy.messages.paymentDeferred)}</p>
+            ${hasPaymentHold && status.paymentCollection ? `<section class="payment-instructions"><h3>Шилжүүлгийн мэдээлэл</h3><p>${escapeText(status.paymentCollection.bankName)}<br>${escapeText(status.paymentCollection.accountHolderName)}<br><strong>${escapeText(status.paymentCollection.accountNumber)}</strong>${status.paymentCollection.transferInstruction ? `<br>${escapeText(status.paymentCollection.transferInstruction)}` : ""}</p></section>` : ""}
           `);
           resultBody.querySelectorAll(".join-original-waitlist").forEach((button) => {
             button.addEventListener("click", async () => {

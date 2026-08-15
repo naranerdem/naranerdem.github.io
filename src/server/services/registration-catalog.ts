@@ -14,6 +14,11 @@ interface CatalogRow {
   activeHoldCount: number;
   remainingSeats: number;
   publicAvailability: "available" | "full" | "unavailable";
+  oneTimeAmountMnt: number | null;
+  twoInstallmentEnabled: number | null;
+  firstInstallmentAmountMnt: number | null;
+  secondInstallmentAmountMnt: number | null;
+  secondInstallmentDueOn: string | null;
 }
 
 export interface RegistrationCatalog {
@@ -30,6 +35,13 @@ export interface RegistrationCatalog {
       activeHoldCount: number;
       remainingSeats: number;
       availability: CatalogRow["publicAvailability"];
+      paymentOptions: Array<{
+        code: "single" | "two_installment";
+        totalAmountMnt: number;
+        initialAmountMnt: number;
+        secondAmountMnt?: number;
+        secondDueOn?: string;
+      }>;
     }>;
   }>;
   paymentPlans: [];
@@ -50,19 +62,29 @@ const stagingCatalogSql = `
     class_session.weekday AS weekday,
     class_session.start_time AS startTime,
     class_session.end_time AS endTime,
+    pricing.one_time_amount_mnt AS oneTimeAmountMnt,
+    pricing.two_installment_enabled AS twoInstallmentEnabled,
+    pricing.first_installment_amount_mnt AS firstInstallmentAmountMnt,
+    pricing.second_installment_amount_mnt AS secondInstallmentAmountMnt,
+    pricing.second_installment_due_on AS secondInstallmentDueOn,
     class_session.capacity AS capacity,
     COALESCE(confirmed.count, 0) AS confirmedCount,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
     MAX(class_session.capacity - COALESCE(confirmed.count, 0)
       - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0), 0) AS remainingSeats,
     CASE
-      WHEN class_session.status = 'closed' THEN 'unavailable'
+      WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
+        OR pricing.one_time_amount_mnt IS NULL
+        OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
       WHEN class_session.capacity - COALESCE(confirmed.count, 0)
         - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) > 0 THEN 'available'
       ELSE 'full'
     END AS publicAvailability
   FROM academic_year
   INNER JOIN class_session ON class_session.academic_year_id = academic_year.id
+  LEFT JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
+  LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
+  LEFT JOIN payment_collection_settings AS payment_settings ON payment_settings.singleton = 1
   LEFT JOIN (
     SELECT enrollment.class_session_id, COUNT(*) AS count
     FROM enrollment
@@ -107,19 +129,29 @@ const productionCatalogSql = `
     class_session.weekday AS weekday,
     class_session.start_time AS startTime,
     class_session.end_time AS endTime,
+    pricing.one_time_amount_mnt AS oneTimeAmountMnt,
+    pricing.two_installment_enabled AS twoInstallmentEnabled,
+    pricing.first_installment_amount_mnt AS firstInstallmentAmountMnt,
+    pricing.second_installment_amount_mnt AS secondInstallmentAmountMnt,
+    pricing.second_installment_due_on AS secondInstallmentDueOn,
     class_session.capacity AS capacity,
     COALESCE(confirmed.count, 0) AS confirmedCount,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
     MAX(class_session.capacity - COALESCE(confirmed.count, 0)
       - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0), 0) AS remainingSeats,
     CASE
-      WHEN class_session.status = 'closed' THEN 'unavailable'
+      WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
+        OR pricing.one_time_amount_mnt IS NULL
+        OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
       WHEN class_session.capacity - COALESCE(confirmed.count, 0)
         - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) > 0 THEN 'available'
       ELSE 'full'
     END AS publicAvailability
   FROM academic_year
   INNER JOIN class_session ON class_session.academic_year_id = academic_year.id
+  LEFT JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
+  LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
+  LEFT JOIN payment_collection_settings AS payment_settings ON payment_settings.singleton = 1
   LEFT JOIN (
     SELECT enrollment.class_session_id, COUNT(*) AS count
     FROM enrollment
@@ -189,6 +221,14 @@ export async function getRegistrationCatalog(
       years.set(row.academicYearId, year);
     }
 
+    const paymentOptions: RegistrationCatalog["academicYears"][number]["classSessions"][number]["paymentOptions"] = [];
+    if (row.oneTimeAmountMnt && row.oneTimeAmountMnt > 0) {
+      paymentOptions.push({ code: "single", totalAmountMnt: row.oneTimeAmountMnt, initialAmountMnt: row.oneTimeAmountMnt });
+      if (row.twoInstallmentEnabled && row.firstInstallmentAmountMnt && row.secondInstallmentAmountMnt && row.secondInstallmentDueOn) {
+        paymentOptions.push({ code: "two_installment", totalAmountMnt: row.firstInstallmentAmountMnt + row.secondInstallmentAmountMnt,
+          initialAmountMnt: row.firstInstallmentAmountMnt, secondAmountMnt: row.secondInstallmentAmountMnt, secondDueOn: row.secondInstallmentDueOn });
+      }
+    }
     year.classSessions.push({
       id: row.classSessionId,
       stageCode: row.stageCode,
@@ -199,6 +239,7 @@ export async function getRegistrationCatalog(
       activeHoldCount: row.activeHoldCount,
       remainingSeats: row.remainingSeats,
       availability: row.publicAvailability,
+      paymentOptions,
     });
   }
 

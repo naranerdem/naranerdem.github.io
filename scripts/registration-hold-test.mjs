@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -120,7 +120,7 @@ function env(database, overrides = {}) {
   };
 }
 
-function submission(classId, waitlistId, children = 1) {
+function submission(classId, waitlistId, children = 1, paymentPlanCode = "single") {
   return {
     guardian: {
       fullName: "Тест Асран",
@@ -140,8 +140,8 @@ function submission(classId, waitlistId, children = 1) {
       selectedClassSessionId: classId || undefined,
       preferredWaitlistClassSessionId: waitlistId || undefined,
       codeInput: "ANY-CODE",
+      paymentPlanCode: classId ? paymentPlanCode : undefined,
     })),
-    paymentPlanCode: "full-year",
     parentRulesAcknowledged: true,
     studentRulesAcknowledged: true,
     turnstileToken: "tested-before-service",
@@ -196,14 +196,10 @@ function session(now, expiresAt) {
 }
 
 try {
-  const migrations = [1, 2, 3, 4, 5]
-    .map((number) => readFileSync(path.resolve("migrations", `${String(number).padStart(4, "0")}_${[
-      "initial_registration_foundation",
-      "single_class_selection",
-      "email_verification_foundation",
-      "generic_code_input",
-      "registration_drafts_and_holds",
-    ][number - 1]}.sql`), "utf8"))
+  const migrations = readdirSync(path.resolve("migrations"))
+    .filter((name) => name.endsWith(".sql"))
+    .sort()
+    .map((name) => readFileSync(path.resolve("migrations", name), "utf8"))
     .join("\n");
   sqlite(migrations);
   const database = new SqliteD1();
@@ -215,6 +211,8 @@ try {
     ["class-last-seat", 1, "available", "10:00"],
     ["class-roomy", 3, "available", "12:00"],
     ["class-full-preferred", 1, "full", "14:00"],
+    ["class-priced", 10, "available", "16:00"],
+    ["class-second-offering", 10, "available", "17:00"],
   ]) {
     database.query(`
       INSERT INTO class_session (
@@ -223,10 +221,65 @@ try {
       ) VALUES (?, 'year-test', 'stage_1', ?, 'Бямба', ?, '15:20', ?, ?, 1, 1, 'catalog-test', ?, ?)
     `, [id, id, time, capacity, status, iso(), iso()]);
   }
+  database.query(`INSERT INTO activity_offering (
+    id, kind, title, academic_year_id, stage_code, use_academic_year_breaks,
+    charge_mode, status, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('offering-test', 'annual_course', 'Тест сургалт', 'year-test', 'stage_1', 1,
+    'paid', 'active', 1, 'catalog-test', ?, ?)`, [iso(), iso()]);
+  database.query("UPDATE class_session SET activity_offering_id = 'offering-test'");
+  database.query(`INSERT INTO offering_course_pricing (
+    activity_offering_id, one_time_amount_mnt, two_installment_enabled,
+    first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at
+  ) VALUES ('offering-test', 850000, 1, 450000, 450000, '2026-11-01', ?, ?)`, [iso(), iso()]);
+  database.query(`UPDATE payment_collection_settings SET bank_name = 'Тест банк',
+    account_holder_name = 'Тест эзэмшигч', account_number = '0000000000', updated_at = ? WHERE singleton = 1`, [iso()]);
+  database.query(`INSERT INTO activity_offering (
+    id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('offering-second-test', 'summer_course', 'Өөр тест сургалт', 'year-test', 'stage_1', 0, 'paid', 'active', 1, 'catalog-test', ?, ?);
+  UPDATE class_session SET activity_offering_id = 'offering-second-test' WHERE id = 'class-second-offering';
+  INSERT INTO offering_course_pricing (
+    activity_offering_id, one_time_amount_mnt, two_installment_enabled,
+    first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at
+  ) VALUES ('offering-second-test', 700000, 0, NULL, NULL, NULL, ?, ?)`, [iso(), iso(), iso(), iso()]);
 
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
   assert.equal(one.hasProvisionalHold, true);
   assert.equal(count(database, "registration_capacity_hold", "status = 'active'"), 1);
+  assert.deepEqual(database.query(`SELECT payment_plan_code AS paymentPlanCode,
+    initial_payment_amount_mnt AS initialAmount, second_payment_amount_mnt AS secondAmount
+    FROM registration_draft_child WHERE registration_draft_id = ?`, [one.draftId])[0],
+  { paymentPlanCode: "single", initialAmount: 850000, secondAmount: null }, "single-plan pricing is snapshotted at acceptance");
+
+  const twoInstallment = await createRegistrationDraft(env(database), submission("class-priced", undefined, 1, "two_installment"), new Date(iso(-3)));
+  const twoSnapshot = database.query(`SELECT payment_plan_code AS paymentPlanCode,
+    initial_payment_amount_mnt AS initialAmount, second_payment_amount_mnt AS secondAmount,
+    second_payment_due_on AS dueOn FROM registration_draft_child WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0];
+  assert.deepEqual(twoSnapshot, { paymentPlanCode: "two_installment", initialAmount: 450000, secondAmount: 450000, dueOn: "2026-11-01" }, "two-installment pricing is snapshotted per child");
+  database.query(`UPDATE offering_course_pricing SET one_time_amount_mnt = 950000,
+    first_installment_amount_mnt = 500000, second_installment_amount_mnt = 500000 WHERE activity_offering_id = 'offering-test'`);
+  assert.equal(database.query(`SELECT initial_payment_amount_mnt AS initialAmount FROM registration_draft_child WHERE registration_draft_id = ?`, [one.draftId])[0].initialAmount, 850000, "later Offering price changes do not rewrite accepted single-plan snapshots");
+  assert.equal(database.query(`SELECT initial_payment_amount_mnt AS initialAmount FROM registration_draft_child WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0].initialAmount, 450000, "later Offering price changes do not rewrite accepted two-installment snapshots");
+  const twoChallenge = addChallenge(database, twoInstallment.draftId, twoInstallment.normalizedEmail, iso(-3), iso(-3 + 24 * 60));
+  const twoSession = session(iso(-2), iso(58));
+  await confirmRegistrationChallenge(env(database), twoChallenge, twoSession, new Date(iso(-2)));
+  const twoStatus = await registrationStatusForSession(database, twoSession.rawToken, new Date(iso(-2)));
+  assert.equal(twoStatus.children[0].initialPaymentAmountMnt, 450000, "verified payment status exposes the saved initial amount, not the new Offering price");
+  assert.equal(twoStatus.paymentCollection.bankName, "Тест банк", "verified payment status includes configured transfer instructions only after verification");
+  const multiChild = submission("class-priced", undefined, 1, "two_installment");
+  multiChild.children.push({ ...multiChild.children[0], givenName: "Хүүхэд 2", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" });
+  const multiChildDraft = await createRegistrationDraft(env(database), multiChild, new Date(iso(-4)));
+  assert.deepEqual(database.query(`SELECT position, payment_plan_code AS paymentPlanCode, initial_payment_amount_mnt AS initialAmount
+    FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [multiChildDraft.draftId]),
+  [{ position: 0, paymentPlanCode: "two_installment", initialAmount: 500000 }, { position: 1, paymentPlanCode: "single", initialAmount: 700000 }],
+  "siblings may retain independent Offering prices and payment plans");
+  const manipulated = submission("class-priced");
+  manipulated.children[0].initialPaymentAmountMnt = 1;
+  const manipulatedDraft = await createRegistrationDraft(env(database), manipulated, new Date(iso(-1)));
+  assert.equal(database.query(`SELECT initial_payment_amount_mnt AS initialAmount FROM registration_draft_child WHERE registration_draft_id = ?`, [manipulatedDraft.draftId])[0].initialAmount, 950000, "browser-provided amounts are ignored in favor of the server pricing plan");
+  database.query("UPDATE payment_collection_settings SET account_number = NULL");
+  await assert.rejects(createRegistrationDraft(env(database), submission("class-priced"), new Date(iso(-1))),
+    (error) => error instanceof RegistrationSubmissionError && error.code === "pricing_unavailable", "incomplete transfer instructions prevent a new payment request");
+  database.query("UPDATE payment_collection_settings SET account_number = '0000000000'");
 
   const competing = await Promise.allSettled([
     createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso(1))),

@@ -270,9 +270,20 @@ references suppress hard deletion. Accountant capability has no access, and
 the Worker enforces every permission and same-origin mutation request.
 
 An Offering may be paid, scheduled, and registration-closed before pricing is
-configured. Future pricing belongs in Offering detail under `Төлбөрийн нөхцөл`,
-not compact creation. Public registration must remain closed until valid price
-basis and payment-plan terms exist.
+configured. Course pricing belongs in Offering detail under `Төлбөрийн нөхцөл`,
+not compact creation. Annual and summer courses use a required positive integer
+MNT one-time amount and may additionally expose a two-installment plan with
+positive first/second amounts and an explicit Mongolia-local due date. The
+Offering is the source for new requests only: accepting a registration stores
+the selected plan and amounts per child, so later edits never rewrite an
+existing family's terms. Events and discounts remain outside this foundation.
+
+Opening a course class is server-gated on valid Offering pricing and completed
+admin-managed bank-transfer instructions. The parent catalog exposes only safe
+plan amounts; bank name, account holder, account number, and optional transfer
+instruction appear only after verified email creates the fresh 24-hour initial
+payment hold. Payment confirmation, reconciliation, adjustments, and finance
+queues are still deliberately unimplemented.
 
 Course attendance is now editable operational bookkeeping for normal annual and
 summer course occurrences. `/staff/attendance/` is a simple phone-first daily

@@ -49,6 +49,11 @@ function catalogRow(id, options = {}) {
       ? "unavailable"
       : remainingSeats > 0 ? "available" : "full",
     status: options.status ?? "available",
+    oneTimeAmountMnt: options.oneTimeAmountMnt ?? 850000,
+    twoInstallmentEnabled: options.twoInstallmentEnabled ?? 1,
+    firstInstallmentAmountMnt: options.firstInstallmentAmountMnt ?? 450000,
+    secondInstallmentAmountMnt: options.secondInstallmentAmountMnt ?? 450000,
+    secondInstallmentDueOn: options.secondInstallmentDueOn ?? "2026-11-01",
     isTest: options.isTest ?? 0,
     isTestOnly: options.isTestOnly ?? 0,
   };
@@ -195,6 +200,10 @@ try {
     ],
   );
   assert.equal(stagingCatalog.body.academicYears[0].classSessions.find((session) => session.id === "staging-closed").label, "1-р шат · Бямба 10:00", "public catalog uses the generated class label, not legacy stored wording");
+  assert.deepEqual(stagingCatalog.body.academicYears[0].classSessions.find((session) => session.id === "staging-many-seats").paymentOptions,
+    [{ code: "single", totalAmountMnt: 850000, initialAmountMnt: 850000 }, { code: "two_installment", totalAmountMnt: 900000, initialAmountMnt: 450000, secondAmountMnt: 450000, secondDueOn: "2026-11-01" }],
+    "public catalog exposes only the configured course payment terms");
+  assert.doesNotMatch(JSON.stringify(stagingCatalog.body), /account_number|accountNumber|bankName/i, "public catalog never exposes bank-transfer instructions");
 
   const stagingCalendar = await jsonResponse(stagingWorker, "/api/calendar/published", stagingEnv);
   assert.equal(stagingCalendar.response.status, 200);

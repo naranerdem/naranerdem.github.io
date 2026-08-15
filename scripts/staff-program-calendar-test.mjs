@@ -10,6 +10,7 @@ const databasePath = path.join(tempDir, "staff-program-calendar.sqlite3");
 const bundlePath = path.join(tempDir, "staff-program-calendar.mjs");
 const offeringBundlePath = path.join(tempDir, "staff-offerings.mjs");
 const annualDefaultBundlePath = path.join(tempDir, "annual-course-start-default.mjs");
+const coursePricingBundlePath = path.join(tempDir, "course-pricing.mjs");
 const routerBundlePath = path.join(tempDir, "router.mjs");
 
 function quote(value) {
@@ -53,7 +54,7 @@ class SqliteD1 {
 }
 
 function count(database, table, where = "1 = 1") { return Number(database.query(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`)[0].count); }
-function actor(role) { return { staffAccountId: `${role}-staff`, displayName: role, roles: [role], capabilities: role === "accountant" ? ["payment.view"] : role === "admin" ? ["program.view", "program.manage", "calendar.view", "calendar.manage", "admin.settings.manage"] : ["program.view", "program.manage", "calendar.view", "calendar.manage"], sessionId: "test", sessionExpiresAt: "2030-01-01T00:00:00.000Z", sessionAbsoluteExpiresAt: "2030-01-01T00:00:00.000Z" }; }
+function actor(role) { return { staffAccountId: `${role}-staff`, displayName: role, roles: [role], capabilities: role === "accountant" ? ["payment.view"] : role === "admin" ? ["program.view", "program.manage", "calendar.view", "calendar.manage", "payment.manage", "admin.settings.manage"] : ["program.view", "program.manage", "calendar.view", "calendar.manage", "payment.manage"], sessionId: "test", sessionExpiresAt: "2030-01-01T00:00:00.000Z", sessionAbsoluteExpiresAt: "2030-01-01T00:00:00.000Z" }; }
 function env(database) { return { APP_ENV: "staging", REGISTRATION_WRITE_ENABLED: "true", APP_ORIGIN: "https://staging.example.test", EMAIL_ENABLED: "true", AUTH_EMAIL_ENABLED: "true", STAFF_AUTH_EMAIL_ENABLED: "true", EMAIL_FROM: "test@example.invalid", DB: database }; }
 function ulaanbaatarToday() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -118,11 +119,14 @@ try {
   if (offeringBundled.status !== 0) throw new Error(offeringBundled.stderr);
   const annualDefaultBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/annual-course-start-default.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${annualDefaultBundlePath}`], { encoding: "utf8" });
   if (annualDefaultBundled.status !== 0) throw new Error(annualDefaultBundled.stderr);
+  const coursePricingBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/course-pricing.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${coursePricingBundlePath}`], { encoding: "utf8" });
+  if (coursePricingBundled.status !== 0) throw new Error(coursePricingBundled.stderr);
   const routerBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/api/router.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${routerBundlePath}`], { encoding: "utf8" });
   if (routerBundled.status !== 0) throw new Error(routerBundled.stderr);
   const service = await import(pathToFileURL(bundlePath).href);
   const offeringService = await import(pathToFileURL(offeringBundlePath).href);
   const annualDefaultService = await import(pathToFileURL(annualDefaultBundlePath).href);
+  const coursePricingService = await import(pathToFileURL(coursePricingBundlePath).href);
   const { handleApiRequest } = await import(pathToFileURL(routerBundlePath).href);
   const database = new SqliteD1(); const runtime = env(database); const now = "2026-08-12T01:00:00.000Z";
   const historyLesson13Date = addCivilDays(ulaanbaatarToday(), 1);
@@ -356,6 +360,21 @@ try {
   assert.equal(newClass.status, "closed", "a new class starts with registration safely closed");
   assert.equal(count(database, "class_meeting_rule", `class_session_id = ${quote(newClass.id)} AND recurrence_kind = 'weekly'`), 1, "new classes receive a typed meeting rule");
   assert.equal(database.query(`SELECT offering.curriculum_program_id AS programId FROM class_session AS class INNER JOIN activity_offering AS offering ON offering.id = class.activity_offering_id WHERE class.id = ${quote(newClass.id)}`)[0].programId, "current-program", "multiple annual classes inherit the same Offering program");
+  await assert.rejects(() => service.saveClassSession(runtime, actor("teacher"), { id: newClass.id, expectedUpdatedAt: newClass.updatedAt, offeringId: "offering-annual-stage-1", recurrenceKind: "weekly", firstDate: "2026-09-08", weeklyWeekday: "Мягмар", academicYearId: "", stageCode: "", weekday: "", startTime: "16:00", endTime: "17:20", capacity: 8, registrationOpen: true }), /Course pricing operation/, "registration cannot open before payment terms are configured");
+  const price = await coursePricingService.saveCoursePricing(runtime, actor("teacher"), {
+    offeringId: "offering-annual-stage-1", oneTimeAmountMnt: 850000, twoInstallmentEnabled: false,
+  });
+  assert.equal(price.oneTimeAmountMnt, 850000, "course prices store whole MNT amounts");
+  await assert.rejects(() => coursePricingService.saveCoursePricing(runtime, actor("teacher"), {
+    offeringId: "offering-annual-stage-1", oneTimeAmountMnt: 850000, twoInstallmentEnabled: true,
+    firstInstallmentAmountMnt: 0, secondInstallmentAmountMnt: 450000, secondInstallmentDueOn: "2026-11-01", expectedUpdatedAt: price.updatedAt,
+  }), /Course pricing operation/, "two-installment terms require positive amounts");
+  await assert.rejects(() => coursePricingService.saveCoursePricing(runtime, actor("teacher"), {
+    offeringId: "offering-annual-stage-1", oneTimeAmountMnt: 850000, twoInstallmentEnabled: true,
+    firstInstallmentAmountMnt: 450000, secondInstallmentAmountMnt: 450000, secondInstallmentDueOn: "not-a-date", expectedUpdatedAt: price.updatedAt,
+  }), /Course pricing operation/, "two-installment terms require a valid due date");
+  await assert.rejects(() => service.saveClassSession(runtime, actor("teacher"), { id: newClass.id, expectedUpdatedAt: newClass.updatedAt, offeringId: "offering-annual-stage-1", recurrenceKind: "weekly", firstDate: "2026-09-08", weeklyWeekday: "Мягмар", academicYearId: "", stageCode: "", weekday: "", startTime: "16:00", endTime: "17:20", capacity: 8, registrationOpen: true }), /Course pricing operation/, "pricing alone cannot open registration without bank instructions");
+  sqlite(`UPDATE payment_collection_settings SET bank_name = 'Тест банк', account_holder_name = 'Тест эзэмшигч', account_number = '0000000000', updated_at = '${now}' WHERE singleton = 1;`);
   await service.saveClassSession(runtime, actor("teacher"), { id: newClass.id, expectedUpdatedAt: newClass.updatedAt, offeringId: "offering-annual-stage-1", recurrenceKind: "weekly", firstDate: "2026-09-08", weeklyWeekday: "Мягмар", academicYearId: "", stageCode: "", weekday: "", startTime: "16:00", endTime: "17:20", capacity: 8, registrationOpen: true });
   assert.equal(database.query(`SELECT status FROM class_session WHERE id = ${quote(newClass.id)}`)[0].status, "available", "teacher-facing open registration maps to the available catalog state");
   const openedClass = database.query(`SELECT updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];

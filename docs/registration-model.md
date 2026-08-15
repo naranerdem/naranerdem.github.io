@@ -36,6 +36,19 @@ A pre-registration that never proceeds to payment must not occupy class capacity
 
 Current policy expects a short initial hold of about 24 hours, configurable later. Approval of exceptional terms does not automatically extend or freeze the hold unless the teacher/admin separately grants an explicit extension. If the hold expires before payment, the pre-registration remains, the seat is released, any approved custom terms may remain associated with the pre-registration where sensible, and the parent must reacquire an available class/time, choose another time, or join the waitlist.
 
+## Course Payment Terms
+
+Annual and summer courses currently have one required `single` plan and may
+offer `two_installment`. The browser submits only that stable plan identity;
+the server reads the Offering's current terms and records per-child base
+amounts and the second due date on the accepted registration draft. A later
+Offering price edit therefore applies only to new registrations. Once email
+verification creates the normal 24-hour initial-payment hold, the authenticated
+status response may show that child's saved initial amount and configured
+transfer instructions. The public catalog never includes account details.
+Discounts, credits, payment confirmation, and reconciliation remain separate
+future layers.
+
 ## Privacy Principle
 
 Collect only information genuinely needed for enrollment, communication, tuition tracking, and safety. Do not design around collecting government identifiers or unnecessary sensitive personal data.
