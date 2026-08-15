@@ -84,7 +84,7 @@ import "../styles/global.css";
             <h2 id="staff-daily-title">Өнөөдөр</h2>
             <div class="staff-tool-grid staff-tool-grid-daily">
               <a class="staff-tool-link staff-tool-primary" data-capability="attendance.view" href="/staff/attendance/"><strong>Ирц</strong><span>Өнөөдрийн хичээл, сурагчдын ирц</span></a>
-              <a class="staff-tool-link" data-capability="payment.view" href="/staff/payments/"><strong>Төлбөр шалгах</strong><span>Орсон төлбөр, хүлээгдэж буй суудал</span></a>
+              <a class="staff-tool-link" data-capability="payment.view" href="/staff/payments/"><strong>Төлбөр шалгах</strong><span id="staff-payment-summary">Орсон төлбөр, хүлээгдэж буй суудал</span></a>
               <a class="staff-tool-link" data-capability="makeup.view" href="/staff/makeups/"><strong>Нөхөх хичээл</strong><span>Тасалсан хичээлийг шийдэх, товлох</span></a>
               <a class="staff-tool-link" data-capability="calendar.manage" href="/staff/day-changes/"><strong>Өдрийн өөрчлөлт</strong><span>Хичээл цуцлах, орлуулах өдөр, нэмэлт өдөр</span></a>
             </div>
@@ -148,6 +148,26 @@ import "../styles/global.css";
         document.getElementById("staff-no-tools").hidden = visibleSections > 0;
         toolLinks.hidden = false;
         show("staff-home");
+        updatePaymentSummary(session.capabilities || []);
+      }
+
+      async function updatePaymentSummary(capabilities) {
+        if (!capabilities.includes("payment.view")) return;
+        const node = document.getElementById("staff-payment-summary");
+        if (!node) return;
+        try {
+          const response = await fetch("/api/staff/payments", { credentials: "same-origin", headers: { Accept: "application/json" } });
+          if (!response.ok) return;
+          const data = await response.json();
+          const now = new Date(data.now).getTime();
+          const old = (data.items || []).filter((item) => now - new Date(item.paymentDueAt).getTime() > 24 * 60 * 60 * 1000);
+          if (!old.length) return;
+          const oldestDays = Math.max(1, Math.floor(Math.max(...old.map((item) => now - new Date(item.paymentDueAt).getTime())) / (24 * 60 * 60 * 1000)));
+          node.textContent = `${oldestDays} өдөр шалгагдаагүй төлбөр байна`;
+          node.classList.add("staff-payment-summary-urgent");
+        } catch {
+          // The dashboard remains useful if the optional summary cannot load.
+        }
       }
 
       async function readSession() {

@@ -1713,6 +1713,11 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
+.staff-tool-link .staff-payment-summary-urgent {
+  color: #a12f18;
+  font-weight: 800;
+}
+
 .staff-tool-primary {
   grid-column: 1 / -1;
   min-height: 5.75rem;
