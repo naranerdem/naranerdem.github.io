@@ -20,6 +20,14 @@ import {
   registrationStatusForSession,
   type RegistrationSubmissionInput,
 } from "../services/registration-submission";
+import {
+  claimParentPayment,
+  getInitialPaymentQueue,
+  PaymentReconciliationError,
+  recordCheckedNotFound,
+  recordManualPayment,
+  releaseUnpaidSeat,
+} from "../staff/payment-reconciliation";
 import { TurnstileError, verifyTurnstile } from "../security/turnstile";
 import { hasStaffCapability, resolveStaffPrincipal, type StaffCapability } from "../staff/authorization";
 import {
@@ -219,6 +227,18 @@ function registrationError(caught: unknown): Response {
     return error("internal_error", "Баталгаажуулах и-мэйлийг одоогоор илгээж чадсангүй.", 503);
   }
   return error("internal_error", "Бүртгэлийг одоогоор үргэлжлүүлж чадсангүй.", 500);
+}
+
+function paymentReconciliationError(caught: unknown): Response {
+  if (!(caught instanceof PaymentReconciliationError)) {
+    return error("internal_error", "Төлбөрийн мэдээллийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Төлбөрийн мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "not_due") return error("invalid_request", "Төлбөрийн хугацаа дуусаагүй тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "already_paid") return error("invalid_request", "Төлбөр бүрэн баталгаажсан тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 function programCalendarError(caught: unknown): Response {
@@ -478,6 +498,25 @@ export async function handleApiRequest(
       return json({ ok: true }, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
       return registrationError(caught);
+    }
+  }
+
+  if (path === "/api/registration/status/payment-claim") {
+    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403, { "Cache-Control": "no-store" });
+    }
+    try {
+      const payload = await request.json() as { paymentRequestId?: unknown };
+      if (typeof payload.paymentRequestId !== "string") throw new PaymentReconciliationError("invalid");
+      const status = await registrationStatusForSession(env.DB, readCookie(request, VERIFIED_EMAIL_COOKIE));
+      await claimParentPayment(env.DB, payload.paymentRequestId, status.id, readCookie(request, VERIFIED_EMAIL_COOKIE));
+      return json({ ok: true }, 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return paymentReconciliationError(caught);
     }
   }
 
@@ -815,6 +854,57 @@ export async function handleApiRequest(
     return denied ?? json({ ok: true, capability: "attendance.manage", changed: false }, 200, {
       "Cache-Control": "no-store",
     });
+  }
+
+  if (path === "/api/staff/payments") {
+    if (request.method === "GET") {
+      const denied = await requireStaffCapability(request, env, "payment.view");
+      if (denied) return denied;
+      const principal = await staffPrincipalForRequest(request, env);
+      if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+      try {
+        return json(await getInitialPaymentQueue(env, principal), 200, { "Cache-Control": "no-store" });
+      } catch (caught) {
+        return paymentReconciliationError(caught);
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403, { "Cache-Control": "no-store" });
+    }
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    if (!hasStaffCapability(principal, "payment.manage")) {
+      return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+    }
+    try {
+      const payload = await request.json() as Record<string, unknown>;
+      switch (payload.action) {
+        case "payment.record":
+          return json({ ok: true, ...await recordManualPayment(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""),
+            allocations: Array.isArray(payload.allocations) ? payload.allocations.map((item) => ({
+              installmentId: String((item as Record<string, unknown>).installmentId ?? ""),
+              amountMnt: Number((item as Record<string, unknown>).amountMnt),
+            })) : [],
+            source: payload.source === "staff_manual_cash" ? "staff_manual_cash" : "staff_manual_bank",
+            receivedAt: typeof payload.receivedAt === "string" ? payload.receivedAt : undefined,
+            receivedAmountMnt: payload.receivedAmountMnt == null ? undefined : Number(payload.receivedAmountMnt),
+            idempotencyKey: String(payload.idempotencyKey ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.checked-not-found":
+          await recordCheckedNotFound(env, principal, String(payload.paymentRequestId ?? ""));
+          return json({ ok: true }, 200, { "Cache-Control": "no-store" });
+        case "payment.release-seat":
+          return json({ ok: true, ...await releaseUnpaidSeat(env, principal, String(payload.paymentRequestId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        default:
+          return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+      }
+    } catch (caught) {
+      return paymentReconciliationError(caught);
+    }
   }
 
   if (path === "/api/staff/attendance") {

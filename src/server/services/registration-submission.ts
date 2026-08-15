@@ -85,6 +85,23 @@ function addSeconds(date: Date, seconds: number): string {
   return new Date(date.getTime() + seconds * 1000).toISOString();
 }
 
+function paymentReference(): string {
+  // Deliberately opaque and copyable: no name, email, or other family data.
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  return `NE-${[...bytes].map((value) => alphabet[value % alphabet.length]).join("")}`;
+}
+
+async function unusedPaymentReference(database: D1Database): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const value = paymentReference();
+    const existing = await database.prepare("SELECT 1 AS value FROM payment_request WHERE payment_reference = ?")
+      .bind(value).first<{ value: number }>();
+    if (!existing) return value;
+  }
+  throw new RegistrationSubmissionError("payment_reference_unavailable");
+}
+
 function changeCount(result: D1Result<unknown> | undefined): number {
   return result?.meta?.changes ?? 0;
 }
@@ -243,7 +260,6 @@ export const acquireAllRequestedSeatsSql = `
     INNER JOIN application_child ON application_child.id = enrollment.application_child_id
     INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
     WHERE enrollment.status = 'awaiting_initial_payment'
-      AND enrollment.effective_hold_deadline_at > ?
       AND application_child.status = 'hold_created'
       AND pre_registration.deleted_at IS NULL
     GROUP BY enrollment.class_session_id
@@ -252,7 +268,8 @@ export const acquireAllRequestedSeatsSql = `
     SELECT registration_capacity_hold.class_session_id, COUNT(*) AS count
     FROM registration_capacity_hold
     WHERE registration_capacity_hold.status = 'active'
-      AND registration_capacity_hold.deadline_at > ?
+      AND (registration_capacity_hold.hold_type = 'initial_payment'
+        OR registration_capacity_hold.deadline_at > ?)
     GROUP BY registration_capacity_hold.class_session_id
   ),
   capacity_ok AS MATERIALIZED (
@@ -371,7 +388,7 @@ export async function createRegistrationDraft(
   });
 
   statements.push(env.DB.prepare(acquireAllRequestedSeatsSql).bind(
-    draftId, now, now, provisionalDeadlineAt, now, now, draftId,
+    draftId, now, provisionalDeadlineAt, now, now, draftId,
   ));
   statements.push(env.DB.prepare(`
     UPDATE registration_draft_child
@@ -550,7 +567,6 @@ export const reacquireAllRequestedSeatsSql = `
     INNER JOIN application_child ON application_child.id = enrollment.application_child_id
     INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
     WHERE enrollment.status = 'awaiting_initial_payment'
-      AND enrollment.effective_hold_deadline_at > ?
       AND application_child.status = 'hold_created'
       AND pre_registration.deleted_at IS NULL
     GROUP BY enrollment.class_session_id
@@ -561,7 +577,8 @@ export const reacquireAllRequestedSeatsSql = `
     INNER JOIN registration_draft_child
       ON registration_draft_child.id = registration_capacity_hold.registration_draft_child_id
     WHERE registration_capacity_hold.status = 'active'
-      AND registration_capacity_hold.deadline_at > ?
+      AND (registration_capacity_hold.hold_type = 'initial_payment'
+        OR registration_capacity_hold.deadline_at > ?)
       AND registration_draft_child.registration_draft_id != ?
     GROUP BY registration_capacity_hold.class_session_id
   ),
@@ -597,6 +614,8 @@ export async function confirmRegistrationChallenge(
   const draftId = challenge.registrationDraftId;
   const now = nowDate.toISOString();
   const paymentDeadlineAt = addSeconds(nowDate, 24 * 60 * 60);
+  const paymentRequestId = crypto.randomUUID();
+  const reference = await unusedPaymentReference(env.DB);
   const counts = await env.DB.prepare(`
     SELECT
       SUM(CASE WHEN selected_class_session_id IS NOT NULL THEN 1 ELSE 0 END) AS selectedCount,
@@ -638,7 +657,7 @@ export async function confirmRegistrationChallenge(
         ) AND status = 'active' AND hold_type = 'provisional_email_confirmation' AND deadline_at > ?
       `).bind(paymentDeadlineAt, now, now, draftId, now)
     : env.DB.prepare(reacquireAllRequestedSeatsSql).bind(
-        draftId, now, now, draftId, paymentDeadlineAt, now, now, draftId,
+        draftId, now, draftId, paymentDeadlineAt, now, now, draftId,
       );
   const waitlistInsert = env.DB.prepare(`
     INSERT OR IGNORE INTO registration_draft_waitlist_entry (
@@ -663,7 +682,47 @@ export async function confirmRegistrationChallenge(
     WHERE id = ? AND status IN ('pending_email', 'email_delivery_failed')
   `).bind(now, now, draftId);
 
-  const results = await env.DB.batch([sessionInsert, challengeUpdate, holdUpdate, waitlistInsert, draftVerified]);
+  const paymentRequest = env.DB.prepare(`
+    INSERT INTO payment_request (id, registration_draft_id, payment_reference, created_at, updated_at, is_test, test_run_id)
+    SELECT ?, registration_draft.id, ?, ?, ?, registration_draft.is_test, registration_draft.test_run_id
+    FROM registration_draft
+    WHERE registration_draft.id = ? AND EXISTS (
+      SELECT 1 FROM registration_capacity_hold
+      INNER JOIN registration_draft_child ON registration_draft_child.id = registration_capacity_hold.registration_draft_child_id
+      WHERE registration_draft_child.registration_draft_id = registration_draft.id
+        AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active'
+    )
+  `).bind(paymentRequestId, reference, now, now, draftId);
+  const initialInstallments = env.DB.prepare(`
+    INSERT INTO payment_installment (
+      id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
+      amount_mnt, original_due_at, effective_due_at, status, created_at, updated_at, is_test, test_run_id
+    ) SELECT registration_draft_child.id || ':initial-installment', ?, registration_draft_child.id, 1, 'initial',
+      registration_draft_child.initial_payment_amount_mnt, ?, ?, 'pending', ?, ?, registration_draft_child.is_test,
+      registration_draft_child.test_run_id
+    FROM registration_draft_child
+    WHERE registration_draft_child.registration_draft_id = ?
+      AND registration_draft_child.selected_class_session_id IS NOT NULL
+      AND registration_draft_child.initial_payment_amount_mnt IS NOT NULL
+      AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
+  `).bind(paymentRequestId, paymentDeadlineAt, paymentDeadlineAt, now, now, draftId, paymentRequestId);
+  const laterInstallments = env.DB.prepare(`
+    INSERT INTO payment_installment (
+      id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
+      amount_mnt, original_due_at, effective_due_at, status, created_at, updated_at, is_test, test_run_id
+    ) SELECT registration_draft_child.id || ':later-installment', ?, registration_draft_child.id, 2, 'later',
+      registration_draft_child.second_payment_amount_mnt,
+      registration_draft_child.second_payment_due_on || '9999-12-31',
+      registration_draft_child.second_payment_due_on || '9999-12-31', 'pending', ?, ?, registration_draft_child.is_test,
+      registration_draft_child.test_run_id
+    FROM registration_draft_child
+    WHERE registration_draft_child.registration_draft_id = ?
+      AND registration_draft_child.second_payment_amount_mnt IS NOT NULL
+      AND registration_draft_child.second_payment_due_on IS NOT NULL
+      AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
+  `).bind(paymentRequestId, now, now, draftId, paymentRequestId);
+
+  const results = await env.DB.batch([sessionInsert, challengeUpdate, holdUpdate, waitlistInsert, draftVerified, paymentRequest, initialInstallments, laterInstallments]);
   if (changeCount(results[0]) !== 1 || changeCount(results[1]) !== 1 || changeCount(results[4]) !== 1) {
     throw new RegistrationSubmissionError("invalid_or_expired_token");
   }
@@ -685,9 +744,8 @@ export async function confirmRegistrationChallenge(
         WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
           AND registration_capacity_hold.status = 'active'
           AND registration_capacity_hold.hold_type = 'initial_payment'
-          AND registration_capacity_hold.deadline_at > ?
       )
-    `).bind(now, draftId, now),
+    `).bind(now, draftId),
     env.DB.prepare(`
       UPDATE registration_draft_child SET status = 'waitlisted', updated_at = ?
       WHERE registration_draft_id = ? AND selected_class_session_id IS NULL AND EXISTS (
@@ -704,14 +762,13 @@ export async function confirmRegistrationChallenge(
           WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
             AND registration_capacity_hold.status = 'active'
             AND registration_capacity_hold.hold_type = 'initial_payment'
-            AND registration_capacity_hold.deadline_at > ?
         )
-    `).bind(now, draftId, now),
+    `).bind(now, draftId),
     env.DB.prepare(`
       UPDATE registration_capacity_hold SET status = 'expired', updated_at = ?
       WHERE registration_draft_child_id IN (
         SELECT id FROM registration_draft_child WHERE registration_draft_id = ?
-      ) AND status = 'active' AND deadline_at <= ?
+      ) AND status = 'active' AND hold_type = 'provisional_email_confirmation' AND deadline_at <= ?
     `).bind(now, draftId, now),
   ]);
 
@@ -779,7 +836,12 @@ export async function registrationStatusForSession(
       registration_capacity_hold.hold_type AS holdType,
       registration_capacity_hold.deadline_at AS holdDeadlineAt,
       registration_capacity_hold.status AS holdStatus,
-      registration_draft_waitlist_entry.status AS waitlistStatus
+      registration_draft_waitlist_entry.status AS waitlistStatus,
+      payment_request.id AS paymentRequestId,
+      payment_request.payment_reference AS paymentReference,
+      payment_installment.status AS initialInstallmentStatus,
+      EXISTS(SELECT 1 FROM payment_evidence WHERE payment_evidence.payment_request_id = payment_request.id
+        AND payment_evidence.evidence_type = 'parent_claim') AS parentPaymentClaimed
     FROM registration_draft_child
     LEFT JOIN class_session AS selected_class ON selected_class.id = registration_draft_child.selected_class_session_id
     LEFT JOIN registration_draft_waitlist_entry ON registration_draft_waitlist_entry.registration_draft_child_id = registration_draft_child.id
@@ -788,11 +850,14 @@ export async function registrationStatusForSession(
       registration_draft_child.preferred_waitlist_class_session_id
     )
     LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+    LEFT JOIN payment_installment ON payment_installment.registration_draft_child_id = registration_draft_child.id
+      AND payment_installment.installment_kind = 'initial'
+    LEFT JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
     WHERE registration_draft_child.registration_draft_id = ?
     ORDER BY registration_draft_child.position
   `).bind(draft.id).all<Record<string, unknown>>();
   const hasActiveInitialPaymentHold = children.results.some((child) => child.holdType === "initial_payment"
-    && child.holdStatus === "active" && typeof child.holdDeadlineAt === "string" && child.holdDeadlineAt > nowDate.toISOString());
+    && child.holdStatus === "active");
   const paymentCollectionSettings = hasActiveInitialPaymentHold
     ? await getPaymentCollectionSettingsFromDatabase(database)
     : null;

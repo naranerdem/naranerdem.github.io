@@ -18,9 +18,11 @@ function bundle(source, output) {
 const registrationBundle = path.join(tempDir, "registration-submission.mjs");
 const turnstileBundle = path.join(tempDir, "turnstile.mjs");
 const emailVerificationBundle = path.join(tempDir, "email-verification.mjs");
+const paymentReconciliationBundle = path.join(tempDir, "payment-reconciliation.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
 bundle("src/server/security/turnstile.ts", turnstileBundle);
 bundle("src/server/auth/email-verification.ts", emailVerificationBundle);
+bundle("src/server/staff/payment-reconciliation.ts", paymentReconciliationBundle);
 const {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -33,6 +35,13 @@ const {
 } = await import(pathToFileURL(registrationBundle).href);
 const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstileBundle).href);
 const { verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
+const {
+  claimParentPayment,
+  getInitialPaymentQueue,
+  recordCheckedNotFound,
+  recordManualPayment,
+  releaseUnpaidSeat,
+} = await import(pathToFileURL(paymentReconciliationBundle).href);
 
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
@@ -241,6 +250,10 @@ try {
     activity_offering_id, one_time_amount_mnt, two_installment_enabled,
     first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at
   ) VALUES ('offering-second-test', 700000, 0, NULL, NULL, NULL, ?, ?)`, [iso(), iso(), iso(), iso()]);
+  database.query(`INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('staff-payment-test', 'payment@example.test', 'Тест Багш', 'active', 1, 'payment-test', ?, ?)`, [iso(), iso()]);
+  const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
+    capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
 
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
   assert.equal(one.hasProvisionalHold, true);
@@ -265,6 +278,31 @@ try {
   const twoStatus = await registrationStatusForSession(database, twoSession.rawToken, new Date(iso(-2)));
   assert.equal(twoStatus.children[0].initialPaymentAmountMnt, 450000, "verified payment status exposes the saved initial amount, not the new Offering price");
   assert.equal(twoStatus.paymentCollection.bankName, "Тест банк", "verified payment status includes configured transfer instructions only after verification");
+  const twoRequest = database.query(`SELECT id, payment_reference AS paymentReference FROM payment_request WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0];
+  assert.match(twoRequest.paymentReference, /^NE-[A-Z2-9]{6}$/, "payment reference is stable, opaque, and copyable");
+  assert.equal(count(database, "payment_installment", `payment_request_id = '${twoRequest.id}'`), 2, "two-installment snapshot creates two generic obligations");
+  await claimParentPayment(database, twoRequest.id, twoInstallment.draftId, twoSession.rawToken, new Date(iso(-1)));
+  await claimParentPayment(database, twoRequest.id, twoInstallment.draftId, twoSession.rawToken, new Date(iso(-1)));
+  assert.equal(count(database, "payment_evidence", `payment_request_id = '${twoRequest.id}' AND evidence_type = 'parent_claim'`), 1, "parent paid claim is idempotent evidence only");
+  const queueBeforePayment = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()));
+  const twoQueueItem = queueBeforePayment.items.find((item) => item.paymentRequestId === twoRequest.id);
+  assert.equal(twoQueueItem.parentClaimed, true, "parent claim is visible to staff without changing capacity");
+  await recordCheckedNotFound(env(database), paymentStaff, twoRequest.id, new Date(iso()));
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${twoInstallment.draftId}') AND status = 'active'`), 1, "checked-not-found never releases a seat");
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: twoRequest.id,
+    allocations: [{ installmentId: twoQueueItem.installmentId, amountMnt: 450000 }],
+    source: 'staff_manual_bank', receivedAt: '2026-08-11T07:53:00.000Z', idempotencyKey: 'two-initial-exact',
+  }, new Date('2026-08-13T09:15:00.000Z'));
+  const duplicatePayment = await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: twoRequest.id,
+    allocations: [{ installmentId: twoQueueItem.installmentId, amountMnt: 450000 }],
+    source: 'staff_manual_bank', receivedAt: '2026-08-11T07:53:00.000Z', idempotencyKey: 'two-initial-exact',
+  }, new Date('2026-08-13T09:16:00.000Z'));
+  assert.equal(duplicatePayment.idempotent, true, "retrying the same manual confirmation does not create a duplicate payment");
+  assert.equal(database.query(`SELECT received_at AS receivedAt, confirmed_at AS confirmedAt FROM received_payment WHERE idempotency_key = 'two-initial-exact'`)[0].receivedAt, '2026-08-11T07:53:00.000Z', "actual receipt time is preserved separately");
+  assert.equal(database.query(`SELECT confirmed_at AS confirmedAt FROM received_payment WHERE idempotency_key = 'two-initial-exact'`)[0].confirmedAt, '2026-08-13T09:15:00.000Z', "staff confirmation time is preserved separately");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'later'`, [twoRequest.id])[0].status, 'pending', "later installment remains independent of initial seat confirmation");
   const multiChild = submission("class-priced", undefined, 1, "two_installment");
   multiChild.children.push({ ...multiChild.children[0], givenName: "Хүүхэд 2", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" });
   const multiChildDraft = await createRegistrationDraft(env(database), multiChild, new Date(iso(-4)));
@@ -272,6 +310,19 @@ try {
     FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [multiChildDraft.draftId]),
   [{ position: 0, paymentPlanCode: "two_installment", initialAmount: 500000 }, { position: 1, paymentPlanCode: "single", initialAmount: 700000 }],
   "siblings may retain independent Offering prices and payment plans");
+  const multiChallenge = addChallenge(database, multiChildDraft.draftId, multiChildDraft.normalizedEmail, iso(-4), iso(56));
+  const multiSession = session(iso(-3), iso(57));
+  await confirmRegistrationChallenge(env(database), multiChallenge, multiSession, new Date(iso(-3)));
+  const multiRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [multiChildDraft.draftId])[0];
+  const multiInstallments = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment
+    WHERE payment_request_id = ? AND installment_kind = 'initial' ORDER BY id`, [multiRequest.id]);
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: multiRequest.id,
+    allocations: multiInstallments.map((item) => ({ installmentId: item.id, amountMnt: Number(item.amountMnt) })),
+    receivedAmountMnt: 1201000, source: 'staff_manual_bank', idempotencyKey: 'multi-child-transfer',
+  }, new Date(iso(-2)));
+  assert.equal(count(database, "payment_allocation", `received_payment_id = (SELECT id FROM received_payment WHERE idempotency_key = 'multi-child-transfer')`), 2, "one received payment can allocate across two children's initial obligations");
+  assert.equal(database.query(`SELECT received_amount_mnt AS amountMnt FROM received_payment WHERE idempotency_key = 'multi-child-transfer'`)[0].amountMnt, 1201000, "unallocated overpayment remains representable without inventing a credit");
   const manipulated = submission("class-priced");
   manipulated.children[0].initialPaymentAmountMnt = 1;
   const manipulatedDraft = await createRegistrationDraft(env(database), manipulated, new Date(iso(-1)));
@@ -380,12 +431,33 @@ try {
   `, [emailChangeDraft.draftId])[0];
   assert.equal(deadlineAfterResendBookkeeping.deadlineAt, beforeEmailChange.deadlineAt, "resend bookkeeping does not extend provisional hold");
 
-  const afterPaymentExpiry = await createRegistrationDraft(
+  await assert.rejects(createRegistrationDraft(
     env(database),
     submission("class-roomy", undefined, 3),
     new Date("2026-08-13T09:00:00.000Z"),
-  );
-  assert.equal(afterPaymentExpiry.hasProvisionalHold, true, "expired 24-hour holds do not consume capacity");
+  ), (error) => error instanceof RegistrationSubmissionError && error.code === "capacity_changed",
+  "overdue initial-payment reservations continue to consume capacity until staff resolves them");
+  const cashDraft = await createRegistrationDraft(env(database), submission("class-priced"), new Date("2026-08-13T09:05:00.000Z"));
+  const cashChallenge = addChallenge(database, cashDraft.draftId, cashDraft.normalizedEmail, "2026-08-13T09:05:00.000Z", "2026-08-14T09:05:00.000Z");
+  const cashSession = session("2026-08-13T09:06:00.000Z", "2026-08-16T10:06:00.000Z");
+  await confirmRegistrationChallenge(env(database), cashChallenge, cashSession, new Date("2026-08-13T09:06:00.000Z"));
+  const cashRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [cashDraft.draftId])[0];
+  const cashInstallment = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'initial'`, [cashRequest.id])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: cashRequest.id, allocations: [{ installmentId: cashInstallment.id, amountMnt: 100000 }],
+    source: 'staff_manual_cash', idempotencyKey: 'cash-partial',
+  }, new Date("2026-08-13T09:10:00.000Z"));
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE id = ?`, [cashInstallment.id])[0].status, 'partially_paid', "partial first payment does not confirm the obligation");
+  await assert.rejects(recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: cashRequest.id, allocations: [{ installmentId: cashInstallment.id, amountMnt: Number(cashInstallment.amountMnt) }],
+    source: 'staff_manual_cash', idempotencyKey: 'cash-overpayment',
+  }), "allocation cannot exceed the remaining obligation");
+  await claimParentPayment(database, cashRequest.id, cashDraft.draftId, cashSession.rawToken, new Date("2026-08-15T10:00:00.000Z"));
+  await assert.rejects(claimParentPayment(database, cashRequest.id, cashDraft.draftId, "not-this-family", new Date("2026-08-15T10:00:00.000Z")), "another session cannot claim a family's payment");
+  const released = await releaseUnpaidSeat(env(database), paymentStaff, cashRequest.id, new Date("2026-08-15T10:00:00.000Z"));
+  assert.equal(released.released, true, "staff can explicitly release a genuinely unpaid overdue seat");
+  assert.equal(released.parentClaimed, true, "release surfaces the parent's non-authoritative payment claim");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${cashDraft.draftId}') AND status = 'active'`), 0, "explicit release, not elapsed time, frees the seat");
   assert.equal(count(database, "guardian_account"), 0);
   assert.equal(count(database, "student"), 0);
 

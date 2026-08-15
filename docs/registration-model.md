@@ -34,7 +34,7 @@ pre-registration completed
 
 A pre-registration that never proceeds to payment must not occupy class capacity. Only active temporary seat holds and confirmed enrollments should consume capacity.
 
-Current policy expects a short initial hold of about 24 hours, configurable later. Approval of exceptional terms does not automatically extend or freeze the hold unless the teacher/admin separately grants an explicit extension. If the hold expires before payment, the pre-registration remains, the seat is released, any approved custom terms may remain associated with the pre-registration where sensible, and the parent must reacquire an available class/time, choose another time, or join the waitlist.
+After timely email verification, the initial payment has a fixed payment deadline of about 24 hours, configurable later. It is a deadline for payment, not an automatic seat-release clock. An unresolved initial-payment reservation remains capacity-consuming until an explicit reconciliation decision resolves it. Approval of exceptional terms does not automatically move the effective deadline; a future explicit extension will preserve the original deadline. Only an authorized explicit release can free an unpaid reserved seat.
 
 ## Course Payment Terms
 
@@ -46,8 +46,10 @@ Offering price edit therefore applies only to new registrations. Once email
 verification creates the normal 24-hour initial-payment hold, the authenticated
 status response may show that child's saved initial amount and configured
 transfer instructions. The public catalog never includes account details.
-Discounts, credits, payment confirmation, and reconciliation remain separate
-future layers.
+The accepted snapshot now creates generic installment obligations at email
+verification. The payment request has one stable opaque transfer reference that
+can cover several children while retaining individual obligations. Discounts,
+credits, and adjustments remain separate future layers.
 
 ## Privacy Principle
 
@@ -300,7 +302,7 @@ Enrollment status should distinguish:
 
 - `awaiting_initial_payment`: temporary seat hold created, first required payment not received
 - `confirmed`: first required payment received and the child has a confirmed place
-- `initial_hold_expired`: initial payment was not received before the effective deadline
+- `initial_hold_expired`: legacy historical status; new initial-payment reservations are released only by an explicit audited reconciliation action
 - `cancelled`: enrollment was manually or administratively cancelled
 - `completed`: enrollment finished normally
 
@@ -339,7 +341,12 @@ finish form + rules + review
 -> confirmed enrollment
 ```
 
-The staging implementation now follows this flow. The provisional hold protects a seat while the parent confirms email. It never consumes time from the fresh 24-hour payment window, which starts only after timely email confirmation. Public full-class temporary counts include capacity-consuming provisional confirmation holds and initial-payment holds, never confirmed enrollments or identities.
+The staging implementation now follows this flow. The provisional hold protects a seat while the parent confirms email. It never consumes time from the fresh 24-hour payment deadline, which starts only after timely email confirmation. A provisional hold stops consuming capacity when its 20 minutes pass. An active initial-payment reservation continues to consume capacity after its deadline until staff explicitly reconciles payment or releases the seat. Public full-class temporary counts include both kinds of capacity-consuming holds, never identities.
+
+Initial-payment reconciliation currently records a durable paid state and keeps
+the seat protected. It does not yet create a canonical guardian, student, or
+`enrollment.status = confirmed`, because the safe verified-draft-to-identity
+promotion path remains a separate task.
 
 The registration confirmation link itself remains usable for a longer configurable lifetime, currently about 24 hours. If confirmation happens after the 20-minute provisional hold expired, atomically re-check capacity. Reacquire the class and start a fresh payment hold if possible; otherwise explain that the temporary guarantee expired and show available classes plus the selected class's FIFO waitlist. Saved registration data remains recoverable.
 
@@ -347,11 +354,11 @@ Email scanners must not consume confirmation links. The future one-click flow pl
 
 After staging form completion, the parent sees a simple email-status screen with the displayed address, resend and change-address actions, the provisional-hold explanation, and Spam/Junk advice. Resend has a 60-second cooldown; resend and change-address invalidate superseded links but never restart the provisional clock. An HttpOnly draft-access cookie restores this status without refilling the form.
 
-The browser-local pre-submission draft lasts 24 hours for accidental refresh or overnight closure and never creates a registration or hold. An accepted server draft has a separate seven-day retention deadline. Retention does not extend the 20-minute seat guarantee, 24-hour confirmation link, or 24-hour payment hold; deadline-aware capacity queries remain correct without Cron.
+The browser-local pre-submission draft lasts 24 hours for accidental refresh or overnight closure and never creates a registration or hold. An accepted server draft has a separate seven-day retention deadline. Retention does not extend the 20-minute seat guarantee or 24-hour confirmation link. It must never delete or rescind a financially unresolved initial-payment reservation.
 
 Before verification, preferred waitlist intent stays only on the server draft. Verification materializes one FIFO entry per child. Waitlist-only creates no seat hold; fallback plus preferred waitlist converts the fallback to a payment hold and creates the preferred entry. Canonical guardian/student creation and returning-family reconciliation remain deliberately deferred, as do payment confirmation and enrollment promotion.
 
-If initial payment is not received, the system may send reminders and expire the hold. Reminder timing and expiry timing must be configurable, not hard-coded.
+If initial payment has not been reconciled, the system may later send reminders, but elapsed time alone is never payment evidence and never releases the seat. A positive future bank/QPay signal may confirm money received; an absent signal must not release anything.
 
 An approved short extension can move the effective deadline without erasing the original deadline.
 
@@ -576,7 +583,7 @@ An extension should preserve:
 
 Reminder and overdue logic should operate on the effective deadline.
 
-An expired initial-payment hold may release a seat. A delayed later installment must not automatically remove an already enrolled child.
+An approved extension changes only the effective deadline and preserves the original. An overdue initial-payment reservation remains reserved until explicit reconciliation; a delayed later installment must not automatically remove an already enrolled child.
 
 ## Payment Records and Evidence
 
@@ -659,6 +666,18 @@ The same underlying payment records should be able to accept evidence from any f
 - direct bank API, if available
 - payment reference encoded in a bank-transfer QR
 - future automated reconciliation
+
+The current foundation records `staff_manual_bank`, `staff_manual_cash`,
+`parent_claim`, and `staff_checked_not_found`. A parent claim is optional,
+idempotent supporting evidence, never proof of payment, never a deadline
+extension, and never a capacity change. A future receipt screenshot may attach
+private object-storage evidence to such a claim. It needs authenticated staff
+viewing, validation, retention policy, and no public URL; R2 storage and OCR
+are deliberately not provisioned yet.
+
+The opaque payment reference contains no personal information. A later
+Монголбанк-standard transfer QR may fill recipient, amount, and this reference,
+but remains an ordinary bank transfer and does not confirm payment by itself.
 
 ### Manual Teacher Confirmation
 

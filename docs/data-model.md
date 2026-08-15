@@ -46,7 +46,8 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `registration_draft_child`: per-child snapshot with one nullable current/fallback class and one nullable preferred FIFO target, plus the accepted course payment plan and base amount snapshot when a class is selected. It is deliberately separate from canonical `student` identity.
 - `offering_course_pricing`: one annual/summer Offering-owned base pricing record: a required positive integer MNT one-time amount and an optional two-installment amount/due-date set. It has no event, discount, credit, evidence, or allocation role.
 - `payment_collection_settings`: a small admin-managed singleton for bank-transfer instructions. It is operational configuration, not a credential, and must be complete before course registration can open.
-- `registration_capacity_hold`: one per draft child, moving from a 20-minute `provisional_email_confirmation` deadline to a fresh 24-hour `initial_payment` deadline after verification.
+- `registration_capacity_hold`: one per draft child, moving from a 20-minute `provisional_email_confirmation` deadline to an `initial_payment` reservation with a fixed payment deadline after verification. Only the provisional hold expires automatically.
+- `payment_request`, `payment_installment`, `received_payment`, `payment_allocation`, and `payment_evidence`: provider-neutral initial reconciliation foundation. A request has one opaque payment reference; obligations stay per child, while received money can be allocated across many obligations.
 - `registration_draft_waitlist_entry`: one verified FIFO entry per draft child. Unverified waitlist intent remains only on `registration_draft_child`.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.
 
@@ -108,7 +109,7 @@ The public catalog returns only non-sensitive aggregate availability for a concr
 remaining seats = capacity - confirmed enrollments - active provisional holds - active initial-payment holds
 ```
 
-Only `enrollment.status = confirmed` counts as confirmed. Active temporary counts include legacy `enrollment.status = awaiting_initial_payment` rows with a future effective deadline and migration-0005 capacity holds with `status = active` and a future deadline. This includes both 20-minute provisional and 24-hour initial-payment holds, but not confirmed enrollments. Expired rows stop counting immediately even before cleanup, and the public value is clamped at zero.
+Only `enrollment.status = confirmed` counts as confirmed. Active temporary counts include legacy `enrollment.status = awaiting_initial_payment` rows and migration-0005 capacity holds with `status = active`. A provisional hold counts only before its 20-minute deadline; an initial-payment reservation counts regardless of whether its fixed payment deadline is overdue. Only explicit release/cancellation removes that reservation from capacity. The public value is clamped at zero.
 
 The catalog does not return a pre-registration total. If a future internal surface needs that number, it should count only non-cancelled, non-deleted child applications with the same `selected_class_session_id`; it must not be used for capacity.
 
@@ -153,7 +154,7 @@ This migration deliberately does not implement:
 - bank payment evidence
 - Khan Bank SMS/API adapter
 
-`application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Complete tuition, payment, discount, credit, refund, and reconciliation tables should come in a later finance migration.
+`application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Migration 0021 adds initial-payment obligations, received payment, allocation, and evidence records without adding discounts, credits, refunds, or broader finance operations.
 
 ## Program And Calendar Foundation
 

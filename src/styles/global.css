@@ -1720,6 +1720,84 @@ textarea:focus {
   background: rgba(7, 58, 175, 0.04);
 }
 
+.staff-payment-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.staff-payment-item {
+  display: grid;
+  gap: 0.55rem;
+  border-top: 1px solid var(--line);
+  padding: 0.8rem 0 0;
+}
+
+.staff-payment-item.is-overdue {
+  border-top-color: rgba(180, 61, 28, 0.55);
+}
+
+.staff-payment-item p {
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+}
+
+.staff-payment-claimed {
+  color: #8b3d13;
+  font-weight: 750;
+}
+
+.staff-payment-actions,
+.staff-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.staff-payment-actions .button {
+  flex: 1 1 11rem;
+}
+
+.staff-payment-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.staff-payment-form label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.staff-payment-form input,
+.staff-payment-form select {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.48rem 0.6rem;
+}
+
+.staff-payment-form .staff-wide {
+  grid-column: 1 / -1;
+}
+
+.staff-payment-release {
+  color: #7a3218;
+  font-size: 0.9rem;
+}
+
+.staff-payment-release p {
+  margin: 0.45rem 0;
+}
+
 .staff-settings-shell {
   width: min(100%, 42rem);
 }

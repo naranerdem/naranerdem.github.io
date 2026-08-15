@@ -31,6 +31,11 @@ if (!confirmed) {
 
 process.stdout.write(count.stdout);
 const deleteSql = `
+DELETE FROM payment_evidence WHERE is_test = 1 AND test_run_id = '${testRunId}';
+DELETE FROM payment_allocation WHERE is_test = 1 AND test_run_id = '${testRunId}';
+DELETE FROM received_payment WHERE is_test = 1 AND test_run_id = '${testRunId}';
+DELETE FROM payment_installment WHERE is_test = 1 AND test_run_id = '${testRunId}';
+DELETE FROM payment_request WHERE is_test = 1 AND test_run_id = '${testRunId}';
 DELETE FROM registration_draft WHERE is_test = 1 AND test_run_id = '${testRunId}';
 DELETE FROM outbound_email WHERE is_test = 1 AND test_run_id = '${testRunId}' AND registration_draft_id IS NULL;
 `;

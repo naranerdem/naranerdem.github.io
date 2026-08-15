@@ -102,7 +102,6 @@ const stagingCatalogSql = `
     INNER JOIN application_child ON application_child.id = enrollment.application_child_id
     INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
     WHERE enrollment.status = 'awaiting_initial_payment'
-      AND enrollment.effective_hold_deadline_at > ?
       AND application_child.status = 'hold_created'
       AND pre_registration.status IN ('submitted', 'under_review', 'awaiting_assignment')
       AND pre_registration.deleted_at IS NULL
@@ -111,7 +110,8 @@ const stagingCatalogSql = `
   LEFT JOIN (
     SELECT class_session_id, COUNT(*) AS count
     FROM registration_capacity_hold
-    WHERE status = 'active' AND deadline_at > ?
+    WHERE status = 'active'
+      AND (hold_type = 'initial_payment' OR deadline_at > ?)
     GROUP BY class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
   WHERE academic_year.registration_status = ?
@@ -172,7 +172,6 @@ const productionCatalogSql = `
     INNER JOIN application_child ON application_child.id = enrollment.application_child_id
     INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
     WHERE enrollment.status = 'awaiting_initial_payment'
-      AND enrollment.effective_hold_deadline_at > ?
       AND enrollment.is_test = 0
       AND application_child.is_test = 0
       AND pre_registration.is_test = 0
@@ -189,7 +188,8 @@ const productionCatalogSql = `
     INNER JOIN registration_draft
       ON registration_draft.id = registration_draft_child.registration_draft_id
     WHERE registration_capacity_hold.status = 'active'
-      AND registration_capacity_hold.deadline_at > ?
+      AND (registration_capacity_hold.hold_type = 'initial_payment'
+        OR registration_capacity_hold.deadline_at > ?)
       AND registration_capacity_hold.is_test = 0
       AND registration_draft_child.is_test = 0
       AND registration_draft.is_test = 0
@@ -209,8 +209,8 @@ export async function getRegistrationCatalog(
 ): Promise<RegistrationCatalog> {
   const now = new Date().toISOString();
   const statement = environment === "staging"
-    ? database.prepare(stagingCatalogSql).bind(now, now, "open")
-    : database.prepare(productionCatalogSql).bind(now, now, "open", 0, 0, 0);
+    ? database.prepare(stagingCatalogSql).bind(now, "open")
+    : database.prepare(productionCatalogSql).bind(now, "open", 0, 0, 0);
   const result = await statement.all<CatalogRow>();
   const years = new Map<string, RegistrationCatalog["academicYears"][number]>();
 

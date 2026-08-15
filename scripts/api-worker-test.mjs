@@ -95,7 +95,8 @@ function createDatabase(rows, options = {}) {
           assert.match(sql, /academic_year\.registration_status = \?/);
           assert.match(sql, /enrollment\.status = 'confirmed'/);
           assert.match(sql, /enrollment\.status = 'awaiting_initial_payment'/);
-          assert.match(sql, /enrollment\.effective_hold_deadline_at > \?/);
+          assert.doesNotMatch(sql, /enrollment\.effective_hold_deadline_at > \?/, "initial-payment capacity never expires by time");
+          assert.match(sql, /hold_type = 'initial_payment'[\s\S]*deadline_at > \?/, "only provisional draft holds use a deadline comparison");
           assert.match(sql, /registration_capacity_hold/);
           assert.match(sql, /COALESCE\(draft_holds\.count, 0\)/);
 
@@ -105,8 +106,7 @@ function createDatabase(rows, options = {}) {
             : rows;
 
           assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
-          assert.match(bindings[1], /^\d{4}-\d{2}-\d{2}T/);
-          assert.deepEqual(bindings.slice(2), productionQuery ? ["open", 0, 0, 0] : ["open"]);
+          assert.deepEqual(bindings.slice(1), productionQuery ? ["open", 0, 0, 0] : ["open"]);
           if (productionQuery) assert.match(sql, /enrollment\.is_test = 0/);
           return { success: true, results: filtered };
         },
