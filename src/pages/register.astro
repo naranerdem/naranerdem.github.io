@@ -802,6 +802,7 @@ const formCopy = registrationFormCopy;
 
       function classStatusText(child) {
         const parts = [];
+        if (child.canonicalEnrollmentStatus === "confirmed") parts.push(`<strong>Бүртгэл баталгаажлаа</strong>`);
         if (child.selectedClassLabel) {
           parts.push(`<strong>${escapeText(child.selectedClassLabel)}</strong> · ${escapeText(`${child.selectedClassWeekday} ${child.selectedClassStartTime}–${child.selectedClassEndTime}`)}`);
         }
@@ -818,6 +819,7 @@ const formCopy = registrationFormCopy;
           const status = await response.json();
           if (!catalog) await loadCatalog();
           const hasPaymentHold = status.children.some((child) => child.holdType === "initial_payment" && child.holdStatus === "active");
+          const hasConfirmedEnrollment = status.children.some((child) => child.canonicalEnrollmentStatus === "confirmed");
           const paymentRequest = status.children.find((child) => child.paymentRequestId)?.paymentRequestId || "";
           const paymentReference = status.children.find((child) => child.paymentReference)?.paymentReference || "";
           const parentClaimed = status.children.some((child) => child.parentPaymentClaimed);
@@ -826,10 +828,14 @@ const formCopy = registrationFormCopy;
             const alternatives = child.status === "seat_unavailable"
               ? sessionsForStage(child.selectedStageCode).filter((session) => session.availability === "available")
               : [];
-            const payment = child.initialPaymentAmountMnt ? `<span>Одоо төлөх: <strong>${escapeText(formatMnt(child.initialPaymentAmountMnt))}</strong>${child.secondPaymentAmountMnt ? `<br>Дараагийн төлбөр: ${escapeText(formatMnt(child.secondPaymentAmountMnt))} · ${escapeText(formatLocalDate(child.secondPaymentDueOn))}` : ""}</span>` : "";
-            return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
+            const payment = child.canonicalEnrollmentStatus === "confirmed"
+              ? `<span>Төлбөр орсон${child.laterInstallmentAmountMnt ? `<br>Дараагийн төлбөр: <strong>${escapeText(formatMnt(child.laterInstallmentAmountMnt))}</strong> · ${escapeText(formatDeadline(child.laterInstallmentDueAt))}` : ""}</span>`
+              : child.initialPaymentAmountMnt ? `<span>Одоо төлөх: <strong>${escapeText(formatMnt(child.initialPaymentAmountMnt))}</strong>${child.secondPaymentAmountMnt ? `<br>Дараагийн төлбөр: ${escapeText(formatMnt(child.secondPaymentAmountMnt))} · ${escapeText(formatLocalDate(child.secondPaymentDueOn))}` : ""}</span>` : "";
+            const facebook = child.canonicalEnrollmentStatus === "confirmed" && child.offeringFacebookGroupUrl
+              ? `<a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэг</a>` : "";
+            return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
-          showResult(alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `
+          showResult(hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `
             ${hasPaymentHold ? `<p class="status-emphasis">${escapeText(formCopy.messages.paymentHold)}</p>` : ""}
             ${seatUnavailable ? `<p class="form-error">${escapeText(formCopy.messages.seatLost)}</p>` : ""}
             <ul class="status-children">${children}</ul>

@@ -28,6 +28,11 @@ import {
   recordManualPayment,
   releaseUnpaidSeat,
 } from "../staff/payment-reconciliation";
+import {
+  CanonicalPromotionError,
+  getPromotionReviewQueue,
+  resolvePromotionIdentity,
+} from "../services/canonical-enrollment-promotion";
 import { TurnstileError, verifyTurnstile } from "../security/turnstile";
 import { hasStaffCapability, resolveStaffPrincipal, type StaffCapability } from "../staff/authorization";
 import {
@@ -239,6 +244,15 @@ function paymentReconciliationError(caught: unknown): Response {
   if (caught.code === "already_paid") return error("invalid_request", "Төлбөр бүрэн баталгаажсан тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function canonicalPromotionError(caught: unknown): Response {
+  if (!(caught instanceof CanonicalPromotionError)) return error("internal_error", "Бүртгэлийг баталгаажуулж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "not_eligible") return error("invalid_request", "Эхний төлбөр бүрэн баталгаажаагүй байна.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "invalid") return error("invalid_request", "Хүүхдийн мэдээллийг дахин шалгана уу.", 400, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Бүртгэлийн төлөв өөрчлөгдсөн байна. Дахин ачаална уу.", 409, { "Cache-Control": "no-store" });
 }
 
 function programCalendarError(caught: unknown): Response {
@@ -863,7 +877,9 @@ export async function handleApiRequest(
       const principal = await staffPrincipalForRequest(request, env);
       if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
       try {
-        return json(await getInitialPaymentQueue(env, principal), 200, { "Cache-Control": "no-store" });
+        const queue = await getInitialPaymentQueue(env, principal);
+        const promotion = await getPromotionReviewQueue(env, principal);
+        return json({ ...queue, promotionItems: promotion.items }, 200, { "Cache-Control": "no-store" });
       } catch (caught) {
         return paymentReconciliationError(caught);
       }
@@ -899,11 +915,17 @@ export async function handleApiRequest(
           return json({ ok: true }, 200, { "Cache-Control": "no-store" });
         case "payment.release-seat":
           return json({ ok: true, ...await releaseUnpaidSeat(env, principal, String(payload.paymentRequestId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "promotion.use-existing-student":
+          return json({ ok: true, ...await resolvePromotionIdentity(env, principal,
+            String(payload.draftChildId ?? ""), { kind: "existing", studentId: String(payload.studentId ?? "") }) }, 200, { "Cache-Control": "no-store" });
+        case "promotion.create-new-student":
+          return json({ ok: true, ...await resolvePromotionIdentity(env, principal,
+            String(payload.draftChildId ?? ""), { kind: "new" }) }, 200, { "Cache-Control": "no-store" });
         default:
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
     } catch (caught) {
-      return paymentReconciliationError(caught);
+      return caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught) : paymentReconciliationError(caught);
     }
   }
 

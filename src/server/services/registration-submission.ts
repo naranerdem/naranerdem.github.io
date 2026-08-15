@@ -840,6 +840,15 @@ export async function registrationStatusForSession(
       payment_request.id AS paymentRequestId,
       payment_request.payment_reference AS paymentReference,
       payment_installment.status AS initialInstallmentStatus,
+      enrollment.status AS canonicalEnrollmentStatus,
+      enrollment.confirmed_at AS canonicalEnrollmentConfirmedAt,
+      (SELECT later.amount_mnt FROM payment_installment AS later
+        WHERE later.registration_draft_child_id = registration_draft_child.id
+          AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentAmountMnt,
+      (SELECT later.effective_due_at FROM payment_installment AS later
+        WHERE later.registration_draft_child_id = registration_draft_child.id
+          AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentDueAt,
+      activity_offering.facebook_group_url AS offeringFacebookGroupUrl,
       EXISTS(SELECT 1 FROM payment_evidence WHERE payment_evidence.payment_request_id = payment_request.id
         AND payment_evidence.evidence_type = 'parent_claim') AS parentPaymentClaimed
     FROM registration_draft_child
@@ -853,6 +862,8 @@ export async function registrationStatusForSession(
     LEFT JOIN payment_installment ON payment_installment.registration_draft_child_id = registration_draft_child.id
       AND payment_installment.installment_kind = 'initial'
     LEFT JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
+    LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+    LEFT JOIN activity_offering ON activity_offering.id = selected_class.activity_offering_id
     WHERE registration_draft_child.registration_draft_id = ?
     ORDER BY registration_draft_child.position
   `).bind(draft.id).all<Record<string, unknown>>();

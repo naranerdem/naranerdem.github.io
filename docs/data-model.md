@@ -34,7 +34,7 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `offering_event_occurrence`: narrow programless one-off event date/time, capacity, and registration state.
 - `academic_year_stage_setting`: legacy 0009 annual Facebook setting retained for compatibility/history; new operational writes use `activity_offering.facebook_group_url`.
 - `annual_course_start_default`: one typed singleton month/day rule for the editable default start date of a new annual Offering; it is admin-managed, audited, and deliberately not a general key/value settings table.
-- `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children.
+- `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children and, after canonical promotion, preserves accepted parent/student rule-version IDs.
 - `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional generic `code_input`, payment-plan choice, and one selected concrete `class_session`.
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
 - `waitlist_entry`: one FIFO queue entry for one concrete class, with future offer/expiry fields.
@@ -43,12 +43,12 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, configurable registration-confirmation expiry (currently 24 hours), linked outbound email, and test provenance. It never stores the raw magic-link token.
 - `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
 - `registration_draft`: seven-day server-side guardian/contact snapshot, rule versions, payment-plan/code input, hashed draft-access token, and registration lifecycle. Staging rows are explicitly test-marked.
-- `registration_draft_child`: per-child snapshot with one nullable current/fallback class and one nullable preferred FIFO target, plus the accepted course payment plan and base amount snapshot when a class is selected. It is deliberately separate from canonical `student` identity.
+- `registration_draft_child`: per-child snapshot with one nullable current/fallback class and one nullable preferred FIFO target, plus the accepted course payment plan and base amount snapshot when a class is selected. It is deliberately separate from canonical `student` identity until paid promotion records explicit canonical mappings and identity-resolution state.
 - `offering_course_pricing`: one annual/summer Offering-owned base pricing record: a required positive integer MNT one-time amount and an optional two-installment amount/due-date set. It has no event, discount, credit, evidence, or allocation role.
 - `payment_collection_settings`: a small admin-managed singleton for bank-transfer instructions. It is operational configuration, not a credential, and must be complete before course registration can open.
 - `registration_capacity_hold`: one per draft child, moving from a 20-minute `provisional_email_confirmation` deadline to an `initial_payment` reservation with a fixed payment deadline after verification. Only the provisional hold expires automatically.
 - `payment_request`, `payment_installment`, `received_payment`, `payment_allocation`, and `payment_evidence`: provider-neutral initial reconciliation foundation. A request has one opaque payment reference; obligations stay per child, while received money can be allocated across many obligations.
-- `registration_draft_waitlist_entry`: one verified FIFO entry per draft child. Unverified waitlist intent remains only on `registration_draft_child`.
+- `registration_draft_waitlist_entry`: one verified FIFO entry per draft child. Unverified waitlist intent remains only on `registration_draft_child`. Migration 0022 links a promoted child's canonical application but deliberately retains this draft-backed entry as the one active FIFO authority, preserving its original creation time.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.
 
 ## Ownership And Deletes
@@ -95,7 +95,7 @@ The public catalog API may return only registration configuration. It must never
 
 An unauthenticated future registration submission must not reveal whether a guardian email already has an account, return existing guardian/student data for a supplied email, overwrite an existing guardian's contact details, or authoritatively link a new child/application to an existing guardian merely because emails match. Existing-account access and linking must wait for the future passwordless email-ownership verification flow, and API responses must not disclose account existence.
 
-Successful magic-link verification creates only a short-lived verified-email session. Challenge consumption and session creation execute in one D1 batch so replay cannot create another session. No authentication query reads `guardian_account`, and no guardian row is created or linked by this foundation.
+Successful magic-link verification creates only a short-lived verified-email session. Challenge consumption and session creation execute in one D1 batch so replay cannot create another session. No authentication query reads `guardian_account`, and no guardian row is created or linked by verification alone. Canonical identity resolution is a later paid, staff-authorized server operation using the verified draft context.
 
 ## Seat Allocation Atomicity
 
@@ -144,17 +144,20 @@ Indexes cover expected lookup paths without indexing everything: guardian email/
 
 ## Deferred Finance Concepts
 
-This migration deliberately does not implement:
+This foundation deliberately does not implement:
 
-- payment records
-- payment allocation
 - credit ledger
 - refund ledger
 - full tuition adjustment engine
-- bank payment evidence
 - Khan Bank SMS/API adapter
 
-`application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Migration 0021 adds initial-payment obligations, received payment, allocation, and evidence records without adding discounts, credits, refunds, or broader finance operations.
+`application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Migration 0021 adds initial-payment obligations, received payment, allocation, and evidence records without adding discounts, credits, refunds, bank adapters, or broader finance operations. Migration 0022 links those draft-origin obligations to the resulting canonical application/enrollment instead of recalculating current Offering prices.
+
+## Canonical Promotion
+
+Migration 0022 promotes one fully reconciled paid draft child at a time. The verified normalized draft email resolves a GuardianAccount only by exact equality: none creates a guardian, exactly one active account is reused, and disabled/conflicting/multiple rows require review. Student matching is limited to exact normalized surname, given name, DOB, and gender among that guardian's already active linked children. Returning/no-match and multiple-match cases remain paid, capacity-consuming identity-review items; no global fuzzy match is allowed.
+
+Staff may explicitly select only a strict global exact candidate or explicitly approve a new child. That decision may add a GuardianStudentRelationship without removing prior relationships and is audited. The migration records source-draft mappings, links each installment to its canonical application/enrollment, preserves accepted rule and pricing snapshots, and changes the active initial-payment reservation to a confirmed Enrollment in one D1 batch. A confirmed enrollment replaces rather than doubles the capacity count.
 
 ## Program And Calendar Foundation
 

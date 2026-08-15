@@ -336,17 +336,20 @@ finish form + rules + review
 -> atomically capacity-check selected class
 -> 20-minute provisional email-confirmation hold
 -> email confirmation
--> fresh 24-hour initial-payment hold
+-> initial-payment reservation with a 24-hour payment deadline
 -> first required payment received
 -> confirmed enrollment
 ```
 
-The staging implementation now follows this flow. The provisional hold protects a seat while the parent confirms email. It never consumes time from the fresh 24-hour payment deadline, which starts only after timely email confirmation. A provisional hold stops consuming capacity when its 20 minutes pass. An active initial-payment reservation continues to consume capacity after its deadline until staff explicitly reconciles payment or releases the seat. Public full-class temporary counts include both kinds of capacity-consuming holds, never identities.
+The staging implementation now follows this flow. The provisional hold protects a seat while the parent confirms email. It never consumes time from the initial-payment reservation's 24-hour payment deadline, which starts only after timely email confirmation. A provisional hold stops consuming capacity when its 20 minutes pass. An active initial-payment reservation continues to consume capacity after its deadline until staff explicitly reconciles payment or releases the seat. Public full-class temporary counts include both kinds of capacity-consuming holds, never identities.
 
-Initial-payment reconciliation currently records a durable paid state and keeps
-the seat protected. It does not yet create a canonical guardian, student, or
-`enrollment.status = confirmed`, because the safe verified-draft-to-identity
-promotion path remains a separate task.
+Initial-payment reconciliation records durable payment evidence and allocations.
+After the required first installment is fully reconciled, migration 0022 safely
+promotes each eligible child to canonical guardian/student/application/enrollment
+records. It uses only the verified server-side normalized email for GuardianAccount
+resolution and only strict normalized name, DOB, and gender comparison within
+that guardian's already-linked children for automatic Student reuse. Ambiguous or
+returning no-match cases remain paid and seat-protected until teacher/admin review.
 
 The registration confirmation link itself remains usable for a longer configurable lifetime, currently about 24 hours. If confirmation happens after the 20-minute provisional hold expired, atomically re-check capacity. Reacquire the class and start a fresh payment hold if possible; otherwise explain that the temporary guarantee expired and show available classes plus the selected class's FIFO waitlist. Saved registration data remains recoverable.
 
@@ -356,7 +359,7 @@ After staging form completion, the parent sees a simple email-status screen with
 
 The browser-local pre-submission draft lasts 24 hours for accidental refresh or overnight closure and never creates a registration or hold. An accepted server draft has a separate seven-day retention deadline. Retention does not extend the 20-minute seat guarantee or 24-hour confirmation link. It must never delete or rescind a financially unresolved initial-payment reservation.
 
-Before verification, preferred waitlist intent stays only on the server draft. Verification materializes one FIFO entry per child. Waitlist-only creates no seat hold; fallback plus preferred waitlist converts the fallback to a payment hold and creates the preferred entry. Canonical guardian/student creation and returning-family reconciliation remain deliberately deferred, as do payment confirmation and enrollment promotion.
+Before verification, preferred waitlist intent stays only on the server draft. Verification materializes one FIFO entry per child. Waitlist-only creates no seat hold; fallback plus preferred waitlist converts the fallback to a payment hold and creates the preferred entry. Canonical promotion links but does not duplicate a materialized draft waitlist entry, so its original FIFO timestamp remains authoritative. Waitlist-only canonicalization remains future work.
 
 If initial payment has not been reconciled, the system may later send reminders, but elapsed time alone is never payment evidence and never releases the seat. A positive future bank/QPay signal may confirm money received; an absent signal must not release anything.
 
@@ -779,7 +782,8 @@ The future teacher dashboard should stay small, Mongolian-language, and operatio
 
 - what needs attention today
 - payments awaiting confirmation
-- initial holds nearing expiry
+- provisional email holds nearing expiry
+- overdue initial-payment reservations awaiting explicit reconciliation
 - installments due soon
 - overdue installments
 - contacts or billing groups who have been granted extensions

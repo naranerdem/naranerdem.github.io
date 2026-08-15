@@ -302,6 +302,7 @@ try {
   assert.equal(duplicatePayment.idempotent, true, "retrying the same manual confirmation does not create a duplicate payment");
   assert.equal(database.query(`SELECT received_at AS receivedAt, confirmed_at AS confirmedAt FROM received_payment WHERE idempotency_key = 'two-initial-exact'`)[0].receivedAt, '2026-08-11T07:53:00.000Z', "actual receipt time is preserved separately");
   assert.equal(database.query(`SELECT confirmed_at AS confirmedAt FROM received_payment WHERE idempotency_key = 'two-initial-exact'`)[0].confirmedAt, '2026-08-13T09:15:00.000Z', "staff confirmation time is preserved separately");
+  assert.equal(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0].enrollmentId != null, true, "reconciliation links the draft child to its canonical confirmed enrollment");
   assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'later'`, [twoRequest.id])[0].status, 'pending', "later installment remains independent of initial seat confirmation");
   const multiChild = submission("class-priced", undefined, 1, "two_installment");
   multiChild.children.push({ ...multiChild.children[0], givenName: "Хүүхэд 2", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" });
@@ -458,8 +459,8 @@ try {
   assert.equal(released.released, true, "staff can explicitly release a genuinely unpaid overdue seat");
   assert.equal(released.parentClaimed, true, "release surfaces the parent's non-authoritative payment claim");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${cashDraft.draftId}') AND status = 'active'`), 0, "explicit release, not elapsed time, frees the seat");
-  assert.equal(count(database, "guardian_account"), 0);
-  assert.equal(count(database, "student"), 0);
+  assert.equal(count(database, "guardian_account"), 2, "only fully reconciled, verified paid drafts become canonical guardians");
+  assert.equal(count(database, "student"), 3, "partial or released payments never create canonical students");
 
   const replayDraft = await createRegistrationDraft(env(database), submission(undefined, "class-full-preferred"), new Date("2026-08-13T10:00:00.000Z"));
   const replayChallenge = addChallenge(

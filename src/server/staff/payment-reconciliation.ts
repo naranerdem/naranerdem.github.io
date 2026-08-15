@@ -1,5 +1,6 @@
 import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { promotePaidDraftChildren } from "../services/canonical-enrollment-promotion";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
 type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid";
@@ -83,12 +84,14 @@ async function refreshInstallmentsAndDraft(env: WorkerEnv, request: PaymentReque
     }
   }
   const initial = installments.filter((item) => item.installmentKind === "initial");
+  for (const installment of initial) {
+    if (installment.allocatedAmountMnt >= installment.amountMnt) {
+      statements.push(env.DB.prepare(`UPDATE registration_draft_child SET initial_payment_reconciled_at = ?, updated_at = ?
+        WHERE id = ? AND initial_payment_reconciled_at IS NULL`).bind(now, now, installment.registrationDraftChildId));
+    }
+  }
   const allInitialPaid = initial.length > 0 && initial.every((item) => item.allocatedAmountMnt >= item.amountMnt);
   if (allInitialPaid) {
-    statements.push(env.DB.prepare(`UPDATE registration_draft_child SET initial_payment_reconciled_at = ?, updated_at = ?
-      WHERE registration_draft_id = ? AND id IN (SELECT registration_draft_child_id FROM payment_installment
-        WHERE payment_request_id = ? AND installment_kind = 'initial') AND initial_payment_reconciled_at IS NULL`)
-      .bind(now, now, request.registrationDraftId, request.id));
     statements.push(env.DB.prepare(`UPDATE registration_draft SET initial_payment_reconciled_at = ?, updated_at = ?
       WHERE id = ? AND initial_payment_reconciled_at IS NULL`).bind(now, now, request.registrationDraftId));
   }
@@ -139,7 +142,10 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   }
   const request = await requestForId(env, input.paymentRequestId);
   const existing = await env.DB.prepare(`SELECT id FROM received_payment WHERE idempotency_key = ?`).bind(input.idempotencyKey).first<{ id: string }>();
-  if (existing) return { id: existing.id, idempotent: true };
+  if (existing) {
+    const promotion = await promotePaidDraftChildren(env, actor, request.registrationDraftId, nowDate);
+    return { id: existing.id, idempotent: true, promotion };
+  }
   const receivedAt = iso(input.receivedAt) ?? nowDate.toISOString();
   const allocations = input.allocations.map((item) => ({ installmentId: String(item.installmentId ?? ""), amountMnt: positive(item.amountMnt) }));
   if (!allocations.length || allocations.some((item) => !item.installmentId || !item.amountMnt)) throw new PaymentReconciliationError("invalid");
@@ -184,7 +190,8 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     { source: input.source, receivedAt, amountMnt: receivedAmount, allocatedAmountMnt: total, allocationCount: allocations.length }, request, now));
   await env.DB.batch(statements);
   const state = await refreshInstallmentsAndDraft(env, request, now);
-  return { id: paymentId, idempotent: false, initialPaymentReconciled: state.allInitialPaid };
+  const promotion = await promotePaidDraftChildren(env, actor, request.registrationDraftId, nowDate);
+  return { id: paymentId, idempotent: false, initialPaymentReconciled: state.allInitialPaid, promotion };
 }
 
 export async function recordCheckedNotFound(env: WorkerEnv, actor: StaffPrincipal, paymentRequestId: string, nowDate = new Date()) {

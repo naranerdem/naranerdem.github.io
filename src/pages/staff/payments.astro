@@ -58,9 +58,21 @@ import "../../styles/global.css";
           ${overdue ? `<details class="staff-payment-release"><summary>Суудал чөлөөлөх</summary><p>${item.parentClaimed ? "Асран хамгаалагч төлбөр хийсэн гэж мэдэгдсэн. Банкны орлогыг дахин шалгана уу." : "Энэ үйлдлээр суудал шууд сулрана."}</p><button class="button danger" type="button" data-payment-release="${escape(item.paymentRequestId)}">Суудлыг чөлөөлөх</button></details>` : ""}
         </article>`;
       }
+      function promotionMarkup(item) {
+        const pending = state.pendingId === item.childId;
+        const candidates = item.candidates || [];
+        const candidateActions = candidates.map((candidate) => `<button class="button secondary" type="button" data-promotion-existing="${escape(candidate.id)}" data-promotion-child="${escape(item.childId)}" ${pending ? "disabled" : ""}>Энэ хүүхэд мөн</button><p class="staff-muted">${escape(candidate.name)} · ${escape(formatDate(candidate.dateOfBirth))}</p>`).join("");
+        const actions = item.guardianResolutionStatus !== "resolved"
+          ? `<p class="staff-muted">Асран хамгаалагчийн мэдээллийг админаар шалгуулна уу.</p>`
+          : `<div class="staff-promotion-actions">${candidateActions}${candidates.length ? "" : `<p class="staff-muted">Тохирох хүүхэд олдсонгүй.</p>`}<button class="text-button" type="button" data-promotion-new="${escape(item.childId)}" ${pending ? "disabled" : ""}>Шинэ хүүхэд</button></div>`;
+        return `<article class="staff-payment-item staff-promotion-item">
+          <div><strong>${escape(item.childName)}</strong><p>${escape(formatDate(item.dateOfBirth))} · ${escape(item.classLabel)} · ${escape(item.weekday)} ${escape(item.startTime)}–${escape(item.endTime)}</p><p>${item.returningStatus === "returning" ? "Өмнө сурч байсан" : "Шинэ хүүхэд"}</p>
+          <p><strong>Төлбөр баталгаажсан</strong></p><p>Бүртгэлийг баталгаажуулах шаардлагатай</p>${actions}</div>
+        </article>`;
+      }
       function render() {
-        const list = q("#payment-list"); const items = state.data?.items || [];
-        list.innerHTML = items.length ? items.map(itemMarkup).join("") : "<p class=\"staff-empty\">Шалгах эхний төлбөр одоогоор алга.</p>";
+        const list = q("#payment-list"); const items = state.data?.items || []; const promotionItems = state.data?.promotionItems || [];
+        list.innerHTML = `${items.length ? items.map(itemMarkup).join("") : "<p class=\"staff-empty\">Шалгах эхний төлбөр одоогоор алга.</p>"}${promotionItems.length ? `<section class="staff-promotion-list"><h2>Баталгаажуулах бүртгэл</h2>${promotionItems.map(promotionMarkup).join("")}</section>` : ""}`;
       }
       async function refresh(success = "") { const response = await fetch("/api/staff/payments", { credentials: "same-origin" }); if (!response.ok) throw new Error("Төлбөрийн жагсаалтыг авч чадсангүй."); state.data = await response.json(); render(); if (success) message(success, true); }
       async function post(payload) { const response = await fetch("/api/staff/payments", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, credentials: "same-origin", body: JSON.stringify(payload) }); const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || "Төлбөрийн мэдээллийг хадгалж чадсангүй."); return body; }
@@ -70,6 +82,8 @@ import "../../styles/global.css";
         if (target.matches("[data-payment-cancel]")) { state.openId = ""; render(); return; }
         if (target.dataset.paymentChecked) { try { await post({ action: "payment.checked-not-found", paymentRequestId: target.dataset.paymentChecked }); await refresh("Шалгаснаа тэмдэглэлээ."); } catch (error) { message(error.message); } return; }
         if (target.dataset.paymentRelease) { if (!confirm("Суудлыг суллах уу? Дараа нь өөр бүртгэл авч болно.")) return; try { await post({ action: "payment.release-seat", paymentRequestId: target.dataset.paymentRelease }); state.openId = ""; await refresh("Суудлыг суллалаа."); } catch (error) { message(error.message); } }
+        if (target.dataset.promotionExisting) { if (!confirm("Энэ хүүхдийг өмнөх бүртгэлтэй холбож баталгаажуулах уу?")) return; state.pendingId = target.dataset.promotionChild; render(); try { await post({ action: "promotion.use-existing-student", draftChildId: target.dataset.promotionChild, studentId: target.dataset.promotionExisting }); await refresh("Бүртгэл баталгаажлаа."); } catch (error) { message(error.message); } finally { state.pendingId = ""; render(); } }
+        if (target.dataset.promotionNew) { if (!confirm("Шинэ хүүхдийн бүртгэл үүсгэж баталгаажуулах уу?")) return; state.pendingId = target.dataset.promotionNew; render(); try { await post({ action: "promotion.create-new-student", draftChildId: target.dataset.promotionNew }); await refresh("Бүртгэл баталгаажлаа."); } catch (error) { message(error.message); } finally { state.pendingId = ""; render(); } }
       });
       q("#payment-list").addEventListener("submit", async (event) => {
         const form = event.target; if (!form.matches("[data-payment-form]")) return; event.preventDefault();

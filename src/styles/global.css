@@ -1746,6 +1746,27 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
+.staff-promotion-list {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1.35rem;
+}
+
+.staff-promotion-list h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.staff-promotion-item {
+  border-top-color: rgba(7, 58, 175, 0.42);
+}
+
+.staff-promotion-actions {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: start;
+}
+
 .staff-payment-claimed {
   color: #8b3d13;
   font-weight: 750;
