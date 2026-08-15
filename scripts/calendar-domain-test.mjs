@@ -198,6 +198,8 @@ try {
   });
   assertCompleteProgram(holidays, 30);
   assert.equal(holidays.filter((slot) => slot.status === "no_class").length, 3, "three habitual dates are explicit no-class rows");
+  assert.ok(holidays.filter((slot) => slot.status === "no_class").every((slot) => slot.lesson === null), "planned no-class dates neither own nor consume a curriculum lesson");
+  assert.equal(holidays.find((slot) => slot.status === "scheduled")?.lesson?.sequenceNumber, 1, "the next active date receives Lesson 1 after a no-class date");
   assert.equal(byLesson(holidays, 30).localDate, "2027-05-16");
   assert.notEqual(byLesson(baseline, 30).localDate, byLesson(holidays, 30).localDate, "holidays extend the tail instead of dropping lessons");
 

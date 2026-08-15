@@ -9,7 +9,7 @@
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro check && ASTRO_TELEMETRY_DISABLED=1 astro build",
     "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview",
     "preview:cloudflare": "npm run build && wrangler dev",
-    "deploy:cloudflare": "npm run build && wrangler deploy",
+    "deploy:cloudflare": "npm run build && wrangler deploy --env=\"\"",
     "deploy:cloudflare:staging": "npm run build && wrangler deploy --env staging",
     "seed:catalog:staging": "node scripts/seed-staging-catalog.mjs",
     "seed:calendar:staging": "node scripts/seed-staging-calendar.mjs",

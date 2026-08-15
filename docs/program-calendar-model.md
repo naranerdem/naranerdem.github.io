@@ -23,6 +23,13 @@ authority: it is optional at creation, can be changed later in Offering details,
 and is shared by every class in that Offering. Legacy class/stage values are
 compatibility/history only.
 
+Each annual or summer Offering has an editable `default_class_duration_minutes`.
+It is a creation default only: new classes and special make-ups derive explicit
+end times from it, while existing class rules, replacement slots, and historical
+calendar times remain authoritative. New annual Stage 1/2, Stage 3, and summer
+Offerings default to 80, 105, and 80 minutes. An Offering may be saved with zero
+or more initial classes in one atomic operation; their registration begins closed.
+
 `class_session` remains the concrete registration cohort/time option within a
 course Offering. Existing annual stage/year and weekday/time columns remain for
 registration compatibility. New staff and calendar code treats

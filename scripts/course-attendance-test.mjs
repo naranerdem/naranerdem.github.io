@@ -279,6 +279,7 @@ try {
   assert.doesNotMatch(styles, /staff-attendance-check \{[\s\S]{0,180}border:/, "attendance checkboxes are not button-like bordered cards");
   assert.match(source, /createOptimisticRosterMutator/, "individual attendance updates are optimistic");
   assert.doesNotMatch(source, /data-mark-status|Ирээгүй гэж тэмдэглэх|Үлдсэнийг ирээгүй болгох/, "ordinary attendance has no explicit absent action");
+  assert.doesNotMatch(source, /staff-attendance-effective-absent|>Ирээгүй</, "effective absence does not add a disruptive row-level label after class ends");
   assert.doesNotMatch(source, /Тэмдэглэгээг арилгах/, "unchecking present is the compact clear interaction");
   assert.doesNotMatch(source, /Ирэхгүйг мэдэгдэх/, "teacher roster uses completed-notice wording");
   assert.doesNotMatch(source, /await refresh\(success\)/, "individual mutations do not refetch the full roster");

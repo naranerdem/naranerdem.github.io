@@ -33,6 +33,10 @@ import "../../styles/global.css";
           <h2 id="makeup-scheduled-title">Товлосон нөхөх хичээл</h2>
           <div id="makeup-scheduled-list" class="staff-makeup-list"></div>
         </section>
+        <section aria-labelledby="makeup-no-title" class="staff-makeup-scheduled-section">
+          <h2 id="makeup-no-title">Нөхөхгүй</h2>
+          <div id="makeup-no-list" class="staff-makeup-list"></div>
+        </section>
       </section>
     </main>
     <script>
@@ -62,7 +66,7 @@ import "../../styles/global.css";
           const group = groups.get(key) || { title: `${entry.programTitle} · ${entry.lessonSequence}-р хичээл`, entries: [] };
           group.entries.push(entry); groups.set(key, group);
         }
-        container.innerHTML = [...groups.values()].map((group) => `<section class="staff-makeup-group"><div class="staff-makeup-group-heading"><strong>${escape(group.title)}</strong><span>${group.entries.length} сурагч</span></div>${group.entries.map((entry) => `<article class="staff-makeup-row"><div><strong>${escape(entry.studentName)}</strong><p>${escape(entry.classLabel)} · ${escape(formatDate(entry.sourceLocalDate))} · Ирээгүй ${entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : ""}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-open-makeup ${sourceAttrs(entry)}>Нөхөх</button><button class="staff-text-action" type="button" data-no-makeup ${sourceAttrs(entry)}>Нөхөхгүй</button></div></article>`).join("")}</section>`).join("");
+        container.innerHTML = [...groups.values()].map((group) => `<section class="staff-makeup-group"><div class="staff-makeup-group-heading"><strong>${escape(group.title)}</strong><span>${group.entries.length} сурагч</span></div>${group.entries.map((entry) => `<article class="staff-makeup-row"><div><strong>${escape(entry.studentName)}</strong><p>${escape(entry.classLabel)} · ${escape(formatDate(entry.sourceLocalDate))}${entry.hasAbsenceNotice ? ` · <span class="staff-attendance-notice">Мэдэгдсэн</span>` : ""}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-open-makeup ${sourceAttrs(entry)}>Нөхөх</button><button class="button secondary" type="button" data-no-makeup ${sourceAttrs(entry)}>Нөхөхгүй</button></div></article>`).join("")}</section>`).join("");
       }
 
       function renderDetail() {
@@ -76,7 +80,7 @@ import "../../styles/global.css";
           : `<p class="staff-empty">Тохирох энгийн анги одоогоор алга.</p>`;
         const special = selected.specialTargets.map((target) => `<article class="staff-makeup-target"><div><strong>${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)}</strong><p>Тусгай нөхөх хичээл · Сул суудал: ${target.remainingCapacity}</p></div><button class="button secondary" type="button" data-assign-special="${escape(target.id)}">Энд нөхөх</button></article>`).join("");
         container.hidden = false;
-        container.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(source.studentName)}</p><h2>${source.lessonSequence}. ${escape(source.lessonTitle)}</h2><p>${escape(source.classLabel)} · ${escape(formatDate(source.sourceLocalDate))}</p></div><button id="close-makeup" class="button secondary" type="button">Хаах</button></div><div class="staff-makeup-targets"><h3>Тохирох анги</h3>${normal}${special}</div><details class="staff-schedule-changes"><summary>Тусгай нөхөх хичээл үүсгэх</summary><form id="special-makeup-form" class="staff-makeup-special-form"><fieldset><legend>Энэ хичээлд орох сурагч</legend>${sameLessonSources.map((entry) => `<label><input type="checkbox" name="source" value="${escape(`${entry.enrollmentId}|${entry.classSessionId}|${entry.curriculumLessonId}`)}" ${entry.enrollmentId === source.enrollmentId && entry.classSessionId === source.classSessionId ? "checked" : ""} />${escape(entry.studentName)}</label>`).join("")}</fieldset><div class="staff-form-grid"><label>Өдөр<input name="localDate" type="date" required /></label><label>Эхлэх цаг<input name="startTime" type="time" required /></label><label>Дуусах цаг<input name="endTime" type="time" required /></label><label>Багтаамж<input name="capacity" type="number" min="1" max="100" value="${Math.max(1, sameLessonSources.length)}" required /></label></div><label>Тэмдэглэл<textarea name="note" rows="2"></textarea></label><button class="button primary" type="submit">Үүсгэж товлох</button></form></details>`;
+        container.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(source.studentName)}</p><h2>${source.lessonSequence}. ${escape(source.lessonTitle)}</h2><p>${escape(source.classLabel)} · ${escape(formatDate(source.sourceLocalDate))}</p></div><button id="close-makeup" class="button secondary" type="button">Хаах</button></div><div class="staff-makeup-targets"><h3>Тохирох анги</h3>${normal}${special}</div><details class="staff-schedule-changes"><summary>Тусгай нөхөх хичээл үүсгэх</summary><form id="special-makeup-form" class="staff-makeup-special-form"><fieldset><legend>Энэ хичээлд орох сурагч</legend>${sameLessonSources.map((entry) => `<label><input type="checkbox" name="source" value="${escape(`${entry.enrollmentId}|${entry.classSessionId}|${entry.curriculumLessonId}`)}" ${entry.enrollmentId === source.enrollmentId && entry.classSessionId === source.classSessionId ? "checked" : ""} />${escape(entry.studentName)}</label>`).join("")}</fieldset><div class="staff-form-grid"><label>Өдөр<input name="localDate" type="date" required /></label><label>Эхлэх цаг<input name="startTime" type="time" required /></label><label>Багтаамж<input name="capacity" type="number" min="1" max="100" value="${Math.max(1, sameLessonSources.length)}" required /></label></div><label>Тэмдэглэл<textarea name="note" rows="2"></textarea></label><button class="button primary" type="submit">Үүсгэж товлох</button></form></details>`;
       }
 
       function renderScheduled() {
@@ -96,7 +100,14 @@ import "../../styles/global.css";
         container.innerHTML = normalMarkup + specialMarkup;
       }
 
-      function render() { renderOpen(); renderDetail(); renderScheduled(); }
+      function renderNoMakeup() {
+        const container = q("#makeup-no-list");
+        const entries = state.data.noMakeup || [];
+        if (!entries.length) { container.innerHTML = `<p class="staff-empty">Нөхөхгүй гэж шийдсэн зүйл алга.</p>`; return; }
+        container.innerHTML = entries.map((entry) => `<article class="staff-makeup-row"><div><strong>${escape(entry.studentName)}</strong><p>${escape(entry.programTitle)} · ${entry.lessonSequence}-р хичээл · ${escape(formatDate(entry.sourceLocalDate))}</p><span class="staff-kind-label">Нөхөхгүй</span></div><button class="button secondary" type="button" data-reopen-no-makeup="${escape(entry.resolutionId)}">Дахин нээх</button></article>`).join("");
+      }
+
+      function render() { renderOpen(); renderDetail(); renderScheduled(); renderNoMakeup(); }
 
       async function mutate(action, payload, success) {
         if (state.pending) return;
@@ -112,6 +123,7 @@ import "../../styles/global.css";
         if (button.id === "close-makeup") { state.selected = null; refresh(); return; }
         if (button.matches("[data-open-makeup]")) { state.selected = sourceFrom(button); refresh().then(() => q("#makeup-detail").scrollIntoView({ behavior: "smooth", block: "start" })); return; }
         if (button.matches("[data-no-makeup]")) { mutate("makeup.no-makeup", sourceFrom(button), "Нөхөхгүй гэж тэмдэглэлээ."); return; }
+        if (button.dataset.reopenNoMakeup) { mutate("makeup.no-makeup-reopen", { resolutionId: button.dataset.reopenNoMakeup }, "Дахин шийдэхээр нээлээ."); return; }
         const source = state.data.selected?.source;
         if (button.dataset.assignNormal && source) { mutate("makeup.assign-normal", { ...source, targetClassSessionId: button.dataset.assignNormal }, "Нөхөх хичээлийг товлолоо."); return; }
         if (button.dataset.assignSpecial && source) { mutate("makeup.assign-special", { ...source, specialOccurrenceId: button.dataset.assignSpecial }, "Нөхөх хичээлийг товлолоо."); return; }
@@ -124,7 +136,7 @@ import "../../styles/global.css";
         event.preventDefault();
         const form = new FormData(event.target);
         const sources = form.getAll("source").map((value) => { const [enrollmentId, classSessionId, curriculumLessonId] = String(value).split("|"); return { enrollmentId, classSessionId, curriculumLessonId }; });
-        mutate("makeup.special-create", { sources, localDate: form.get("localDate"), startTime: form.get("startTime"), endTime: form.get("endTime"), capacity: Number(form.get("capacity")), note: form.get("note") }, "Тусгай нөхөх хичээлийг товлолоо.");
+        mutate("makeup.special-create", { sources, localDate: form.get("localDate"), startTime: form.get("startTime"), capacity: Number(form.get("capacity")), note: form.get("note") }, "Тусгай нөхөх хичээлийг товлолоо.");
       });
 
       (async () => { if (!(await hasMakeupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));

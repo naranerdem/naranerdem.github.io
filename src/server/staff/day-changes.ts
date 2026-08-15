@@ -134,6 +134,19 @@ function addDays(value: string, days: number): string {
   return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
+function addMinutes(startTime: string, minutes: number): string {
+  const [hours, minutesPart] = startTime.split(":").map(Number);
+  const total = hours * 60 + minutesPart + minutes;
+  if (total >= 24 * 60) throw new DayChangeError("invalid");
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function durationMinutes(startTime: string, endTime: string): number {
+  const [startHour, startMinute] = startTime.split(":").map(Number);
+  const [endHour, endMinute] = endTime.split(":").map(Number);
+  return endHour * 60 + endMinute - startHour * 60 - startMinute;
+}
+
 function requireManage(actor: StaffPrincipal): void {
   if (!hasStaffCapability(actor, "calendar.manage")) throw new DayChangeError("forbidden");
 }
@@ -589,7 +602,7 @@ async function plansForAction(
     const localDate = clean(input.localDate, 10);
     const context = await contextForClass(env, classSessionId);
     const startTime = clean(input.startTime, 5) || context.startTime;
-    const endTime = clean(input.endTime, 5) || context.endTime;
+    const endTime = clean(input.endTime, 5) || addMinutes(startTime, durationMinutes(context.startTime, context.endTime));
     const plan = await planExtras(env, context, [{ id: id(), localDate, startTime, endTime, reasonLabel: clean(input.note) || "Нэмэлт өдөр" }], at);
     return {
       action: "course_extra_day_added",

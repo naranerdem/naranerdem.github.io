@@ -73,6 +73,11 @@ function civilWeekday(value) {
 }
 
 try {
+  const schedulePage = readFileSync("src/pages/staff/schedule.astro", "utf8");
+  const programsPage = readFileSync("src/pages/staff/programs.astro", "utf8");
+  assert.match(schedulePage, /slot\.status === "scheduled" && slot\.lessonSequence/, "a planned no-class row cannot render a curriculum lesson");
+  assert.match(programsPage, /Хичээл оруулаагүй байна[\s\S]*?>Засах</, "an empty summer Program exposes its edit action");
+  assert.match(programsPage, /family\.kind === "summer_course" \? `<div class="staff-danger-zone">/, "only summer Programs expose removal controls");
   const migrations = readdirSync("migrations").filter((file) => file.endsWith(".sql")).sort();
   const offeringMigration = "0010_activity_offerings_and_meeting_rules.sql";
   const offeringMigrationIndex = migrations.indexOf(offeringMigration);
@@ -172,10 +177,8 @@ try {
   const unauthenticated = await handleApiRequest(new Request("https://staging.example.test/api/staff/program-calendar"), runtime);
   assert.equal(unauthenticated.status, 401, "unauthenticated callers cannot read staff setup data");
 
-    const programsPage = readFileSync("src/pages/staff/programs.astro", "utf8");
-    const offeringsPage = readFileSync("src/pages/staff/offerings.astro", "utf8");
+  const offeringsPage = readFileSync("src/pages/staff/offerings.astro", "utf8");
   const holidaysPage = readFileSync("src/pages/staff/holidays.astro", "utf8");
-  const schedulePage = readFileSync("src/pages/staff/schedule.astro", "utf8");
   const settingsPage = readFileSync("src/pages/staff/settings/index.astro", "utf8");
   const legacyPage = readFileSync("src/pages/staff/program-calendar.astro", "utf8");
   const routerSource = readFileSync("src/server/api/router.ts", "utf8");
@@ -271,10 +274,11 @@ try {
 
   await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1", startsOn: "2025-09-01", endsOn: "2026-06-01", chargeMode: "free" }), /Offering operation/, "annual offerings reject a manual free charge mode");
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1", startsOn: "2025-09-01", endsOn: "2026-06-01" });
-  const annualDefault = database.query("SELECT charge_mode AS chargeMode, use_academic_year_breaks AS useBreaks FROM activity_offering WHERE academic_year_id = 'year-2025' AND stage_code = 'stage_1'")[0];
+  const annualDefault = database.query("SELECT charge_mode AS chargeMode, use_academic_year_breaks AS useBreaks, default_class_duration_minutes AS duration FROM activity_offering WHERE academic_year_id = 'year-2025' AND stage_code = 'stage_1'")[0];
   assert.equal(annualDefault.chargeMode, "paid", "annual course charge defaults to paid");
   assert.equal(database.query("SELECT facebook_group_url AS facebookGroupUrl FROM activity_offering WHERE academic_year_id = 'year-2025' AND stage_code = 'stage_1'")[0].facebookGroupUrl, null, "an Offering may be created with no Facebook group");
   assert.equal(annualDefault.useBreaks, 1, "annual courses apply academic-year breaks by default");
+  assert.equal(annualDefault.duration, 80, "new Stage 1 annual offerings default to 80 minutes");
 
   await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Туршилтын зуны сургалт", startsOn: "2027-06-01", endsOn: "2027-06-26" }), /Offering operation/, "summer offerings require an existing published program");
   await service.createSummerProgramFamilyDraft(runtime, actor("teacher"), { displayName: "Туршилтын зуны хөтөлбөр" });
@@ -286,15 +290,18 @@ try {
   const summerFamily = database.query(`SELECT program_family_id AS familyId FROM curriculum_program WHERE id = ${quote(summerDraft.id)}`)[0];
   await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Туршилтын зуны сургалт", startsOn: "2027-06-01", endsOn: "2027-06-14", programFamilyId: summerFamily.familyId, chargeMode: "free" }), /Offering operation/, "summer offerings reject a manual free charge mode");
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Туршилтын зуны сургалт", startsOn: "2027-06-01", endsOn: "2027-06-14", programFamilyId: summerFamily.familyId, facebookGroupUrl: "https://facebook.com/groups/fake-summer" });
-  const summerOffering = database.query("SELECT id, curriculum_program_id AS programId, academic_year_id AS academicYearId, charge_mode AS chargeMode, use_academic_year_breaks AS useBreaks FROM activity_offering WHERE title = 'Туршилтын зуны сургалт'")[0];
+  const summerOffering = database.query("SELECT id, curriculum_program_id AS programId, academic_year_id AS academicYearId, charge_mode AS chargeMode, use_academic_year_breaks AS useBreaks, default_class_duration_minutes AS duration FROM activity_offering WHERE title = 'Туршилтын зуны сургалт'")[0];
   assert.equal(summerOffering.chargeMode, "paid", "summer charge defaults to paid");
   assert.equal(summerOffering.useBreaks, 0, "summer does not inherit academic breaks by default");
+  assert.equal(summerOffering.duration, 80, "new summer offerings default to 80 minutes");
   sqlite(`INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, status, is_test, test_run_id, created_at, updated_at)
     VALUES ('summer-irrelevant-break', ${quote(summerOffering.academicYearId)}, 'Зуны үед үйлчлэхгүй', '2027-06-07', '2027-06-07', 1, 'active', 1, 'staff-program-test', '${now}', '${now}');`);
   await offeringService.saveOfferingBreak(runtime, actor("teacher"), { offeringId: summerOffering.id, label: "Туршилтын завсарлага", startsOn: "2027-06-07", endsOn: "2027-06-08" });
   await service.saveClassSession(runtime, actor("teacher"), { offeringId: summerOffering.id, firstDate: "2027-06-01", lastDate: "2027-06-14", academicYearId: "", stageCode: "", weekday: "", startTime: "10:00", endTime: "11:30", capacity: 12 });
   const summerWeekdayClass = database.query("SELECT class_session.id, class_session.updated_at AS updatedAt, class_meeting_rule.recurrence_kind AS recurrenceKind FROM class_session INNER JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id WHERE class_session.activity_offering_id = " + quote(summerOffering.id) + " AND class_session.start_time = '10:00'")[0];
   assert.equal(summerWeekdayClass.recurrenceKind, "daily", "new summer classes default to daily recurrence");
+  await service.saveClassSession(runtime, actor("teacher"), { offeringId: summerOffering.id, firstDate: "2027-06-01", lastDate: "2027-06-14", academicYearId: "", stageCode: "", weekday: "", startTime: "16:00", capacity: 12 });
+  assert.equal(database.query("SELECT end_time AS endTime FROM class_session WHERE activity_offering_id = " + quote(summerOffering.id) + " AND start_time = '16:00'")[0].endTime, "17:20", "new class end time derives from its Offering duration");
   await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: summerWeekdayClass.id });
   const summerDraftRevision = database.query(`SELECT revision.id, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = ${quote(summerWeekdayClass.id)} AND revision.status = 'draft'`)[0];
   assert.equal(database.query(`SELECT local_date AS localDate FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(summerDraftRevision.id)} AND status = 'scheduled' ORDER BY local_date DESC LIMIT 1`)[0].localDate, "2027-06-16", "a course break extends a daily summer plan beyond its soft end date");
@@ -483,6 +490,17 @@ try {
   const disposableSummer = database.query("SELECT id FROM curriculum_program_family WHERE display_name = 'Түр зуны ноорог'")[0];
   await service.deleteSummerProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: disposableSummer.id });
   assert.equal(count(database, "curriculum_program_family", `id = ${quote(disposableSummer.id)}`), 0, "an unreferenced summer draft family can be deleted safely");
+  await service.createSummerProgramFamilyDraft(runtime, actor("teacher"), { displayName: "Ашигласан зуны хөтөлбөр" });
+  const referencedDraft = database.query("SELECT id, updated_at AS updatedAt, program_family_id AS familyId FROM curriculum_program WHERE program_kind = 'summer_course' AND status = 'draft' ORDER BY created_at DESC LIMIT 1")[0];
+  await service.insertProgramDraftLesson(runtime, actor("teacher"), { programId: referencedDraft.id, expectedUpdatedAt: referencedDraft.updatedAt, title: "Анхны хичээл" });
+  const referencedSaved = database.query(`SELECT updated_at AS updatedAt FROM curriculum_program WHERE id = ${quote(referencedDraft.id)}`)[0];
+  await service.publishProgramFamilyDraft(runtime, actor("teacher"), { programId: referencedDraft.id, expectedUpdatedAt: referencedSaved.updatedAt });
+  await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Ашигласан зуны сургалт", startsOn: "2027-07-01", endsOn: "2027-07-10", programFamilyId: referencedDraft.familyId, defaultClassDurationMinutes: 95, initialClasses: [{ recurrenceKind: "daily", startTime: "14:00", capacity: 9 }] });
+  const referencedOffering = database.query("SELECT id FROM activity_offering WHERE title = 'Ашигласан зуны сургалт'")[0];
+  assert.equal(count(database, "class_session", `activity_offering_id = ${quote(referencedOffering.id)}`), 1, "offering and its requested initial class are created together");
+  assert.equal(database.query(`SELECT end_time AS endTime FROM class_session WHERE activity_offering_id = ${quote(referencedOffering.id)}`)[0].endTime, "15:35", "initial class uses the teacher-selected Offering duration");
+  await service.deleteSummerProgramFamilyDraft(runtime, actor("teacher"), { programFamilyId: referencedDraft.familyId });
+  assert.equal(database.query(`SELECT status FROM curriculum_program_family WHERE id = ${quote(referencedDraft.familyId)}`)[0].status, "archived", "a referenced summer Program is retired instead of destroyed");
   sqlite(`
     UPDATE academic_year SET is_current = 0 WHERE is_current = 1;
     INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)

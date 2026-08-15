@@ -285,6 +285,11 @@ the stable class-plus-immutable-lesson identity rather than a revision-scoped
 calendar slot. Events, parent-submitted notices, and attendance-derived
 financial conclusions are still not implemented.
 
+Effective absence remains derived after class end; the roster stays visually
+stable and does not add a red row-level `Ирээгүй` label. `/staff/makeups/`
+retains unresolved, scheduled, and `Нөхөхгүй` teacher decisions. A no-makeup
+decision remains visible and can be reopened without deleting audit history.
+
 Event attendance is a separate, simpler future record: `attended`, `did not
 attend`, and an optional short note. It must not be forced through course
 absence-notice, same-lesson make-up, or make-up-invitation semantics.

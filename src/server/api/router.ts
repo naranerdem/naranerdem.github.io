@@ -69,6 +69,7 @@ import {
   createSpecialCourseMakeupOccurrence,
   getCourseMakeupOverview,
   resolveCourseMakeupAsNotNeeded,
+  reopenCourseMakeupResolution,
 } from "../staff/course-makeups";
 import {
   applyDailyChange,
@@ -921,6 +922,9 @@ export async function handleApiRequest(
         case "makeup.no-makeup":
           result = await resolveCourseMakeupAsNotNeeded(env, principal, payload);
           break;
+        case "makeup.no-makeup-reopen":
+          await reopenCourseMakeupResolution(env, principal, payload);
+          break;
         case "makeup.assign-normal":
           result = await assignCourseMakeupToNormalClass(env, principal, payload);
           break;
@@ -1033,6 +1037,8 @@ export async function handleApiRequest(
             eventEndTime: typeof payload.eventEndTime === "string" ? payload.eventEndTime : null,
             eventCapacity: Number(payload.eventCapacity),
             eventRegistrationOpen: typeof payload.eventRegistrationOpen === "boolean" ? payload.eventRegistrationOpen : false,
+            defaultClassDurationMinutes: Number(payload.defaultClassDurationMinutes),
+            initialClasses: Array.isArray(payload.initialClasses) ? payload.initialClasses : undefined,
           });
           break;
         case "offering-facebook.save":

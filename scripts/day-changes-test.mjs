@@ -74,6 +74,10 @@ function currentSlot(database, classId, lessonId) {
 }
 
 try {
+  const page = readFileSync("src/pages/staff/day-changes.astro", "utf8");
+  assert.match(page, /Цуцлаад орлуулах өдөр нэмэх/, "individual cancellation explains the replacement-slot model");
+  assert.match(page, /name="replacementDate" type="date" \/>/, "an individual replacement date starts blank");
+  assert.match(page, /Энэ өдрийн бүх хичээл/, "the whole-day action describes its scope");
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   sqlite(migrations.map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
   const built = spawnSync(esbuild, ["src/server/staff/day-changes.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${bundlePath}`], { encoding: "utf8" });
@@ -216,7 +220,6 @@ try {
   for (const classId of classes) assert.ok(database.query(`SELECT 1 AS value FROM class_calendar_slot AS slot INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE revision.status = 'published' AND calendar.class_session_id = ? AND slot.local_date = ? AND slot.status = 'scheduled'`, [classId, laterReplacement]).length, `${classId} receives the all-class replacement slot`);
   assert.equal(count(database, "audit_event", "action IN ('course_day_moved', 'course_occurrence_cancelled', 'course_extra_day_added', 'course_day_cancelled', 'course_day_replacement_added')"), 5, "daily operations create one coarse audit event each");
 
-  const page = readFileSync("src/pages/staff/day-changes.astro", "utf8");
   const rendered = readFileSync("dist/staff/day-changes/index.html", "utf8");
   assert.match(page, /Өдрийг бүхэлд нь цуцлах/);
   assert.match(page, /Өдрийг шилжүүлэх/);

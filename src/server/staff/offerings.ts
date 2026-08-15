@@ -26,6 +26,7 @@ interface OfferingRow {
   curriculumProgramId: string | null;
   useAcademicYearBreaks: number;
   chargeMode: ChargeMode;
+  defaultClassDurationMinutes: number | null;
   facebookGroupUrl: string | null;
   note: string | null;
   status: "active" | "archived";
@@ -85,6 +86,13 @@ export interface OfferingSaveInput {
   eventEndTime?: string | null;
   eventCapacity?: number;
   eventRegistrationOpen?: boolean;
+  defaultClassDurationMinutes?: number;
+  initialClasses?: Array<{
+    recurrenceKind?: string;
+    weeklyWeekday?: string | null;
+    startTime?: string;
+    capacity?: number;
+  }>;
 }
 
 function requireManage(actor: StaffPrincipal): void {
@@ -103,6 +111,12 @@ function validDate(value: string): boolean {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 function validTime(value: string): boolean { return /^([01]\d|2[0-3]):[0-5]\d$/.test(value); }
+function addMinutes(startTime: string, minutes: number): string {
+  const [hours, mins] = startTime.split(":").map(Number);
+  const total = hours * 60 + mins + minutes;
+  if (total >= 24 * 60) throw new OfferingError("invalid");
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
 function validUrl(value: string | null): boolean {
   if (!value) return true;
   try {
@@ -117,6 +131,10 @@ function stageLabel(stage: string): string {
 }
 function defaultCharge(kind: OfferingKind): ChargeMode { return kind === "event" ? "free" : "paid"; }
 function defaultBreakPolicy(kind: OfferingKind): boolean { return kind === "annual_course"; }
+function defaultDuration(kind: OfferingKind, stageCode: string | null): number | null {
+  if (kind === "event") return null;
+  return kind === "annual_course" && stageCode === "stage_3" ? 105 : 80;
+}
 function flags(env: WorkerEnv, source?: { isTest: number; testRunId: string | null }) {
   if (source) return { isTest: source.isTest, testRunId: source.testRunId };
   return env.APP_ENV === "staging" ? { isTest: 1, testRunId: "staff-offering" } : { isTest: 0, testRunId: null };
@@ -145,6 +163,7 @@ async function offeringById(env: WorkerEnv, offeringId: string): Promise<Offerin
     stage_code AS stageCode, level_label AS levelLabel, starts_on AS startsOn, ends_on AS endsOn,
     curriculum_program_id AS curriculumProgramId, use_academic_year_breaks AS useAcademicYearBreaks,
     charge_mode AS chargeMode, facebook_group_url AS facebookGroupUrl, note, status,
+    default_class_duration_minutes AS defaultClassDurationMinutes,
     is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
     FROM activity_offering WHERE id = ?`).bind(offeringId).first<OfferingRow>();
   if (!row) throw new OfferingError("not_found");
@@ -180,7 +199,7 @@ async function currentProgramForFamily(
     FROM curriculum_program_family AS family
     INNER JOIN curriculum_program AS program ON program.id = family.current_published_program_id
     INNER JOIN academic_year AS year ON year.id = program.academic_year_id
-    WHERE family.id = ? AND family.kind = ?
+    WHERE family.id = ? AND family.kind = ? AND family.status = 'active'
       AND (? IS NULL OR family.annual_stage_code = ?)`).bind(familyId, kind, annualStageCode ?? null, annualStageCode ?? null).first<ProgramContextRow>();
   if (!program || program.status !== "published" || program.programKind !== kind) throw new OfferingError("invalid");
   return program;
@@ -267,6 +286,90 @@ async function offeringHasRegistrationReferences(env: WorkerEnv, offeringId: str
   return row?.found === 1;
 }
 
+type InitialClass = {
+  recurrenceKind: "weekly" | "weekdays" | "daily";
+  weeklyWeekday: string | null;
+  startTime: string;
+  capacity: number;
+};
+
+function initialClasses(input: OfferingSaveInput, kind: "annual_course" | "summer_course"): InitialClass[] {
+  if (input.initialClasses === undefined) return [];
+  if (!Array.isArray(input.initialClasses) || input.initialClasses.length > 12) throw new OfferingError("invalid");
+  return input.initialClasses.map((entry) => {
+    const recurrenceKind = text(entry?.recurrenceKind, 20) || (kind === "summer_course" ? "daily" : "weekly");
+    const weeklyWeekday = recurrenceKind === "weekly" ? text(entry?.weeklyWeekday, 20) : null;
+    const startTime = text(entry?.startTime, 5);
+    const capacity = Number(entry?.capacity);
+    if (!(["weekly", "weekdays", "daily"] as const).includes(recurrenceKind as InitialClass["recurrenceKind"])
+      || (recurrenceKind === "weekly" && !["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"].includes(weeklyWeekday ?? ""))
+      || !validTime(startTime) || !Number.isInteger(capacity) || capacity < 1 || capacity > 80) {
+      throw new OfferingError("invalid");
+    }
+    return { recurrenceKind: recurrenceKind as InitialClass["recurrenceKind"], weeklyWeekday, startTime, capacity };
+  });
+}
+
+function classLabel(
+  kind: "annual_course" | "summer_course",
+  stageCode: string,
+  firstDate: string,
+  lastDate: string | null,
+  recurrenceKind: InitialClass["recurrenceKind"],
+  weeklyWeekday: string | null,
+  startTime: string,
+  endTime: string,
+): string {
+  if (kind === "summer_course") {
+    const short = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+    return `${short(firstDate)}${lastDate ? `–${short(lastDate)}` : ""} · ${startTime}–${endTime}`;
+  }
+  const weekday = recurrenceKind === "weekly" ? weeklyWeekday : recurrenceKind === "weekdays" ? "Ажлын өдөр" : "Өдөр бүр";
+  return `${stageLabel(stageCode)} · ${weekday} ${startTime}–${endTime}`;
+}
+
+function initialClassStatements(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  offering: { id: string; kind: "annual_course" | "summer_course"; academicYearId: string; stageCode: string; startsOn: string; endsOn: string | null },
+  classes: readonly InitialClass[],
+  duration: number,
+  provenance: { isTest: number; testRunId: string | null },
+  time: string,
+): D1PreparedStatement[] {
+  const statements: D1PreparedStatement[] = [];
+  for (const entry of classes) {
+    const classId = id();
+    const endTime = addMinutes(entry.startTime, duration);
+    const lastDate = offering.kind === "summer_course" ? offering.endsOn : null;
+    const weekday = entry.recurrenceKind === "weekly"
+      ? entry.weeklyWeekday as string
+      : `${entry.recurrenceKind === "weekdays" ? "Ажлын өдөр" : "Өдөр бүр"} ${Number(offering.startsOn.slice(5, 7))}/${Number(offering.startsOn.slice(8, 10))}`;
+    statements.push(
+      env.DB.prepare(`INSERT INTO class_session (id, academic_year_id, stage_code, display_label,
+        weekday, start_time, end_time, capacity, status, facebook_group_url,
+        is_test_only, is_test, test_run_id, created_at, updated_at, activity_offering_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', NULL, ?, ?, ?, ?, ?, ?)`).bind(
+        classId, offering.academicYearId, offering.stageCode,
+        classLabel(offering.kind, offering.stageCode, offering.startsOn, lastDate, entry.recurrenceKind, entry.weeklyWeekday, entry.startTime, endTime),
+        weekday, entry.startTime, endTime, entry.capacity,
+        provenance.isTest, provenance.isTest, provenance.testRunId, time, time, offering.id,
+      ),
+      env.DB.prepare(`INSERT INTO class_meeting_rule (
+        class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
+        start_time, end_time, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        classId, entry.recurrenceKind, offering.startsOn, lastDate, entry.weeklyWeekday,
+        entry.startTime, endTime, time, time,
+      ),
+      audit(env, actor, "class_session_created", "class_session", classId, {
+        offeringId: offering.id, recurrenceKind: entry.recurrenceKind, registrationOpen: false,
+      }, provenance, time),
+    );
+  }
+  return statements;
+}
+
 export async function getOfferingOverview(env: WorkerEnv): Promise<{
   offerings: Array<Record<string, unknown>>;
   eventOccurrences: Array<Record<string, unknown>>;
@@ -282,6 +385,7 @@ export async function getOfferingOverview(env: WorkerEnv): Promise<{
       family.id AS programFamilyId, family.display_name AS programFamilyName,
       offering.use_academic_year_breaks AS useAcademicYearBreaks,
       offering.charge_mode AS chargeMode, offering.facebook_group_url AS facebookGroupUrl,
+      offering.default_class_duration_minutes AS defaultClassDurationMinutes,
       offering.note, offering.status, offering.is_test AS isTest,
       offering.test_run_id AS testRunId, offering.updated_at AS updatedAt
       FROM activity_offering AS offering
@@ -368,21 +472,33 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
       ? `${annualYear?.label} · ${stageLabel(program.stageCode)}`
       : text(input.title);
     const sourceFlags = flags(env, program);
+    const duration = Number(input.defaultClassDurationMinutes ?? defaultDuration(kind, kind === "annual_course" ? program.stageCode : null));
+    if (!Number.isInteger(duration) || duration < 15 || duration > 360) throw new OfferingError("invalid");
+    const classes = initialClasses(input, kind);
     if (!title) throw new OfferingError("invalid");
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO activity_offering (
         id, kind, title, academic_year_id, stage_code, level_label, starts_on, ends_on,
         curriculum_program_id, use_academic_year_breaks, charge_mode, facebook_group_url,
+        default_class_duration_minutes,
         note, status, is_test, test_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
         .bind(offeringId, kind, title, annualYear?.id ?? program.academicYearId, kind === "annual_course" ? program.stageCode : null, null,
           startsOn, endsOn, program.id,
           defaultBreakPolicy(kind) ? 1 : 0,
-          chargeMode, facebookGroupUrl, note, sourceFlags.isTest, sourceFlags.testRunId, time, time),
+          chargeMode, facebookGroupUrl, duration, note, sourceFlags.isTest, sourceFlags.testRunId, time, time),
       audit(env, actor, "activity_offering_created", "activity_offering", offeringId, {
         kind, chargeMode, useAcademicYearBreaks: defaultBreakPolicy(kind),
-        programId: program.id,
+        programId: program.id, defaultClassDurationMinutes: duration, initialClassCount: classes.length,
       }, sourceFlags, time),
+      ...initialClassStatements(env, actor, {
+        id: offeringId,
+        kind,
+        academicYearId: annualYear?.id ?? program.academicYearId,
+        stageCode: kind === "annual_course" ? program.stageCode : "stage_1",
+        startsOn,
+        endsOn,
+      }, classes, duration, sourceFlags, time),
     ]);
     return;
   }
@@ -433,7 +549,9 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
   const endsOn = current.kind === "annual_course" ? annualYear?.endsOn ?? "" : (text(input.endsOn) || current.endsOn || "");
   const title = current.kind === "annual_course" ? `${annualYear?.label} · ${stageLabel(program.stageCode)}` : text(input.title);
   const useBreaks = defaultBreakPolicy(current.kind);
-  if (!title || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn) throw new OfferingError("invalid");
+  const duration = Number(input.defaultClassDurationMinutes ?? current.defaultClassDurationMinutes ?? defaultDuration(current.kind, current.stageCode));
+  if (!title || !validDate(startsOn) || !validDate(endsOn) || endsOn < startsOn
+    || !Number.isInteger(duration) || duration < 15 || duration > 360) throw new OfferingError("invalid");
   const structuralChange = startsOn !== current.startsOn || endsOn !== current.endsOn
     || useBreaks !== Boolean(current.useAcademicYearBreaks)
     || (annualYear?.id ?? program.academicYearId) !== current.academicYearId
@@ -444,13 +562,13 @@ export async function saveActivityOffering(env: WorkerEnv, actor: StaffPrincipal
   const update = structuralChange
     ? env.DB.prepare(`UPDATE activity_offering SET title = ?, academic_year_id = ?, stage_code = ?, level_label = NULL, starts_on = ?, ends_on = ?,
       curriculum_program_id = ?, use_academic_year_breaks = ?, charge_mode = 'paid',
-      facebook_group_url = ?, note = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
+      facebook_group_url = ?, note = ?, default_class_duration_minutes = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
       .bind(title, annualYear?.id ?? program.academicYearId, current.kind === "annual_course" ? program.stageCode : null,
         startsOn, endsOn, program.id, useBreaks ? 1 : 0,
-        facebookGroupUrl, note, time, current.id, input.expectedUpdatedAt)
-    : env.DB.prepare(`UPDATE activity_offering SET title = ?, facebook_group_url = ?, note = ?, updated_at = ?
-      WHERE id = ? AND updated_at = ?`)
-      .bind(title, facebookGroupUrl, note, time, current.id, input.expectedUpdatedAt);
+        facebookGroupUrl, note, duration, time, current.id, input.expectedUpdatedAt)
+    : env.DB.prepare(`UPDATE activity_offering SET title = ?, facebook_group_url = ?, note = ?,
+      default_class_duration_minutes = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
+      .bind(title, facebookGroupUrl, note, duration, time, current.id, input.expectedUpdatedAt);
   const result = await env.DB.batch([
     update,
     audit(env, actor, "activity_offering_changed", "activity_offering", current.id, {

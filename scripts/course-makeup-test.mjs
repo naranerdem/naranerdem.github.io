@@ -175,6 +175,12 @@ try {
   await makeups.resolveCourseMakeupAsNotNeeded(runtime, actor(), source(2), afterSourceEnd);
   overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
   assert.ok(!overview.unresolved.some((entry) => entry.enrollmentId === "enrollment-2"), "no-makeup decision suppresses the active queue");
+  const noMakeup = overview.noMakeup.find((entry) => entry.enrollmentId === "enrollment-2");
+  assert.ok(noMakeup, "no-makeup remains visible as an auditable teacher decision");
+  await makeups.reopenCourseMakeupResolution(runtime, actor(), { resolutionId: noMakeup.resolutionId });
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
+  assert.ok(overview.unresolved.some((entry) => entry.enrollmentId === "enrollment-2"), "a no-makeup decision can be reopened for a new choice");
+  await makeups.resolveCourseMakeupAsNotNeeded(runtime, actor(), source(2), afterSourceEnd);
 
   const enrollmentsBefore = count(database, "enrollment");
   const normalAssignment = await makeups.assignCourseMakeupToNormalClass(runtime, actor(), { ...source(1), targetClassSessionId: "target-class" }, afterSourceEnd);
@@ -231,6 +237,7 @@ try {
   const page = readFileSync("src/pages/staff/makeups.astro", "utf8");
   const built = readFileSync("dist/staff/makeups/index.html", "utf8");
   assert.match(page, /Нөхөхгүй/);
+  assert.match(page, /Дахин нээх/);
   assert.match(page, /Тусгай нөхөх хичээл үүсгэх/);
   assert.match(page, /Сул суудал/);
   assert.doesNotMatch(page, /урилга|Messenger|и-мэйл илгээ/, "make-up planning does not claim communication");

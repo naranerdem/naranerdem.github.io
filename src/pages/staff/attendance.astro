@@ -91,7 +91,7 @@ import "../../styles/global.css";
         const pending = optimistic.isPending(entry.enrollmentId);
         const effective = effectiveAttendanceStatus(status, state.data.selected.occurrenceEnded);
         const control = (value, label) => `<label class="staff-attendance-check ${checked[value] ? "selected" : ""}"><input type="checkbox" data-attendance-control="${value}" data-enrollment="${escape(entry.enrollmentId)}" ${checked[value] ? "checked" : ""} ${pending ? "disabled" : ""} />${label}</label>`;
-        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}${effective === "absent" ? `<span class="staff-attendance-effective-absent">Ирээгүй</span>` : ""}</div>`;
+        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}</div>`;
       }
 
       function noticeControls(entry) {
