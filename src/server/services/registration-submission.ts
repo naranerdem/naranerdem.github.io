@@ -3,6 +3,7 @@ import { normalizeEmail, validEmail } from "../auth/email-address";
 import { randomToken, sha256 } from "../auth/crypto";
 import type { D1Database, D1Result, WorkerEnv } from "../env";
 import { getPaymentCollectionSettings, getPaymentCollectionSettingsFromDatabase, type CoursePaymentPlanCode } from "../staff/course-pricing";
+import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -46,6 +47,7 @@ interface ClassRow {
   stageCode: StageCode;
   status: string;
   registrationStatus: string;
+  registrationWindowActive: number;
   offeringId: string | null;
   oneTimeAmountMnt: number | null;
   twoInstallmentEnabled: number | null;
@@ -208,7 +210,7 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
   return { ...input, guardian, children };
 }
 
-async function loadChosenClasses(database: D1Database, ids: string[]): Promise<ClassRow[]> {
+async function loadChosenClasses(database: D1Database, ids: string[], localDate: string): Promise<ClassRow[]> {
   const uniqueIds = [...new Set(ids.filter(Boolean))];
   if (!uniqueIds.length) return [];
   const placeholders = uniqueIds.map(() => "?").join(", ");
@@ -219,6 +221,7 @@ async function loadChosenClasses(database: D1Database, ids: string[]): Promise<C
       class_session.status AS status,
       academic_year.registration_status AS registrationStatus,
       class_session.activity_offering_id AS offeringId,
+      CASE WHEN ${activeWindowForOfferingSql("offering.id")} THEN 1 ELSE 0 END AS registrationWindowActive,
       pricing.one_time_amount_mnt AS oneTimeAmountMnt,
       pricing.two_installment_enabled AS twoInstallmentEnabled,
       pricing.first_installment_amount_mnt AS firstInstallmentAmountMnt,
@@ -232,7 +235,7 @@ async function loadChosenClasses(database: D1Database, ids: string[]): Promise<C
     WHERE class_session.id IN (${placeholders})
       AND class_session.is_test = 1
       AND class_session.is_test_only = 1
-  `).bind(...uniqueIds).all<ClassRow>();
+  `).bind(localDate, localDate, ...uniqueIds).all<ClassRow>();
   if (result.results.length !== uniqueIds.length) throw new RegistrationSubmissionError("invalid_class");
   return result.results;
 }
@@ -311,11 +314,14 @@ export async function createRegistrationDraft(
     child.selectedClassSessionId ?? "",
     child.preferredWaitlistClassSessionId ?? "",
   ]);
-  const classes = await loadChosenClasses(env.DB, classIds);
+  const classes = await loadChosenClasses(env.DB, classIds, mongoliaCivilDate(nowDate));
   const classById = new Map(classes.map((item) => [item.id, item]));
   const yearIds = new Set(classes.map((item) => item.academicYearId));
   if (yearIds.size !== 1 || classes.some((item) => item.registrationStatus !== "open" || item.status === "closed" || item.status === "cancelled")) {
     throw new RegistrationSubmissionError("invalid_class");
+  }
+  if (classes.some((item) => item.registrationWindowActive !== 1)) {
+    throw new RegistrationSubmissionError("registration_closed");
   }
   for (const child of input.children) {
     for (const id of [child.selectedClassSessionId, child.preferredWaitlistClassSessionId]) {

@@ -99,6 +99,8 @@ function createDatabase(rows, options = {}) {
           assert.match(sql, /hold_type = 'initial_payment'[\s\S]*deadline_at > \?/, "only provisional draft holds use a deadline comparison");
           assert.match(sql, /registration_capacity_hold/);
           assert.match(sql, /COALESCE\(draft_holds\.count, 0\)/);
+          assert.match(sql, /registration_window_offering/);
+          assert.match(sql, /registration_window\.starts_on <= \?/);
 
           const productionQuery = sql.includes("class_session.is_test_only = ?");
           const filtered = productionQuery
@@ -106,7 +108,8 @@ function createDatabase(rows, options = {}) {
             : rows;
 
           assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
-          assert.deepEqual(bindings.slice(1), productionQuery ? ["open", 0, 0, 0] : ["open"]);
+          assert.equal(bindings.slice(1, 5).every((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)), true, "catalog checks active Mongolia-local registration-window dates");
+          assert.deepEqual(bindings.slice(5), productionQuery ? ["open", 0, 0, 0] : ["open"]);
           if (productionQuery) assert.match(sql, /enrollment\.is_test = 0/);
           return { success: true, results: filtered };
         },

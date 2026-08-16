@@ -4,6 +4,12 @@ import { EmailVerificationError, startEmailVerification, verifyEmailToken } from
 import { VERIFIED_EMAIL_COOKIE } from "../auth/email-verification";
 import { EmailConfigurationError, EmailDeliveryError } from "../email/service";
 import { getRegistrationCatalog } from "../services/registration-catalog";
+import {
+  deleteRegistrationWindow,
+  getRegistrationWindowOverview,
+  RegistrationWindowError,
+  saveRegistrationWindow,
+} from "../services/registration-windows";
 import { getPublishedCalendars } from "../services/published-calendar";
 import {
   changeDraftEmail,
@@ -217,6 +223,9 @@ function registrationError(caught: unknown): Response {
     if (caught.code === "capacity_changed") {
       return error("registration_unavailable", "Сонгосон ангийн суудал саяхан дүүрлээ. Анги, цагаа дахин сонгоно уу.", 409);
     }
+    if (caught.code === "registration_closed") {
+      return error("registration_unavailable", "Энэ сургалтын бүртгэлийн хугацаа хаагдсан байна.", 409);
+    }
     if (caught.code === "resend_cooldown") {
       return error("invalid_request", "И-мэйлийг дахин илгээхийн өмнө түр хүлээнэ үү.", 429);
     }
@@ -232,6 +241,17 @@ function registrationError(caught: unknown): Response {
     return error("internal_error", "Баталгаажуулах и-мэйлийг одоогоор илгээж чадсангүй.", 503);
   }
   return error("internal_error", "Бүртгэлийг одоогоор үргэлжлүүлж чадсангүй.", 500);
+}
+
+function registrationWindowError(caught: unknown): Response {
+  if (!(caught instanceof RegistrationWindowError)) {
+    return error("internal_error", "Бүртгэлийн хугацааг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Бүртгэлийн хугацаа олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", "Мэдээлэл өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "immutable") return error("invalid_request", "Өнгөрсөн хугацааг өөрчлөх боломжгүй. Идэвхтэй хугацааны эхлэх өдрийг өөрчилж болохгүй.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Нэр, огноо, сонгосон сургалтуудаа шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 function paymentReconciliationError(caught: unknown): Response {
@@ -1098,6 +1118,49 @@ export async function handleApiRequest(
       return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
     } catch (caught) {
       return dayChangeError(caught);
+    }
+  }
+
+  if (path === "/api/staff/registration-windows") {
+    if (request.method === "GET") {
+      const denied = await requireStaffCapability(request, env, "registration.manage");
+      if (denied) return denied;
+      try {
+        return json(await getRegistrationWindowOverview(env), 200, { "Cache-Control": "no-store" });
+      } catch (caught) {
+        return registrationWindowError(caught);
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403);
+    }
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    try {
+      const payload = await request.json() as Record<string, unknown>;
+      if (!payload || typeof payload.action !== "string") throw new RegistrationWindowError("invalid");
+      if (payload.action === "registration-window.save") {
+        await saveRegistrationWindow(env, principal, {
+          id: typeof payload.id === "string" ? payload.id : undefined,
+          expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
+          name: payload.name,
+          startsOn: payload.startsOn,
+          endsOn: payload.endsOn,
+          offeringIds: payload.offeringIds,
+        });
+      } else if (payload.action === "registration-window.delete") {
+        await deleteRegistrationWindow(env, principal, {
+          id: String(payload.id ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+        });
+      } else {
+        return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+      }
+      return json({ ok: true }, 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return registrationWindowError(caught);
     }
   }
 

@@ -1,0 +1,65 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><meta name="theme-color" content="#073aaf" /><title>Бүртгэл | {siteIdentity.name}</title></head>
+  <body class="staff-page" data-staff-tool-surface="booting">
+    <header class="site-header"><a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>Бүртгэл</span></span></a></header>
+    <main class="staff-shell" aria-live="polite">
+      <section id="tool-booting" class="staff-state"><p class="eyebrow">Бүртгэл</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Бүртгэл</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-app" hidden>
+        <div class="staff-page-heading"><div><p class="eyebrow">Сургалтын тохиргоо</p><h1>Бүртгэл</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <p id="tool-message" class="staff-error" role="status" hidden></p>
+        <section id="registration-summary" class="staff-operation-section"></section>
+        <section id="window-editor"></section>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      const q = (selector) => document.querySelector(selector);
+      const escape = (value) => String(value ?? "").replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
+      const state = { data: null, editingId: "", creating: false };
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
+      async function request(path, init) { const response = await fetch(path, { credentials: "same-origin", ...init }); const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || "Хадгалж чадсангүй."); return body; }
+      async function refresh(success = "") { state.data = await request("/api/staff/registration-windows", { headers: { Accept: "application/json" } }); render(); message(success, Boolean(success)); }
+      function selected() { return state.data?.windows.find((item) => item.id === state.editingId); }
+      function offeringText(id) { const item = state.data?.offerings.find((offering) => offering.id === id); return item?.title || ""; }
+      function dateText(value) { const [year, month, day] = String(value || "").split("-").map(Number); return year && month && day ? `${year} оны ${month}-р сарын ${day}` : ""; }
+      function detailRow(item, editable = true) { return `<div class="staff-registration-secondary-row"><div><strong>${escape(item.name)}</strong><p>${escape(dateText(item.startsOn))} – ${escape(dateText(item.endsOn))}</p><p class="staff-muted">${escape(item.offeringIds.map(offeringText).filter(Boolean).join(", "))}</p></div>${editable ? `<button class="text-button" type="button" data-window-edit="${escape(item.id)}">Засах</button>` : ""}</div>`; }
+      function edit(item) { state.editingId = item.id; state.creating = false; renderEditor(); q("#window-editor").scrollIntoView({ behavior: "smooth", block: "start" }); }
+      function renderSummary() {
+        const windows = state.data?.windows || [];
+        const active = windows.filter((item) => item.state === "active");
+        const future = windows.filter((item) => item.state === "future");
+        const past = windows.filter((item) => item.state === "past");
+        const primary = active[0] || future[0];
+        const otherUpcoming = [...active.slice(1), ...future.filter((item) => item.id !== primary?.id)];
+        const status = active.length ? "Бүртгэл нээлттэй" : future.length ? "Дараагийн бүртгэл" : "Бүртгэл хаалттай";
+        const content = primary
+          ? `<p class="staff-registration-dates">${escape(dateText(primary.startsOn))} – ${escape(dateText(primary.endsOn))}</p><p class="staff-registration-offerings">${escape(primary.offeringIds.map(offeringText).filter(Boolean).join(", "))}</p><button class="button primary" type="button" data-window-edit="${escape(primary.id)}">Засах</button>`
+          : `<p class="staff-muted">Одоогоор нийтэд бүртгэл нээлттэй биш байна.</p><button id="window-new" class="button primary" type="button">Бүртгэл нээх</button>`;
+        q("#registration-summary").innerHTML = `<section class="staff-registration-status"><h2>${status}</h2>${content}</section>${otherUpcoming.length ? `<details class="staff-registration-secondary"><summary>Бусад товлосон бүртгэлүүд</summary>${otherUpcoming.map((item) => detailRow(item)).join("")}</details>` : ""}${past.length ? `<details class="staff-registration-secondary"><summary>Өмнөх бүртгэлүүд</summary>${past.map((item) => detailRow(item, false)).join("")}</details>` : ""}`;
+        q("#window-new")?.addEventListener("click", () => { state.creating = true; state.editingId = ""; renderEditor(); });
+        q("#registration-summary").querySelectorAll("[data-window-edit]").forEach((button) => button.onclick = () => edit(windows.find((item) => item.id === button.dataset.windowEdit)));
+      }
+      function renderEditor() {
+        const container = q("#window-editor"); const item = selected();
+        if (!item && !state.creating) { container.innerHTML = ""; return; }
+        const startLocked = item?.state === "active";
+        const selectedIds = new Set(item?.offeringIds || []);
+        container.innerHTML = `<section class="staff-operation-section"><div class="staff-section-heading"><div><h2>${item ? "Бүртгэл засах" : "Бүртгэл нээх"}</h2>${item?.state === "active" ? `<p class="staff-muted">Нээлттэй бүртгэлийн эхлэх өдөр өөрчлөгдөхгүй.</p>` : ""}</div></div><form id="window-form" class="staff-compact-form"><label>Нэр <input id="window-name" required maxlength="160" value="${escape(item?.name || "")}" /></label><div class="staff-form-grid"><label>Эхлэх өдөр <input id="window-start" type="date" required ${startLocked ? "disabled" : ""} value="${escape(item?.startsOn || "")}" /></label><label>Дуусах өдөр <input id="window-end" type="date" required value="${escape(item?.endsOn || "")}" /></label></div><fieldset class="staff-window-offerings"><legend>Бүртгэл нээх сургалтууд</legend>${(state.data?.offerings || []).length ? state.data.offerings.map((offering) => `<label class="staff-check"><input type="checkbox" name="offering" value="${escape(offering.id)}" ${selectedIds.has(offering.id) ? "checked" : ""} /><span>${escape(offering.title)}${offering.startsOn ? ` · ${escape(offering.startsOn)}` : ""}</span></label>`).join("") : `<p class="staff-empty">Сонгох сургалт одоогоор алга.</p>`}</fieldset><div class="staff-form-actions"><button class="button secondary" data-window-cancel type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button>${item?.state === "future" ? `<button class="text-button" data-window-delete type="button">Устгах</button>` : ""}</div></form></section>`;
+        container.querySelector("[data-window-cancel]").onclick = closeEditor;
+        container.querySelector("#window-form").onsubmit = async (event) => { event.preventDefault(); const form = event.currentTarget; if (!form.reportValidity()) return; const offeringIds = [...form.querySelectorAll("input[name=offering]:checked")].map((input) => input.value); await run(() => request("/api/staff/registration-windows", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ action: "registration-window.save", id: item?.id, expectedUpdatedAt: item?.updatedAt, name: q("#window-name").value, startsOn: startLocked ? item.startsOn : q("#window-start").value, endsOn: q("#window-end").value, offeringIds }) }), item ? "Бүртгэлийг хадгаллаа." : "Бүртгэлийг нээлээ."); };
+        container.querySelector("[data-window-delete]")?.addEventListener("click", () => { if (window.confirm("Энэ бүртгэлийг устгах уу?")) run(() => request("/api/staff/registration-windows", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ action: "registration-window.delete", id: item.id, expectedUpdatedAt: item.updatedAt }) }), "Бүртгэлийг устгалаа."); });
+      }
+      function closeEditor() { state.editingId = ""; state.creating = false; renderEditor(); }
+      async function run(work, success) { message(); try { await work(); closeEditor(); await refresh(success); } catch (error) { message(error.message); } }
+      function render() { renderSummary(); renderEditor(); }
+      (async () => { const session = await request("/api/staff/session", { headers: { Accept: "application/json" } }); if (!session.authenticated || !(session.capabilities || []).includes("registration.manage")) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+    </script>
+  </body>
+</html>

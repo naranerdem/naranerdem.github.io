@@ -1,4 +1,5 @@
 import type { AppEnvironment, D1Database } from "../env";
+import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
 
 interface CatalogRow {
   academicYearId: string;
@@ -74,6 +75,7 @@ const stagingCatalogSql = `
       - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0), 0) AS remainingSeats,
     CASE
       WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
+        OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
         OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
       WHEN class_session.capacity - COALESCE(confirmed.count, 0)
@@ -115,6 +117,7 @@ const stagingCatalogSql = `
     GROUP BY class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
   WHERE academic_year.registration_status = ?
+    AND ${activeWindowForOfferingSql("offering.id")}
     AND class_session.status IN ('available', 'full', 'closed')
   ORDER BY academic_year.starts_on, academic_year.public_label, class_session.weekday, class_session.start_time
 `;
@@ -141,6 +144,7 @@ const productionCatalogSql = `
       - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0), 0) AS remainingSeats,
     CASE
       WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
+        OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
         OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
       WHEN class_session.capacity - COALESCE(confirmed.count, 0)
@@ -196,6 +200,7 @@ const productionCatalogSql = `
     GROUP BY registration_capacity_hold.class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
   WHERE academic_year.registration_status = ?
+    AND ${activeWindowForOfferingSql("offering.id")}
     AND academic_year.is_test = ?
     AND class_session.is_test = ?
     AND class_session.is_test_only = ?
@@ -208,9 +213,10 @@ export async function getRegistrationCatalog(
   environment: AppEnvironment,
 ): Promise<RegistrationCatalog> {
   const now = new Date().toISOString();
+  const localDate = mongoliaCivilDate();
   const statement = environment === "staging"
-    ? database.prepare(stagingCatalogSql).bind(now, "open")
-    : database.prepare(productionCatalogSql).bind(now, "open", 0, 0, 0);
+    ? database.prepare(stagingCatalogSql).bind(now, localDate, localDate, localDate, localDate, "open")
+    : database.prepare(productionCatalogSql).bind(now, localDate, localDate, localDate, localDate, "open", 0, 0, 0);
   const result = await statement.all<CatalogRow>();
   const years = new Map<string, RegistrationCatalog["academicYears"][number]>();
 

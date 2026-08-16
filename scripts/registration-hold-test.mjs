@@ -250,6 +250,11 @@ try {
     activity_offering_id, one_time_amount_mnt, two_installment_enabled,
     first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at
   ) VALUES ('offering-second-test', 700000, 0, NULL, NULL, NULL, ?, ?)`, [iso(), iso(), iso(), iso()]);
+  database.query(`INSERT INTO registration_window (
+    id, name, starts_on, ends_on, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('window-active-test', 'Тест бүртгэл', '2026-08-01', '2026-08-31', 1, 'catalog-test', ?, ?);
+  INSERT INTO registration_window_offering (registration_window_id, activity_offering_id, created_at)
+  VALUES ('window-active-test', 'offering-test', ?), ('window-active-test', 'offering-second-test', ?);`, [iso(), iso(), iso(), iso()]);
   database.query(`INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
     VALUES ('staff-payment-test', 'payment@example.test', 'Тест Багш', 'active', 1, 'payment-test', ?, ?)`, [iso(), iso()]);
   const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
@@ -462,6 +467,14 @@ try {
   assert.equal(count(database, "guardian_account"), 2, "only fully reconciled, verified paid drafts become canonical guardians");
   assert.equal(count(database, "student"), 3, "partial or released payments never create canonical students");
 
+  const closureDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-13T09:50:00.000Z"));
+  const closureChallenge = addChallenge(
+    database,
+    closureDraft.draftId,
+    closureDraft.normalizedEmail,
+    "2026-08-13T09:50:00.000Z",
+    "2026-08-14T09:50:00.000Z",
+  );
   const replayDraft = await createRegistrationDraft(env(database), submission(undefined, "class-full-preferred"), new Date("2026-08-13T10:00:00.000Z"));
   const replayChallenge = addChallenge(
     database,
@@ -470,6 +483,15 @@ try {
     "2026-08-13T10:00:00.000Z",
     "2026-08-14T10:00:00.000Z",
   );
+  database.query(`UPDATE registration_window SET ends_on = '2026-08-12', updated_at = ?
+    WHERE id = 'window-active-test'`, [iso(120)]);
+  await assert.rejects(
+    createRegistrationDraft(env(database), submission("class-priced"), new Date("2026-08-13T10:00:30.000Z")),
+    (error) => error instanceof RegistrationSubmissionError && error.code === "registration_closed",
+    "a stale browser cannot create a new draft after its Offering window closes",
+  );
+  await verifyEmailToken(env(database), closureChallenge.rawToken, "", new Date("2026-08-13T10:00:30.000Z"));
+  assert.equal(database.query(`SELECT status FROM registration_draft WHERE id = ?`, [closureDraft.draftId])[0].status, "awaiting_initial_payment", "an accepted held draft continues through email confirmation after its window closes");
   const verificationTime = new Date("2026-08-13T10:01:00.000Z");
   const firstVerification = await verifyEmailToken(env(database), replayChallenge.rawToken, "", verificationTime);
   assert.match(firstVerification.redirectUrl, /status=confirmed/);

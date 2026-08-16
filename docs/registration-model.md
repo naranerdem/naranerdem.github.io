@@ -188,6 +188,28 @@ public registration must remain closed until it has a valid pricing basis and
 required payment-plan terms. That future configuration belongs in Offering
 detail under `Төлбөрийн нөхцөл`, not in compact Offering creation.
 
+### Registration Window
+
+`RegistrationWindow` is the teacher-facing `Бүртгэлийн хугацаа`: a name,
+inclusive Mongolia-local start/end dates, and an explicit snapshot of one or
+more annual/summer `ActivityOffering`s. It is many-to-many because one Offering
+may be advertised again through a later reopening window. New Offerings are
+never attached implicitly. A window is future, active, or past solely from its
+dates; future windows are editable/deletable, active windows keep their start
+date while their end/membership may be corrected, and past windows are
+read-only.
+
+Ordinary public acceptance requires an Offering in at least one active window,
+valid pricing and bank-transfer settings, the concrete class's existing open
+safety status, and the normal capacity/eligibility checks. A full class still
+uses the ordinary FIFO waitlist. No active windows means new ordinary public
+registration is closed. Window closure never releases or invalidates an
+already accepted draft, verification path, initial-payment reservation, paid
+identity review, canonical promotion, or waitlist record; it only rejects a
+stale browser before a new draft is accepted. Teaching dates and registration
+dates remain independent, so ordinary registration may remain open after a
+course begins.
+
 ### ClassSession
 
 A `ClassSession` is a concrete registration time/cohort inside a course

@@ -2057,6 +2057,67 @@ textarea:focus {
   font-size: 1rem;
 }
 
+.staff-window-offerings {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.staff-window-offerings {
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.staff-window-offerings legend {
+  margin-bottom: 0.45rem;
+  font-weight: 750;
+}
+
+.staff-registration-status {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.staff-registration-status h2,
+.staff-registration-status p {
+  margin: 0;
+}
+
+.staff-registration-dates {
+  font-weight: 750;
+}
+
+.staff-registration-offerings {
+  color: var(--muted);
+}
+
+.staff-registration-status .button {
+  justify-self: start;
+}
+
+.staff-registration-secondary {
+  border-top: 1px solid var(--line);
+  padding-top: 0.8rem;
+}
+
+.staff-registration-secondary summary {
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.staff-registration-secondary-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding: 0.8rem 0 0;
+}
+
+.staff-registration-secondary-row p {
+  margin: 0.2rem 0 0;
+}
+
 .staff-offering-group + .staff-offering-group {
   margin-top: 1.25rem;
 }
