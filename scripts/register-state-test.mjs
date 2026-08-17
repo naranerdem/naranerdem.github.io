@@ -4,6 +4,7 @@ import {
   classSelectionIssue,
   initialStageSelection,
   nextWaitlistSelection,
+  restrictStageSelection,
   stageFromSearch,
   userStageSelection,
 } from "../public/scripts/registration-state.js";
@@ -15,6 +16,8 @@ assert.equal(stageFromSearch("?stage=stage_2"), "");
 const urlSelection = initialStageSelection("?stage=2");
 assert.deepEqual(urlSelection, { value: "stage_2", source: "url" });
 assert.deepEqual(applyStageRecommendation(urlSelection, "stage_3"), urlSelection);
+assert.deepEqual(restrictStageSelection(urlSelection, new Set(["stage_1"])), { value: "", source: "none" });
+assert.deepEqual(applyStageRecommendation(urlSelection, "stage_1", new Set(["stage_1"])), { value: "stage_1", source: "recommendation" });
 
 const recommended = applyStageRecommendation(initialStageSelection(""), "stage_3");
 assert.deepEqual(recommended, { value: "stage_3", source: "recommendation" });
@@ -22,6 +25,7 @@ assert.deepEqual(recommended, { value: "stage_3", source: "recommendation" });
 const manual = userStageSelection("stage_1");
 assert.deepEqual(applyStageRecommendation(manual, "stage_3"), manual);
 assert.deepEqual(applyStageRecommendation(manual, ""), manual);
+assert.deepEqual(applyStageRecommendation(manual, "stage_2", new Set(["stage_2"])), { value: "stage_2", source: "recommendation" });
 
 const emptyCatalogIssue = classSelectionIssue({
   catalogState: "available",

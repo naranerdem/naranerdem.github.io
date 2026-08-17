@@ -46,7 +46,6 @@ interface ClassRow {
   academicYearId: string;
   stageCode: StageCode;
   status: string;
-  registrationStatus: string;
   registrationWindowActive: number;
   offeringId: string | null;
   oneTimeAmountMnt: number | null;
@@ -219,7 +218,6 @@ async function loadChosenClasses(database: D1Database, ids: string[], localDate:
       class_session.academic_year_id AS academicYearId,
       class_session.stage_code AS stageCode,
       class_session.status AS status,
-      academic_year.registration_status AS registrationStatus,
       class_session.activity_offering_id AS offeringId,
       CASE WHEN ${activeWindowForOfferingSql("offering.id")} THEN 1 ELSE 0 END AS registrationWindowActive,
       pricing.one_time_amount_mnt AS oneTimeAmountMnt,
@@ -317,7 +315,7 @@ export async function createRegistrationDraft(
   const classes = await loadChosenClasses(env.DB, classIds, mongoliaCivilDate(nowDate));
   const classById = new Map(classes.map((item) => [item.id, item]));
   const yearIds = new Set(classes.map((item) => item.academicYearId));
-  if (yearIds.size !== 1 || classes.some((item) => item.registrationStatus !== "open" || item.status === "closed" || item.status === "cancelled")) {
+  if (yearIds.size !== 1 || classes.some((item) => item.status === "closed" || item.status === "cancelled")) {
     throw new RegistrationSubmissionError("invalid_class");
   }
   if (classes.some((item) => item.registrationWindowActive !== 1)) {
@@ -676,11 +674,9 @@ export async function confirmRegistrationChallenge(
     FROM registration_draft_child
     INNER JOIN class_session
       ON class_session.id = registration_draft_child.preferred_waitlist_class_session_id
-    INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.preferred_waitlist_class_session_id IS NOT NULL
       AND class_session.status IN ('available', 'full')
-      AND academic_year.registration_status = 'open'
   `).bind(now, now, draftId);
   const draftVerified = env.DB.prepare(`
     UPDATE registration_draft

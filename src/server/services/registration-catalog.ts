@@ -116,8 +116,7 @@ const stagingCatalogSql = `
       AND (hold_type = 'initial_payment' OR deadline_at > ?)
     GROUP BY class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
-  WHERE academic_year.registration_status = ?
-    AND ${activeWindowForOfferingSql("offering.id")}
+  WHERE ${activeWindowForOfferingSql("offering.id")}
     AND class_session.status IN ('available', 'full', 'closed')
   ORDER BY academic_year.starts_on, academic_year.public_label, class_session.weekday, class_session.start_time
 `;
@@ -199,8 +198,7 @@ const productionCatalogSql = `
       AND registration_draft.is_test = 0
     GROUP BY registration_capacity_hold.class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
-  WHERE academic_year.registration_status = ?
-    AND ${activeWindowForOfferingSql("offering.id")}
+  WHERE ${activeWindowForOfferingSql("offering.id")}
     AND academic_year.is_test = ?
     AND class_session.is_test = ?
     AND class_session.is_test_only = ?
@@ -211,12 +209,13 @@ const productionCatalogSql = `
 export async function getRegistrationCatalog(
   database: D1Database,
   environment: AppEnvironment,
+  nowDate = new Date(),
 ): Promise<RegistrationCatalog> {
-  const now = new Date().toISOString();
-  const localDate = mongoliaCivilDate();
+  const now = nowDate.toISOString();
+  const localDate = mongoliaCivilDate(nowDate);
   const statement = environment === "staging"
-    ? database.prepare(stagingCatalogSql).bind(now, localDate, localDate, localDate, localDate, "open")
-    : database.prepare(productionCatalogSql).bind(now, localDate, localDate, localDate, localDate, "open", 0, 0, 0);
+    ? database.prepare(stagingCatalogSql).bind(now, localDate, localDate, localDate, localDate)
+    : database.prepare(productionCatalogSql).bind(now, localDate, localDate, localDate, localDate, 0, 0, 0);
   const result = await statement.all<CatalogRow>();
   const years = new Map<string, RegistrationCatalog["academicYears"][number]>();
 

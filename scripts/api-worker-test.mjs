@@ -92,7 +92,7 @@ function createDatabase(rows, options = {}) {
             return { success: true, results: filtered };
           }
           if (options.catalogError) throw new Error("SQLITE_ERROR: no such table: class_session");
-          assert.match(sql, /academic_year\.registration_status = \?/);
+          assert.doesNotMatch(sql, /academic_year\.registration_status/, "registration windows, not the legacy academic-year state, control ordinary public opening");
           assert.match(sql, /enrollment\.status = 'confirmed'/);
           assert.match(sql, /enrollment\.status = 'awaiting_initial_payment'/);
           assert.doesNotMatch(sql, /enrollment\.effective_hold_deadline_at > \?/, "initial-payment capacity never expires by time");
@@ -109,7 +109,7 @@ function createDatabase(rows, options = {}) {
 
           assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
           assert.equal(bindings.slice(1, 5).every((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)), true, "catalog checks active Mongolia-local registration-window dates");
-          assert.deepEqual(bindings.slice(5), productionQuery ? ["open", 0, 0, 0] : ["open"]);
+          assert.deepEqual(bindings.slice(5), productionQuery ? [0, 0, 0] : []);
           if (productionQuery) assert.match(sql, /enrollment\.is_test = 0/);
           return { success: true, results: filtered };
         },

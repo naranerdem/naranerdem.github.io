@@ -203,7 +203,9 @@ Ordinary public acceptance requires an Offering in at least one active window,
 valid pricing and bank-transfer settings, the concrete class's existing open
 safety status, and the normal capacity/eligibility checks. A full class still
 uses the ordinary FIFO waitlist. No active windows means new ordinary public
-registration is closed. Window closure never releases or invalidates an
+registration is closed. `academic_year.registration_status` is retained for
+compatibility but does not add a second ordinary public-opening gate. Window
+closure never releases or invalidates an
 already accepted draft, verification path, initial-payment reservation, paid
 identity review, canonical promotion, or waitlist record; it only rejects a
 stale browser before a new draft is accepted. Teaching dates and registration

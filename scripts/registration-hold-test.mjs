@@ -16,10 +16,12 @@ function bundle(source, output) {
 }
 
 const registrationBundle = path.join(tempDir, "registration-submission.mjs");
+const catalogBundle = path.join(tempDir, "registration-catalog.mjs");
 const turnstileBundle = path.join(tempDir, "turnstile.mjs");
 const emailVerificationBundle = path.join(tempDir, "email-verification.mjs");
 const paymentReconciliationBundle = path.join(tempDir, "payment-reconciliation.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
+bundle("src/server/services/registration-catalog.ts", catalogBundle);
 bundle("src/server/security/turnstile.ts", turnstileBundle);
 bundle("src/server/auth/email-verification.ts", emailVerificationBundle);
 bundle("src/server/staff/payment-reconciliation.ts", paymentReconciliationBundle);
@@ -33,6 +35,7 @@ const {
   registrationStatusForSession,
   RegistrationSubmissionError,
 } = await import(pathToFileURL(registrationBundle).href);
+const { getRegistrationCatalog } = await import(pathToFileURL(catalogBundle).href);
 const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstileBundle).href);
 const { verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
 const {
@@ -222,6 +225,7 @@ try {
     ["class-full-preferred", 1, "full", "14:00"],
     ["class-priced", 10, "available", "16:00"],
     ["class-second-offering", 10, "available", "17:00"],
+    ["class-legacy-status", 10, "available", "17:30"],
   ]) {
     database.query(`
       INSERT INTO class_session (
@@ -255,14 +259,45 @@ try {
   ) VALUES ('window-active-test', 'Тест бүртгэл', '2026-08-01', '2026-08-31', 1, 'catalog-test', ?, ?);
   INSERT INTO registration_window_offering (registration_window_id, activity_offering_id, created_at)
   VALUES ('window-active-test', 'offering-test', ?), ('window-active-test', 'offering-second-test', ?);`, [iso(), iso(), iso(), iso()]);
+  for (const [id, stage] of [["offering-stage-2", "stage_2"], ["offering-stage-3", "stage_3"]]) {
+    database.query(`INSERT INTO activity_offering (
+      id, kind, title, academic_year_id, stage_code, use_academic_year_breaks,
+      charge_mode, status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, 'annual_course', ?, 'year-test', ?, 1, 'paid', 'active', 1, 'catalog-test', ?, ?)`, [id, id, stage, iso(), iso()]);
+    database.query(`INSERT INTO class_session (
+      id, activity_offering_id, academic_year_id, stage_code, display_label, weekday,
+      start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, 'year-test', ?, ?, 'Бямба', '18:00', '19:20', 8, 'available', 1, 1, 'catalog-test', ?, ?)`,
+    [`class-${stage}`, id, stage, `class-${stage}`, iso(), iso()]);
+    database.query(`INSERT INTO offering_course_pricing (
+      activity_offering_id, one_time_amount_mnt, two_installment_enabled,
+      first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at
+    ) VALUES (?, 800000, 0, NULL, NULL, NULL, ?, ?)`, [id, iso(), iso()]);
+  }
+  database.query(`INSERT INTO class_session (
+    id, activity_offering_id, academic_year_id, stage_code, display_label, weekday,
+    start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('class-closed', 'offering-test', 'year-test', 'stage_1', 'class-closed', 'Бямба',
+    '19:00', '20:20', 8, 'closed', 1, 1, 'catalog-test', ?, ?)`, [iso(), iso()]);
   database.query(`INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
     VALUES ('staff-payment-test', 'payment@example.test', 'Тест Багш', 'active', 1, 'payment-test', ?, ?)`, [iso(), iso()]);
   const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
     capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
 
+  database.query("UPDATE academic_year SET registration_status = 'closed' WHERE id = 'year-test'");
+  const stageOneOnlyCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
+  const catalogSessions = stageOneOnlyCatalog.academicYears.flatMap((year) => year.classSessions);
+  assert.ok(catalogSessions.some((entry) => entry.id === "class-last-seat" && entry.stageCode === "stage_1"), "an active Stage 1 window exposes its concrete classes even when the legacy academic-year status is closed");
+  assert.deepEqual(new Set(catalogSessions.map((entry) => entry.stageCode)), new Set(["stage_1"]), "Stage 2 and 3 Offerings outside every active window are absent from the public catalog");
+  assert.equal(catalogSessions.find((entry) => entry.id === "class-closed")?.availability, "unavailable", "a closed concrete class remains unavailable despite an active window");
+  const legacyStatusDraft = await createRegistrationDraft(env(database), submission("class-legacy-status"), new Date(iso(-5)));
+  assert.ok(legacyStatusDraft.hasProvisionalHold, "legacy academic-year registration status does not override a valid active window");
+
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
   assert.equal(one.hasProvisionalHold, true);
-  assert.equal(count(database, "registration_capacity_hold", "status = 'active'"), 1);
+  assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-last-seat' AND status = 'active'"), 1);
+  const fullCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
+  assert.equal(fullCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-last-seat")?.availability, "full", "a full active-window class remains in the catalog as a waitlist target");
   assert.deepEqual(database.query(`SELECT payment_plan_code AS paymentPlanCode,
     initial_payment_amount_mnt AS initialAmount, second_payment_amount_mnt AS secondAmount
     FROM registration_draft_child WHERE registration_draft_id = ?`, [one.draftId])[0],

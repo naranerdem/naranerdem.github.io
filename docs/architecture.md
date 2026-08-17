@@ -291,7 +291,9 @@ for ordinary public registration. A class is newly registerable only when its
 active annual/summer Offering belongs to at least one window whose inclusive
 date range contains the current `Asia/Ulaanbaatar` civil date, pricing and
 payment collection are ready, and its existing per-class registration safety
-switch remains open. The window never replaces that class switch. Past windows
+switch remains open. The window never replaces that class switch. The retained
+`academic_year.registration_status` compatibility field is not an additional
+ordinary public-registration gate. Past windows
 are read-only, active windows retain their start date, and reopening is a new
 window. Expiry affects only new public acceptance: already accepted drafts,
 email verification, payment holds, waitlists, and canonical promotion continue

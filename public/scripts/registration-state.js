@@ -14,9 +14,15 @@ export function userStageSelection(value) {
   return { value: stageCodes.has(value) ? value : "", source: "user" };
 }
 
-export function applyStageRecommendation(selection, recommendation) {
+export function restrictStageSelection(selection, availableStages = stageCodes) {
+  if (!selection.value || availableStages.has(selection.value)) return selection;
+  return { value: "", source: "none" };
+}
+
+export function applyStageRecommendation(selection, recommendation, availableStages = stageCodes) {
+  selection = restrictStageSelection(selection, availableStages);
   if (selection.source === "user" || selection.source === "url") return selection;
-  if (stageCodes.has(recommendation)) return { value: recommendation, source: "recommendation" };
+  if (availableStages.has(recommendation)) return { value: recommendation, source: "recommendation" };
   if (selection.source === "recommendation") return { value: "", source: "none" };
   return selection;
 }

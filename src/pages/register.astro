@@ -172,6 +172,7 @@ const formCopy = registrationFormCopy;
         classSelectionIssue,
         initialStageSelection,
         nextWaitlistSelection,
+        restrictStageSelection,
         userStageSelection,
       } from "/scripts/registration-state.js";
       import {
@@ -270,8 +271,15 @@ const formCopy = registrationFormCopy;
         return `<option value="${escapeText(option.value)}">${escapeText(option.label)}</option>`;
       }
 
+      function catalogStages() {
+        if (!catalog) return new Set(Object.keys(stageLabels));
+        return new Set(catalog.academicYears.flatMap((year) => year.classSessions).map((session) => session.stageCode));
+      }
+
       function stageOptions() {
+        const stages = catalogStages();
         return Object.entries(stageLabels)
+          .filter(([value]) => stages.has(value))
           .map(([value, label]) => `<option value="${value}">${escapeText(label)}</option>`)
           .join("");
       }
@@ -291,9 +299,27 @@ const formCopy = registrationFormCopy;
         const selection = applyStageRecommendation(
           { value: stage.value, source: card.dataset.stageSource || "none" },
           suggestion,
+          catalogStages(),
         );
         stage.value = selection.value;
         card.dataset.stageSource = selection.source;
+      }
+
+      function updateStageOptions(card) {
+        const stage = card.querySelector("[data-child-stage]");
+        const selected = restrictStageSelection(
+          { value: stage.value, source: card.dataset.stageSource || "none" },
+          catalogStages(),
+        );
+        stage.innerHTML = `<option value="">${escapeText(formCopy.selectPlaceholder)}</option>${stageOptions()}`;
+        stage.value = selected.value;
+        card.dataset.stageSource = selected.source;
+        if (!selected.value) {
+          delete card.dataset.selectedClassId;
+          delete card.dataset.waitlistClassId;
+          delete card.dataset.paymentPlanCode;
+        }
+        updateRecommendation(card);
       }
 
       function sessionForId(id) {
@@ -1030,7 +1056,7 @@ const formCopy = registrationFormCopy;
           catalog = null;
           catalogState = "unavailable";
         }
-        childCards().forEach((card) => renderClasses(card));
+        childCards().forEach((card) => { updateStageOptions(card); renderClasses(card); });
       }
 
       async function loadBootstrap() {
@@ -1052,7 +1078,7 @@ const formCopy = registrationFormCopy;
           catalog = null;
           catalogState = "unavailable";
         }
-        childCards().forEach((card) => renderClasses(card));
+        childCards().forEach((card) => { updateStageOptions(card); renderClasses(card); });
       }
 
       renderChild(childCount, "");
