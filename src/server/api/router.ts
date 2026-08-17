@@ -71,6 +71,7 @@ import {
 } from "../staff/session-policy";
 import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
+import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import {
   CourseAttendanceError,
   cancelCourseAbsenceNotice,
@@ -1347,6 +1348,13 @@ export async function handleApiRequest(
             month: Number(payload.month), day: Number(payload.day), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "public-qr-redirect-settings.save":
+          await updatePublicQrRedirectSettings(env, principal, {
+            nDestinationUrl: payload.nDestinationUrl,
+            tDestinationUrl: payload.tDestinationUrl,
+            expectedUpdatedAt: payload.expectedUpdatedAt,
+          });
+          break;
         case "offering-course-pricing.save":
           await saveCoursePricing(env, principal, {
             offeringId: String(payload.offeringId ?? ""),
@@ -1378,6 +1386,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Энэ тохиргоо өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Эхлэх өдрийн утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof PublicQrRedirectSettingsError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Энэ тохиргоо өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "QR холбоосыг https:// хаягаар оруулна уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof CoursePricingError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

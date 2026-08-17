@@ -233,6 +233,8 @@ try {
   assert.match(offeringsPage, /staff-danger-zone/, "unused class deletion lives inside selected Offering details");
   assert.doesNotMatch(settingsPage, /Facebook бүлгийн|offering-facebook\.save|facebook-form/, "Settings has no duplicate Offering Facebook editor");
   assert.match(settingsPage, /Жилийн сургалтын эхлэх өдрийн анхны утга/, "the global annual start default is an admin-only secondary setting");
+  assert.match(settingsPage, /Үүдний QR холбоос/, "admin settings contain the compact public QR destination section");
+  assert.match(settingsPage, /public-qr-redirect-settings\.save/, "the QR section uses one dedicated typed settings action");
   assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");
   assert.match(offeringsPage, /Facebook бүлгийн холбоос/, "Offering creation and editing own the Facebook-group value");
   assert.match(offeringsPage, /Хоосон орхиж болно\./, "an Offering Facebook group is explicitly optional");

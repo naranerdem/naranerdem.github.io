@@ -34,6 +34,7 @@
     "test:reports": "npm run test:staff-reports",
     "test:registration": "node scripts/registration-hold-test.mjs",
     "test:registration-windows": "node scripts/registration-windows-test.mjs",
+    "test:public-qr": "node scripts/public-qr-redirect-test.mjs",
     "test:canonical-promotion": "node scripts/canonical-promotion-test.mjs",
     "test:calendar": "node scripts/calendar-domain-test.mjs",
     "test:schedule:preview": "npm run build && node scripts/schedule-preview-test.mjs",
