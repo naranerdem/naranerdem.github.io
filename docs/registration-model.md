@@ -128,7 +128,7 @@ Returning registration should be substantially shorter than first registration.
 
 ### Parent and Child Acknowledgement
 
-Registration should reflect that parent/guardian and child review the registration information and rules together. This is an operational acknowledgement, not a fabricated legal digital-signature system.
+Registration should reflect that parent/guardian and child review the registration information and rules together. This is an operational acknowledgement, not a fabricated legal digital-signature system. The accepted draft preserves the exact legitimate guardian/student rule versions loaded by that page. A later rule publication does not invalidate a genuine already-loaded historical version or rewrite accepted/canonical provenance.
 
 Future public wording should remain concise and friendly, with concepts like:
 

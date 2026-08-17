@@ -4,6 +4,7 @@ import { randomToken, sha256 } from "../auth/crypto";
 import type { D1Database, D1Result, WorkerEnv } from "../env";
 import { getPaymentCollectionSettings, getPaymentCollectionSettingsFromDatabase, type CoursePaymentPlanCode } from "../staff/course-pricing";
 import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
+import { assertCourseRuleVersions, PublicContentError } from "../staff/public-content";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -38,6 +39,8 @@ export interface RegistrationSubmissionInput {
   }>;
   parentRulesAcknowledged: boolean;
   studentRulesAcknowledged: boolean;
+  parentRulesVersion?: string;
+  studentRulesVersion?: string;
   turnstileToken: string;
 }
 
@@ -308,6 +311,10 @@ export async function createRegistrationDraft(
 ) {
   if (!registrationWritesAvailable(env)) throw new RegistrationSubmissionError("disabled");
   const input = validateSubmission(rawInput);
+  const parentRulesVersion = clean(input.parentRulesVersion, 120) || rulesContent.parent.version;
+  const studentRulesVersion = clean(input.studentRulesVersion, 120) || rulesContent.student.version;
+  try { await assertCourseRuleVersions(env, parentRulesVersion, studentRulesVersion); }
+  catch (error) { if (error instanceof PublicContentError) throw new RegistrationSubmissionError("invalid_rules_version"); throw error; }
   const classIds = input.children.flatMap((child) => [
     child.selectedClassSessionId ?? "",
     child.preferredWaitlistClassSessionId ?? "",
@@ -367,8 +374,8 @@ export async function createRegistrationDraft(
     draftId, accessTokenHash, [...yearIds][0], input.guardian.fullName,
     input.guardian.relationship, input.guardian.primaryPhone, input.guardian.secondaryPhone || null,
     input.guardian.email, normalizedEmail, input.guardian.facebookName || null,
-    input.guardian.homeAddress, "per_child", rulesContent.parent.version,
-    rulesContent.student.version, expiresAt, testRunId, now, now,
+    input.guardian.homeAddress, "per_child", parentRulesVersion,
+    studentRulesVersion, expiresAt, testRunId, now, now,
   )];
 
   input.children.forEach((child, index) => {

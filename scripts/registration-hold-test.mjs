@@ -292,6 +292,8 @@ try {
   assert.equal(catalogSessions.find((entry) => entry.id === "class-closed")?.availability, "unavailable", "a closed concrete class remains unavailable despite an active window");
   const legacyStatusDraft = await createRegistrationDraft(env(database), submission("class-legacy-status"), new Date(iso(-5)));
   assert.ok(legacyStatusDraft.hasProvisionalHold, "legacy academic-year registration status does not override a valid active window");
+  const fabricatedRules = submission("class-priced"); fabricatedRules.parentRulesVersion = "fabricated-rule-version";
+  await assert.rejects(createRegistrationDraft(env(database), fabricatedRules, new Date(iso(-4))), (error) => error.code === "invalid_rules_version", "fabricated rule versions are rejected");
 
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
   assert.equal(one.hasProvisionalHold, true);

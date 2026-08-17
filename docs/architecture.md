@@ -78,7 +78,7 @@ The current non-submitting prototype keeps stage selection deterministic: an exp
 
 The production catalog may legitimately contain no configured classes. The UI must then focus and explain the class-availability state rather than treating the already-valid stage select as the missing field. A previous prototype bug did the latter because its custom selected-class check ran for every successful catalog response, including an empty catalog, and always focused the stage select. Regression coverage preserves the corrected behavior.
 
-Parent and student rule acknowledgements are distinct product events. Staging submissions persist the explicit stable parent/student rule versions from the content layer; future published rule changes must use new immutable version IDs.
+Parent and student rule acknowledgements are distinct product events. Ordinary annual/summer courses use two global D1-backed documents, `Эцэг эхийн журам` and `Сурагчийн журам`. Saving changed text creates a new immutable version; a matching save is a no-op. Registration drafts and canonical records retain their submitted version IDs. A page that loaded a legitimate older version remains valid after a later publication, but fabricated or wrong-document IDs are rejected. Static fallback continues to render checked-in baseline text.
 
 Parent-facing account access should eventually be passwordless, based on verified email magic links or one-time codes. Email links should return the parent to durable server-side registration/account state, not rely on an old browser tab or client session remaining alive.
 
@@ -167,6 +167,8 @@ the concrete Offering and shared by its classes, never by an individual time
 slot. A future Mongolian Content/Settings editor should support quick phone
 edits but remain desktop-comfortable for long rules. It must stay a collection
 of clear operational tools, not a generic heavyweight CMS.
+
+Small public operational content is typed and D1-authoritative: center contact/prose belongs to one `public_center_information` singleton, and recommended grade guidance plus public descriptions belong to the stable Program family rather than lesson-content revisions. Teacher/admin edit this through one phone-friendly `Мэдээлэл` surface and the existing Program screen. These fields never advance curriculum revisions or alter Offering pins. GitHub Pages uses checked-in safe defaults until a future public-page composition pass consumes the D1 content.
 
 Schedule is for selecting and editing an existing class calendar. Class
 creation, edit, and safe deletion belong to the selected Offering detail under
@@ -279,7 +281,7 @@ the selected plan and amounts per child, so later edits never rewrite an
 existing family's terms. Events and discounts remain outside this foundation.
 
 Opening a course class is server-gated on valid Offering pricing and completed
-admin-managed bank-transfer instructions. The parent catalog exposes only safe
+teacher/admin-managed operational payment collection information. The parent catalog exposes only safe
 plan amounts; bank name, account holder, account number, and optional transfer
 instruction appear only after verified email creates the initial-payment
 reservation with a 24-hour payment deadline. Initial payment confirmation and allocation reconciliation are

@@ -20,6 +20,7 @@ import { getOfferingOverview } from "./offerings";
 import { attendanceProtectedThroughSequence } from "./course-attendance";
 import { assertOfferingRegistrationReady, getPaymentCollectionSettings } from "./course-pricing";
 import { getPublicQrRedirectSettings } from "../public-qr-redirects";
+import { getCourseRules, getPublicCenterInformation } from "./public-content";
 
 const STAGES = ["stage_1", "stage_2", "stage_3"] as const;
 type StageCode = typeof STAGES[number];
@@ -71,6 +72,10 @@ interface ProgramFamilyRow {
   isTest: number;
   testRunId: string | null;
   updatedAt: string;
+  recommendedGradeMin: string | null;
+  recommendedGradeMax: string | null;
+  publicShortDescription: string | null;
+  publicLongDescription: string | null;
 }
 
 interface LessonRow {
@@ -561,13 +566,15 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, publicQrRedirectSettings] = await Promise.all([
+  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, publicQrRedirectSettings, publicCenterInformation, courseRules] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
     env.DB.prepare(`SELECT id, kind, display_name AS displayName,
       annual_stage_code AS annualStageCode, current_published_program_id AS currentProgramId,
-      status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+      status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt,
+      recommended_grade_min AS recommendedGradeMin, recommended_grade_max AS recommendedGradeMax,
+      public_short_description AS publicShortDescription, public_long_description AS publicLongDescription
       FROM curriculum_program_family ORDER BY kind, annual_stage_code, display_name`).all<ProgramFamilyRow>(),
     env.DB.prepare(`SELECT curriculum_program.id, curriculum_program.program_family_id AS programFamilyId,
       curriculum_program.academic_year_id AS academicYearId, curriculum_program.stage_code AS stageCode,
@@ -619,6 +626,8 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     getAnnualCourseStartDefault(env),
     getPaymentCollectionSettings(env),
     getPublicQrRedirectSettings(env),
+    getPublicCenterInformation(env),
+    getCourseRules(env),
   ]);
   const lessonsByProgram = new Map<string, LessonRow[]>();
   for (const lesson of lessons.results) lessonsByProgram.set(lesson.programId, [...(lessonsByProgram.get(lesson.programId) ?? []), lesson]);
@@ -716,14 +725,41 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     annualCourseStartDefault,
     paymentCollectionSettings,
     publicQrRedirectSettings,
+    publicCenterInformation,
+    courseRules,
   };
 }
 
 async function familyById(env: WorkerEnv, familyId: string): Promise<ProgramFamilyRow> {
   return one<ProgramFamilyRow>(env, env.DB.prepare(`SELECT id, kind, display_name AS displayName,
     annual_stage_code AS annualStageCode, current_published_program_id AS currentProgramId,
-    status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    status, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt,
+    recommended_grade_min AS recommendedGradeMin, recommended_grade_max AS recommendedGradeMax,
+    public_short_description AS publicShortDescription, public_long_description AS publicLongDescription
     FROM curriculum_program_family WHERE id = ?`).bind(familyId));
+}
+
+export async function saveProgramFamilyPublicInformation(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { programFamilyId: string; expectedUpdatedAt: string; recommendedGradeMin?: unknown; recommendedGradeMax?: unknown; publicShortDescription?: unknown; publicLongDescription?: unknown },
+): Promise<void> {
+  if (!hasStaffCapability(actor, "content.manage")) throw new ProgramCalendarError("forbidden");
+  const family = await familyById(env, text(input.programFamilyId, 100));
+  if (!input.expectedUpdatedAt || family.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  const grade = (value: unknown) => typeof value === "string" && value.trim() ? value.trim().slice(0, 40) : null;
+  const min = grade(input.recommendedGradeMin); const max = grade(input.recommendedGradeMax);
+  const gradeOrder = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
+  if ((min && !gradeOrder.includes(min)) || (max && !gradeOrder.includes(max)) || (min && max && gradeOrder.indexOf(min) > gradeOrder.indexOf(max))) throw new ProgramCalendarError("invalid");
+  const short = typeof input.publicShortDescription === "string" && input.publicShortDescription.trim() ? input.publicShortDescription.trim().slice(0, 1000) : null;
+  const long = typeof input.publicLongDescription === "string" && input.publicLongDescription.trim() ? input.publicLongDescription.trim().slice(0, 6000) : null;
+  const time = now(); const flags = operationFlags(env, family);
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE curriculum_program_family SET recommended_grade_min=?, recommended_grade_max=?, public_short_description=?, public_long_description=?, updated_at=? WHERE id=? AND updated_at=?`)
+      .bind(min, max, short, long, time, family.id, family.updatedAt),
+    audit(env, actor, "program_family_public_information_changed", "curriculum_program_family", family.id, { gradeRange: [min, max], hasShortDescription: Boolean(short), hasLongDescription: Boolean(long) }, flags, time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
 async function programById(env: WorkerEnv, programId: string): Promise<ProgramRow> {

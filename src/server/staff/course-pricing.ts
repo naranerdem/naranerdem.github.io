@@ -132,7 +132,7 @@ export async function updatePaymentCollectionSettings(env: WorkerEnv, actor: Sta
   bankName?: string | null; accountHolderName?: string | null; accountNumber?: string | null;
   transferInstruction?: string | null; expectedUpdatedAt: string;
 }): Promise<PaymentCollectionSettings> {
-  if (!hasStaffCapability(actor, "admin.settings.manage")) throw new CoursePricingError("forbidden");
+  if (!hasStaffCapability(actor, "content.manage")) throw new CoursePricingError("forbidden");
   const current = await getPaymentCollectionSettings(env);
   if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new CoursePricingError("conflict");
   const value = { bankName: text(input.bankName, 120), accountHolderName: text(input.accountHolderName, 160),

@@ -141,8 +141,7 @@ const formCopy = registrationFormCopy;
           <h2 id="guardian-rules-title">{rulesContent.parent.title}</h2>
           <button class="icon-text-button" type="button" data-close-dialog="guardian-rules-dialog">{formCopy.buttons.close}</button>
         </div>
-        <p>{rulesContent.parent.acknowledgement}</p>
-        <ul>{rulesContent.parent.summary.map((item) => <li>{item}</li>)}</ul>
+        <div id="guardian-rules-body"><p>{rulesContent.parent.acknowledgement}</p><ul>{rulesContent.parent.summary.map((item) => <li>{item}</li>)}</ul></div>
         <div class="dialog-actions">
           <button class="button secondary" type="button" data-close-dialog="guardian-rules-dialog">{formCopy.buttons.close}</button>
           <button class="button primary" type="button" id="acknowledge-guardian">{formCopy.buttons.acknowledgeGuardian}</button>
@@ -156,8 +155,7 @@ const formCopy = registrationFormCopy;
           <h2 id="student-rules-title">{rulesContent.student.title}</h2>
           <button class="icon-text-button" type="button" data-close-dialog="student-rules-dialog">{formCopy.buttons.close}</button>
         </div>
-        <p>{rulesContent.student.acknowledgement}</p>
-        <ul>{rulesContent.student.summary.map((item) => <li>{item}</li>)}</ul>
+        <div id="student-rules-body"><p>{rulesContent.student.acknowledgement}</p><ul>{rulesContent.student.summary.map((item) => <li>{item}</li>)}</ul></div>
         <div class="dialog-actions">
           <button class="button secondary" type="button" data-close-dialog="student-rules-dialog">{formCopy.buttons.close}</button>
           <button class="button primary" type="button" id="acknowledge-student">{formCopy.buttons.acknowledgeStudent}</button>
@@ -214,6 +212,7 @@ const formCopy = registrationFormCopy;
       let returnFocusTo = null;
       let storedDraft = null;
       let runtimeConfig = { environment: "production", writeEnabled: false, turnstileSiteKey: null };
+      let runtimeRules = { parentRulesVersion: registrationData.rulesContent.parent.version, studentRulesVersion: registrationData.rulesContent.student.version };
       let turnstileToken = "";
       let turnstileWidgetId = null;
       let changeEmailWidgetId = null;
@@ -721,6 +720,8 @@ const formCopy = registrationFormCopy;
           })),
           parentRulesAcknowledged: parentAcknowledged,
           studentRulesAcknowledged: studentAcknowledged,
+          parentRulesVersion: runtimeRules.parentRulesVersion,
+          studentRulesVersion: runtimeRules.studentRulesVersion,
           turnstileToken,
         };
       }
@@ -1067,6 +1068,14 @@ const formCopy = registrationFormCopy;
           if (!Array.isArray(payload?.catalog?.academicYears)) throw new Error("Invalid bootstrap");
           runtimeConfig = payload.config;
           catalog = payload.catalog;
+          const guardian = (payload.courseRules || []).find((rule) => rule.code === "guardian"); const student = (payload.courseRules || []).find((rule) => rule.code === "student");
+          if (guardian && student) {
+            runtimeRules = { parentRulesVersion: guardian.versionId, studentRulesVersion: student.versionId };
+            document.getElementById("guardian-rules-title").textContent = guardian.title;
+            document.getElementById("student-rules-title").textContent = student.title;
+            document.getElementById("guardian-rules-body").innerHTML = guardian.bodyText.split(/\n\s*\n/).map((paragraph) => `<p>${paragraph.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character])}</p>`).join("");
+            document.getElementById("student-rules-body").innerHTML = student.bodyText.split(/\n\s*\n/).map((paragraph) => `<p>${paragraph.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character])}</p>`).join("");
+          }
           catalogState = "available";
           if (runtimeConfig.writeEnabled) {
             environmentNotice.textContent = formCopy.messages.stagingNotice;

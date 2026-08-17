@@ -71,6 +71,8 @@ import {
 } from "../staff/session-policy";
 import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
+import { PublicContentError, saveCourseRule, updatePublicCenterInformation } from "../staff/public-content";
+import { getCourseRules } from "../staff/public-content";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import {
   CourseAttendanceError,
@@ -121,6 +123,7 @@ import {
   renameProgramDraft,
   renameProgramDraftLesson,
   startProgramFamilyDraft,
+  saveProgramFamilyPublicInformation,
 } from "../staff/program-calendar";
 import {
   OfferingError,
@@ -402,6 +405,7 @@ export async function handleApiRequest(
           turnstileSiteKey: registrationWritesAvailable(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
         },
         catalog: await getRegistrationCatalog(env.DB, env.APP_ENV),
+        courseRules: await getCourseRules(env),
       }, 200, { "Cache-Control": "no-store" });
     } catch {
       return error("internal_error", "Бүртгэлийн мэдээллийг одоогоор авч чадсангүй.", 500);
@@ -1250,6 +1254,13 @@ export async function handleApiRequest(
         case "program.edit":
           await startProgramFamilyDraft(env, principal, { programFamilyId: String(payload.programFamilyId ?? "") });
           break;
+        case "program.public-information.save":
+          await saveProgramFamilyPublicInformation(env, principal, {
+            programFamilyId: String(payload.programFamilyId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            recommendedGradeMin: payload.recommendedGradeMin, recommendedGradeMax: payload.recommendedGradeMax,
+            publicShortDescription: payload.publicShortDescription, publicLongDescription: payload.publicLongDescription,
+          });
+          break;
         case "program.rename":
           await renameProgramDraft(env, principal, {
             programId: String(payload.programId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
@@ -1375,6 +1386,12 @@ export async function handleApiRequest(
             expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "public-center-information.save":
+          await updatePublicCenterInformation(env, principal, payload);
+          break;
+        case "course-rule.save":
+          await saveCourseRule(env, principal, { code: payload.code, bodyText: payload.bodyText, expectedUpdatedAt: payload.expectedUpdatedAt });
+          break;
         default:
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
@@ -1402,6 +1419,11 @@ export async function handleApiRequest(
               : caught.code === "not_ready" ? "Бүртгэл нээхийн өмнө төлбөрийн нөхцөлийг бүрэн тохируулна уу."
                 : "Төлбөрийн нөхцөлийн мэдээллийг шалгана уу.";
         return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", message, status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof PublicContentError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ мэдээллийг өөрчлөх эрх алга." : caught.code === "conflict" ? "Мэдээлэл өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу." : "Оруулсан мэдээллийг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       return programCalendarError(caught);
     }

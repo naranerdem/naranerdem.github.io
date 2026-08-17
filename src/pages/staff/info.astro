@@ -1,0 +1,37 @@
+---
+import { siteIdentity } from "../../content/homepage";
+import "../../styles/global.css";
+---
+
+<html lang="mn">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><meta name="theme-color" content="#073aaf" /><title>Мэдээлэл | {siteIdentity.name}</title></head>
+  <body class="staff-page" data-staff-tool-surface="booting">
+    <header class="site-header"><a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>Мэдээлэл</span></span></a></header>
+    <main class="staff-shell staff-settings-shell" aria-live="polite">
+      <section id="tool-booting" class="staff-state"><p class="eyebrow">Мэдээлэл</p><h1>Түр хүлээнэ үү</h1></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Мэдээлэл</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Буцах</a></section>
+      <section id="tool-app" hidden><div class="staff-page-heading"><div><p class="eyebrow">Төвийн тохиргоо</p><h1>Мэдээлэл</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div><p id="tool-message" class="staff-error" role="status" hidden></p><section id="center-information" class="staff-operation-section"></section><section id="payment-information" class="staff-operation-section"></section><section id="rules-information" class="staff-operation-section"></section></section>
+    </main>
+    <script>
+      // @ts-nocheck
+      import { escape, getOverview, hasSetupAccess, postOverviewAction } from "../../scripts/staff-setup.js";
+      const state = { data: null, editingRule: "" }; const q = (s) => document.querySelector(s);
+      const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
+      function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
+      async function refresh(success = "") { state.data = await getOverview(); render(); message(success, Boolean(success)); }
+      function renderCenter() { const value = state.data.publicCenterInformation; q("#center-information").innerHTML = `<h2>Төвийн мэдээлэл</h2><form id="center-form" class="staff-compact-form"><label>Утас <input id="center-phone" inputmode="tel" value="${escape(value.phone || "")}" /></label><label>Нийтийн и-мэйл <input id="center-email" type="email" inputmode="email" value="${escape(value.publicEmail || "")}" /></label><label class="staff-wide">Facebook хуудас <input id="center-facebook" type="url" inputmode="url" value="${escape(value.facebookPageUrl || "")}" /></label><label class="staff-wide">Хаяг <textarea id="center-address" rows="2">${escape(value.physicalAddress || "")}</textarea></label><label class="staff-wide">Нүүр хуудасны товч текст <textarea id="center-intro" rows="3">${escape(value.homepageIntro || "")}</textarea></label><label class="staff-wide">Төвийн тухай <textarea id="center-about" rows="5">${escape(value.aboutCenterText || "")}</textarea></label><label class="staff-wide">Багшийн танилцуулга <textarea id="center-bio" rows="5">${escape(value.teacherBio || "")}</textarea></label><div class="staff-form-actions staff-wide"><button class="button primary" type="submit">Хадгалах</button></div></form>`;
+        q("#center-form").onsubmit = (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("public-center-information.save", { expectedUpdatedAt: value.updatedAt, phone: q("#center-phone").value, publicEmail: q("#center-email").value, facebookPageUrl: q("#center-facebook").value, physicalAddress: q("#center-address").value, homepageIntro: q("#center-intro").value, aboutCenterText: q("#center-about").value, teacherBio: q("#center-bio").value }), "Төвийн мэдээллийг хадгаллаа."); };
+      }
+      function renderPayment() { const value = state.data.paymentCollectionSettings; q("#payment-information").innerHTML = `<h2>Төлбөрийн мэдээлэл</h2><form id="payment-form" class="staff-compact-form"><label>Банкны нэр <input id="payment-bank" required value="${escape(value.bankName || "")}" /></label><label>Данс эзэмшигч <input id="payment-holder" required value="${escape(value.accountHolderName || "")}" /></label><label class="staff-wide">Дансны дугаар <input id="payment-number" required inputmode="numeric" value="${escape(value.accountNumber || "")}" /></label><label class="staff-wide">Шилжүүлгийн тайлбар <input id="payment-instruction" maxlength="500" value="${escape(value.transferInstruction || "")}" /></label><div class="staff-form-actions staff-wide"><button class="button primary" type="submit">Хадгалах</button></div></form>`;
+        q("#payment-form").onsubmit = (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("payment-collection-settings.save", { expectedUpdatedAt: value.updatedAt, bankName: q("#payment-bank").value, accountHolderName: q("#payment-holder").value, accountNumber: q("#payment-number").value, transferInstruction: q("#payment-instruction").value }), "Төлбөрийн мэдээллийг хадгаллаа."); };
+      }
+      function renderRules() { const rules = state.data.courseRules || []; const editing = rules.find((rule) => rule.code === state.editingRule); q("#rules-information").innerHTML = editing ? `<h2>${escape(editing.title)}</h2><form id="rule-form" class="staff-compact-form"><label class="staff-wide">Журам <textarea id="rule-body" rows="16" required>${escape(editing.bodyText)}</textarea></label><div class="staff-form-actions staff-wide"><button class="button secondary" id="rule-cancel" type="button">Болих</button><button class="button primary" type="submit">Хадгалах</button></div></form>` : `<h2>Журам</h2><div class="staff-list">${rules.map((rule) => `<div class="staff-list-row"><span>${escape(rule.title)}</span><button class="button secondary" type="button" data-rule="${rule.code}">Засах</button></div>`).join("")}</div>`;
+        q("#rule-cancel")?.addEventListener("click", () => { state.editingRule = ""; renderRules(); }); q("[data-rule]")?.addEventListener("click", (event) => { state.editingRule = event.currentTarget.dataset.rule; renderRules(); });
+        q("#rule-form")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(async () => { await postOverviewAction("course-rule.save", { code: editing.code, bodyText: q("#rule-body").value, expectedUpdatedAt: editing.updatedAt }); state.editingRule = ""; }, "Журмыг хадгаллаа."); });
+      }
+      function render() { renderCenter(); renderPayment(); renderRules(); }
+      async function run(work, success) { message(); try { await work(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } const session = await (await fetch("/api/staff/session", { credentials: "same-origin" })).json(); if (!(session.capabilities || []).includes("content.manage")) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+    </script>
+  </body>
+</html>

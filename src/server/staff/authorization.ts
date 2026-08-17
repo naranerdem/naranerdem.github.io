@@ -6,6 +6,7 @@ export type StaffRole = typeof STAFF_ROLES[number];
 
 export const STAFF_CAPABILITIES = [
   "admin.settings.manage",
+  "content.manage",
   "admin.staff.manage",
   "program.view",
   "program.manage",
@@ -28,6 +29,7 @@ export type StaffCapability = typeof STAFF_CAPABILITIES[number];
 const ROLE_CAPABILITIES: Record<StaffRole, readonly StaffCapability[]> = {
   admin: STAFF_CAPABILITIES,
   teacher: [
+    "content.manage",
     "program.view",
     "program.manage",
     "calendar.view",

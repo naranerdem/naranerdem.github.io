@@ -54,7 +54,7 @@ class SqliteD1 {
 }
 
 function count(database, table, where = "1 = 1") { return Number(database.query(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`)[0].count); }
-function actor(role) { return { staffAccountId: `${role}-staff`, displayName: role, roles: [role], capabilities: role === "accountant" ? ["payment.view"] : role === "admin" ? ["program.view", "program.manage", "calendar.view", "calendar.manage", "payment.manage", "admin.settings.manage"] : ["program.view", "program.manage", "calendar.view", "calendar.manage", "payment.manage"], sessionId: "test", sessionExpiresAt: "2030-01-01T00:00:00.000Z", sessionAbsoluteExpiresAt: "2030-01-01T00:00:00.000Z" }; }
+function actor(role) { return { staffAccountId: `${role}-staff`, displayName: role, roles: [role], capabilities: role === "accountant" ? ["payment.view"] : role === "admin" ? ["program.view", "program.manage", "calendar.view", "calendar.manage", "payment.manage", "admin.settings.manage", "content.manage"] : ["program.view", "program.manage", "calendar.view", "calendar.manage", "payment.manage", "content.manage"], sessionId: "test", sessionExpiresAt: "2030-01-01T00:00:00.000Z", sessionAbsoluteExpiresAt: "2030-01-01T00:00:00.000Z" }; }
 function env(database) { return { APP_ENV: "staging", REGISTRATION_WRITE_ENABLED: "true", APP_ORIGIN: "https://staging.example.test", EMAIL_ENABLED: "true", AUTH_EMAIL_ENABLED: "true", STAFF_AUTH_EMAIL_ENABLED: "true", EMAIL_FROM: "test@example.invalid", DB: database }; }
 function ulaanbaatarToday() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -181,6 +181,15 @@ try {
   const unauthenticated = await handleApiRequest(new Request("https://staging.example.test/api/staff/program-calendar"), runtime);
   assert.equal(unauthenticated.status, 401, "unauthenticated callers cannot read staff setup data");
 
+  const pinnedBeforePublicInfo = database.query("SELECT current_published_program_id AS id FROM curriculum_program_family WHERE id = 'annual-program-stage_1'")[0].id;
+  await service.saveProgramFamilyPublicInformation(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1", expectedUpdatedAt: database.query("SELECT updated_at AS value FROM curriculum_program_family WHERE id = 'annual-program-stage_1'")[0].value, recommendedGradeMin: "4", recommendedGradeMax: "6", publicShortDescription: "Товч", publicLongDescription: "Дэлгэрэнгүй" });
+  const publicInfoFamily = database.query("SELECT recommended_grade_min AS min, recommended_grade_max AS max, current_published_program_id AS programId FROM curriculum_program_family WHERE id = 'annual-program-stage_1'")[0];
+  assert.deepEqual([publicInfoFamily.min, publicInfoFamily.max], ["4", "6"], "Program-family public information persists independently");
+  assert.equal(publicInfoFamily.programId, pinnedBeforePublicInfo, "public information does not move the curriculum pointer");
+  assert.equal(database.query("SELECT curriculum_program_id AS id FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0].id, pinnedBeforePublicInfo, "existing Offerings retain their pinned revision");
+  await assert.rejects(service.saveProgramFamilyPublicInformation(runtime, actor("teacher"), { programFamilyId: "annual-program-stage_1", expectedUpdatedAt: database.query("SELECT updated_at AS value FROM curriculum_program_family WHERE id = 'annual-program-stage_1'")[0].value, recommendedGradeMin: "7", recommendedGradeMax: "4" }), /Program and calendar/);
+  await assert.rejects(service.saveProgramFamilyPublicInformation(runtime, actor("accountant"), { programFamilyId: "annual-program-stage_1", expectedUpdatedAt: "x" }), /Program and calendar/);
+
   const offeringsPage = readFileSync("src/pages/staff/offerings.astro", "utf8");
   const holidaysPage = readFileSync("src/pages/staff/holidays.astro", "utf8");
   const settingsPage = readFileSync("src/pages/staff/settings/index.astro", "utf8");
@@ -233,7 +242,7 @@ try {
   assert.match(offeringsPage, /staff-danger-zone/, "unused class deletion lives inside selected Offering details");
   assert.doesNotMatch(settingsPage, /Facebook бүлгийн|offering-facebook\.save|facebook-form/, "Settings has no duplicate Offering Facebook editor");
   assert.match(settingsPage, /Жилийн сургалтын эхлэх өдрийн анхны утга/, "the global annual start default is an admin-only secondary setting");
-  assert.match(settingsPage, /Үүдний QR холбоос/, "admin settings contain the compact public QR destination section");
+  assert.match(settingsPage, /QR холбоос/, "admin settings contain the compact public QR destination section");
   assert.match(settingsPage, /public-qr-redirect-settings\.save/, "the QR section uses one dedicated typed settings action");
   assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");
   assert.match(offeringsPage, /Facebook бүлгийн холбоос/, "Offering creation and editing own the Facebook-group value");
