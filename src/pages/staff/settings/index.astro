@@ -16,6 +16,7 @@ import "../../../styles/global.css";
         <section id="annual-start-setting" class="staff-operation-section" hidden></section>
         <section id="payment-collection-setting" class="staff-operation-section" hidden></section>
         <section id="public-qr-setting" class="staff-operation-section" hidden></section>
+        <section id="teacher-dashboard-setting" class="staff-operation-section" hidden></section>
         <a id="auth-link" class="staff-settings-link" href="/staff/settings/auth/" hidden>Нэвтрэх хугацааны тохиргоо</a>
       </section>
     </main>
@@ -47,6 +48,10 @@ import "../../../styles/global.css";
         qr.hidden = !state.canManageAuth || !qrSettings;
         qr.innerHTML = qr.hidden ? "" : `<details><summary>QR холбоос</summary><form id="public-qr-form" class="staff-compact-form staff-settings-secondary"><label class="staff-wide">Наран Эрдэм <input id="public-qr-n" type="url" inputmode="url" required value="${escapeHtml(qrSettings.nDestinationUrl)}" /></label><label class="staff-wide">Цэнэг <input id="public-qr-t" type="url" inputmode="url" required value="${escapeHtml(qrSettings.tDestinationUrl)}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;
         q("#public-qr-form")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("public-qr-redirect-settings.save", { expectedUpdatedAt: qrSettings.updatedAt, nDestinationUrl: q("#public-qr-n").value, tDestinationUrl: q("#public-qr-t").value }), "QR холбоосыг хадгаллаа."); });
+        const dashboard = q("#teacher-dashboard-setting"); const preferences = state.data?.teacherDashboardPreferences;
+        dashboard.hidden = !state.canManageAuth || !preferences;
+        dashboard.innerHTML = dashboard.hidden ? "" : `<details><summary>Багшийн нүүр хуудас</summary><form id="teacher-dashboard-form" class="staff-compact-form staff-settings-secondary"><label class="staff-wide"><input id="show-setup-section" type="checkbox" ${preferences.showSetupSection ? "checked" : ""} /> Сургалтын тохиргоо хэсгийг харуулах</label><label class="staff-wide"><input id="show-registration" type="checkbox" ${preferences.showRegistration ? "checked" : ""} /> Бүртгэл товчийг харуулах</label><label class="staff-wide"><input id="show-information" type="checkbox" ${preferences.showInformation ? "checked" : ""} /> Мэдээлэл товчийг харуулах</label><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;
+        q("#teacher-dashboard-form")?.addEventListener("submit", (event) => { event.preventDefault(); run(() => postOverviewAction("teacher-dashboard-preferences.save", { expectedUpdatedAt: preferences.updatedAt, showSetupSection: q("#show-setup-section").checked, showRegistration: q("#show-registration").checked, showInformation: q("#show-information").checked }), "Багшийн нүүр хуудасны тохиргоог хадгаллаа."); });
       }
       async function run(work, success) { message(); try { await work(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       (async () => {

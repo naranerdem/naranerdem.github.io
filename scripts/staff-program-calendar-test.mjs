@@ -76,6 +76,7 @@ function civilWeekday(value) {
 try {
   const schedulePage = readFileSync("src/pages/staff/schedule.astro", "utf8");
   const programsPage = readFileSync("src/pages/staff/programs.astro", "utf8");
+  const staffDashboardPage = readFileSync("src/pages/staff.astro", "utf8");
   assert.match(schedulePage, /slot\.status === "scheduled" && slot\.lessonSequence/, "a planned no-class row cannot render a curriculum lesson");
   assert.match(programsPage, /Хичээл оруулаагүй байна[\s\S]*?>Засах</, "an empty summer Program exposes its edit action");
   assert.match(programsPage, /family\.kind === "summer_course" \? `<div class="staff-danger-zone">/, "only summer Programs expose removal controls");
@@ -193,6 +194,7 @@ try {
   const offeringsPage = readFileSync("src/pages/staff/offerings.astro", "utf8");
   const holidaysPage = readFileSync("src/pages/staff/holidays.astro", "utf8");
   const settingsPage = readFileSync("src/pages/staff/settings/index.astro", "utf8");
+  const infoPage = readFileSync("src/pages/staff/info.astro", "utf8");
   const legacyPage = readFileSync("src/pages/staff/program-calendar.astro", "utf8");
   const routerSource = readFileSync("src/server/api/router.ts", "utf8");
   assert.match(programsPage, />Хадгалах</, "program tool presents ordinary save wording");
@@ -203,6 +205,10 @@ try {
   assert.match(programsPage, /Зуны хөтөлбөр нэмэх/, "ordinary program setup only creates summer program families");
   assert.ok(programsPage.indexOf("Зуны хөтөлбөр") < programsPage.lastIndexOf("Зуны хөтөлбөр нэмэх"), "the summer-program action remains inside the later summer section");
   assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
+  assert.match(programsPage, /Зөвлөмжит анги/, "Program detail presents recommended grades directly");
+  assert.match(programsPage, /Хичээлийн жагсаалт/, "curriculum editing is visibly attached to the lesson list");
+  assert.match(programsPage, /program-long-dialog/, "long public descriptions use a separate focused panel");
+  assert.match(infoPage, /querySelectorAll\("\[data-rule\]"\)/, "both rule edit buttons receive listeners");
   assert.match(programsPage, /Өмнө нь хичээл оруулах/, "the Program row menu supports insertion before a lesson");
   assert.match(programsPage, /data-staff-action-menu/, "Program row menus opt into the shared one-menu controller");
   assert.match(programsPage, /createStaffActionMenuController/, "Program page initializes shared action-menu behavior");
@@ -244,6 +250,11 @@ try {
   assert.match(settingsPage, /Жилийн сургалтын эхлэх өдрийн анхны утга/, "the global annual start default is an admin-only secondary setting");
   assert.match(settingsPage, /QR холбоос/, "admin settings contain the compact public QR destination section");
   assert.match(settingsPage, /public-qr-redirect-settings\.save/, "the QR section uses one dedicated typed settings action");
+  assert.match(settingsPage, /Багшийн нүүр хуудас/, "admin settings include the compact teacher dashboard preferences");
+  assert.match(staffDashboardPage, /\/api\/staff\/dashboard-preferences/, "teacher dashboard reads presentation preferences separately from authorization");
+  assert.match(staffDashboardPage, /staff-setup-section/, "the setup section can be hidden as one presentation group");
+  assert.match(staffDashboardPage, /staff-registration-link/, "registration card has an independent presentation target");
+  assert.match(staffDashboardPage, /staff-information-link/, "information card has an independent presentation target");
   assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");
   assert.match(offeringsPage, /Facebook бүлгийн холбоос/, "Offering creation and editing own the Facebook-group value");
   assert.match(offeringsPage, /Хоосон орхиж болно\./, "an Offering Facebook group is explicitly optional");

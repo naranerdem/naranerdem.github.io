@@ -73,6 +73,7 @@ import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from ".
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
 import { PublicContentError, saveCourseRule, updatePublicCenterInformation } from "../staff/public-content";
 import { getCourseRules } from "../staff/public-content";
+import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updateTeacherDashboardPreferences } from "../staff/teacher-dashboard-preferences";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import {
   CourseAttendanceError,
@@ -729,10 +730,19 @@ export async function handleApiRequest(
     return json({
       authenticated: true,
       displayName: principal.displayName,
+      roles: principal.roles,
       capabilities: principal.capabilities,
       expiresAt: principal.sessionExpiresAt,
       absoluteExpiresAt: principal.sessionAbsoluteExpiresAt,
     }, 200, { "Cache-Control": "no-store" });
+  }
+
+  if (path === "/api/staff/dashboard-preferences") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    try { return json(await getTeacherDashboardPreferences(env), 200, { "Cache-Control": "no-store" }); }
+    catch { return error("internal_error", "Тохиргоог авч чадсангүй.", 500, { "Cache-Control": "no-store" }); }
   }
 
   if (path === "/api/staff/team") {
@@ -1366,6 +1376,9 @@ export async function handleApiRequest(
             expectedUpdatedAt: payload.expectedUpdatedAt,
           });
           break;
+        case "teacher-dashboard-preferences.save":
+          await updateTeacherDashboardPreferences(env, principal, payload);
+          break;
         case "offering-course-pricing.save":
           await saveCoursePricing(env, principal, {
             offeringId: String(payload.offeringId ?? ""),
@@ -1410,6 +1423,11 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Энэ тохиргоо өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд шалгана уу."
               : "QR холбоосыг https:// хаягаар оруулна уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof TeacherDashboardPreferencesError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга." : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу." : "Тохиргооны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof CoursePricingError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

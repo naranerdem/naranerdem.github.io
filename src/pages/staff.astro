@@ -89,7 +89,7 @@ import "../styles/global.css";
               <a class="staff-tool-link" data-capability="calendar.manage" href="/staff/day-changes/"><strong>Өдрийн өөрчлөлт</strong><span>Хичээл цуцлах, орлуулах өдөр, нэмэлт өдөр</span></a>
             </div>
           </section>
-          <section class="staff-tool-section staff-tool-section-secondary" data-tool-section aria-labelledby="staff-setup-title">
+          <section id="staff-setup-section" class="staff-tool-section staff-tool-section-secondary" data-tool-section aria-labelledby="staff-setup-title">
             <p class="eyebrow">Сургалтын тохиргоо</p>
             <h2 id="staff-setup-title">Сургалт ба хуваарь</h2>
             <div class="staff-tool-grid">
@@ -97,8 +97,8 @@ import "../styles/global.css";
               <a class="staff-tool-link" data-capability="program.manage" href="/staff/programs/"><strong>Хөтөлбөр</strong><span>Хичээлүүдийг бэлтгэх</span></a>
               <a class="staff-tool-link" data-capability="calendar.manage" href="/staff/schedule/"><strong>Хуваарь</strong><span>Анги, цаг, огноотой хуваарь</span></a>
               <a class="staff-tool-link" data-capability="calendar.manage" href="/staff/holidays/"><strong>Амралтын хуваарь</strong><span>Жилийн амралтын хугацаа</span></a>
-              <a class="staff-tool-link" data-capability="registration.manage" href="/staff/registration-windows/"><strong>Бүртгэл</strong><span>Нийтийн бүртгэлийг нээх, хаах</span></a>
-              <a class="staff-tool-link" data-capability="content.manage" href="/staff/info/"><strong>Мэдээлэл</strong><span>Төв, төлбөр, журам</span></a>
+              <a id="staff-registration-link" class="staff-tool-link" data-capability="registration.manage" href="/staff/registration-windows/"><strong>Бүртгэл</strong><span>Нийтийн бүртгэлийг нээх, хаах</span></a>
+              <a id="staff-information-link" class="staff-tool-link" data-capability="content.manage" href="/staff/info/"><strong>Мэдээлэл</strong><span>Төв, төлбөр, журам</span></a>
             </div>
           </section>
           <section class="staff-tool-section staff-tool-section-secondary" data-tool-section aria-labelledby="staff-admin-title">
@@ -136,15 +136,30 @@ import "../styles/global.css";
         if (id !== "staff-waiting") stopPolling();
       }
 
-      function showAuthenticated(session) {
+      async function showAuthenticated(session) {
         welcome.textContent = `${session.displayName}, таны нэвтрэх эрх баталгаажлаа.`;
         const capabilities = session.capabilities || [];
         for (const link of toolLinks.querySelectorAll("[data-capability]")) {
           link.hidden = !capabilities.includes(link.dataset.capability);
         }
+        let teacherPreferences = null;
+        if ((session.roles || []).includes("teacher")) {
+          try {
+            const response = await fetch("/api/staff/dashboard-preferences", { credentials: "same-origin", headers: { Accept: "application/json" } });
+            if (response.ok) {
+              const preferences = await response.json();
+              teacherPreferences = preferences;
+              if (preferences.showSetupSection) {
+                document.getElementById("staff-registration-link").hidden ||= !preferences.showRegistration;
+                document.getElementById("staff-information-link").hidden ||= !preferences.showInformation;
+              }
+            }
+          } catch { /* Presentation defaults remain visible when preferences cannot load. */ }
+        }
         let visibleSections = 0;
         for (const section of toolLinks.querySelectorAll("[data-tool-section]")) {
-          section.hidden = !section.querySelector("[data-capability]:not([hidden])");
+          section.hidden = section.id === "staff-setup-section" && teacherPreferences && !teacherPreferences.showSetupSection
+            ? true : !section.querySelector("[data-capability]:not([hidden])");
           if (!section.hidden) visibleSections += 1;
         }
         document.getElementById("staff-no-tools").hidden = visibleSections > 0;
@@ -204,7 +219,7 @@ import "../styles/global.css";
           const attempt = await claimAttempt();
           if (attempt.state === "authenticated") {
             const session = await readSession();
-            if (session.authenticated) showAuthenticated(session);
+            if (session.authenticated) await showAuthenticated(session);
             else show("staff-login");
             return;
           }
@@ -254,7 +269,7 @@ import "../styles/global.css";
         try {
           const session = await readSession();
           if (session.authenticated) {
-            showAuthenticated(session);
+            await showAuthenticated(session);
             return;
           }
           const attempt = await claimAttempt();

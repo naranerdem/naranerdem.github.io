@@ -21,6 +21,7 @@ import { attendanceProtectedThroughSequence } from "./course-attendance";
 import { assertOfferingRegistrationReady, getPaymentCollectionSettings } from "./course-pricing";
 import { getPublicQrRedirectSettings } from "../public-qr-redirects";
 import { getCourseRules, getPublicCenterInformation } from "./public-content";
+import { getTeacherDashboardPreferences } from "./teacher-dashboard-preferences";
 
 const STAGES = ["stage_1", "stage_2", "stage_3"] as const;
 type StageCode = typeof STAGES[number];
@@ -566,7 +567,7 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, publicQrRedirectSettings, publicCenterInformation, courseRules] = await Promise.all([
+  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, publicQrRedirectSettings, publicCenterInformation, courseRules, teacherDashboardPreferences] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
@@ -628,6 +629,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     getPublicQrRedirectSettings(env),
     getPublicCenterInformation(env),
     getCourseRules(env),
+    getTeacherDashboardPreferences(env),
   ]);
   const lessonsByProgram = new Map<string, LessonRow[]>();
   for (const lesson of lessons.results) lessonsByProgram.set(lesson.programId, [...(lessonsByProgram.get(lesson.programId) ?? []), lesson]);
@@ -727,6 +729,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     publicQrRedirectSettings,
     publicCenterInformation,
     courseRules,
+    teacherDashboardPreferences,
   };
 }
 
