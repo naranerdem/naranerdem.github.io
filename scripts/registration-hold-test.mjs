@@ -17,11 +17,13 @@ function bundle(source, output) {
 
 const registrationBundle = path.join(tempDir, "registration-submission.mjs");
 const catalogBundle = path.join(tempDir, "registration-catalog.mjs");
+const publicSiteBundle = path.join(tempDir, "public-site.mjs");
 const turnstileBundle = path.join(tempDir, "turnstile.mjs");
 const emailVerificationBundle = path.join(tempDir, "email-verification.mjs");
 const paymentReconciliationBundle = path.join(tempDir, "payment-reconciliation.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
 bundle("src/server/services/registration-catalog.ts", catalogBundle);
+bundle("src/server/services/public-site.ts", publicSiteBundle);
 bundle("src/server/security/turnstile.ts", turnstileBundle);
 bundle("src/server/auth/email-verification.ts", emailVerificationBundle);
 bundle("src/server/staff/payment-reconciliation.ts", paymentReconciliationBundle);
@@ -36,6 +38,7 @@ const {
   RegistrationSubmissionError,
 } = await import(pathToFileURL(registrationBundle).href);
 const { getRegistrationCatalog } = await import(pathToFileURL(catalogBundle).href);
+const { getPublicSiteModel } = await import(pathToFileURL(publicSiteBundle).href);
 const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstileBundle).href);
 const { verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
 const {
@@ -294,6 +297,16 @@ try {
   assert.ok(legacyStatusDraft.hasProvisionalHold, "legacy academic-year registration status does not override a valid active window");
   const fabricatedRules = submission("class-priced"); fabricatedRules.parentRulesVersion = "fabricated-rule-version";
   await assert.rejects(createRegistrationDraft(env(database), fabricatedRules, new Date(iso(-4))), (error) => error.code === "invalid_rules_version", "fabricated rule versions are rejected");
+  database.query("UPDATE public_center_information SET homepage_intro = 'Нийтийн товч танилцуулга', teacher_bio = 'Тест багш' WHERE singleton = 1");
+  database.query("INSERT INTO curriculum_program_family (id, kind, display_name, annual_stage_code, status, is_test, test_run_id, created_at, updated_at) VALUES ('annual-program-stage_1', 'annual_course', '1-р шат', 'stage_1', 'active', 1, 'registration-test', ?, ?)", [iso(), iso()]);
+  database.query("UPDATE curriculum_program_family SET recommended_grade_min = '4', recommended_grade_max = '6', public_short_description = 'Нийтийн тайлбар', public_long_description = 'Нууц биш дэлгэрэнгүй' WHERE id = 'annual-program-stage_1'");
+  const publicSite = await getPublicSiteModel(env(database));
+  const publicStageOne = publicSite.programs.find((program) => program.stageCode === "stage_1");
+  assert.equal(publicSite.center.homepageIntro, "Нийтийн товч танилцуулга", "public site uses typed center information");
+  assert.equal(publicStageOne.current, true, "only catalog-visible active-window classes make a public Program current");
+  assert.equal(publicStageOne.registerHref, "/register/?stage=stage_1", "public registration uses the authoritative stage route");
+  assert.equal(publicStageOne.lessonCount, 0, "the test fixture has no public lesson detail and exposes only a count");
+  assert.doesNotMatch(JSON.stringify(publicSite), /lessonTitle|internalNote/, "public-site model contains no curriculum lesson titles or notes");
 
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
   assert.equal(one.hasProvisionalHold, true);

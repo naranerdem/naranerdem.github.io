@@ -170,6 +170,8 @@ of clear operational tools, not a generic heavyweight CMS.
 
 Small public operational content is typed and D1-authoritative: center contact/prose belongs to one `public_center_information` singleton, and recommended grade guidance plus public descriptions belong to the stable Program family rather than lesson-content revisions. Teacher/admin edit this through one phone-friendly `Мэдээлэл` surface and the existing Program screen. These fields never advance curriculum revisions or alter Offering pins. GitHub Pages uses checked-in safe defaults until a future public-page composition pass consumes the D1 content.
 
+The public site consumes one narrow unauthenticated read model that combines only center information, annual Program-family public metadata, published lesson counts, and the existing registration catalog's safe availability result. It never returns lesson titles, notes, revisions, staff records, or payment instructions. Stable public annual Program routes are `/programs/stage-1/`, `/programs/stage-2/`, and `/programs/stage-3/`. Named summer Program detail routes remain a future extension; the static site does not need dynamic routing or SSR for this initial set.
+
 Schedule is for selecting and editing an existing class calendar. Class
 creation, edit, and safe deletion belong to the selected Offering detail under
 `Сургалт, арга хэмжээ`, so each class has one operational owner in the staff

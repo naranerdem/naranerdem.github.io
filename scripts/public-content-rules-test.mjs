@@ -34,6 +34,8 @@ try {
   assert.notEqual(changed.versionId, guardian.versionId); assert.equal(database.query("SELECT COUNT(*) AS count FROM course_rule_version WHERE course_rule_document_id = 'course-rule-guardian'")[0].count, 2);
   await content.assertCourseRuleVersions(env, guardian.versionId, student.versionId);
   await assert.rejects(content.assertCourseRuleVersions(env, student.versionId, guardian.versionId), /Public content operation failed/);
+  const infoPage = readFileSync("src/pages/staff/info.astro", "utf8");
+  assert.ok(infoPage.indexOf('id="rules-information"') < infoPage.indexOf('id="center-information"') && infoPage.indexOf('id="center-information"') < infoPage.indexOf('id="payment-information"'), "staff info presents rules, then center information, then payment information");
   const defaults = await preferences.getTeacherDashboardPreferences(env);
   assert.deepEqual([defaults.showSetupSection, defaults.showRegistration, defaults.showInformation], [true, true, true], "dashboard defaults preserve the existing teacher view");
   const updatedPreferences = await preferences.updateTeacherDashboardPreferences(env, actor("admin"), { expectedUpdatedAt: defaults.updatedAt, showSetupSection: false, showRegistration: false, showInformation: false });

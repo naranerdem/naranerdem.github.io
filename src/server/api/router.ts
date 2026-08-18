@@ -4,6 +4,7 @@ import { EmailVerificationError, startEmailVerification, verifyEmailToken } from
 import { VERIFIED_EMAIL_COOKIE } from "../auth/email-verification";
 import { EmailConfigurationError, EmailDeliveryError } from "../email/service";
 import { getRegistrationCatalog } from "../services/registration-catalog";
+import { getPublicSiteModel } from "../services/public-site";
 import {
   deleteRegistrationWindow,
   getRegistrationWindowOverview,
@@ -376,6 +377,12 @@ export async function handleApiRequest(
     } catch {
       return error("internal_error", "Бүртгэлийн мэдээллийг одоогоор авч чадсангүй.", 500);
     }
+  }
+
+  if (path === "/api/public-site") {
+    if (request.method !== "GET") return methodNotAllowed();
+    try { return json(await getPublicSiteModel(env), 200, { "Cache-Control": "no-store" }); }
+    catch { return error("internal_error", "Нийтийн мэдээллийг одоогоор авч чадсангүй.", 500); }
   }
 
   if (path === "/api/calendar/published") {

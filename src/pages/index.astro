@@ -1,170 +1,33 @@
 ---
-import {
-  distinctivePoints,
-  hero,
-  navigation,
-  programStages,
-  siteIdentity,
-  studyAreas,
-  teacherNote,
-} from "../content/homepage";
 import { contact } from "../content/contact";
-import { registrationCopy } from "../content/registration";
+import { hero, siteIdentity } from "../content/homepage";
 import "../styles/global.css";
+const baselinePrograms = [
+  { stageCode: "stage_1", slug: "stage-1", title: "1-р шат", grade: "4–6-р анги", description: "Туршилтаар шинжлэх ухааны суурь ойлголтыг танин мэднэ." },
+  { stageCode: "stage_2", slug: "stage-2", title: "2-р шат", grade: "7-р анги", description: "Ажиглалт, тайлбар, туршилтын дадлаа ахиулна." },
+  { stageCode: "stage_3", slug: "stage-3", title: "3-р шат", grade: "8–10-р анги", description: "Илүү гүнзгий туршилт, бие даасан сэтгэлгээг хөгжүүлнэ." },
+];
 ---
-
-<html lang="mn">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content={siteIdentity.description} />
-    <title>{siteIdentity.title}</title>
-  </head>
-  <body>
-    <header class="site-header">
-      <a class="brand-link" href="/" aria-label="Нүүр хуудас">
-        <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
-        <span>
-          <strong>{siteIdentity.name}</strong>
-          <span>{siteIdentity.shortProgramLabel}</span>
-        </span>
-      </a>
-      <nav class="top-nav" aria-label="Гол цэс">
-        {
-          navigation.map((item) => (
-            <a href={item.href}>{item.label}</a>
-          ))
-        }
-      </nav>
-    </header>
-
-    <main>
-      <section class="hero-section section-shell" aria-labelledby="page-title">
-        <div class="hero-copy">
-          <p class="eyebrow">{hero.kicker}</p>
-          <h1 id="page-title">{hero.heading}</h1>
-          <p class="hero-summary">{hero.summary}</p>
-          <div class="action-row" aria-label="Гол үйлдлүүд">
-            <a class="button primary" href={hero.primaryAction.href}>
-              {hero.primaryAction.label}
-            </a>
-            <a class="button secondary" href={hero.secondaryAction.href} target="_blank" rel="noreferrer">
-              {hero.secondaryAction.label}
-            </a>
-          </div>
-        </div>
-        <div class="hero-logo" aria-label="Наран Эрдэм лого">
-          <img src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
-        </div>
-      </section>
-
-      <section id="program" class="section-shell" aria-labelledby="program-title">
-        <div class="section-heading">
-          <p class="eyebrow">Шаталсан хөтөлбөр</p>
-          <h2 id="program-title">Гурван шаттай туршилт-лаборатори сургалт</h2>
-          <p>
-            Хичээлийн жилийн турш үргэлжлэх энэ хөтөлбөр нь хүүхдийг шат дараатайгаар
-            практик туршилтын ажилд дасгадаг.
-          </p>
-        </div>
-        <div class="stage-list">
-          {
-            programStages.map((stage) => (
-              <article class="stage-item">
-                <div>
-                  <p class="stage-title">{stage.title}</p>
-                  <h3>{stage.level}</h3>
-                  <p>{stage.audience}</p>
-                </div>
-                <dl class="stage-meta">
-                  <div>
-                    <dt>Хичээл</dt>
-                    <dd>{stage.lessons}</dd>
-                  </div>
-                  <div>
-                    <dt>Давтамж</dt>
-                    <dd>{stage.rhythm}</dd>
-                  </div>
-                </dl>
-                <a class="stage-registration-link" href={stage.registrationHref}>Бүртгүүлэх</a>
-              </article>
-            ))
-          }
-        </div>
-      </section>
-
-      <section class="study-band" aria-labelledby="study-title">
-        <div class="section-shell study-layout">
-          <div>
-            <p class="eyebrow">Юу судлах вэ?</p>
-            <h2 id="study-title">Бодитоор туршиж, ажиглаж, тайлбарлаж сурна</h2>
-            <p>
-              Хүүхдүүд хэд хэдэн байгалийн шинжлэх ухааны чиглэлээр лабораторийн
-              туршилт, практик ажлаар дамжин өөрийн сонирхлоо нээх боломжтой.
-            </p>
-          </div>
-          <ul class="area-list" aria-label="Судлах чиглэлүүд">
-            {studyAreas.map((area) => <li>{area}</li>)}
-          </ul>
-        </div>
-      </section>
-
-      <section class="section-shell" aria-labelledby="distinctive-title">
-        <div class="section-heading">
-          <p class="eyebrow">Онцлог</p>
-          <h2 id="distinctive-title">Дулаан уур амьсгалтай, нухацтай туршилтын орчин</h2>
-        </div>
-        <div class="feature-layout">
-          <ul class="check-list">
-            {distinctivePoints.map((point) => <li>{point}</li>)}
-          </ul>
-          <aside class="teacher-note" aria-labelledby="teacher-title">
-            <h3 id="teacher-title">{teacherNote.heading}</h3>
-            <p>{teacherNote.body}</p>
-          </aside>
-        </div>
-      </section>
-
-      <section id="registration-info" class="registration-section" aria-labelledby="registration-title">
-        <div class="section-shell registration-box">
-          <div>
-            <p class="eyebrow">Бүртгэл</p>
-            <h2 id="registration-title">{registrationCopy.heading}</h2>
-            <p>{registrationCopy.intro}</p>
-            <p class="quiet-note">{registrationCopy.statusLabel}</p>
-          </div>
-          <a class="button primary" href={registrationCopy.actionHref}>
-            {registrationCopy.actionLabel}
-          </a>
-        </div>
-      </section>
-
-      <section id="contact" class="section-shell contact-section" aria-labelledby="contact-title">
-        <div class="section-heading">
-          <p class="eyebrow">{contact.section.kicker}</p>
-          <h2 id="contact-title">{contact.section.heading}</h2>
-        </div>
-        <div class="contact-grid">
-          <a class="contact-card" href={contact.phone.href}>
-            <span>{contact.section.phoneLabel}</span>
-            <strong>{contact.phone.label}</strong>
-          </a>
-          <a class="contact-card" href={contact.facebook.href} target="_blank" rel="noreferrer">
-            <span>{contact.section.facebookLabel}</span>
-            <strong>{contact.facebook.label}</strong>
-          </a>
-          <address class="contact-card address-card">
-            <span>{contact.section.locationLabel}</span>
-            {contact.locationLines.map((line) => <strong>{line}</strong>)}
-            <em>{contact.locationNote}</em>
-          </address>
-        </div>
-      </section>
-    </main>
-
-    <footer class="site-footer">
-      <p>{siteIdentity.name} · {siteIdentity.programLabel}</p>
-      <a href={contact.facebook.href} target="_blank" rel="noreferrer">{contact.facebook.label}</a>
-    </footer>
-  </body>
-</html>
+<html lang="mn"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content={siteIdentity.description} /><title>{siteIdentity.title}</title></head>
+<body><header class="site-header"><a class="brand-link" href="/"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>{siteIdentity.shortProgramLabel}</span></span></a><nav class="top-nav" aria-label="Гол цэс"><a href="#programs">Хөтөлбөр</a><a href="#contact">Холбоо барих</a></nav></header>
+<main>
+  <section class="hero-section section-shell" aria-labelledby="page-title"><div class="hero-copy"><p class="eyebrow">Хүүхдийн шинжлэх ухааны лаборатори</p><h1 id="page-title">Наран Эрдэм</h1><p id="hero-intro" class="hero-summary">{hero.summary}</p><div class="action-row"><a class="button primary" href="/register/">Бүртгүүлэх</a><a id="hero-facebook" class="button secondary" href={contact.facebook.href} target="_blank" rel="noreferrer">Facebook</a></div></div><div class="hero-logo"><img src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /></div></section>
+  <section id="current-registration" class="section-shell" hidden aria-labelledby="current-title"><div class="section-heading"><p class="eyebrow">Бүртгэл</p><h2 id="current-title">Одоо бүртгэж байна</h2></div><div id="current-program-list" class="stage-list"></div></section>
+  <section id="programs" class="section-shell" aria-labelledby="program-title"><div class="section-heading"><p class="eyebrow">Шаталсан сургалт</p><h2 id="program-title">Үндсэн хөтөлбөр</h2></div><div id="permanent-program-list" class="stage-list">{baselinePrograms.map((program) => <article class="stage-item" data-program={program.stageCode}><div><p class="stage-title">{program.title}</p><p>{program.grade}</p><p>{program.description}</p></div><a class="stage-registration-link" href={`/programs/${program.slug}/`}>Дэлгэрэнгүй</a></article>)}</div></section>
+  <section id="about" class="section-shell" aria-labelledby="about-title"><div class="section-heading"><p class="eyebrow">Танилцуулга</p><h2 id="about-title">Төв, багшийн тухай</h2><p id="about-center">Наран Эрдэм нь хүүхдүүдийг бодитоор туршиж, ажиглаж, тайлбарлаж сурахад чиглэсэн лаборатори сургалт юм.</p><p id="teacher-bio" class="quiet-note"></p></div></section>
+  <section id="contact" class="section-shell contact-section" aria-labelledby="contact-title"><div class="section-heading"><p class="eyebrow">Холбоо барих</p><h2 id="contact-title">Холбогдох</h2></div><div id="contact-list" class="contact-grid"><a class="contact-card" href={contact.phone.href}><span>Утас</span><strong>{contact.phone.label}</strong></a><a class="contact-card" href={contact.facebook.href} target="_blank" rel="noreferrer"><span>Facebook</span><strong>{contact.facebook.label}</strong></a><address class="contact-card address-card"><span>Байршил</span>{contact.locationLines.map((line) => <strong>{line}</strong>)}</address></div></section>
+</main><footer class="site-footer"><p>{siteIdentity.name}</p></footer>
+<script>
+  // @ts-nocheck
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"})[c]);
+  const grade = (p) => !p.recommendedGradeMin && !p.recommendedGradeMax ? "" : p.recommendedGradeMin === p.recommendedGradeMax ? `${p.recommendedGradeMin}-р анги` : `${p.recommendedGradeMin || p.recommendedGradeMax}–${p.recommendedGradeMax || p.recommendedGradeMin}-р анги`;
+  const minutes = (v) => !v ? "" : `${Math.floor(v / 60) ? `${Math.floor(v / 60)} цаг` : ""}${v % 60 ? `${Math.floor(v / 60) ? " " : ""}${v % 60} минут` : ""}`;
+  const card = (p, current) => `<article class="stage-item"><div><p class="stage-title">${esc(p.title)}</p>${grade(p) ? `<p>${esc(grade(p))}</p>` : ""}${p.shortDescription ? `<p>${esc(p.shortDescription)}</p>` : ""}<p>${p.lessonCount ? `${p.lessonCount} хичээл` : ""}${p.durationMinutes ? `${p.lessonCount ? " · " : ""}${minutes(p.durationMinutes)}` : ""}</p></div><div class="staff-inline-actions"><a class="stage-registration-link" href="/programs/${esc(p.slug)}/">Дэлгэрэнгүй</a>${current ? `<a class="stage-registration-link" href="${esc(p.registerHref)}">Бүртгүүлэх</a>` : ""}</div></article>`;
+  fetch("/api/public-site", { headers: { Accept: "application/json" } }).then((r) => r.ok ? r.json() : Promise.reject()).then((data) => {
+    const c = data.center || {}; if (c.homepageIntro) document.querySelector("#hero-intro").textContent = c.homepageIntro; if (c.aboutCenterText) document.querySelector("#about-center").textContent = c.aboutCenterText; if (c.teacherBio) document.querySelector("#teacher-bio").textContent = c.teacherBio;
+    if (c.facebookPageUrl) document.querySelector("#hero-facebook").href = c.facebookPageUrl;
+    const current = data.currentPrograms || []; const currentSection = document.querySelector("#current-registration"); if (current.length) { currentSection.hidden = false; document.querySelector("#current-program-list").innerHTML = current.map((p) => card(p, true)).join(""); }
+    document.querySelector("#permanent-program-list").innerHTML = (data.programs || []).filter((p) => !p.current).map((p) => card(p, false)).join("");
+    const contact = []; if (c.phone) contact.push(`<a class="contact-card" href="tel:${esc(c.phone).replace(/[^+0-9]/g, "")}"><span>Утас</span><strong>${esc(c.phone)}</strong></a>`); if (c.publicEmail) contact.push(`<a class="contact-card" href="mailto:${esc(c.publicEmail)}"><span>И-мэйл</span><strong>${esc(c.publicEmail)}</strong></a>`); if (c.facebookPageUrl) contact.push(`<a class="contact-card" href="${esc(c.facebookPageUrl)}" target="_blank" rel="noreferrer"><span>Facebook</span><strong>Facebook</strong></a>`); if (c.physicalAddress) contact.push(`<address class="contact-card address-card"><span>Байршил</span><strong>${esc(c.physicalAddress)}</strong></address>`); if (contact.length) document.querySelector("#contact-list").innerHTML = contact.join("");
+  }).catch(() => {});
+</script></body></html>
