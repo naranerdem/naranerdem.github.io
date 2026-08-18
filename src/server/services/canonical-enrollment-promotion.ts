@@ -179,6 +179,10 @@ async function resolveGuardian(database: D1Database, row: PromotionRow): Promise
       .bind(row.canonicalGuardianId).first<GuardianRow>();
     return guardian?.status === "active" ? { guardianId: guardian.id } : { needsReview: true };
   }
+  // An unverified address is contact information, not identity authority. Keep
+  // the paid enrollment on a distinct guardian record until a verified channel
+  // can support a later reconciliation flow.
+  if (!row.verifiedAt) return { guardianId: `${row.draftId}:unverified-guardian` };
   const guardians = (await database.prepare(`SELECT id, status FROM guardian_account WHERE email_normalized = ?`)
     .bind(row.normalizedEmail).all<GuardianRow>()).results;
   if (guardians.length === 0) return { guardianId: `guardian:${await sha256(row.normalizedEmail)}` };
@@ -202,7 +206,7 @@ export async function promotePaidDraftChild(
   if (!row) throw new CanonicalPromotionError("not_found");
   if (row.canonicalEnrollmentId) return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
   const now = nowDate.toISOString();
-  if (!row.verifiedAt || !row.initialInstallmentPaid || !row.selectedClassSessionId || !row.activeInitialHold) {
+  if (!row.initialInstallmentPaid || !row.selectedClassSessionId || !row.activeInitialHold) {
     await env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'not_eligible',
       promotion_status = 'not_eligible', updated_at = ? WHERE id = ?`).bind(now, row.childId).run();
     return { state: "not_eligible" };
@@ -287,7 +291,7 @@ export async function promotePaidDraftChild(
       id, guardian_id, academic_year_id, status, submitted_at, parent_rules_version, student_rules_version,
       is_test, test_run_id, created_at, updated_at
     ) VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(preRegistrationId, guardian.guardianId, row.academicYearId, row.verifiedAt,
+      .bind(preRegistrationId, guardian.guardianId, row.academicYearId, row.verifiedAt ?? now,
         row.parentRulesVersion, row.studentRulesVersion, row.draftIsTest, row.draftTestRunId, now, now),
     env.DB.prepare(`UPDATE registration_draft SET canonical_pre_registration_id = ?, updated_at = ?
       WHERE id = ? AND (canonical_pre_registration_id IS NULL OR canonical_pre_registration_id = ?)`)

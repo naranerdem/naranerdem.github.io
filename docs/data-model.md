@@ -45,13 +45,13 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `registration_draft`: seven-day server-side guardian/contact snapshot, rule versions, payment-plan/code input, hashed draft-access token, and registration lifecycle. Staging rows are explicitly test-marked.
 - `registration_draft_child`: per-child snapshot with one nullable current/fallback class and one nullable preferred FIFO target, plus the accepted course payment plan and base amount snapshot when a class is selected. It is deliberately separate from canonical `student` identity until paid promotion records explicit canonical mappings and identity-resolution state.
 - `offering_course_pricing`: one annual/summer Offering-owned base pricing record: a required positive integer MNT one-time amount and an optional two-installment amount/due-date set. It has no event, discount, credit, evidence, or allocation role.
-- `payment_collection_settings`: a small teacher/admin-managed singleton for operational payment collection information: bank name, account holder, account number, and optional transfer instruction. It is not a credential and must be complete before course registration can open.
+- `payment_collection_settings`: a small teacher/admin-managed singleton for operational payment collection information: bank name, account holder, optional IBAN, account number, and optional transfer instruction. It is not a credential and must be complete before course registration can open.
 - `public_center_information`: one typed singleton for editable public contact details and small public prose; not a generic CMS.
 - `course_rule_document` and `course_rule_version`: exactly two global ordinary-course rule documents with immutable historical text versions and a current-version pointer.
 - `registration_window` and `registration_window_offering`: a teacher-managed Mongolia-local civil-date period and its explicit many-to-many snapshot of annual/summer Offerings. An Offering can occur in historical reopening windows, but new Offerings never join an old window automatically.
-- `registration_capacity_hold`: one per draft child, moving from a 20-minute `provisional_email_confirmation` deadline to an `initial_payment` reservation with a fixed payment deadline after verification. Only the provisional hold expires automatically.
-- `payment_request`, `payment_installment`, `received_payment`, `payment_allocation`, and `payment_evidence`: provider-neutral initial reconciliation foundation. A request has one opaque payment reference; obligations stay per child, while received money can be allocated across many obligations.
-- `registration_draft_waitlist_entry`: one verified FIFO entry per draft child. Unverified waitlist intent remains only on `registration_draft_child`. Migration 0022 links a promoted child's canonical application but deliberately retains this draft-backed entry as the one active FIFO authority, preserving its original creation time.
+- `registration_capacity_hold`: one per draft child. New rows use an `initial_payment` reservation with a fixed payment deadline at accepted submission; historical `provisional_email_confirmation` rows remain compatible. A payment deadline never automatically releases an initial reservation.
+- `payment_request`, `payment_installment`, `received_payment`, `payment_allocation`, and `payment_evidence`: provider-neutral initial reconciliation foundation. A request has an opaque internal reference and a separate stored human transfer description; obligations stay per child, while received money can be allocated across many obligations.
+- `registration_draft_waitlist_entry`: one FIFO entry per accepted draft child. Migration 0022 links a promoted child's canonical application but deliberately retains this draft-backed entry as the one active FIFO authority, preserving its original creation time.
 - `audit_event`: compact non-PII audit event/tombstone table for future operational actions.
 
 ## Ownership And Deletes
@@ -223,7 +223,7 @@ New classes and event occurrences start with registration closed.
 Annual and summer Offerings are always paid; events default to free and may be
 paid. These values create no finance records. Future paid registration must use
 common pricing/payment machinery, while a free event can eventually confirm
-after email verification and capacity checks without a payment-only hold.
+after capacity checks without a payment-only hold.
 
 Production has the schema only and no operational Offerings, classes, programs,
 events, Facebook groups, or personal data. Staging fixtures are explicitly

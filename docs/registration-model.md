@@ -34,7 +34,7 @@ pre-registration completed
 
 A pre-registration that never proceeds to payment must not occupy class capacity. Only active temporary seat holds and confirmed enrollments should consume capacity.
 
-After timely email verification, the initial payment has a fixed payment deadline of about 24 hours, configurable later. It is a deadline for payment, not an automatic seat-release clock. An unresolved initial-payment reservation remains capacity-consuming until an explicit reconciliation decision resolves it. Approval of exceptional terms does not automatically move the effective deadline; a future explicit extension will preserve the original deadline. Only an authorized explicit release can free an unpaid reserved seat.
+At accepted submission, the initial payment has a fixed payment deadline of about 24 hours, configurable later. Email verification is a parallel contact-channel step, not a payment/enrollment gate. The deadline is for payment, not an automatic seat-release clock. An unresolved initial-payment reservation remains capacity-consuming until an explicit reconciliation decision resolves it. Approval of exceptional terms does not automatically move the effective deadline; a future explicit extension will preserve the original deadline. Only an authorized explicit release can free an unpaid reserved seat.
 
 ## Course Payment Terms
 
@@ -42,13 +42,13 @@ Annual and summer courses currently have one required `single` plan and may
 offer `two_installment`. The browser submits only that stable plan identity;
 the server reads the Offering's current terms and records per-child base
 amounts and the second due date on the accepted registration draft. A later
-Offering price edit therefore applies only to new registrations. Once email
-verification creates the normal 24-hour initial-payment hold, the authenticated
-status response may show that child's saved initial amount and configured
-transfer instructions. The public catalog never includes account details.
-The accepted snapshot now creates generic installment obligations at email
-verification. The payment request has one stable opaque transfer reference that
-can cover several children while retaining individual obligations. Discounts,
+Offering price edit therefore applies only to new registrations. Accepted
+submission creates the normal 24-hour initial-payment hold and exposes that
+child's saved initial amount and configured transfer instructions through
+draft access. The public catalog never includes account details. The accepted
+snapshot creates generic installment obligations immediately. The payment request
+has one stable opaque internal reference and a separate human transfer description
+for the parent; it can cover several children while retaining individual obligations. Discounts,
 credits, and adjustments remain separate future layers.
 
 ## Privacy Principle
@@ -356,34 +356,31 @@ Intended flow:
 
 ```text
 finish form + rules + review
--> save pending registration/draft
+-> accepted registration draft
 -> atomically capacity-check selected class
--> 20-minute provisional email-confirmation hold
--> email confirmation
--> initial-payment reservation with a 24-hour payment deadline
+-> initial-payment reservation, payment request, and installments immediately
+-> fixed 24-hour payment deadline immediately
+-> email verification independently, if used
 -> first required payment received
 -> confirmed enrollment
 ```
 
-The staging implementation now follows this flow. The provisional hold protects a seat while the parent confirms email. It never consumes time from the initial-payment reservation's 24-hour payment deadline, which starts only after timely email confirmation. A provisional hold stops consuming capacity when its 20 minutes pass. An active initial-payment reservation continues to consume capacity after its deadline until staff explicitly reconciles payment or releases the seat. Public full-class temporary counts include both kinds of capacity-consuming holds, never identities.
+New staging registrations follow this flow. An active initial-payment reservation continues to consume capacity after its deadline until staff explicitly reconciles payment or releases the seat. Email verification is a communication/identity-channel fact, not a payment or enrollment prerequisite. Historical rows using the earlier 20-minute provisional-email hold retain their legacy conversion behavior.
 
 Initial-payment reconciliation records durable payment evidence and allocations.
 After the required first installment is fully reconciled, migration 0022 safely
 promotes each eligible child to canonical guardian/student/application/enrollment
-records. It uses only the verified server-side normalized email for GuardianAccount
-resolution and only strict normalized name, DOB, and gender comparison within
-that guardian's already-linked children for automatic Student reuse. Ambiguous or
-returning no-match cases remain paid and seat-protected until teacher/admin review.
+records. With a verified email channel, it may use the strict server-side normalized-email rules for GuardianAccount resolution and strict normalized name, DOB, and gender comparison within that guardian's already-linked children for automatic Student reuse. Without a verified channel, it creates a distinct guardian identity and never guesses or reuses an existing account. Ambiguous or returning no-match cases remain paid and seat-protected until teacher/admin review; later verified-channel reconciliation remains possible.
 
-The registration confirmation link itself remains usable for a longer configurable lifetime, currently about 24 hours. If confirmation happens after the 20-minute provisional hold expired, atomically re-check capacity. Reacquire the class and start a fresh payment hold if possible; otherwise explain that the temporary guarantee expired and show available classes plus the selected class's FIFO waitlist. Saved registration data remains recoverable.
+The registration confirmation link remains usable for a configurable lifetime, currently about 24 hours. Confirming it records the email channel without renewing, releasing, or otherwise changing a new registration's payment reservation. Historical provisional rows retain their legacy late-confirmation behavior.
 
 Email scanners must not consume confirmation links. The future one-click flow places the secret in the URL fragment, then the real browser posts it to the verification endpoint; a scanner's ordinary HTTP GET never receives or consumes it. Ordinary login/auth magic links remain conceptually separate and may have a shorter lifetime.
 
-After staging form completion, the parent sees a simple email-status screen with the displayed address, resend and change-address actions, the provisional-hold explanation, and Spam/Junk advice. Resend has a 60-second cooldown; resend and change-address invalidate superseded links but never restart the provisional clock. An HttpOnly draft-access cookie restores this status without refilling the form.
+After staging form completion, the parent immediately sees class/waitlist state, saved payment amount, deadline, bank instructions, and a prompt to confirm email. Resend has a 60-second cooldown; resend and change-address invalidate superseded links but never restart the payment deadline. An HttpOnly draft-access cookie restores this registration-scoped status without refilling the form.
 
-The browser-local pre-submission draft lasts 24 hours for accidental refresh or overnight closure and never creates a registration or hold. An accepted server draft has a separate seven-day retention deadline. Retention does not extend the 20-minute seat guarantee or 24-hour confirmation link. It must never delete or rescind a financially unresolved initial-payment reservation.
+The browser-local pre-submission draft lasts 24 hours for accidental refresh or overnight closure and never creates a registration or hold. An accepted server draft has a separate seven-day retention deadline. Retention does not extend the payment deadline or confirmation-link lifetime. It must never delete or rescind a financially unresolved initial-payment reservation.
 
-Before verification, preferred waitlist intent stays only on the server draft. Verification materializes one FIFO entry per child. Waitlist-only creates no seat hold; fallback plus preferred waitlist converts the fallback to a payment hold and creates the preferred entry. Canonical promotion links but does not duplicate a materialized draft waitlist entry, so its original FIFO timestamp remains authoritative. Waitlist-only canonicalization remains future work.
+Accepted waitlist choices materialize one FIFO entry per child without requiring email verification. Waitlist-only creates no seat hold; fallback plus preferred waitlist creates both the fallback payment hold and the preferred entry. Canonical promotion links but does not duplicate a materialized draft waitlist entry, so its original FIFO timestamp remains authoritative. Waitlist-only canonicalization remains future work.
 
 If initial payment has not been reconciled, the system may later send reminders, but elapsed time alone is never payment evidence and never releases the seat. A positive future bank/QPay signal may confirm money received; an absent signal must not release anything.
 

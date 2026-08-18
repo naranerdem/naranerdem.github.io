@@ -692,7 +692,7 @@ const formCopy = registrationFormCopy;
       }
 
       function registrationPayload() {
-        const genderValue = (value) => value === "Эмэгтэй" ? "female" : value === "Эрэгтэй" ? "male" : "not_specified";
+        const genderValue = (value) => value === "Эмэгтэй" ? "female" : "male";
         return {
           guardian: {
             fullName: value("#guardian-name"),
@@ -862,11 +862,11 @@ const formCopy = registrationFormCopy;
               ? `<a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэг</a>` : "";
             return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
-          showResult(hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `
+          showResult(hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : status.verifiedAt ? (alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle) : "Бүртгэлийн мэдээллийг хүлээн авлаа.", `
             ${hasPaymentHold ? `<p class="status-emphasis">${escapeText(formCopy.messages.paymentHold)}</p>` : ""}
             ${seatUnavailable ? `<p class="form-error">${escapeText(formCopy.messages.seatLost)}</p>` : ""}
             <ul class="status-children">${children}</ul>
-            ${hasPaymentHold && status.paymentCollection ? `<section class="payment-instructions"><h3>Шилжүүлгийн мэдээлэл</h3><p>${escapeText(status.paymentCollection.bankName)}<br>${escapeText(status.paymentCollection.accountHolderName)}<br><strong>${escapeText(status.paymentCollection.accountNumber)}</strong>${status.paymentCollection.transferInstruction ? `<br>${escapeText(status.paymentCollection.transferInstruction)}` : ""}</p>${paymentReference ? `<p>Гүйлгээний утга: <strong id="payment-reference">${escapeText(paymentReference)}</strong> <button id="copy-payment-reference" class="text-button" type="button">Хуулах</button></p>` : ""}<p class="staff-muted">Бид төлбөр банканд орсныг шалгаж баталгаажуулна. Баталгаажуулалт ихэвчлэн 12–24 цагийн дотор хийгдэнэ.</p>${paymentRequest ? `<p class="staff-muted">Заавал хийх шаардлагагүй. Бид банкны орлогыг шалгаж баталгаажуулна.</p><button id="claim-payment" class="button secondary" type="button" ${parentClaimed ? "disabled" : ""}>${parentClaimed ? "Төлбөр хийсэн гэж мэдэгдсэн" : "Төлбөр хийсэн гэж мэдэгдэх"}</button><p id="payment-claim-message" class="catalog-message" role="status"></p>` : ""}</section>` : ""}
+            ${hasPaymentHold && status.paymentCollection ? `<section class="payment-instructions"><h3>Шилжүүлгийн мэдээлэл</h3><p>${escapeText(status.paymentCollection.bankName)}<br>${escapeText(status.paymentCollection.accountHolderName)}${status.paymentCollection.iban ? `<br><strong>IBAN: ${escapeText(status.paymentCollection.iban)}</strong>` : ""}<br><strong>${escapeText(status.paymentCollection.accountNumber)}</strong>${status.paymentCollection.transferInstruction ? `<br>${escapeText(status.paymentCollection.transferInstruction)}` : ""}</p>${paymentReference ? `<p>Гүйлгээний утга: <strong id="payment-reference">${escapeText(paymentReference)}</strong> <button id="copy-payment-reference" class="text-button" type="button">Хуулах</button></p>` : ""}<p class="staff-muted">Бид төлбөр банканд орсныг шалгаж баталгаажуулна. Баталгаажуулалт ихэвчлэн 12–24 цагийн дотор хийгдэнэ.</p><p>И-мэйлээ баталгаажуулбал бүртгэлийн мэдээлэл, төлөвийн мэдэгдлийг и-мэйлээр авах боломжтой.</p>${paymentRequest ? `<button id="claim-payment" class="button secondary" type="button" ${parentClaimed ? "disabled" : ""}>${parentClaimed ? "Төлбөр хийснээ мэдэгдсэн" : "Төлбөр хийснээ мэдэгдэх"}</button><p id="payment-claim-message" class="catalog-message" role="status"></p>` : ""}</section>` : ""}
           `);
           document.getElementById("copy-payment-reference")?.addEventListener("click", async () => {
             try { await navigator.clipboard.writeText(paymentReference); } catch { /* selection remains visible for manual copy */ }
@@ -995,7 +995,7 @@ const formCopy = registrationFormCopy;
           const result = await response.json();
           if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
           discardStoredDraft();
-          showEmailStatus(result);
+          await showVerifiedStatus(false);
         } catch (caught) {
           turnstileMessage.textContent = caught.message || formCopy.messages.submitFailed;
           turnstileToken = "";

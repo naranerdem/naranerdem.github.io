@@ -43,7 +43,7 @@ export const registrationFormCopy = {
     resendEmail: "И-мэйл дахин илгээх",
     changeEmail: "И-мэйл хаяг өөрчлөх",
     joinWaitlist: "Хүлээлгийн жагсаалтад орох",
-    waitlistOnly: "Зөвхөн хүлээлгийн жагсаалт",
+    waitlistOnly: "Зөвхөн хүлээлгийн жагсаалтад үлдэх",
   },
   guardian: {
     title: "Асран хамгаалагч",
@@ -79,7 +79,7 @@ export const registrationFormCopy = {
       stage_2: "2-р шат — Дунд түвшин",
       stage_3: "3-р шат — Ахисан түвшин",
     },
-    genderOptions: ["Эмэгтэй", "Эрэгтэй", "Өөрөөр бичих/хэлэх"],
+    genderOptions: ["Эмэгтэй", "Эрэгтэй"],
     gradeOptions: [
       { value: "4", label: "4-р анги" },
       { value: "5", label: "5-р анги" },

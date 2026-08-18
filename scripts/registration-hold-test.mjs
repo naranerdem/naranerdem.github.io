@@ -21,12 +21,14 @@ const publicSiteBundle = path.join(tempDir, "public-site.mjs");
 const turnstileBundle = path.join(tempDir, "turnstile.mjs");
 const emailVerificationBundle = path.join(tempDir, "email-verification.mjs");
 const paymentReconciliationBundle = path.join(tempDir, "payment-reconciliation.mjs");
+const registrationCorrectionBundle = path.join(tempDir, "registration-corrections.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
 bundle("src/server/services/registration-catalog.ts", catalogBundle);
 bundle("src/server/services/public-site.ts", publicSiteBundle);
 bundle("src/server/security/turnstile.ts", turnstileBundle);
 bundle("src/server/auth/email-verification.ts", emailVerificationBundle);
 bundle("src/server/staff/payment-reconciliation.ts", paymentReconciliationBundle);
+bundle("src/server/staff/registration-corrections.ts", registrationCorrectionBundle);
 const {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -34,6 +36,7 @@ const {
   createRegistrationDraft,
   enforceResendCooldown,
   markRegistrationEmailSent,
+  registrationStatusForAccess,
   registrationStatusForSession,
   RegistrationSubmissionError,
 } = await import(pathToFileURL(registrationBundle).href);
@@ -48,6 +51,7 @@ const {
   recordManualPayment,
   releaseUnpaidSeat,
 } = await import(pathToFileURL(paymentReconciliationBundle).href);
+const { registrationCorrectionDetail, saveRegistrationCorrection } = await import(pathToFileURL(registrationCorrectionBundle).href);
 
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
@@ -248,7 +252,7 @@ try {
     first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at
   ) VALUES ('offering-test', 850000, 1, 450000, 450000, '2026-11-01', ?, ?)`, [iso(), iso()]);
   database.query(`UPDATE payment_collection_settings SET bank_name = 'Тест банк',
-    account_holder_name = 'Тест эзэмшигч', account_number = '0000000000', updated_at = ? WHERE singleton = 1`, [iso()]);
+    account_holder_name = 'Тест эзэмшигч', account_number = '0000000000', iban = 'MN00TEST0000000000', updated_at = ? WHERE singleton = 1`, [iso()]);
   database.query(`INSERT INTO activity_offering (
     id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at
   ) VALUES ('offering-second-test', 'summer_course', 'Өөр тест сургалт', 'year-test', 'stage_1', 0, 'paid', 'active', 1, 'catalog-test', ?, ?);
@@ -286,6 +290,7 @@ try {
     VALUES ('staff-payment-test', 'payment@example.test', 'Тест Багш', 'active', 1, 'payment-test', ?, ?)`, [iso(), iso()]);
   const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
     capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
+  const registrationStaff = { ...paymentStaff, capabilities: ['registration.manage'] };
 
   database.query("UPDATE academic_year SET registration_status = 'closed' WHERE id = 'year-test'");
   const stageOneOnlyCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
@@ -294,7 +299,7 @@ try {
   assert.deepEqual(new Set(catalogSessions.map((entry) => entry.stageCode)), new Set(["stage_1"]), "Stage 2 and 3 Offerings outside every active window are absent from the public catalog");
   assert.equal(catalogSessions.find((entry) => entry.id === "class-closed")?.availability, "unavailable", "a closed concrete class remains unavailable despite an active window");
   const legacyStatusDraft = await createRegistrationDraft(env(database), submission("class-legacy-status"), new Date(iso(-5)));
-  assert.ok(legacyStatusDraft.hasProvisionalHold, "legacy academic-year registration status does not override a valid active window");
+  assert.ok(legacyStatusDraft.hasPaymentHold, "legacy academic-year registration status does not override a valid active window");
   const fabricatedRules = submission("class-priced"); fabricatedRules.parentRulesVersion = "fabricated-rule-version";
   await assert.rejects(createRegistrationDraft(env(database), fabricatedRules, new Date(iso(-4))), (error) => error.code === "invalid_rules_version", "fabricated rule versions are rejected");
   database.query("UPDATE public_center_information SET homepage_intro = 'Нийтийн товч танилцуулга', teacher_bio = 'Тест багш' WHERE singleton = 1");
@@ -309,7 +314,23 @@ try {
   assert.doesNotMatch(JSON.stringify(publicSite), /lessonTitle|internalNote/, "public-site model contains no curriculum lesson titles or notes");
 
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
-  assert.equal(one.hasProvisionalHold, true);
+  assert.equal(one.hasPaymentHold, true);
+  assert.equal(one.paymentDeadlineAt, iso(24 * 60), "accepted submission starts the 24-hour payment deadline without email verification");
+  const oneAccessToken = decodeURIComponent(one.accessCookie.match(/naran_registration_draft=([^;]+)/)[1]);
+  const oneStatus = await registrationStatusForAccess(database, oneAccessToken, new Date(iso()));
+  assert.equal(oneStatus.children[0].holdType, "initial_payment", "draft access immediately exposes the payment reservation");
+  assert.equal(oneStatus.paymentCollection.iban, "MN00TEST0000000000", "configured IBAN appears in immediate parent payment instructions");
+  const correctionDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date(iso(-2)));
+  const correctionChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [correctionDraft.draftId])[0].id;
+  const correctionBefore = await registrationCorrectionDetail(env(database), registrationStaff, correctionChild);
+  database.query("UPDATE registration_draft SET verified_at = ? WHERE id = ?", [iso(-2), correctionDraft.draftId]);
+  const correctionAfter = await saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...correctionBefore,
+    guardianName: "Зассан Асран", primaryPhone: "99112233", email: "corrected@example.test", surname: "Зассан", givenName: "Хүүхэд", gender: "female", dateOfBirth: "2015-01-01", currentGrade: "5", homeAddress: "Тест хаяг" });
+  assert.equal(correctionAfter.guardianName, "Зассан Асран", "teacher can correct ordinary guardian details");
+  assert.equal(database.query("SELECT verified_at AS verifiedAt FROM registration_draft WHERE id = ?", [correctionDraft.draftId])[0].verifiedAt, null, "a changed email never inherits prior verification");
+  assert.equal(count(database, "registration_data_correction", `registration_draft_child_id = '${correctionChild}'`), 1, "correction retains before/after history");
+  assert.equal(count(database, "audit_event", `action = 'registration_data_corrected' AND subject_id = '${correctionChild}'`), 1, "correction is audited");
+  await assert.rejects(saveRegistrationCorrection(env(database), paymentStaff, correctionChild, { ...correctionBefore }), "accountant cannot correct registration identity/contact data");
   assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-last-seat' AND status = 'active'"), 1);
   const fullCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
   assert.equal(fullCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-last-seat")?.availability, "full", "a full active-window class remains in the catalog as a waitlist target");
@@ -333,8 +354,9 @@ try {
   const twoStatus = await registrationStatusForSession(database, twoSession.rawToken, new Date(iso(-2)));
   assert.equal(twoStatus.children[0].initialPaymentAmountMnt, 450000, "verified payment status exposes the saved initial amount, not the new Offering price");
   assert.equal(twoStatus.paymentCollection.bankName, "Тест банк", "verified payment status includes configured transfer instructions only after verification");
-  const twoRequest = database.query(`SELECT id, payment_reference AS paymentReference FROM payment_request WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0];
+  const twoRequest = database.query(`SELECT id, payment_reference AS paymentReference, transfer_description AS transferDescription FROM payment_request WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0];
   assert.match(twoRequest.paymentReference, /^NE-[A-Z2-9]{6}$/, "payment reference is stable, opaque, and copyable");
+  assert.match(twoRequest.transferDescription, /^Хүүхэд 1 99000000(?: [2-9][0-9]?)?$/, "parent transfer description uses child name and the full guardian phone rather than the opaque request ID");
   assert.equal(count(database, "payment_installment", `payment_request_id = '${twoRequest.id}'`), 2, "two-installment snapshot creates two generic obligations");
   await claimParentPayment(database, twoRequest.id, twoInstallment.draftId, twoSession.rawToken, new Date(iso(-1)));
   await claimParentPayment(database, twoRequest.id, twoInstallment.draftId, twoSession.rawToken, new Date(iso(-1)));
@@ -383,10 +405,10 @@ try {
   manipulated.children[0].initialPaymentAmountMnt = 1;
   const manipulatedDraft = await createRegistrationDraft(env(database), manipulated, new Date(iso(-1)));
   assert.equal(database.query(`SELECT initial_payment_amount_mnt AS initialAmount FROM registration_draft_child WHERE registration_draft_id = ?`, [manipulatedDraft.draftId])[0].initialAmount, 950000, "browser-provided amounts are ignored in favor of the server pricing plan");
-  database.query("UPDATE payment_collection_settings SET account_number = NULL");
+  database.query("UPDATE payment_collection_settings SET account_number = NULL, iban = NULL");
   await assert.rejects(createRegistrationDraft(env(database), submission("class-priced"), new Date(iso(-1))),
     (error) => error instanceof RegistrationSubmissionError && error.code === "pricing_unavailable", "incomplete transfer instructions prevent a new payment request");
-  database.query("UPDATE payment_collection_settings SET account_number = '0000000000'");
+  database.query("UPDATE payment_collection_settings SET account_number = '0000000000', iban = 'MN00TEST0000000000'");
 
   const competing = await Promise.allSettled([
     createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso(1))),
@@ -395,9 +417,9 @@ try {
   assert.equal(competing.filter((result) => result.status === "fulfilled").length, 0, "an existing hold protects the last seat");
   assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-last-seat' AND deadline_at > '2026-08-11T08:01:00.000Z'"), 1);
 
-  database.query("UPDATE registration_capacity_hold SET deadline_at = ? WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)", [iso(1), one.draftId]);
+  database.query("UPDATE registration_capacity_hold SET status = 'released', released_at = ?, release_reason = 'test_staff_release' WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)", [iso(1), one.draftId]);
   const replacement = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso(2)));
-  assert.equal(replacement.hasProvisionalHold, true, "expired provisional hold restores capacity without cleanup");
+  assert.equal(replacement.hasPaymentHold, true, "an immediate payment reservation restores capacity without cleanup");
 
   await assert.rejects(
     createRegistrationDraft(env(database), submission("class-roomy", undefined, 4), new Date(iso(3))),
@@ -407,8 +429,8 @@ try {
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${partialDraft.id}')`), 0, "multi-child failure creates no partial hold");
 
   const waitlistOnly = await createRegistrationDraft(env(database), submission(undefined, "class-full-preferred"), new Date(iso(4)));
-  assert.equal(waitlistOnly.hasProvisionalHold, false);
-  assert.equal(count(database, "registration_draft_waitlist_entry", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${waitlistOnly.draftId}')`), 0, "unverified draft does not enter FIFO queue");
+  assert.equal(waitlistOnly.hasPaymentHold, false);
+  assert.equal(count(database, "registration_draft_waitlist_entry", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${waitlistOnly.draftId}')`), 1, "accepted waitlist-only draft enters its FIFO queue without email verification");
   const waitChallenge = addChallenge(database, waitlistOnly.draftId, waitlistOnly.normalizedEmail, iso(4), iso(4 + 24 * 60));
   const waitConfirmed = await confirmRegistrationChallenge(env(database), waitChallenge, session(iso(5), iso(65)), new Date(iso(5)));
   assert.equal(waitConfirmed.status, "waitlisted");
@@ -437,10 +459,10 @@ try {
   database.query("UPDATE registration_capacity_hold SET deadline_at = ? WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)", ["2026-08-11T08:08:30.000Z", lateFree.draftId]);
   const lateFreeChallenge = addChallenge(database, lateFree.draftId, lateFree.normalizedEmail, iso(8), iso(8 + 24 * 60));
   const reacquired = await confirmRegistrationChallenge(env(database), lateFreeChallenge, session(iso(9), iso(69)), new Date(iso(9)));
-  assert.equal(reacquired.lateReacquired, true);
+  assert.equal(reacquired.lateReacquired, false, "email verification does not renew an existing initial-payment reservation");
   assert.equal(reacquired.hasPaymentHold, true);
 
-  database.query("UPDATE registration_capacity_hold SET deadline_at = ? WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)", [iso(9), replacement.draftId]);
+  database.query("UPDATE registration_capacity_hold SET status = 'released', released_at = ?, release_reason = 'test_staff_release' WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)", [iso(9), replacement.draftId]);
   const competitor = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso(10)));
   const replacementChallenge = addChallenge(database, replacement.draftId, replacement.normalizedEmail, iso(2), iso(2 + 24 * 60));
   const lost = await confirmRegistrationChallenge(env(database), replacementChallenge, session(iso(11), iso(71)), new Date(iso(11)));

@@ -191,6 +191,9 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   await env.DB.batch(statements);
   const state = await refreshInstallmentsAndDraft(env, request, now);
   const promotion = await promotePaidDraftChildren(env, actor, request.registrationDraftId, nowDate);
+  // Notification delivery is secondary to the audited payment/enrollment transaction.
+  void import("../auth/email-verification").then(({ sendRegistrationPaymentMilestone }) =>
+    sendRegistrationPaymentMilestone(env, request.registrationDraftId)).catch(() => undefined);
   return { id: paymentId, idempotent: false, initialPaymentReconciled: state.allInitialPaid, promotion };
 }
 
@@ -237,9 +240,12 @@ export async function releaseUnpaidSeat(env: WorkerEnv, actor: StaffPrincipal, p
 }
 
 export async function claimParentPayment(database: WorkerEnv["DB"], paymentRequestId: string, registrationDraftId: string,
-  rawSessionToken: string, nowDate = new Date()) {
-  const { sessionOwnsDraft } = await import("../services/registration-submission");
-  if (!await sessionOwnsDraft(database, rawSessionToken, registrationDraftId, nowDate)) throw new PaymentReconciliationError("forbidden");
+  rawAccessToken: string, nowDate = new Date()) {
+  const { draftForAccessToken, sessionOwnsDraft } = await import("../services/registration-submission");
+  let ownsDraft = false;
+  try { ownsDraft = (await draftForAccessToken(database, rawAccessToken, nowDate)).id === registrationDraftId; }
+  catch { ownsDraft = await sessionOwnsDraft(database, rawAccessToken, registrationDraftId, nowDate); }
+  if (!ownsDraft) throw new PaymentReconciliationError("forbidden");
   const request = await database.prepare(`SELECT id, registration_draft_id AS registrationDraftId,
     payment_reference AS paymentReference, is_test AS isTest, test_run_id AS testRunId FROM payment_request
     WHERE id = ? AND registration_draft_id = ?`).bind(paymentRequestId, registrationDraftId).first<PaymentRequestRow>();

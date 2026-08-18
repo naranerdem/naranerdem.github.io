@@ -24,7 +24,7 @@ import {
   readCookie,
   REGISTRATION_DRAFT_COOKIE,
   RegistrationSubmissionError,
-  registrationStatusForSession,
+  registrationStatusForAccess,
   type RegistrationSubmissionInput,
 } from "../services/registration-submission";
 import {
@@ -76,6 +76,7 @@ import { PublicContentError, saveCourseRule, updatePublicCenterInformation } fro
 import { getCourseRules } from "../staff/public-content";
 import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updateTeacherDashboardPreferences } from "../staff/teacher-dashboard-preferences";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
+import { RegistrationCorrectionError, registrationCorrectionDetail, saveRegistrationCorrection } from "../staff/registration-corrections";
 import {
   CourseAttendanceError,
   cancelCourseAbsenceNotice,
@@ -216,9 +217,7 @@ async function requireStaffCapability(
 
 function registrationWritesAvailable(env: WorkerEnv): boolean {
   return env.APP_ENV === "staging"
-    && env.REGISTRATION_WRITE_ENABLED === "true"
-    && env.EMAIL_ENABLED === "true"
-    && env.AUTH_EMAIL_ENABLED === "true";
+    && env.REGISTRATION_WRITE_ENABLED === "true";
 }
 
 function registrationError(caught: unknown): Response {
@@ -250,6 +249,12 @@ function registrationError(caught: unknown): Response {
 }
 
 function registrationWindowError(caught: unknown): Response {
+  if (caught instanceof RegistrationCorrectionError) {
+    if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+    if (caught.code === "not_found") return error("not_found", "Бүртгэлийн мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+    if (caught.code === "needs_review") return error("invalid_request", "Энэ мэдээлэл өмнөх бүртгэлтэй холбогдсон тул админ шалгаж засна.", 409, { "Cache-Control": "no-store" });
+    return error("invalid_request", "Мэдээллээ шалгаад дахин оролдоно уу.", 400, { "Cache-Control": "no-store" });
+  }
   if (!(caught instanceof RegistrationWindowError)) {
     return error("internal_error", "Бүртгэлийн хугацааг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
   }
@@ -442,16 +447,16 @@ export async function handleApiRequest(
           ok: true,
           emailSent: false,
           email: draft.email,
-          hasProvisionalHold: draft.hasProvisionalHold,
-          provisionalDeadlineAt: draft.provisionalDeadlineAt,
+          hasPaymentHold: draft.hasPaymentHold,
+          paymentDeadlineAt: draft.paymentDeadlineAt,
         }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie });
       }
       return json({
         ok: true,
         emailSent: true,
         email: draft.email,
-        hasProvisionalHold: draft.hasProvisionalHold,
-        provisionalDeadlineAt: draft.provisionalDeadlineAt,
+        hasPaymentHold: draft.hasPaymentHold,
+        paymentDeadlineAt: draft.paymentDeadlineAt,
       }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie });
     } catch (caught) {
       return registrationError(caught);
@@ -511,7 +516,7 @@ export async function handleApiRequest(
     if (!registrationWritesAvailable(env)) return authNotFound();
     if (request.method !== "GET") return methodNotAllowed();
     try {
-      const status = await registrationStatusForSession(env.DB, readCookie(request, VERIFIED_EMAIL_COOKIE));
+      const status = await registrationStatusForAccess(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
       return json(status, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
       return registrationError(caught);
@@ -541,7 +546,7 @@ export async function handleApiRequest(
       return error("invalid_request", "Хүлээлгийн жагсаалтын хүсэлтийг шалгана уу.", 400);
     }
     try {
-      await joinOriginalClassWaitlist(env.DB, readCookie(request, VERIFIED_EMAIL_COOKIE), childId);
+      await joinOriginalClassWaitlist(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE), childId);
       return json({ ok: true }, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
       return registrationError(caught);
@@ -559,8 +564,8 @@ export async function handleApiRequest(
     try {
       const payload = await request.json() as { paymentRequestId?: unknown };
       if (typeof payload.paymentRequestId !== "string") throw new PaymentReconciliationError("invalid");
-      const status = await registrationStatusForSession(env.DB, readCookie(request, VERIFIED_EMAIL_COOKIE));
-      await claimParentPayment(env.DB, payload.paymentRequestId, status.id, readCookie(request, VERIFIED_EMAIL_COOKIE));
+      const status = await registrationStatusForAccess(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
+      await claimParentPayment(env.DB, payload.paymentRequestId, status.id, readCookie(request, REGISTRATION_DRAFT_COOKIE));
       return json({ ok: true }, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
       return paymentReconciliationError(caught);
@@ -1164,7 +1169,11 @@ export async function handleApiRequest(
     try {
       const payload = await request.json() as Record<string, unknown>;
       if (!payload || typeof payload.action !== "string") throw new RegistrationWindowError("invalid");
-      if (payload.action === "registration-window.save") {
+      if (payload.action === "registration-detail.get") {
+        return json(await registrationCorrectionDetail(env, principal, String(payload.childId ?? "")), 200, { "Cache-Control": "no-store" });
+      } else if (payload.action === "registration-detail.save") {
+        return json({ ok: true, detail: await saveRegistrationCorrection(env, principal, String(payload.childId ?? ""), payload) }, 200, { "Cache-Control": "no-store" });
+      } else if (payload.action === "registration-window.save") {
         await saveRegistrationWindow(env, principal, {
           id: typeof payload.id === "string" ? payload.id : undefined,
           expectedUpdatedAt: typeof payload.expectedUpdatedAt === "string" ? payload.expectedUpdatedAt : undefined,
@@ -1402,6 +1411,7 @@ export async function handleApiRequest(
             bankName: typeof payload.bankName === "string" ? payload.bankName : null,
             accountHolderName: typeof payload.accountHolderName === "string" ? payload.accountHolderName : null,
             accountNumber: typeof payload.accountNumber === "string" ? payload.accountNumber : null,
+            iban: typeof payload.iban === "string" ? payload.iban : null,
             transferInstruction: typeof payload.transferInstruction === "string" ? payload.transferInstruction : null,
             expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });

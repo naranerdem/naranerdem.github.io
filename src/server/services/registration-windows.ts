@@ -130,7 +130,7 @@ async function selectedOfferings(env: WorkerEnv, ids: string[]): Promise<Offerin
 }
 
 export async function getRegistrationWindowOverview(env: WorkerEnv, localDate = mongoliaCivilDate()) {
-  const [windows, offerings] = await Promise.all([
+  const [windows, offerings, registrations] = await Promise.all([
     env.DB.prepare(`SELECT id, name, starts_on AS startsOn, ends_on AS endsOn,
       is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
       FROM registration_window
@@ -142,6 +142,26 @@ export async function getRegistrationWindowOverview(env: WorkerEnv, localDate = 
       WHERE offering.status = 'active' AND offering.kind IN ('annual_course', 'summer_course')
         AND (? = 'staging' OR offering.is_test = 0)
       ORDER BY offering.starts_on, offering.title`).bind(env.APP_ENV).all<OfferingRow>(),
+    env.DB.prepare(`SELECT registration_draft_child.id AS childId,
+      registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+      registration_draft_child.status AS childStatus,
+      registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
+      registration_draft.email, registration_draft.verified_at AS verifiedAt,
+      class_session.stage_code AS stageCode, class_session.display_label AS classLabel,
+      registration_draft_waitlist_entry.status AS waitlistStatus,
+      payment_installment.status AS initialPaymentStatus,
+      enrollment.status AS enrollmentStatus,
+      registration_draft_child.promotion_status AS promotionStatus,
+      registration_draft_child.identity_resolution_status AS identityResolutionStatus
+      FROM registration_draft_child
+      INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+      LEFT JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+      LEFT JOIN registration_draft_waitlist_entry ON registration_draft_waitlist_entry.registration_draft_child_id = registration_draft_child.id
+      LEFT JOIN payment_installment ON payment_installment.registration_draft_child_id = registration_draft_child.id
+        AND payment_installment.installment_kind = 'initial'
+      LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+      WHERE (? = 'staging' OR registration_draft.is_test = 0)
+      ORDER BY registration_draft.created_at DESC, registration_draft_child.position`).bind(env.APP_ENV).all<Record<string, unknown>>(),
   ]);
   const memberships = await env.DB.prepare(`SELECT registration_window_id AS windowId,
     activity_offering_id AS offeringId FROM registration_window_offering`).all<{ windowId: string; offeringId: string }>();
@@ -159,6 +179,7 @@ export async function getRegistrationWindowOverview(env: WorkerEnv, localDate = 
       state: registrationWindowState(window, localDate),
       offeringIds: byWindow.get(window.id) ?? [],
     })),
+    registrations: registrations.results,
   };
 }
 

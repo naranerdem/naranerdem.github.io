@@ -80,15 +80,15 @@ The production catalog may legitimately contain no configured classes. The UI mu
 
 Parent and student rule acknowledgements are distinct product events. Ordinary annual/summer courses use two global D1-backed documents, `Эцэг эхийн журам` and `Сурагчийн журам`. Saving changed text creates a new immutable version; a matching save is a no-op. Registration drafts and canonical records retain their submitted version IDs. A page that loaded a legitimate older version remains valid after a later publication, but fabricated or wrong-document IDs are rejected. Static fallback continues to render checked-in baseline text.
 
-Parent-facing account access should eventually be passwordless, based on verified email magic links or one-time codes. Email links should return the parent to durable server-side registration/account state, not rely on an old browser tab or client session remaining alive.
+Parent-facing account access should eventually be passwordless and based on verified communication channels: initially email magic links or one-time codes, and later phone/SMS codes. A guardian may have more than one verified channel. A verified channel returns the parent to durable server-side registration/account state, not an old browser tab or client session.
 
 Before email ownership is verified, a public submission must not discover whether an email belongs to an existing guardian, retrieve existing family data, overwrite an existing guardian profile, or authoritatively link supplied data to an existing account. This preserves safe account linking for the future passwordless flow.
 
 Migration 0003 adds one-time verification challenges and short-lived verified-email sessions; migration 0004 renames the premature referral-only input to generic `code_input`; migration 0005 links challenges/sessions to a separate server registration draft and adds per-child capacity holds and verified-draft FIFO entries. Challenge, session, and draft-access tokens use Worker Web Crypto; D1 stores SHA-256 hashes, while raw values exist only in the confirmation URL fragment or secure cookie. Registration-confirmation links expire after 24 hours, are consumed once by a browser `POST`, and create a one-hour `HttpOnly; Secure; SameSite=Lax; Path=/` verified-email cookie. Verification alone never exposes a guardian or child to the browser. After a paid draft's first installment is fully reconciled, migration 0022 may use that verified server-side normalized email for exact GuardianAccount resolution; browser-posted email is never identity authority. Scanner GET requests cannot consume a fragment token.
 
-Staging registration writes use two distinct timings: a 20-minute provisional hold after form/review acceptance and a fixed 24-hour initial-payment deadline after email confirmation. A provisional hold stops consuming capacity when its deadline passes. An active initial-payment reservation remains capacity-consuming after its deadline until staff explicitly records payment or explicitly releases the unpaid seat; no Cron, catalog query, or cleanup routine may infer non-payment from time. A late email confirmation atomically reacquires all requested child seats or none; if it cannot, email verification still succeeds and the parent sees current same-stage alternatives plus the original class waitlist. A single conditional D1 write checks grouped per-class demand and inserts every requested child hold only when all classes have capacity.
+New staging registration writes create a fixed 24-hour initial-payment reservation at accepted submission. Email verification runs in parallel and does not create, renew, or release that reservation. An active initial-payment reservation remains capacity-consuming after its deadline until staff explicitly records payment or explicitly releases the unpaid seat; no Cron, catalog query, or cleanup routine may infer non-payment from time. Historical provisional-email rows retain their legacy conversion behavior. A single conditional D1 write checks grouped per-class demand and inserts every requested child hold only when all classes have capacity.
 
-The browser-local pre-submission draft expires after 24 hours. Server drafts expire after seven days for incomplete recovery; their 20-minute provisional hold and 24-hour confirmation link are independent deadlines. Retention must never delete or release a financially unresolved initial-payment reservation. Resend and email-change actions use a 60-second cooldown, invalidate superseded challenges, and never move the provisional deadline.
+The browser-local pre-submission draft expires after 24 hours. Server drafts expire after seven days for incomplete recovery. New accepted registrations have an independent fixed 24-hour payment deadline and a separately expiring confirmation link. Retention must never delete or release a financially unresolved initial-payment reservation. Resend and email-change actions use a 60-second cooldown, invalidate superseded challenges, and never move the payment deadline.
 
 The future parent portal should show children, current registrations, class/time, payment schedule/status, discounts, available credit, referral status/share link, refund options, Facebook class-group link after confirmation, and returning registration.
 
@@ -284,8 +284,8 @@ existing family's terms. Events and discounts remain outside this foundation.
 
 Opening a course class is server-gated on valid Offering pricing and completed
 teacher/admin-managed operational payment collection information. The parent catalog exposes only safe
-plan amounts; bank name, account holder, account number, and optional transfer
-instruction appear only after verified email creates the initial-payment
+plan amounts; bank name, account holder, optional IBAN, account number, and optional transfer
+instruction appear after accepted submission creates the initial-payment
 reservation with a 24-hour payment deadline. Initial payment confirmation and allocation reconciliation are
 implemented; adjustments, credits/refunds, bank adapters, and broader finance
 queues remain deliberately unimplemented.
@@ -487,3 +487,10 @@ The current Astro configuration uses static output and a root `site` URL appropr
 Future backend-dependent routes should degrade gracefully. If the app is served from GitHub Pages without backend services, public content should continue to work and dynamic registration tools should show a clear unavailable state or link to an alternative process.
 
 Creating a future temporary seat hold for a selected class must perform capacity validation and hold creation atomically. A separate availability read followed by a later insert is not sufficient.
+## Registration contact and payment lifecycle
+
+An accepted public registration creates its initial-payment reservation and 24-hour payment deadline immediately. Email verification is an independent contact-channel fact: it enables trusted email communication but does not gate payment instructions, staff reconciliation, or enrollment promotion. A future verified phone/SMS channel follows the same principle; guardian access is based on verified communication channels, not email alone.
+
+An unverified email is never used to match an existing guardian account. If a paid draft is promoted before email verification, it receives a distinct guardian identity that can be reconciled later through a verified channel and staff review. Payment requests retain opaque internal IDs; parents receive a human transfer description based on child name and full guardian phone, with a small suffix only for concurrent collisions.
+
+An unverified submitted email may still receive messages scoped only to that registration, including receipt and payment-instruction communications. Delivery failure is retained as outbound-email operational state; it does not establish or invalidate identity. Future `/parent/` login will send a fresh challenge which both verifies the chosen email or phone channel and creates the parent session. Registration screens must not put raw contact values into public URL parameters.

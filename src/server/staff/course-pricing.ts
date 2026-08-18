@@ -17,6 +17,7 @@ export interface PaymentCollectionSettings {
   bankName: string | null;
   accountHolderName: string | null;
   accountNumber: string | null;
+  iban: string | null;
   transferInstruction: string | null;
   updatedAt: string;
   complete: boolean;
@@ -44,7 +45,7 @@ function validDate(value: string | null): value is string {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 function complete(value: Omit<PaymentCollectionSettings, "complete">): boolean {
-  return Boolean(value.bankName && value.accountHolderName && value.accountNumber);
+  return Boolean(value.bankName && value.accountHolderName && (value.accountNumber || value.iban));
 }
 function flags(_env: WorkerEnv, source: OfferingKindRow) {
   return { isTest: source.isTest, testRunId: source.testRunId };
@@ -69,7 +70,7 @@ async function offering(env: WorkerEnv, offeringId: string): Promise<OfferingKin
 
 export async function getPaymentCollectionSettingsFromDatabase(database: D1Database): Promise<PaymentCollectionSettings> {
   const row = await database.prepare(`SELECT bank_name AS bankName, account_holder_name AS accountHolderName,
-    account_number AS accountNumber, transfer_instruction AS transferInstruction, updated_at AS updatedAt
+    account_number AS accountNumber, iban, transfer_instruction AS transferInstruction, updated_at AS updatedAt
     FROM payment_collection_settings WHERE singleton = 1`).first<Omit<PaymentCollectionSettings, "complete">>();
   if (!row) throw new CoursePricingError("not_ready");
   return { ...row, complete: complete(row) };
@@ -130,20 +131,20 @@ export async function saveCoursePricing(env: WorkerEnv, actor: StaffPrincipal, i
 
 export async function updatePaymentCollectionSettings(env: WorkerEnv, actor: StaffPrincipal, input: {
   bankName?: string | null; accountHolderName?: string | null; accountNumber?: string | null;
-  transferInstruction?: string | null; expectedUpdatedAt: string;
+  iban?: string | null; transferInstruction?: string | null; expectedUpdatedAt: string;
 }): Promise<PaymentCollectionSettings> {
   if (!hasStaffCapability(actor, "content.manage")) throw new CoursePricingError("forbidden");
   const current = await getPaymentCollectionSettings(env);
   if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new CoursePricingError("conflict");
   const value = { bankName: text(input.bankName, 120), accountHolderName: text(input.accountHolderName, 160),
-    accountNumber: text(input.accountNumber, 120), transferInstruction: text(input.transferInstruction, 500) };
+    accountNumber: text(input.accountNumber, 120), iban: text(input.iban, 80), transferInstruction: text(input.transferInstruction, 500) };
   const now = new Date().toISOString();
   const result = await env.DB.batch([
     env.DB.prepare(`UPDATE payment_collection_settings SET bank_name = ?, account_holder_name = ?, account_number = ?,
-      transfer_instruction = ?, updated_at = ? WHERE singleton = 1 AND updated_at = ?`)
-      .bind(value.bankName, value.accountHolderName, value.accountNumber, value.transferInstruction, now, current.updatedAt),
+      iban = ?, transfer_instruction = ?, updated_at = ? WHERE singleton = 1 AND updated_at = ?`)
+      .bind(value.bankName, value.accountHolderName, value.accountNumber, value.iban, value.transferInstruction, now, current.updatedAt),
     audit(env, actor, "payment_collection_settings_changed", "payment_collection_settings", "1",
-      { bankNameConfigured: Boolean(value.bankName), accountHolderConfigured: Boolean(value.accountHolderName), accountNumberConfigured: Boolean(value.accountNumber) },
+      { bankNameConfigured: Boolean(value.bankName), accountHolderConfigured: Boolean(value.accountHolderName), accountNumberConfigured: Boolean(value.accountNumber), ibanConfigured: Boolean(value.iban) },
       { isTest: env.APP_ENV === "staging" ? 1 : 0, testRunId: env.APP_ENV === "staging" ? "staff-settings" : null }, now),
   ]);
   if ((result[0]?.meta?.changes ?? 0) !== 1) throw new CoursePricingError("conflict");
