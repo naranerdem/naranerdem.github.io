@@ -9,7 +9,7 @@ export default {
     if (qrRedirect) return qrRedirect;
     return handleApiRequest(request, env, context);
   },
-  async scheduled(controller: WorkerScheduledController, env: WorkerEnv): Promise<void> {
-    controller.waitUntil(finalizeDuePaymentConfirmations(env, new Date(controller.scheduledTime)));
+  async scheduled(controller: WorkerScheduledController, env: WorkerEnv, context: WorkerExecutionContext): Promise<void> {
+    context.waitUntil(finalizeDuePaymentConfirmations(env, new Date(controller.scheduledTime)));
   },
 };

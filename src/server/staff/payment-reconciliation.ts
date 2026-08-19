@@ -148,8 +148,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     class_session.start_time AS startTime, class_session.end_time AS endTime,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN received_payment.id END) AS tentativePaymentId,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN payment_confirmation.finalize_after END) AS finalizeAfter,
-    MAX(CASE WHEN payment_confirmation.status = 'finalized' THEN payment_confirmation.seat_confirmation_approved ELSE 0 END) AS seatConfirmationApproved,
-    MAX(CASE WHEN payment_confirmation.status = 'finalized' THEN payment_confirmation.remaining_payment_due_at END) AS remainingPaymentDueAt,
+    MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.seat_confirmation_approved ELSE 0 END) AS seatConfirmationApproved,
+    MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.remaining_payment_due_at END) AS remainingPaymentDueAt,
     EXISTS(SELECT 1 FROM payment_evidence AS claim WHERE claim.payment_request_id = payment_request.id
       AND claim.evidence_type = 'parent_claim') AS parentClaimed,
     (SELECT MAX(recorded_at) FROM payment_evidence AS checked WHERE checked.payment_request_id = payment_request.id
@@ -293,15 +293,19 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
     const request = await requestForId(env, row.paymentRequestId);
     const state = await refreshInstallmentsAndDraft(env, request, now);
     const promotion = await promotePaidDraftChildren(env, systemActor, request.registrationDraftId, nowDate);
-    if (state.allInitialPaid) {
-      void import("../auth/email-verification").then(({ sendRegistrationPaymentMilestone }) =>
-        sendRegistrationPaymentMilestone(env, request.registrationDraftId)).catch(() => undefined);
-    }
     await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
       metadata_json, environment, is_test, test_run_id, created_at) VALUES (?, ?, 'system', 'payment-finalizer',
       'payment_confirmation_finalized', 'payment_confirmation', ?, ?, ?, ?, ?, ?)`)
       .bind(crypto.randomUUID(), now, row.id, JSON.stringify({ allInitialPaid: state.allInitialPaid, promotion: promotion.map((entry) => entry.state) }),
         env.APP_ENV, row.isTest, row.testRunId, now).run();
+    if (state.allInitialPaid) {
+      try {
+        const { sendRegistrationPaymentMilestone } = await import("../auth/email-verification");
+        await sendRegistrationPaymentMilestone(env, request.registrationDraftId);
+      } catch {
+        // The confirmation and its audit event are already durable; the queued email remains observable for retry.
+      }
+    }
     finalized += 1;
   }
   return finalized;

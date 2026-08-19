@@ -16,6 +16,7 @@ import "../../../styles/global.css";
         <section id="annual-start-setting" class="staff-operation-section" hidden></section>
         <section id="payment-collection-setting" class="staff-operation-section" hidden></section>
         <section id="payment-confirmation-grace-setting" class="staff-operation-section" hidden></section>
+        <section id="initial-payment-deadline-setting" class="staff-operation-section" hidden></section>
         <section id="public-qr-setting" class="staff-operation-section" hidden></section>
         <section id="teacher-dashboard-setting" class="staff-operation-section" hidden></section>
         <a id="auth-link" class="staff-settings-link" href="/staff/settings/auth/" hidden>Нэвтрэх хугацааны тохиргоо</a>
@@ -49,6 +50,10 @@ import "../../../styles/global.css";
         grace.hidden = !state.canManageAuth || !graceSetting;
         grace.innerHTML = grace.hidden ? "" : `<details><summary>Төлбөр баталгаажуулах засварын хугацаа</summary><form id="payment-grace-form" class="staff-compact-form staff-settings-secondary"><label>Минут <input id="payment-grace-minutes" type="number" min="1" max="60" required value="${graceSetting.graceMinutes}" /></label><p class="staff-muted">Шинэ утга нь дараагийн баталгаажуулалтад үйлчилнэ.</p><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;
         q("#payment-grace-form")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("payment-confirmation-grace.save", { graceMinutes: Number(q("#payment-grace-minutes").value), expectedUpdatedAt: graceSetting.updatedAt }), "Засварын хугацааг хадгаллаа."); });
+        const deadline = q("#initial-payment-deadline-setting"); const deadlineSetting = state.data?.initialPaymentDeadline;
+        deadline.hidden = !state.canManageAuth || !deadlineSetting;
+        deadline.innerHTML = deadline.hidden ? "" : `<details><summary>Бүртгүүлсний дараах төлбөр хийх хугацаа</summary><form id="initial-payment-deadline-form" class="staff-compact-form staff-settings-secondary"><label>Минут <input id="initial-payment-deadline-minutes" type="number" min="1" max="10080" required value="${deadlineSetting.deadlineMinutes}" /></label><p class="staff-muted">1440 минут = 24 цаг. Шинэ утга нь дараагийн бүртгэлд үйлчилнэ.</p><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;
+        q("#initial-payment-deadline-form")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; run(() => postOverviewAction("initial-payment-deadline.save", { deadlineMinutes: Number(q("#initial-payment-deadline-minutes").value), expectedUpdatedAt: deadlineSetting.updatedAt }), "Төлбөр хийх хугацааг хадгаллаа."); });
         const qr = q("#public-qr-setting"); const qrSettings = state.data?.publicQrRedirectSettings;
         qr.hidden = !state.canManageAuth || !qrSettings;
         qr.innerHTML = qr.hidden ? "" : `<details><summary>QR холбоос</summary><form id="public-qr-form" class="staff-compact-form staff-settings-secondary"><label class="staff-wide">Наран Эрдэм <input id="public-qr-n" type="url" inputmode="url" required value="${escapeHtml(qrSettings.nDestinationUrl)}" /></label><label class="staff-wide">Цэнэг <input id="public-qr-t" type="url" inputmode="url" required value="${escapeHtml(qrSettings.tDestinationUrl)}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;

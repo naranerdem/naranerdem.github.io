@@ -34,7 +34,7 @@ pre-registration completed
 
 A pre-registration that never proceeds to payment must not occupy class capacity. Only active temporary seat holds and confirmed enrollments should consume capacity.
 
-At accepted submission, the initial payment has a fixed payment deadline of about 24 hours, configurable later. Email verification is a parallel contact-channel step, not a payment/enrollment gate. The deadline is for payment, not an automatic seat-release clock. An unresolved initial-payment reservation remains capacity-consuming until an explicit reconciliation decision resolves it. Approval of exceptional terms does not automatically move the effective deadline; a future explicit extension will preserve the original deadline. Only an authorized explicit release can free an unpaid reserved seat.
+At accepted submission, the initial payment deadline is snapshotted from an admin-controlled typed duration, defaulting to 1,440 minutes (24 hours). Email verification is a parallel contact-channel step, not a payment/enrollment gate. A later setting change affects only future registrations. The deadline is for payment, not an automatic seat-release clock. An unresolved initial-payment reservation remains capacity-consuming until an explicit reconciliation decision resolves it. Approval of exceptional terms does not automatically move the effective deadline; a future explicit extension will preserve the original deadline. Only an authorized explicit release can free an unpaid reserved seat.
 
 ## Course Payment Terms
 
@@ -43,7 +43,7 @@ offer `two_installment`. The browser submits only that stable plan identity;
 the server reads the Offering's current terms and records per-child base
 amounts and the second due date on the accepted registration draft. A later
 Offering price edit therefore applies only to new registrations. Accepted
-submission creates the normal 24-hour initial-payment hold and exposes that
+submission creates the normal snapshotted initial-payment hold and exposes that
 child's saved initial amount and configured transfer instructions through
 draft access. The public catalog never includes account details. The accepted
 snapshot creates generic installment obligations immediately. The payment request
@@ -359,7 +359,7 @@ finish form + rules + review
 -> accepted registration draft
 -> atomically capacity-check selected class
 -> initial-payment reservation, payment request, and installments immediately
--> fixed 24-hour payment deadline immediately
+-> snapshotted initial-payment deadline immediately
 -> email verification independently, if used
 -> first required payment received
 -> confirmed enrollment

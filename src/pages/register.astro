@@ -215,7 +215,6 @@ const formCopy = registrationFormCopy;
       let runtimeRules = { parentRulesVersion: registrationData.rulesContent.parent.version, studentRulesVersion: registrationData.rulesContent.student.version };
       let turnstileToken = "";
       let turnstileWidgetId = null;
-      let changeEmailWidgetId = null;
 
       function escapeText(value) {
         return String(value)
@@ -430,6 +429,7 @@ const formCopy = registrationFormCopy;
           target.querySelectorAll("[data-child-class]").forEach((input) => { input.checked = false; });
           delete card.dataset.selectedClassId;
           delete card.dataset.paymentPlanCode;
+          renderPaymentChoices(card, null);
           updateWaitlistOnlyButton();
           setCatalogMessage(card, "");
           saveDraft();
@@ -631,7 +631,7 @@ const formCopy = registrationFormCopy;
           const session = sessionForId(classId);
           const waitlist = sessionForId(waitlistId);
           const code = card.querySelector("[data-child-code]").value.trim();
-          const plan = session?.paymentOptions?.find((option) => option.code === card.querySelector("[data-child-payment-plan]")?.value);
+          const plan = session?.paymentOptions?.find((option) => option.code === selectedPaymentPlanCode(card));
           return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span>${session ? `<span>${escapeText(formCopy.review.selectedClassHeading)}: ${escapeText(`${classText(session)} · ${availabilityText(session)}`)}</span>` : ""}${plan ? `<span>Төлбөр: ${escapeText(plan.code === "single" ? "Нэг удаа төлөх" : "2 хувааж төлөх")} · ${escapeText(formatMnt(plan.initialAmountMnt))}${plan.secondAmountMnt ? `; дараагийн ${escapeText(formatMnt(plan.secondAmountMnt))} · ${escapeText(formatLocalDate(plan.secondDueOn))}` : ""}</span>` : ""}${waitlist ? `<span>${escapeText(formCopy.review.waitlistHeading)}: ${escapeText(classText(waitlist))}</span>` : ""}${code ? `<span>${escapeText(formCopy.review.codeHeading)}: ${escapeText(code)}</span>` : ""}</li>`;
         }).join("");
         reviewSummary.innerHTML = `
@@ -716,7 +716,7 @@ const formCopy = registrationFormCopy;
             selectedClassSessionId: card.querySelector("[data-child-class]:checked")?.value || undefined,
             preferredWaitlistClassSessionId: card.querySelector("[data-child-waitlist]:checked")?.value || undefined,
             codeInput: card.querySelector("[data-child-code]").value.trim(),
-            paymentPlanCode: card.querySelector("[data-child-payment-plan]")?.value || undefined,
+            paymentPlanCode: selectedPaymentPlanCode(card) || undefined,
           })),
           parentRulesAcknowledged: parentAcknowledged,
           studentRulesAcknowledged: studentAcknowledged,
@@ -734,6 +734,10 @@ const formCopy = registrationFormCopy;
         return `${date.getMonth() + 1}-р сарын ${date.getDate()}, ${hour}:${minute}`;
       }
 
+      function selectedPaymentPlanCode(card) {
+        return card.querySelector('[data-child-payment-plan]:checked, input[type="hidden"][data-child-payment-plan]')?.value || "";
+      }
+
       function showResult(title, bodyHtml) {
         bootingPanel.hidden = true;
         form.hidden = true;
@@ -745,86 +749,6 @@ const formCopy = registrationFormCopy;
         progress.textContent = runtimeConfig.writeEnabled ? "Бүртгэлийн төлөв" : progress.textContent;
         resultTitle.focus?.();
         resultPanel.scrollIntoView({ block: "start" });
-      }
-
-      function showEmailStatus(payload) {
-        const holdText = payload.hasProvisionalHold
-          ? `<p>${escapeText(formCopy.messages.emailStatusHold)}</p>${payload.provisionalDeadlineAt ? `<p><strong>Түр хадгалах хугацаа:</strong> ${escapeText(formatDeadline(payload.provisionalDeadlineAt))}</p>` : ""}`
-          : `<p>${escapeText(formCopy.messages.emailStatusWaitlist)}</p>`;
-        showResult(formCopy.messages.emailStatusTitle, `
-          <p class="status-email">${escapeText(payload.email)}</p>
-          ${holdText}
-          ${payload.emailSent === false || payload.emailDeliveryFailed ? `<p class="form-error">Баталгаажуулах и-мэйл илгээгдсэнгүй. Доорх товчоор дахин оролдоно уу.</p>` : ""}
-          <p>${escapeText(formCopy.messages.emailStatusHelp)}</p>
-          <p id="registration-result-message" class="catalog-message" role="status"></p>
-          <div class="status-actions">
-            <button class="button secondary" type="button" id="resend-registration-email">${escapeText(formCopy.buttons.resendEmail)}</button>
-            <button class="text-button" type="button" id="show-change-email">${escapeText(formCopy.buttons.changeEmail)}</button>
-          </div>
-          <form id="change-registration-email" class="change-email-form" hidden>
-            <label><span>${escapeText(formCopy.guardian.email)}</span><input type="email" name="email" value="${escapeText(payload.email)}" required></label>
-            <div id="change-email-turnstile"></div>
-            <button class="button primary" type="submit">${escapeText(formCopy.buttons.changeEmail)}</button>
-          </form>
-        `);
-        const message = document.getElementById("registration-result-message");
-        document.getElementById("resend-registration-email").addEventListener("click", async (event) => {
-          const button = event.currentTarget;
-          button.disabled = true;
-          message.textContent = "";
-          try {
-            const response = await fetch("/api/registration/email/resend", { method: "POST", credentials: "same-origin" });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
-            message.textContent = formCopy.messages.emailResent;
-          } catch (caught) {
-            message.textContent = caught.message || formCopy.messages.submitFailed;
-          } finally {
-            window.setTimeout(() => { button.disabled = false; }, 60_000);
-          }
-        });
-        document.getElementById("show-change-email").addEventListener("click", async () => {
-          const changeForm = document.getElementById("change-registration-email");
-          changeForm.hidden = false;
-          try {
-            const turnstile = await loadTurnstileScript();
-            if (changeEmailWidgetId === null) {
-              changeEmailWidgetId = turnstile.render("#change-email-turnstile", {
-                sitekey: runtimeConfig.turnstileSiteKey,
-                action: "registration_submit",
-              });
-            }
-          } catch {
-            message.textContent = formCopy.messages.turnstileRequired;
-          }
-        });
-        document.getElementById("change-registration-email").addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const changeForm = event.currentTarget;
-          const token = window.turnstile?.getResponse(changeEmailWidgetId) || "";
-          if (!token) {
-            message.textContent = formCopy.messages.turnstileRequired;
-            return;
-          }
-          const button = changeForm.querySelector("button[type='submit']");
-          button.disabled = true;
-          try {
-            const response = await fetch("/api/registration/email/change", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Accept: "application/json" },
-              credentials: "same-origin",
-              body: JSON.stringify({ email: changeForm.elements.email.value, turnstileToken: token }),
-            });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
-            showEmailStatus({ ...payload, email: result.email });
-          } catch (caught) {
-            message.textContent = caught.message || formCopy.messages.submitFailed;
-            window.turnstile?.reset(changeEmailWidgetId);
-          } finally {
-            button.disabled = false;
-          }
-        });
       }
 
       function classStatusText(child) {
@@ -907,6 +831,9 @@ const formCopy = registrationFormCopy;
               }
             });
           });
+          const newRegistration = '<div class="status-actions"><button id="start-new-registration" class="button secondary" type="button">Өөр хүүхэд бүртгүүлэх</button></div>';
+          resultBody.insertAdjacentHTML("beforeend", newRegistration);
+          document.getElementById("start-new-registration")?.addEventListener("click", startNewRegistration);
           discardStoredDraft();
         } catch {
           showResult(alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `<p>${escapeText(formCopy.messages.submitFailed)}</p>`);
@@ -1043,6 +970,17 @@ const formCopy = registrationFormCopy;
         document.body.dataset.registrationSurface = "form";
         if (storedDraft) draftNotice.hidden = false;
       }
+      function startNewRegistration() {
+        form.reset();
+        parentAcknowledged = false;
+        studentAcknowledged = false;
+        childrenList.replaceChildren();
+        childCount = 0;
+        renderChild(childCount, "");
+        childCards().forEach((card) => { updateStageOptions(card); renderClasses(card); });
+        showRegistrationForm();
+        window.history.replaceState({}, "", "/register/");
+      }
       restoreDraftButton.addEventListener("click", () => storedDraft && restoreDraft(storedDraft));
       discardDraftButton.addEventListener("click", discardStoredDraft);
       async function loadCatalog() {
@@ -1101,11 +1039,10 @@ const formCopy = registrationFormCopy;
           return;
         } else if (runtimeConfig.writeEnabled) {
           try {
-            const response = await fetch("/api/registration/pending", { headers: { Accept: "application/json" }, credentials: "same-origin" });
-            const pending = response.ok ? await response.json() : null;
-            if (pending) {
-              document.body.dataset.registrationSurface = "email-status";
-              showEmailStatus(pending);
+            const response = await fetch("/api/registration/status", { headers: { Accept: "application/json" }, credentials: "same-origin" });
+            if (response.ok) {
+              document.body.dataset.registrationSurface = "verified";
+              await showVerifiedStatus(false);
               return;
             }
           } catch {

@@ -5,6 +5,7 @@ import type { D1Database, D1Result, WorkerEnv } from "../env";
 import { getPaymentCollectionSettings, getPaymentCollectionSettingsFromDatabase, type CoursePaymentPlanCode } from "../staff/course-pricing";
 import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
 import { assertCourseRuleVersions, PublicContentError } from "../staff/public-content";
+import { getInitialPaymentDeadlineSettingFromDatabase } from "../staff/initial-payment-deadline";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -374,7 +375,8 @@ export async function createRegistrationDraft(
   });
 
   const now = nowDate.toISOString();
-  const paymentDeadlineAt = addSeconds(nowDate, 24 * 60 * 60);
+  const paymentDeadline = await getInitialPaymentDeadlineSettingFromDatabase(env.DB);
+  const paymentDeadlineAt = addSeconds(nowDate, paymentDeadline.deadlineMinutes * 60);
   const expiresAt = addSeconds(nowDate, REGISTRATION_DRAFT_TTL_SECONDS);
   const draftId = crypto.randomUUID();
   const testRunId = `registration:${draftId}`;

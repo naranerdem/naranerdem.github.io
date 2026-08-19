@@ -74,6 +74,7 @@ import {
   type StaffSessionPolicyInput,
 } from "../staff/session-policy";
 import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
+import { InitialPaymentDeadlineError, updateInitialPaymentDeadlineSetting } from "../staff/initial-payment-deadline";
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
 import { PublicContentError, saveCourseRule, updatePublicCenterInformation } from "../staff/public-content";
 import { getCourseRules } from "../staff/public-content";
@@ -1430,6 +1431,11 @@ export async function handleApiRequest(
             graceMinutes: Number(payload.graceMinutes), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "initial-payment-deadline.save":
+          await updateInitialPaymentDeadlineSetting(env, principal, {
+            deadlineMinutes: Number(payload.deadlineMinutes), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         case "public-center-information.save":
           await updatePublicCenterInformation(env, principal, payload);
           break;
@@ -1447,6 +1453,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Энэ тохиргоо өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Эхлэх өдрийн утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof InitialPaymentDeadlineError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "Төлбөр хийх хугацааны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PublicQrRedirectSettingsError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

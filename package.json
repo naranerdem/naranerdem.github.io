@@ -33,6 +33,7 @@
     "test:staff-reports": "node scripts/staff-reports-test.mjs",
     "test:reports": "npm run test:staff-reports",
     "test:registration": "node scripts/registration-hold-test.mjs",
+    "test:payment-ui": "node scripts/payment-ui-regression-test.mjs && node scripts/scheduled-payment-finalization-test.mjs",
     "test:registration-windows": "node scripts/registration-windows-test.mjs",
     "test:public-qr": "node scripts/public-qr-redirect-test.mjs",
     "test:public-content": "node scripts/public-content-rules-test.mjs",

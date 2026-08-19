@@ -35,9 +35,12 @@ import "../../styles/global.css";
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
       const mnt = (value) => `${new Intl.NumberFormat("en-US").format(Number(value || 0))} ₮`;
+      const localParts = (value) => Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ulaanbaatar", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(value)).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+      const localDateTime = (value) => { const parts = localParts(value); return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`; };
+      const localLabel = (value) => { const parts = localParts(value); return `${parts.month}-р сарын ${parts.day}, ${parts.hour}:${parts.minute}`; };
       function dueText(item) {
         const minutes = Math.floor((new Date(state.data.now).getTime() - new Date(item.paymentDueAt).getTime()) / 60000);
-        if (minutes <= 0) return `Төлөх хугацаа: ${formatDate(item.paymentDueAt.slice(0, 10))} ${item.paymentDueAt.slice(11, 16)}`;
+        if (minutes <= 0) return `Төлөх хугацаа: ${localLabel(item.paymentDueAt)}`;
         if (minutes < 60) return `Хугацаа ${minutes} минутын өмнө дууссан`;
         if (minutes < 24 * 60) return `Хугацаа ${Math.floor(minutes / 60)} цагийн өмнө дууссан`;
         return `${Math.floor(minutes / (24 * 60))} өдөр шалгагдаагүй`;
@@ -45,16 +48,16 @@ import "../../styles/global.css";
       function itemMarkup(item) {
         const remaining = Number(item.expectedAmountMnt) - Number(item.allocatedAmountMnt);
         const open = state.openId === item.installmentId;
-        const overdue = new Date(item.paymentDueAt) < new Date(state.data.now);
-        const pending = state.pendingId === item.installmentId;
         const effectiveDue = item.remainingPaymentDueAt || item.paymentDueAt;
-        const tentative = item.tentativePaymentId ? `<p class="staff-muted">Баталгаажуулж байна · ${escape(item.finalizeAfter?.slice(11, 16) || "")} хүртэл <button class="text-button" type="button" data-payment-undo="${escape(item.tentativePaymentId)}">Буцаах</button></p>` : "";
+        const overdue = new Date(effectiveDue) < new Date(state.data.now);
+        const pending = state.pendingId === item.installmentId;
+        const tentative = item.tentativePaymentId ? `<p class="staff-muted"><button class="text-button" type="button" data-payment-undo="${escape(item.tentativePaymentId)}">Буцаах</button></p>` : "";
         return `<article class="staff-payment-item ${overdue ? "is-overdue" : ""}">
           <div><strong>${escape(item.childName)}</strong><p>${escape(item.classLabel)} · ${escape(item.weekday)} ${escape(item.startTime)}–${escape(item.endTime)}</p>
           <p><strong>${escape(mnt(remaining))}</strong> үлдсэн</p><p>${escape(dueText({ ...item, paymentDueAt: effectiveDue }))}</p>
-          ${item.seatConfirmationApproved ? `<p class="staff-muted">Суудал баталгаажсан</p>` : ""}${tentative}</div>
+          ${item.seatConfirmationApproved ? `<p class="staff-muted">Суудал баталгаажсан</p>` : ""}</div>
           <div class="staff-payment-actions"><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}">Нээх</button></div>
-          ${open ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p><label>Орсон дүн<input name="amount" type="number" min="1" step="1" value="${escape(remaining)}" required /></label><label>Төрөл<select name="source"><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${new Date().toISOString().slice(0, 16)}" required /></label><label class="staff-check"><input name="approveSeat" type="checkbox" /><span>Суудлыг баталгаажуулах</span></label><label class="staff-wide" data-remaining-deadline hidden>Үлдсэн төлбөрийн хугацаа<input name="remainingDueAt" type="datetime-local" /></label><div class="staff-inline-actions staff-wide"><button class="button secondary" type="button" data-payment-cancel>Болих</button><button class="button primary" type="submit">Төлбөр орсон</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}">Одоогоор олдсонгүй</button></div></form>` : ""}
+          ${open ? `${remaining > 0 ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p><label>Орсон дүн<input name="amount" type="number" min="1" step="1" value="${escape(remaining)}" required /></label><label>Төрөл<select name="source"><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${localDateTime(new Date())}" required /></label><label class="staff-check"><input name="approveSeat" type="checkbox" /><span>Суудлыг баталгаажуулах</span></label><label class="staff-wide" data-remaining-deadline hidden>Үлдсэн төлбөрийн хугацаа<input name="remainingDueAt" type="datetime-local" /></label><div class="staff-inline-actions staff-wide"><button class="button secondary" type="button" data-payment-cancel>Болих</button><button class="button primary" type="submit">Төлбөр орсон</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}">Одоогоор олдсонгүй</button></div></form>` : ""}${tentative}` : ""}
           ${overdue ? `<details class="staff-payment-release"><summary>Суудал чөлөөлөх</summary><p>${item.parentClaimed ? "Асран хамгаалагч төлбөр хийсэн гэж мэдэгдсэн. Банкны орлогыг дахин шалгана уу." : "Энэ үйлдлээр суудал шууд сулрана."}</p><button class="button danger" type="button" data-payment-release="${escape(item.paymentRequestId)}">Суудлыг чөлөөлөх</button></details>` : ""}
         </article>`;
       }
@@ -75,7 +78,7 @@ import "../../styles/global.css";
         const list = q("#payment-list"); const items = state.data?.items || []; const promotionItems = state.data?.promotionItems || [];
         const sections = ["Төлбөр хүлээж байна", "Хугацаа хэтэрсэн", "Хэсэгчлэн төлсөн", "Төлбөр баталгаажсан", "Кредит / буцаалт", "Хүлээлгийн жагсаалт", "Шалгах шаардлагатай"];
         const groups = Object.fromEntries(sections.map((title) => [title, []]));
-        for (const item of items) { const remaining = Number(item.expectedAmountMnt) - Number(item.allocatedAmountMnt); const due = new Date(item.remainingPaymentDueAt || item.paymentDueAt) < new Date(state.data.now); const group = due ? "Хугацаа хэтэрсэн" : item.seatConfirmationApproved && remaining > 0 ? "Хэсэгчлэн төлсөн" : "Төлбөр хүлээж байна"; groups[group].push(item); }
+        for (const item of items) { const remaining = Number(item.expectedAmountMnt) - Number(item.allocatedAmountMnt); const due = new Date(item.remainingPaymentDueAt || item.paymentDueAt) < new Date(state.data.now); const group = remaining <= 0 ? "Төлбөр баталгаажсан" : due ? "Хугацаа хэтэрсэн" : item.seatConfirmationApproved ? "Хэсэгчлэн төлсөн" : "Төлбөр хүлээж байна"; groups[group].push(item); }
         for (const item of promotionItems) groups["Шалгах шаардлагатай"].push(item);
         for (const item of state.data?.credits || []) groups["Кредит / буцаалт"].push({ ...item, credit: true });
         list.innerHTML = sections.map((title) => `<section class="staff-operation-section"><h2>${title}</h2>${groups[title].length ? groups[title].map((item) => item.credit ? creditMarkup(item) : item.installmentId ? itemMarkup(item) : promotionMarkup(item)).join("") : "<p class=\"staff-empty\">Одоогоор байхгүй</p>"}</section>`).join("");
@@ -102,7 +105,7 @@ import "../../styles/global.css";
         try { await post({ action: "payment.record", paymentRequestId: item.paymentRequestId, allocations: [{ installmentId: item.installmentId, amountMnt }], source, receivedAt, approveSeatConfirmation: approveSeat, remainingPaymentDueAt: remainingDueAt, idempotencyKey: `manual:${item.paymentRequestId}:${item.installmentId}:${source}:${receivedAt}:${amountMnt}` }); state.openId = ""; await refresh("Төлбөрийн баримтыг тэмдэглэлээ."); } catch (error) { message(error.message); } finally { state.pendingId = ""; render(); }
       });
       q("#payment-list").addEventListener("change", (event) => { const input = event.target; if (input.name !== "approveSeat") return; const deadline = input.closest("form").querySelector("[data-remaining-deadline]"); deadline.hidden = !input.checked; deadline.querySelector("input").required = input.checked; });
-      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } show("tool-app"); try { await refresh(); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
     </script>
   </body>
 </html>

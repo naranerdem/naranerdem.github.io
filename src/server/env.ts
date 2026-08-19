@@ -42,5 +42,4 @@ export interface WorkerExecutionContext {
 
 export interface WorkerScheduledController {
   scheduledTime: number;
-  waitUntil(promise: Promise<unknown>): void;
 }

@@ -22,6 +22,7 @@ const turnstileBundle = path.join(tempDir, "turnstile.mjs");
 const emailVerificationBundle = path.join(tempDir, "email-verification.mjs");
 const paymentReconciliationBundle = path.join(tempDir, "payment-reconciliation.mjs");
 const registrationCorrectionBundle = path.join(tempDir, "registration-corrections.mjs");
+const initialPaymentDeadlineBundle = path.join(tempDir, "initial-payment-deadline.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
 bundle("src/server/services/registration-catalog.ts", catalogBundle);
 bundle("src/server/services/public-site.ts", publicSiteBundle);
@@ -29,6 +30,7 @@ bundle("src/server/security/turnstile.ts", turnstileBundle);
 bundle("src/server/auth/email-verification.ts", emailVerificationBundle);
 bundle("src/server/staff/payment-reconciliation.ts", paymentReconciliationBundle);
 bundle("src/server/staff/registration-corrections.ts", registrationCorrectionBundle);
+bundle("src/server/staff/initial-payment-deadline.ts", initialPaymentDeadlineBundle);
 const {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -53,6 +55,7 @@ const {
   releaseUnpaidSeat,
 } = await import(pathToFileURL(paymentReconciliationBundle).href);
 const { registrationCorrectionDetail, saveRegistrationCorrection } = await import(pathToFileURL(registrationCorrectionBundle).href);
+const { getInitialPaymentDeadlineSetting, updateInitialPaymentDeadlineSetting } = await import(pathToFileURL(initialPaymentDeadlineBundle).href);
 
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
@@ -292,6 +295,7 @@ try {
   const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
     capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
   const registrationStaff = { ...paymentStaff, capabilities: ['registration.manage'] };
+  const adminStaff = { ...paymentStaff, staffAccountId: 'staff-admin-test', capabilities: ['admin.settings.manage'] };
 
   database.query("UPDATE academic_year SET registration_status = 'closed' WHERE id = 'year-test'");
   const stageOneOnlyCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
@@ -317,6 +321,18 @@ try {
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
   assert.equal(one.hasPaymentHold, true);
   assert.equal(one.paymentDeadlineAt, iso(24 * 60), "accepted submission starts the 24-hour payment deadline without email verification");
+  const initialDeadline = await getInitialPaymentDeadlineSetting(env(database));
+  assert.equal(initialDeadline.deadlineMinutes, 1440, "the default initial-payment deadline is 24 hours");
+  await assert.rejects(updateInitialPaymentDeadlineSetting(env(database), paymentStaff, { deadlineMinutes: 5, expectedUpdatedAt: initialDeadline.updatedAt }), "teacher/accountant cannot change the initial-payment deadline");
+  const shortDeadline = await updateInitialPaymentDeadlineSetting(env(database), adminStaff, { deadlineMinutes: 5, expectedUpdatedAt: initialDeadline.updatedAt });
+  assert.equal(shortDeadline.deadlineMinutes, 5, "admin can change the initial-payment deadline");
+  assert.equal(one.paymentDeadlineAt, iso(24 * 60), "an existing registration retains its snapshotted deadline after the setting changes");
+  const shortDeadlineDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date(iso(1)));
+  assert.equal(shortDeadlineDraft.paymentDeadlineAt, iso(6), "a five-minute setting snapshots a five-minute deadline for a new registration");
+  const shortHold = database.query(`SELECT id FROM registration_capacity_hold WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)`, [shortDeadlineDraft.draftId])[0];
+  const shortQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(7)));
+  assert.ok(shortQueue.items.some((item) => item.paymentRequestId === database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [shortDeadlineDraft.draftId])[0].id), "an overdue initial reservation remains in the operational queue and is never auto-released");
+  assert.equal(database.query(`SELECT status FROM registration_capacity_hold WHERE id = ?`, [shortHold.id])[0].status, "active", "passing the snapshotted deadline does not release capacity");
   const oneAccessToken = decodeURIComponent(one.accessCookie.match(/naran_registration_draft=([^;]+)/)[1]);
   const oneStatus = await registrationStatusForAccess(database, oneAccessToken, new Date(iso()));
   assert.equal(oneStatus.children[0].holdType, "initial_payment", "draft access immediately exposes the payment reservation");
@@ -580,6 +596,10 @@ try {
   );
   const storedChallenge = database.query("SELECT token_hash AS tokenHash FROM email_verification_challenge WHERE id = ?", [replayChallenge.id])[0];
   assert.notEqual(storedChallenge.tokenHash, replayChallenge.rawToken);
+  const crossBrowserChallenge = addChallenge(database, twoInstallment.draftId, twoInstallment.normalizedEmail, "2026-08-13T10:01:00.000Z", "2026-08-14T10:01:00.000Z");
+  const crossBrowserVerification = await verifyEmailToken(env(database), crossBrowserChallenge.rawToken, sessionToken, verificationTime);
+  assert.match(crossBrowserVerification.redirectUrl, /status=confirmed/, "an unrelated browser session never changes which registration an email challenge verifies");
+  assert.notEqual(crossBrowserVerification.cookie, firstVerification.cookie, "email verification creates a new session for the challenged registration rather than reusing an unrelated one");
 
   const production = env(database, {
     APP_ENV: "production",
