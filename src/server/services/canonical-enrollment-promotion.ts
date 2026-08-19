@@ -47,6 +47,7 @@ interface PromotionRow {
   canonicalApplicationChildId: string | null;
   canonicalEnrollmentId: string | null;
   initialInstallmentPaid: number;
+  partialSeatApproved: number;
   activeInitialHold: number;
 }
 
@@ -140,6 +141,12 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
     registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
     EXISTS(SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
       AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid') AS initialInstallmentPaid,
+    EXISTS(SELECT 1 FROM payment_confirmation
+      INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+      INNER JOIN payment_installment AS approved_installment ON approved_installment.id = payment_allocation.payment_installment_id
+      WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
+        AND approved_installment.registration_draft_child_id = registration_draft_child.id
+        AND approved_installment.installment_kind = 'initial') AS partialSeatApproved,
     EXISTS(SELECT 1 FROM registration_capacity_hold WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active') AS activeInitialHold
     FROM registration_draft_child
@@ -206,7 +213,7 @@ export async function promotePaidDraftChild(
   if (!row) throw new CanonicalPromotionError("not_found");
   if (row.canonicalEnrollmentId) return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
   const now = nowDate.toISOString();
-  if (!row.initialInstallmentPaid || !row.selectedClassSessionId || !row.activeInitialHold) {
+  if ((!row.initialInstallmentPaid && !row.partialSeatApproved) || !row.selectedClassSessionId || !row.activeInitialHold) {
     await env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'not_eligible',
       promotion_status = 'not_eligible', updated_at = ? WHERE id = ?`).bind(now, row.childId).run();
     return { state: "not_eligible" };
@@ -360,8 +367,14 @@ export async function promotePaidDraftChildren(env: WorkerEnv, actor: StaffPrinc
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.selected_class_session_id IS NOT NULL
       AND registration_draft_child.canonical_enrollment_id IS NULL
-      AND EXISTS (SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
-        AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid')`)
+      AND (EXISTS (SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
+        AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid')
+        OR EXISTS (SELECT 1 FROM payment_confirmation
+          INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+          INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+          WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
+            AND payment_installment.registration_draft_child_id = registration_draft_child.id
+            AND payment_installment.installment_kind = 'initial'))`)
     .bind(registrationDraftId).all<{ id: string }>();
   const outcomes = [];
   for (const child of result.results) outcomes.push(await promotePaidDraftChild(env, actor, child.id, null, nowDate));

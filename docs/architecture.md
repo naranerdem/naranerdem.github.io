@@ -438,6 +438,10 @@ Payment evidence can come from several future sources:
 
 The adapter layer must be replaceable. Enrollment logic should work with normalized payment evidence and reconciliation decisions, not Khan Bank-specific parsing details.
 
+Teacher-facing registration operations live under `Бүртгэл, төлбөр`; public-window setup remains the separate, secondary `Бүртгэлийн хугацаа` surface. A manual `Төлбөр орсон` immediately preserves the received-payment evidence and allocation, then creates a durable tentative confirmation with a snapshot `finalize_after`. A Workers Cron handler finalizes due confirmations; it is never an in-memory timer. The narrow admin-only `payment_confirmation_grace_setting` controls future snapshots only (default five minutes). Undo before finalization leaves no enrollment or confirmation email consequence. After finalization, normal correction must remain audited and use transaction-scoped parent communication.
+
+When an explicitly released reservation has received money, its received-payment history is retained and the unconsumed amount becomes explicit `payment_credit`. It can later be allocated only through an audited operation or marked as manually refunded; matching text contact data is never sufficient for automatic cross-registration allocation.
+
 #### Experimental iPhone SMS Evidence Adapter
 
 The teacher uses an iPhone, so a future experimental adapter may be investigated:

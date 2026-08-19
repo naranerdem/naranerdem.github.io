@@ -719,6 +719,8 @@ The future UX should protect against accidental clicks without becoming cumberso
 - show a short-lived Undo action such as `Буцаах`
 - if amount, date, or allocation is ambiguous, ask for the minimum additional information needed
 
+The implemented correction model uses a durable five-minute default grace period, configurable by an admin for future confirmations. `Төлбөр орсон` records evidence immediately, but enrollment finalization and the payment-confirmation email wait until that confirmation's stored `finalize_after`. `Буцаах` during the window reverses the tentative confirmation without deleting evidence or sending a correction email. A teacher-approved partial first payment may confirm a seat only with an explicit remaining-payment deadline; it retains the original amount and moves into the partial-payment operational group until that deadline. A released reservation never discards money already received: its unconsumed amount becomes auditable credit or may be marked manually refunded.
+
 Payment evidence should preserve:
 
 - amount

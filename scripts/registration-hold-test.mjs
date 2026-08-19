@@ -46,6 +46,7 @@ const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstile
 const { verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
 const {
   claimParentPayment,
+  finalizeDuePaymentConfirmations,
   getInitialPaymentQueue,
   recordCheckedNotFound,
   recordManualPayment,
@@ -371,6 +372,8 @@ try {
     allocations: [{ installmentId: twoQueueItem.installmentId, amountMnt: 450000 }],
     source: 'staff_manual_bank', receivedAt: '2026-08-11T07:53:00.000Z', idempotencyKey: 'two-initial-exact',
   }, new Date('2026-08-13T09:15:00.000Z'));
+  assert.equal(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0].enrollmentId, null, "tentative confirmation preserves a correction window before enrollment finalizes");
+  await finalizeDuePaymentConfirmations(env(database), new Date('2026-08-13T09:21:00.000Z'));
   const duplicatePayment = await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: twoRequest.id,
     allocations: [{ installmentId: twoQueueItem.installmentId, amountMnt: 450000 }],
@@ -525,6 +528,7 @@ try {
     paymentRequestId: cashRequest.id, allocations: [{ installmentId: cashInstallment.id, amountMnt: 100000 }],
     source: 'staff_manual_cash', idempotencyKey: 'cash-partial',
   }, new Date("2026-08-13T09:10:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:16:00.000Z"));
   assert.equal(database.query(`SELECT status FROM payment_installment WHERE id = ?`, [cashInstallment.id])[0].status, 'partially_paid', "partial first payment does not confirm the obligation");
   await assert.rejects(recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: cashRequest.id, allocations: [{ installmentId: cashInstallment.id, amountMnt: Number(cashInstallment.amountMnt) }],

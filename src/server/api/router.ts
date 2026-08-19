@@ -30,10 +30,13 @@ import {
 import {
   claimParentPayment,
   getInitialPaymentQueue,
+  markPaymentCreditRefunded,
   PaymentReconciliationError,
   recordCheckedNotFound,
   recordManualPayment,
   releaseUnpaidSeat,
+  undoTentativePaymentConfirmation,
+  updatePaymentConfirmationGraceSetting,
 } from "../staff/payment-reconciliation";
 import {
   CanonicalPromotionError,
@@ -956,7 +959,13 @@ export async function handleApiRequest(
             receivedAt: typeof payload.receivedAt === "string" ? payload.receivedAt : undefined,
             receivedAmountMnt: payload.receivedAmountMnt == null ? undefined : Number(payload.receivedAmountMnt),
             idempotencyKey: String(payload.idempotencyKey ?? ""),
+            approveSeatConfirmation: Boolean(payload.approveSeatConfirmation),
+            remainingPaymentDueAt: typeof payload.remainingPaymentDueAt === "string" ? payload.remainingPaymentDueAt : undefined,
           }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.undo-tentative":
+          return json({ ok: true, ...await undoTentativePaymentConfirmation(env, principal, String(payload.receivedPaymentId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "payment-credit.refund":
+          return json({ ok: true, ...await markPaymentCreditRefunded(env, principal, String(payload.creditId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "payment.checked-not-found":
           await recordCheckedNotFound(env, principal, String(payload.paymentRequestId ?? ""));
           return json({ ok: true }, 200, { "Cache-Control": "no-store" });
@@ -1414,6 +1423,11 @@ export async function handleApiRequest(
             iban: typeof payload.iban === "string" ? payload.iban : null,
             transferInstruction: typeof payload.transferInstruction === "string" ? payload.transferInstruction : null,
             expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
+        case "payment-confirmation-grace.save":
+          await updatePaymentConfirmationGraceSetting(env, principal, {
+            graceMinutes: Number(payload.graceMinutes), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
         case "public-center-information.save":

@@ -9,20 +9,20 @@ import "../../styles/global.css";
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
     <meta name="theme-color" content="#073aaf" />
-    <title>Төлбөр шалгах | {siteIdentity.name}</title>
+    <title>Бүртгэл, төлбөр | {siteIdentity.name}</title>
   </head>
   <body class="staff-page" data-staff-tool-surface="booting">
     <header class="site-header">
       <a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг">
         <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
-        <span><strong>{siteIdentity.name}</strong><span>Төлбөр шалгах</span></span>
+        <span><strong>{siteIdentity.name}</strong><span>Бүртгэл, төлбөр</span></span>
       </a>
     </header>
     <main class="staff-shell" aria-live="polite">
       <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
-      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Төлбөр шалгах</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Бүртгэл, төлбөр</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
-        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Төлбөр шалгах</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Бүртгэл, төлбөр</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <div id="payment-list" class="staff-payment-list"></div>
       </section>
@@ -30,7 +30,7 @@ import "../../styles/global.css";
     <script>
       // @ts-nocheck
       import { escape, formatDate } from "../../scripts/staff-setup.js";
-      const state = { data: null, openId: "", pendingId: "" };
+      const state = { data: null, openId: "", pendingId: "", detailId: "" };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -47,14 +47,14 @@ import "../../styles/global.css";
         const open = state.openId === item.installmentId;
         const overdue = new Date(item.paymentDueAt) < new Date(state.data.now);
         const pending = state.pendingId === item.installmentId;
+        const effectiveDue = item.remainingPaymentDueAt || item.paymentDueAt;
+        const tentative = item.tentativePaymentId ? `<p class="staff-muted">Баталгаажуулж байна · ${escape(item.finalizeAfter?.slice(11, 16) || "")} хүртэл <button class="text-button" type="button" data-payment-undo="${escape(item.tentativePaymentId)}">Буцаах</button></p>` : "";
         return `<article class="staff-payment-item ${overdue ? "is-overdue" : ""}">
           <div><strong>${escape(item.childName)}</strong><p>${escape(item.classLabel)} · ${escape(item.weekday)} ${escape(item.startTime)}–${escape(item.endTime)}</p>
-          <p><strong>Хүлээгдэж буй: ${escape(mnt(remaining))}</strong></p><p>${escape(dueText(item))}</p>
-          <p>Гүйлгээний утга: <strong>${escape(item.paymentReference)}</strong>${item.parentClaimed ? " · <span class=\"staff-payment-claimed\">Төлбөр хийсэн гэж мэдэгдсэн</span>" : ""}</p>
-          ${item.lastCheckedAt ? `<p class="staff-muted">Сүүлд шалгасан: ${escape(formatDate(item.lastCheckedAt.slice(0, 10)))} ${escape(item.lastCheckedAt.slice(11, 16))}</p>` : ""}</div>
-          <div class="staff-payment-actions"><button class="button primary" type="button" data-payment-open="${escape(item.installmentId)}" ${pending ? "disabled" : ""}>Төлбөр орсон</button>
-          <button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}" ${pending ? "disabled" : ""}>Одоогоор олдсонгүй</button></div>
-          ${open ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}"><label>Дүн<input name="amount" type="number" min="1" step="1" value="${escape(remaining)}" required /></label><label>Төрөл<select name="source"><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${new Date().toISOString().slice(0, 16)}" required /></label><div class="staff-inline-actions staff-wide"><button class="button secondary" type="button" data-payment-cancel>Болих</button><button class="button primary" type="submit">Хадгалах</button></div></form>` : ""}
+          <p><strong>${escape(mnt(remaining))}</strong> үлдсэн</p><p>${escape(dueText({ ...item, paymentDueAt: effectiveDue }))}</p>
+          ${item.seatConfirmationApproved ? `<p class="staff-muted">Суудал баталгаажсан</p>` : ""}${tentative}</div>
+          <div class="staff-payment-actions"><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}">Нээх</button></div>
+          ${open ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p><label>Орсон дүн<input name="amount" type="number" min="1" step="1" value="${escape(remaining)}" required /></label><label>Төрөл<select name="source"><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${new Date().toISOString().slice(0, 16)}" required /></label><label class="staff-check"><input name="approveSeat" type="checkbox" /><span>Суудлыг баталгаажуулах</span></label><label class="staff-wide" data-remaining-deadline hidden>Үлдсэн төлбөрийн хугацаа<input name="remainingDueAt" type="datetime-local" /></label><div class="staff-inline-actions staff-wide"><button class="button secondary" type="button" data-payment-cancel>Болих</button><button class="button primary" type="submit">Төлбөр орсон</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}">Одоогоор олдсонгүй</button></div></form>` : ""}
           ${overdue ? `<details class="staff-payment-release"><summary>Суудал чөлөөлөх</summary><p>${item.parentClaimed ? "Асран хамгаалагч төлбөр хийсэн гэж мэдэгдсэн. Банкны орлогыг дахин шалгана уу." : "Энэ үйлдлээр суудал шууд сулрана."}</p><button class="button danger" type="button" data-payment-release="${escape(item.paymentRequestId)}">Суудлыг чөлөөлөх</button></details>` : ""}
         </article>`;
       }
@@ -70,17 +70,25 @@ import "../../styles/global.css";
           <p><strong>Төлбөр баталгаажсан</strong></p><p>Бүртгэлийг баталгаажуулах шаардлагатай</p>${actions}</div>
         </article>`;
       }
+      function creditMarkup(item) { return `<article class="staff-payment-item"><div><strong>${escape(item.childName)}</strong><p>${escape(item.classLabel || "")}</p><p><strong>${escape(mnt(item.availableAmountMnt))}</strong> кредит / буцаалт</p></div><div class="staff-payment-actions"><button class="text-button" type="button" data-credit-refund="${escape(item.id)}">Буцаан төлсөн</button></div></article>`; }
       function render() {
         const list = q("#payment-list"); const items = state.data?.items || []; const promotionItems = state.data?.promotionItems || [];
-        list.innerHTML = `${items.length ? items.map(itemMarkup).join("") : "<p class=\"staff-empty\">Шалгах эхний төлбөр одоогоор алга.</p>"}${promotionItems.length ? `<section class="staff-promotion-list"><h2>Баталгаажуулах бүртгэл</h2>${promotionItems.map(promotionMarkup).join("")}</section>` : ""}`;
+        const sections = ["Төлбөр хүлээж байна", "Хугацаа хэтэрсэн", "Хэсэгчлэн төлсөн", "Төлбөр баталгаажсан", "Кредит / буцаалт", "Хүлээлгийн жагсаалт", "Шалгах шаардлагатай"];
+        const groups = Object.fromEntries(sections.map((title) => [title, []]));
+        for (const item of items) { const remaining = Number(item.expectedAmountMnt) - Number(item.allocatedAmountMnt); const due = new Date(item.remainingPaymentDueAt || item.paymentDueAt) < new Date(state.data.now); const group = due ? "Хугацаа хэтэрсэн" : item.seatConfirmationApproved && remaining > 0 ? "Хэсэгчлэн төлсөн" : "Төлбөр хүлээж байна"; groups[group].push(item); }
+        for (const item of promotionItems) groups["Шалгах шаардлагатай"].push(item);
+        for (const item of state.data?.credits || []) groups["Кредит / буцаалт"].push({ ...item, credit: true });
+        list.innerHTML = sections.map((title) => `<section class="staff-operation-section"><h2>${title}</h2>${groups[title].length ? groups[title].map((item) => item.credit ? creditMarkup(item) : item.installmentId ? itemMarkup(item) : promotionMarkup(item)).join("") : "<p class=\"staff-empty\">Одоогоор байхгүй</p>"}</section>`).join("");
       }
       async function refresh(success = "") { const response = await fetch("/api/staff/payments", { credentials: "same-origin" }); if (!response.ok) throw new Error("Төлбөрийн жагсаалтыг авч чадсангүй."); state.data = await response.json(); render(); if (success) message(success, true); }
       async function post(payload) { const response = await fetch("/api/staff/payments", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, credentials: "same-origin", body: JSON.stringify(payload) }); const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || "Төлбөрийн мэдээллийг хадгалж чадсангүй."); return body; }
       q("#payment-list").addEventListener("click", async (event) => {
         const target = event.target.closest("button"); if (!target || target.disabled) return;
-        if (target.dataset.paymentOpen) { state.openId = target.dataset.paymentOpen; render(); return; }
+        if (target.dataset.paymentDetail) { state.openId = target.dataset.paymentDetail; render(); return; }
         if (target.matches("[data-payment-cancel]")) { state.openId = ""; render(); return; }
         if (target.dataset.paymentChecked) { try { await post({ action: "payment.checked-not-found", paymentRequestId: target.dataset.paymentChecked }); await refresh("Шалгаснаа тэмдэглэлээ."); } catch (error) { message(error.message); } return; }
+        if (target.dataset.paymentUndo) { try { await post({ action: "payment.undo-tentative", receivedPaymentId: target.dataset.paymentUndo }); await refresh("Тэмдэглэлийг буцаалаа."); } catch (error) { message(error.message); } return; }
+        if (target.dataset.creditRefund) { if (!confirm("Буцаан төлсөн гэж тэмдэглэх үү?")) return; try { await post({ action: "payment-credit.refund", creditId: target.dataset.creditRefund }); await refresh("Буцаан төлсөн гэж тэмдэглэлээ."); } catch (error) { message(error.message); } return; }
         if (target.dataset.paymentRelease) { if (!confirm("Суудлыг суллах уу? Дараа нь өөр бүртгэл авч болно.")) return; try { await post({ action: "payment.release-seat", paymentRequestId: target.dataset.paymentRelease }); state.openId = ""; await refresh("Суудлыг суллалаа."); } catch (error) { message(error.message); } }
         if (target.dataset.promotionExisting) { if (!confirm("Энэ хүүхдийг өмнөх бүртгэлтэй холбож баталгаажуулах уу?")) return; state.pendingId = target.dataset.promotionChild; render(); try { await post({ action: "promotion.use-existing-student", draftChildId: target.dataset.promotionChild, studentId: target.dataset.promotionExisting }); await refresh("Бүртгэл баталгаажлаа."); } catch (error) { message(error.message); } finally { state.pendingId = ""; render(); } }
         if (target.dataset.promotionNew) { if (!confirm("Шинэ хүүхдийн бүртгэл үүсгэж баталгаажуулах уу?")) return; state.pendingId = target.dataset.promotionNew; render(); try { await post({ action: "promotion.create-new-student", draftChildId: target.dataset.promotionNew }); await refresh("Бүртгэл баталгаажлаа."); } catch (error) { message(error.message); } finally { state.pendingId = ""; render(); } }
@@ -90,8 +98,10 @@ import "../../styles/global.css";
         const item = state.data.items.find((entry) => entry.installmentId === form.dataset.paymentForm); if (!item) return;
         const receivedAt = new Date(form.elements.receivedAt.value).toISOString(); const amountMnt = Number(form.elements.amount.value); const source = form.elements.source.value;
         state.pendingId = item.installmentId; render();
-        try { await post({ action: "payment.record", paymentRequestId: item.paymentRequestId, allocations: [{ installmentId: item.installmentId, amountMnt }], source, receivedAt, idempotencyKey: `manual:${item.paymentRequestId}:${item.installmentId}:${source}:${receivedAt}:${amountMnt}` }); state.openId = ""; await refresh("Төлбөрийг тэмдэглэлээ."); } catch (error) { message(error.message); } finally { state.pendingId = ""; render(); }
+        const approveSeat = form.elements.approveSeat.checked; const remainingDueAt = form.elements.remainingDueAt.value ? new Date(form.elements.remainingDueAt.value).toISOString() : undefined;
+        try { await post({ action: "payment.record", paymentRequestId: item.paymentRequestId, allocations: [{ installmentId: item.installmentId, amountMnt }], source, receivedAt, approveSeatConfirmation: approveSeat, remainingPaymentDueAt: remainingDueAt, idempotencyKey: `manual:${item.paymentRequestId}:${item.installmentId}:${source}:${receivedAt}:${amountMnt}` }); state.openId = ""; await refresh("Төлбөрийн баримтыг тэмдэглэлээ."); } catch (error) { message(error.message); } finally { state.pendingId = ""; render(); }
       });
+      q("#payment-list").addEventListener("change", (event) => { const input = event.target; if (input.name !== "approveSeat") return; const deadline = input.closest("form").querySelector("[data-remaining-deadline]"); deadline.hidden = !input.checked; deadline.querySelector("input").required = input.checked; });
       (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>
