@@ -486,6 +486,20 @@ Teacher exports should reflect the current operational state in a human-readable
 
 ## Static Fallback
 
+## Public brochure content
+
+The homepage is intentionally a simple brochure surface. Live class availability
+and registration choices belong to `/register/`, not the homepage. Its public
+content is an optional `homepageIntro`, followed by `aboutCenterText` shown to
+teachers as `Хөтөлбөр` and `teacherBio` shown as `Танилцуулга`. Each nonempty
+line is a paragraph; only a line beginning with `## ` is a heading. It is not
+Markdown or a CMS, and HTML is escaped. Program long descriptions remain only
+for historical/API compatibility and are not routine public content.
+
+Public typography has exactly two admin-controlled values: `sans` (the current
+public sans stack) and `serif` (`Times New Roman`, Times, serif). Staff
+operational pages are unaffected.
+
 The current Astro configuration uses static output and a root `site` URL appropriate for the GitHub user site `https://naranerdem.github.io`.
 
 Future backend-dependent routes should degrade gracefully. If the app is served from GitHub Pages without backend services, public content should continue to work and dynamic registration tools should show a clear unavailable state or link to an alternative process.

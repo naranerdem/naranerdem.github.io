@@ -37,6 +37,7 @@
     "test:registration-windows": "node scripts/registration-windows-test.mjs",
     "test:public-qr": "node scripts/public-qr-redirect-test.mjs",
     "test:public-content": "node scripts/public-content-rules-test.mjs",
+    "test:public-brochure": "node scripts/public-brochure-test.mjs",
     "test:canonical-promotion": "node scripts/canonical-promotion-test.mjs",
     "test:calendar": "node scripts/calendar-domain-test.mjs",
     "test:schedule:preview": "npm run build && node scripts/schedule-preview-test.mjs",

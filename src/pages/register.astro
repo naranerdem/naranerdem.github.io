@@ -87,8 +87,8 @@ const formCopy = registrationFormCopy;
               <input id="guardian-secondary-phone" name="guardianSecondaryPhone" type="tel" inputmode="tel" autocomplete="tel" />
             </label>
             <label>
-              <span>{formCopy.guardian.facebook}</span>
-              <input id="guardian-facebook" name="guardianFacebook" autocomplete="off" />
+              <span>{formCopy.guardian.facebook} <span class="required-marker" aria-hidden="true">*</span></span>
+              <input id="guardian-facebook" name="guardianFacebook" autocomplete="off" required />
               <small>{formCopy.guardian.facebookHelp}</small>
             </label>
             <label class="field-wide">
@@ -165,6 +165,7 @@ const formCopy = registrationFormCopy;
 
     <script id="registration-data" type="application/json" is:inline set:html={JSON.stringify(registrationData)} />
     <script is:inline type="module">
+      import { loadPublicFont } from "/scripts/public-font.js";
       import {
         applyStageRecommendation,
         classSelectionIssue,
@@ -178,6 +179,7 @@ const formCopy = registrationFormCopy;
         createRegistrationDraft,
         readRegistrationDraft,
       } from "/scripts/registration-draft.js";
+      loadPublicFont();
 
       const registrationData = JSON.parse(document.getElementById("registration-data").textContent);
       const formCopy = registrationData.registrationFormCopy;
@@ -215,6 +217,7 @@ const formCopy = registrationFormCopy;
       let runtimeRules = { parentRulesVersion: registrationData.rulesContent.parent.version, studentRulesVersion: registrationData.rulesContent.student.version };
       let turnstileToken = "";
       let turnstileWidgetId = null;
+      let guardianPrefill = null;
 
       function escapeText(value) {
         return String(value)
@@ -768,6 +771,7 @@ const formCopy = registrationFormCopy;
           const response = await fetch("/api/registration/status", { headers: { Accept: "application/json" }, credentials: "same-origin" });
           if (!response.ok) throw new Error("status unavailable");
           const status = await response.json();
+          guardianPrefill = status;
           if (!catalog) await loadCatalog();
           const hasPaymentHold = status.children.some((child) => child.holdType === "initial_payment" && child.holdStatus === "active");
           const hasConfirmedEnrollment = status.children.some((child) => child.canonicalEnrollmentStatus === "confirmed");
@@ -783,14 +787,14 @@ const formCopy = registrationFormCopy;
               ? `<span>Төлбөр орсон${child.laterInstallmentAmountMnt ? `<br>Дараагийн төлбөр: <strong>${escapeText(formatMnt(child.laterInstallmentAmountMnt))}</strong> · ${escapeText(formatDeadline(child.laterInstallmentDueAt))}` : ""}</span>`
               : child.initialPaymentAmountMnt ? `<span>Одоо төлөх: <strong>${escapeText(formatMnt(child.initialPaymentAmountMnt))}</strong>${child.secondPaymentAmountMnt ? `<br>Дараагийн төлбөр: ${escapeText(formatMnt(child.secondPaymentAmountMnt))} · ${escapeText(formatLocalDate(child.secondPaymentDueOn))}` : ""}</span>` : "";
             const facebook = child.canonicalEnrollmentStatus === "confirmed" && child.offeringFacebookGroupUrl
-              ? `<a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэг</a>` : "";
+              ? `<span><a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэг</a><br>Эцэг эх Facebook бүлэгт нэгдэнэ үү. Хүүхэд Facebook хаягтай бол мөн нэгдэж болно. Наран Эрдэмийн Facebook хуудсанд өөрийн Facebook хаягаасаа нэг мессеж илгээнэ үү.</span>` : "";
             return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
           showResult(hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : status.verifiedAt ? (alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle) : "Бүртгэлийн мэдээллийг хүлээн авлаа.", `
             ${hasPaymentHold ? `<p class="status-emphasis">${escapeText(formCopy.messages.paymentHold)}</p>` : ""}
             ${seatUnavailable ? `<p class="form-error">${escapeText(formCopy.messages.seatLost)}</p>` : ""}
             <ul class="status-children">${children}</ul>
-            ${hasPaymentHold && status.paymentCollection ? `<section class="payment-instructions"><h3>Шилжүүлгийн мэдээлэл</h3><p>${escapeText(status.paymentCollection.bankName)}<br>${escapeText(status.paymentCollection.accountHolderName)}${status.paymentCollection.iban ? `<br><strong>IBAN: ${escapeText(status.paymentCollection.iban)}</strong>` : ""}<br><strong>${escapeText(status.paymentCollection.accountNumber)}</strong>${status.paymentCollection.transferInstruction ? `<br>${escapeText(status.paymentCollection.transferInstruction)}` : ""}</p>${paymentReference ? `<p>Гүйлгээний утга: <strong id="payment-reference">${escapeText(paymentReference)}</strong> <button id="copy-payment-reference" class="text-button" type="button">Хуулах</button></p>` : ""}<p class="staff-muted">Бид төлбөр банканд орсныг шалгаж баталгаажуулна. Баталгаажуулалт ихэвчлэн 12–24 цагийн дотор хийгдэнэ.</p><p>И-мэйлээ баталгаажуулбал бүртгэлийн мэдээлэл, төлөвийн мэдэгдлийг и-мэйлээр авах боломжтой.</p>${paymentRequest ? `<button id="claim-payment" class="button secondary" type="button" ${parentClaimed ? "disabled" : ""}>${parentClaimed ? "Төлбөр хийснээ мэдэгдсэн" : "Төлбөр хийснээ мэдэгдэх"}</button><p id="payment-claim-message" class="catalog-message" role="status"></p>` : ""}</section>` : ""}
+            ${hasPaymentHold && status.paymentCollection ? `<section class="payment-instructions"><h3>Шилжүүлгийн мэдээлэл</h3><p>${escapeText(status.paymentCollection.bankName)} · <strong>${escapeText(status.paymentCollection.accountNumber)}</strong><br>${escapeText(status.paymentCollection.accountHolderName)}${status.paymentCollection.iban ? `<br><strong>IBAN: ${escapeText(status.paymentCollection.iban)}</strong>` : ""}${status.paymentCollection.transferInstruction ? `<br>${escapeText(status.paymentCollection.transferInstruction)}` : ""}</p>${paymentReference ? `<p>Гүйлгээний утга: <strong id="payment-reference">${escapeText(paymentReference)}</strong> <button id="copy-payment-reference" class="text-button" type="button">Хуулах</button></p>` : ""}<p>И-мэйлээ баталгаажуулбал бүртгэлийн мэдээлэл, төлөвийн мэдэгдлийг и-мэйлээр авах боломжтой.</p>${paymentRequest ? `<button id="claim-payment" class="button secondary" type="button" ${parentClaimed ? "disabled" : ""}>${parentClaimed ? "Төлбөр хийснээ мэдэгдсэн" : "Төлбөр хийснээ мэдэгдэх"}</button><p id="payment-claim-message" class="catalog-message" role="status"></p>` : ""}</section>` : ""}
           `);
           document.getElementById("copy-payment-reference")?.addEventListener("click", async () => {
             try { await navigator.clipboard.writeText(paymentReference); } catch { /* selection remains visible for manual copy */ }
@@ -971,7 +975,13 @@ const formCopy = registrationFormCopy;
         if (storedDraft) draftNotice.hidden = false;
       }
       function startNewRegistration() {
+        const guardian = guardianPrefill ? {
+          guardianName: guardianPrefill.guardianFullName || "", guardianRelationship: guardianPrefill.relationship || "",
+          guardianPhone: guardianPrefill.primaryPhone || "", guardianSecondaryPhone: guardianPrefill.secondaryPhone || "",
+          guardianEmail: guardianPrefill.email || "", guardianFacebook: guardianPrefill.facebookName || "", guardianAddress: guardianPrefill.homeAddress || "",
+        } : Object.fromEntries(["guardianName", "guardianRelationship", "guardianPhone", "guardianSecondaryPhone", "guardianEmail", "guardianFacebook", "guardianAddress"].map((name) => [name, form.elements[name]?.value || ""]));
         form.reset();
+        Object.entries(guardian).forEach(([name, value]) => { if (form.elements[name]) form.elements[name].value = value; });
         parentAcknowledged = false;
         studentAcknowledged = false;
         childrenList.replaceChildren();
@@ -979,7 +989,7 @@ const formCopy = registrationFormCopy;
         renderChild(childCount, "");
         childCards().forEach((card) => { updateStageOptions(card); renderClasses(card); });
         showRegistrationForm();
-        window.history.replaceState({}, "", "/register/");
+        window.history.replaceState({}, "", "/register/?new=1");
       }
       restoreDraftButton.addEventListener("click", () => storedDraft && restoreDraft(storedDraft));
       discardDraftButton.addEventListener("click", discardStoredDraft);
@@ -1032,7 +1042,9 @@ const formCopy = registrationFormCopy;
       storedDraft = readStoredDraft();
       async function settleInitialSurface() {
         await loadBootstrap();
-        const status = new URLSearchParams(window.location.search).get("status");
+        const parameters = new URLSearchParams(window.location.search);
+        const status = parameters.get("status");
+        if (parameters.get("new") === "1") { showRegistrationForm(); return; }
         if (runtimeConfig.writeEnabled && (status === "confirmed" || status === "already-verified")) {
           document.body.dataset.registrationSurface = "verified";
           await showVerifiedStatus(status === "already-verified");

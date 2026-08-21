@@ -146,6 +146,10 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,
     class_session.start_time AS startTime, class_session.end_time AS endTime,
+    (SELECT later.amount_mnt FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
+      AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterAmountMnt,
+    (SELECT later.effective_due_at FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
+      AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterDueAt,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN received_payment.id END) AS tentativePaymentId,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN payment_confirmation.finalize_after END) AS finalizeAfter,
     MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.seat_confirmation_approved ELSE 0 END) AS seatConfirmationApproved,
@@ -165,7 +169,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
     WHERE payment_installment.installment_kind = 'initial'
-      AND payment_installment.status IN ('pending', 'partially_paid')
+      AND payment_installment.status IN ('pending', 'partially_paid', 'paid')
     GROUP BY payment_installment.id
     ORDER BY parentClaimed DESC, payment_installment.effective_due_at < ? DESC,
       payment_installment.effective_due_at ASC, payment_request.created_at ASC`).bind(now).all<Record<string, unknown>>();
@@ -180,8 +184,18 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     WHERE payment_credit.status = 'available' ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
   return { now, items: result.results.map((item) => ({ ...item,
     expectedAmountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),
-    parentClaimed: Boolean(item.parentClaimed),
-  })), credits: credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt) })) };
+    parentClaimed: Boolean(item.parentClaimed), laterAmountMnt: item.laterAmountMnt == null ? null : Number(item.laterAmountMnt),
+  })), credits: credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt) })),
+  waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
+    registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+    registration_draft.primary_phone AS primaryPhone, class_session.display_label AS classLabel,
+    class_session.weekday AS weekday, class_session.start_time AS startTime, class_session.end_time AS endTime
+    FROM registration_draft_waitlist_entry
+    INNER JOIN registration_draft_child ON registration_draft_child.id = registration_draft_waitlist_entry.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    INNER JOIN class_session ON class_session.id = registration_draft_waitlist_entry.class_session_id
+    WHERE registration_draft_waitlist_entry.status = 'active'
+    ORDER BY registration_draft_waitlist_entry.created_at ASC LIMIT 100`).all<Record<string, unknown>>()).results };
 }
 
 export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal, input: {

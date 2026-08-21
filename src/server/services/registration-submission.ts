@@ -179,7 +179,7 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
     facebookName: clean(input?.guardian?.facebookName, 160),
     homeAddress: clean(input?.guardian?.homeAddress, 500),
   };
-  if (!guardian.fullName || !guardian.relationship || !guardian.primaryPhone || !guardian.homeAddress) {
+  if (!guardian.fullName || !guardian.relationship || !guardian.primaryPhone || !guardian.facebookName || !guardian.homeAddress) {
     throw new RegistrationSubmissionError("invalid_guardian");
   }
   if (!validEmail(normalizeEmail(guardian.email))) throw new RegistrationSubmissionError("invalid_email");
@@ -892,7 +892,7 @@ export async function sessionOwnsDraft(
 
 async function registrationStatusForDraft(
   database: D1Database,
-  draft: { id: string; email: string; status: string; verifiedAt: string | null },
+  draft: { id: string; email: string; status: string; verifiedAt: string | null; guardianFullName?: string; relationship?: string; primaryPhone?: string; secondaryPhone?: string | null; facebookName?: string | null; homeAddress?: string },
   nowDate: Date,
 ) {
   const children = await database.prepare(`
@@ -964,19 +964,23 @@ export async function registrationStatusForSession(database: D1Database, rawSess
   if (!rawSessionToken || rawSessionToken.length > 256) throw new RegistrationSubmissionError("session_required");
   const tokenHash = await sha256(rawSessionToken);
   const draft = await database.prepare(`SELECT registration_draft.id, registration_draft.email, registration_draft.status,
-    registration_draft.verified_at AS verifiedAt FROM verified_email_session
+    registration_draft.verified_at AS verifiedAt, registration_draft.guardian_full_name AS guardianFullName,
+    registration_draft.guardian_relationship AS relationship, registration_draft.primary_phone AS primaryPhone, registration_draft.secondary_phone AS secondaryPhone,
+    registration_draft.facebook_name AS facebookName, registration_draft.home_address AS homeAddress FROM verified_email_session
     INNER JOIN registration_draft ON registration_draft.id = verified_email_session.registration_draft_id
     WHERE verified_email_session.session_token_hash = ? AND verified_email_session.expires_at > ?
       AND verified_email_session.revoked_at IS NULL AND registration_draft.is_test = 1`)
-    .bind(tokenHash, nowDate.toISOString()).first<{ id: string; email: string; status: string; verifiedAt: string | null }>();
+    .bind(tokenHash, nowDate.toISOString()).first<{ id: string; email: string; status: string; verifiedAt: string | null; guardianFullName: string; relationship: string; primaryPhone: string; secondaryPhone: string | null; facebookName: string | null; homeAddress: string }>();
   if (!draft) throw new RegistrationSubmissionError("session_required");
   return registrationStatusForDraft(database, draft, nowDate);
 }
 
 export async function registrationStatusForAccess(database: D1Database, rawAccessToken: string, nowDate = new Date()) {
   const access = await draftForAccessToken(database, rawAccessToken, nowDate);
-  const draft = await database.prepare(`SELECT id, email, status, verified_at AS verifiedAt FROM registration_draft WHERE id = ?`)
-    .bind(access.id).first<{ id: string; email: string; status: string; verifiedAt: string | null }>();
+  const draft = await database.prepare(`SELECT id, email, status, verified_at AS verifiedAt, guardian_full_name AS guardianFullName,
+    guardian_relationship AS relationship, primary_phone AS primaryPhone, secondary_phone AS secondaryPhone, facebook_name AS facebookName,
+    home_address AS homeAddress FROM registration_draft WHERE id = ?`)
+    .bind(access.id).first<{ id: string; email: string; status: string; verifiedAt: string | null; guardianFullName: string; relationship: string; primaryPhone: string; secondaryPhone: string | null; facebookName: string | null; homeAddress: string }>();
   if (!draft) throw new RegistrationSubmissionError("draft_access_denied");
   return registrationStatusForDraft(database, draft, nowDate);
 }

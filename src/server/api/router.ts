@@ -25,6 +25,7 @@ import {
   REGISTRATION_DRAFT_COOKIE,
   RegistrationSubmissionError,
   registrationStatusForAccess,
+  registrationStatusForSession,
   type RegistrationSubmissionInput,
 } from "../services/registration-submission";
 import {
@@ -78,6 +79,7 @@ import { InitialPaymentDeadlineError, updateInitialPaymentDeadlineSetting } from
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
 import { PublicContentError, saveCourseRule, updatePublicCenterInformation } from "../staff/public-content";
 import { getCourseRules } from "../staff/public-content";
+import { updatePublicSiteFont } from "../staff/public-site-font";
 import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updateTeacherDashboardPreferences } from "../staff/teacher-dashboard-preferences";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import { RegistrationCorrectionError, registrationCorrectionDetail, saveRegistrationCorrection } from "../staff/registration-corrections";
@@ -520,7 +522,10 @@ export async function handleApiRequest(
     if (!registrationWritesAvailable(env)) return authNotFound();
     if (request.method !== "GET") return methodNotAllowed();
     try {
-      const status = await registrationStatusForAccess(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
+      const verified = readCookie(request, VERIFIED_EMAIL_COOKIE);
+      const status = verified
+        ? await registrationStatusForSession(env.DB, verified)
+        : await registrationStatusForAccess(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
       return json(status, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
       return registrationError(caught);
@@ -1435,6 +1440,9 @@ export async function handleApiRequest(
           await updateInitialPaymentDeadlineSetting(env, principal, {
             deadlineMinutes: Number(payload.deadlineMinutes), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
+          break;
+        case "public-site-font.save":
+          await updatePublicSiteFont(env, principal, { font: payload.font, expectedUpdatedAt: payload.expectedUpdatedAt });
           break;
         case "public-center-information.save":
           await updatePublicCenterInformation(env, principal, payload);

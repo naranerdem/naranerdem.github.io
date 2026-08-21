@@ -3505,3 +3505,13 @@ textarea:focus {
     background: rgba(7, 58, 175, 0.08);
   }
 }
+html[data-public-font="serif"] .public-page,
+html[data-public-font="serif"] .register-page,
+html[data-public-font="serif"] .program-page { font-family: "Times New Roman", Times, serif; }
+.simple-home { max-width: 760px; padding-top: 3rem; padding-bottom: 3rem; }
+.simple-hero { margin-bottom: 2.5rem; }
+.simple-hero h1 { color: #073aaf; font-size: clamp(3rem, 10vw, 5.5rem); margin: 0; }
+.simple-subtitle { color: #e56d18; letter-spacing: .08em; font-size: .9rem; margin: .5rem 0 1rem; }
+.public-prose { margin: 2rem 0; }
+.public-prose h2 { margin: 1.5rem 0 .5rem; }
+.public-prose p { margin: 0 0 1rem; }

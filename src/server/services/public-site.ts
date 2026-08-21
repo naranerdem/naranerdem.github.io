@@ -1,6 +1,7 @@
 import type { WorkerEnv } from "../env";
 import { getRegistrationCatalog } from "./registration-catalog";
 import { getPublicCenterInformation } from "../staff/public-content";
+import { getPublicSiteFont } from "../staff/public-site-font";
 
 const stageLabels = { stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" } as const;
 type StageCode = keyof typeof stageLabels;
@@ -13,7 +14,7 @@ function durationMinutes(start: string, end: string): number | null {
 export function publicProgramSlug(stage: StageCode): string { return ({ stage_1: "stage-1", stage_2: "stage-2", stage_3: "stage-3" })[stage]; }
 
 export async function getPublicSiteModel(env: WorkerEnv) {
-  const [center, catalog, families] = await Promise.all([
+  const [center, catalog, families, font] = await Promise.all([
     getPublicCenterInformation(env), getRegistrationCatalog(env.DB, env.APP_ENV),
     env.DB.prepare(`SELECT family.annual_stage_code AS stageCode, family.display_name AS title,
       family.recommended_grade_min AS recommendedGradeMin, family.recommended_grade_max AS recommendedGradeMax,
@@ -24,6 +25,7 @@ export async function getPublicSiteModel(env: WorkerEnv) {
       LEFT JOIN curriculum_lesson AS lesson ON lesson.curriculum_program_id = program.id AND lesson.status = 'active'
       WHERE family.kind = 'annual_course' AND family.status = 'active'
       GROUP BY family.id ORDER BY family.annual_stage_code`).all<FamilyRow>(),
+    getPublicSiteFont(env),
   ]);
   const sessions = catalog.academicYears.flatMap((year) => year.classSessions);
   const visibleStages = new Set(sessions.filter((session) => session.availability === "available" || session.availability === "full").map((session) => session.stageCode as StageCode));
@@ -35,5 +37,5 @@ export async function getPublicSiteModel(env: WorkerEnv) {
       classSummary: stageSessions.map((session) => ({ label: session.label, availability: session.availability, remainingSeats: session.remainingSeats })),
     };
   });
-  return { center, programs, currentPrograms: programs.filter((program) => program.current) };
+  return { center, publicSiteFont: font.font, programs, currentPrograms: programs.filter((program) => program.current) };
 }

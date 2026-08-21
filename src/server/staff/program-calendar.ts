@@ -21,6 +21,7 @@ import { attendanceProtectedThroughSequence } from "./course-attendance";
 import { assertOfferingRegistrationReady, getPaymentCollectionSettings } from "./course-pricing";
 import { getPublicQrRedirectSettings } from "../public-qr-redirects";
 import { getCourseRules, getPublicCenterInformation } from "./public-content";
+import { getPublicSiteFont } from "./public-site-font";
 import { getTeacherDashboardPreferences } from "./teacher-dashboard-preferences";
 import { getPaymentConfirmationGraceSetting } from "./payment-reconciliation";
 import { getInitialPaymentDeadlineSetting } from "./initial-payment-deadline";
@@ -569,7 +570,7 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, paymentConfirmationGrace, initialPaymentDeadline, publicQrRedirectSettings, publicCenterInformation, courseRules, teacherDashboardPreferences] = await Promise.all([
+  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, paymentConfirmationGrace, initialPaymentDeadline, publicQrRedirectSettings, publicCenterInformation, courseRules, teacherDashboardPreferences, publicSiteFont] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
@@ -632,6 +633,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     getInitialPaymentDeadlineSetting(env),
     getPublicQrRedirectSettings(env),
     getPublicCenterInformation(env),
+    getPublicSiteFont(env),
     getCourseRules(env),
     getTeacherDashboardPreferences(env),
   ]);
@@ -736,6 +738,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     publicCenterInformation,
     courseRules,
     teacherDashboardPreferences,
+    publicSiteFont,
   };
 }
 

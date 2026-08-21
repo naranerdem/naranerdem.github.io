@@ -150,6 +150,7 @@ function submission(classId, waitlistId, children = 1, paymentPlanCode = "single
       relationship: "Ээж",
       primaryPhone: "99000000",
       email: `parent-${randomUUID()}@example.test`,
+      facebookName: "Тест Асран",
       homeAddress: "Баянзүрх дүүрэг",
     },
     children: Array.from({ length: children }, (_, index) => ({
