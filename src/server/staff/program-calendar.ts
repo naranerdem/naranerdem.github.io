@@ -21,7 +21,7 @@ import { attendanceProtectedThroughSequence } from "./course-attendance";
 import { assertOfferingRegistrationReady, getPaymentCollectionSettings } from "./course-pricing";
 import { getPublicQrRedirectSettings } from "../public-qr-redirects";
 import { getCourseRules, getPublicCenterInformation } from "./public-content";
-import { getPublicSiteFont } from "./public-site-font";
+import { getPublicSiteFontForPresentation } from "./public-site-font";
 import { getTeacherDashboardPreferences } from "./teacher-dashboard-preferences";
 import { getPaymentConfirmationGraceSetting } from "./payment-reconciliation";
 import { getInitialPaymentDeadlineSetting } from "./initial-payment-deadline";
@@ -633,7 +633,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     getInitialPaymentDeadlineSetting(env),
     getPublicQrRedirectSettings(env),
     getPublicCenterInformation(env),
-    getPublicSiteFont(env),
+    getPublicSiteFontForPresentation(env),
     getCourseRules(env),
     getTeacherDashboardPreferences(env),
   ]);

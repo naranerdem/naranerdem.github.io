@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-public-content-"));
-const databasePath = path.join(tempDir, "content.sqlite3"); const bundlePath = path.join(tempDir, "content.mjs"); const preferencesBundlePath = path.join(tempDir, "preferences.mjs");
+const databasePath = path.join(tempDir, "content.sqlite3"); const bundlePath = path.join(tempDir, "content.mjs"); const preferencesBundlePath = path.join(tempDir, "preferences.mjs"); const fontBundlePath = path.join(tempDir, "public-site-font.mjs");
 function quote(value) { return value == null ? "NULL" : typeof value === "number" ? String(value) : `'${String(value).replaceAll("'", "''")}'`; }
 function bindSql(sql, values) { let index = 0; const bound = sql.replaceAll("?", () => quote(values[index++])); assert.equal(index, values.length); return bound; }
 function sqlite(input, json = false) { const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], { input: `PRAGMA foreign_keys=ON;\n${input}`, encoding: "utf8" }); if (result.status !== 0) throw new Error(result.stderr); return result.stdout.trim(); }
@@ -20,8 +20,10 @@ try {
   sqlite(readdirSync("migrations").filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort().map((name) => readFileSync(path.join("migrations", name), "utf8")).join("\n"));
   const bundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/public-content.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${bundlePath}`], { encoding: "utf8" }); if (bundled.status !== 0) throw new Error(bundled.stderr);
   const preferencesBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/teacher-dashboard-preferences.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${preferencesBundlePath}`], { encoding: "utf8" }); if (preferencesBundled.status !== 0) throw new Error(preferencesBundled.stderr);
+  const fontBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/public-site-font.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${fontBundlePath}`], { encoding: "utf8" }); if (fontBundled.status !== 0) throw new Error(fontBundled.stderr);
   const content = await import(`${pathToFileURL(bundlePath).href}?content`);
   const preferences = await import(`${pathToFileURL(preferencesBundlePath).href}?preferences`);
+  const fonts = await import(`${pathToFileURL(fontBundlePath).href}?fonts`);
   const before = await content.getPublicCenterInformation(env);
   await content.updatePublicCenterInformation(env, actor("teacher"), { expectedUpdatedAt: before.updatedAt, phone: "90066280", publicEmail: "info@example.mn", facebookPageUrl: "https://facebook.com/example", physicalAddress: "Тест", homepageIntro: "Товч", aboutCenterText: "Дэлгэрэнгүй", teacherBio: "Багш" });
   assert.equal((await content.getPublicCenterInformation(env)).phone, "90066280");
@@ -42,5 +44,27 @@ try {
   assert.equal(updatedPreferences.showSetupSection, false);
   await assert.rejects(preferences.updateTeacherDashboardPreferences(env, actor("teacher"), { expectedUpdatedAt: updatedPreferences.updatedAt, showSetupSection: true, showRegistration: true, showInformation: true }), /Teacher dashboard preferences operation failed/);
   await assert.rejects(preferences.updateTeacherDashboardPreferences(env, actor("accountant"), { expectedUpdatedAt: updatedPreferences.updatedAt, showSetupSection: true, showRegistration: true, showInformation: true }), /Teacher dashboard preferences operation failed/);
+  const defaultFont = await fonts.getPublicSiteFont(env);
+  assert.equal(defaultFont.font, "sans", "font setting starts at sans");
+  const serifFont = await fonts.updatePublicSiteFont(env, actor("admin"), { font: "serif", expectedUpdatedAt: defaultFont.updatedAt });
+  assert.equal(serifFont.font, "serif");
+  assert.equal((await fonts.getPublicSiteFont(env)).font, "serif", "saved font reads back");
+  assert.equal(database.query("SELECT COUNT(*) AS count FROM audit_event WHERE action = 'public_site_font_changed'")[0].count, 1, "font update is audited");
+  const sansFont = await fonts.updatePublicSiteFont(env, actor("admin"), { font: "sans", expectedUpdatedAt: serifFont.updatedAt });
+  assert.equal(sansFont.font, "sans", "font can be restored to sans");
+  await assert.rejects(fonts.updatePublicSiteFont(env, actor("admin"), { font: "display", expectedUpdatedAt: sansFont.updatedAt }), /Public font setting failed/);
+  await assert.rejects(fonts.updatePublicSiteFont(env, actor("admin"), { font: "serif", expectedUpdatedAt: serifFont.updatedAt }), /Public font setting failed/);
+  await assert.rejects(fonts.updatePublicSiteFont(env, actor("teacher"), { font: "serif", expectedUpdatedAt: sansFont.updatedAt }), /Public font setting failed/);
+  await assert.rejects(fonts.updatePublicSiteFont(env, actor("accountant"), { font: "serif", expectedUpdatedAt: sansFont.updatedAt }), /Public font setting failed/);
+  const failingFontEnv = { ...env, DB: { prepare() { throw new Error("font table unavailable"); } } };
+  assert.deepEqual(await fonts.getPublicSiteFontForPresentation(failingFontEnv), { font: "sans", updatedAt: "" }, "font read failure degrades safely for presentation");
+  const publicSiteSource = readFileSync("src/server/services/public-site.ts", "utf8");
+  const overviewSource = readFileSync("src/server/staff/program-calendar.ts", "utf8");
+  assert.match(publicSiteSource, /getPublicSiteFontForPresentation\(env\)/, "public projection uses presentation fallback");
+  assert.match(overviewSource, /getPublicSiteFontForPresentation\(env\)/, "staff overview uses presentation fallback");
+  const homepage = readFileSync("src/pages/index.astro", "utf8"); const styles = readFileSync("src/styles/global.css", "utf8");
+  assert.match(homepage, /homepage-secondary-actions/, "second CTA row has explicit contact spacing hook");
+  assert.match(styles, /\.public-prose h2 \{ font-size: clamp\(1\.65rem, 3vw, 2\.35rem\)/, "public prose headings use the reduced size");
+  assert.match(styles, /\.homepage-secondary-actions \{ margin-bottom: clamp\(2rem, 5vw, 4rem\)/, "contact follows the second CTA with extra separation");
   console.log("ok typed public content, immutable course rules, stale provenance, permissions, and audit");
 } finally { rmSync(tempDir, { recursive: true, force: true }); }

@@ -1,7 +1,7 @@
 import type { WorkerEnv } from "../env";
 import { getRegistrationCatalog } from "./registration-catalog";
 import { getPublicCenterInformation } from "../staff/public-content";
-import { getPublicSiteFont } from "../staff/public-site-font";
+import { getPublicSiteFontForPresentation } from "../staff/public-site-font";
 
 const stageLabels = { stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" } as const;
 type StageCode = keyof typeof stageLabels;
@@ -25,7 +25,7 @@ export async function getPublicSiteModel(env: WorkerEnv) {
       LEFT JOIN curriculum_lesson AS lesson ON lesson.curriculum_program_id = program.id AND lesson.status = 'active'
       WHERE family.kind = 'annual_course' AND family.status = 'active'
       GROUP BY family.id ORDER BY family.annual_stage_code`).all<FamilyRow>(),
-    getPublicSiteFont(env),
+    getPublicSiteFontForPresentation(env),
   ]);
   const sessions = catalog.academicYears.flatMap((year) => year.classSessions);
   const visibleStages = new Set(sessions.filter((session) => session.availability === "available" || session.availability === "full").map((session) => session.stageCode as StageCode));

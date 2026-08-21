@@ -79,7 +79,7 @@ import { InitialPaymentDeadlineError, updateInitialPaymentDeadlineSetting } from
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
 import { PublicContentError, saveCourseRule, updatePublicCenterInformation } from "../staff/public-content";
 import { getCourseRules } from "../staff/public-content";
-import { updatePublicSiteFont } from "../staff/public-site-font";
+import { PublicSiteFontError, updatePublicSiteFont } from "../staff/public-site-font";
 import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updateTeacherDashboardPreferences } from "../staff/teacher-dashboard-preferences";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import { RegistrationCorrectionError, registrationCorrectionDetail, saveRegistrationCorrection } from "../staff/registration-corrections";
@@ -1442,7 +1442,12 @@ export async function handleApiRequest(
           });
           break;
         case "public-site-font.save":
-          await updatePublicSiteFont(env, principal, { font: payload.font, expectedUpdatedAt: payload.expectedUpdatedAt });
+          try {
+            await updatePublicSiteFont(env, principal, { font: payload.font, expectedUpdatedAt: payload.expectedUpdatedAt });
+          } catch (caught) {
+            if (caught instanceof PublicSiteFontError) throw caught;
+            return error("internal_error", "Нийтийн хуудасны фонтыг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+          }
           break;
         case "public-center-information.save":
           await updatePublicCenterInformation(env, principal, payload);
@@ -1468,6 +1473,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Төлбөр хийх хугацааны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof PublicSiteFontError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "Фонтын утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PublicQrRedirectSettingsError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
