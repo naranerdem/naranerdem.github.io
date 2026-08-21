@@ -3516,3 +3516,9 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
 .public-prose h2 { font-size: clamp(1.35rem, 2vw, 1.85rem); margin: 1.5rem 0 .5rem; }
 .public-prose p { margin: 0 0 1rem; }
 .homepage-secondary-actions { margin-bottom: clamp(2rem, 5vw, 4rem); }
+
+@media (max-width: 32rem) {
+  html[data-public-font="serif"] .public-page,
+  html[data-public-font="serif"] .register-page,
+  html[data-public-font="serif"] .program-page { font-size: 17px; }
+}

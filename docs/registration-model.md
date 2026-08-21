@@ -4,18 +4,17 @@ This document describes the future registration and tuition model. It is a domai
 
 ## Core Principle
 
-A child's application is not a confirmed registration until the first required payment has been received.
+A child's accepted ordinary registration is not a confirmed enrollment until the first required payment has been reconciled.
 
-Submitting pre-registration/application information does not by itself reserve a seat or consume class capacity. A pre-registration record may be reviewed, corrected, or used by the teacher/admin to apply privately approved terms before a payment request is generated.
+A browser/incomplete pre-submission draft consumes no seat. An accepted ordinary registration atomically creates its initial-payment reservation, consumes capacity immediately, creates its payment request/installments, and snapshots the payment deadline. Teacher/admin may still review or correct the accepted record without changing its payment or enrollment provenance.
 
 Normal future flow:
 
 ```text
-pre-registration completed
--> standard payment terms selected
--> class availability checked
--> temporary short seat hold created
--> required first payment requested
+browser draft completed
+-> accepted ordinary registration submission
+-> initial-payment reservation, payment request, and installments created atomically
+-> payment deadline snapshotted
 -> payment received/reconciled
 -> enrollment confirmed
 ```
@@ -32,7 +31,7 @@ pre-registration completed
 -> enrollment confirmed
 ```
 
-A pre-registration that never proceeds to payment must not occupy class capacity. Only active temporary seat holds and confirmed enrollments should consume capacity.
+Only a browser/incomplete pre-submission draft that never becomes accepted consumes no capacity. An accepted ordinary registration's active initial-payment reservation and a confirmed enrollment both consume capacity; payment-deadline expiry alone never releases that reservation.
 
 At accepted submission, the initial payment deadline is snapshotted from an admin-controlled typed duration, defaulting to 1,440 minutes (24 hours). Email verification is a parallel contact-channel step, not a payment/enrollment gate. A later setting change affects only future registrations. The deadline is for payment, not an automatic seat-release clock. An unresolved initial-payment reservation remains capacity-consuming until an explicit reconciliation decision resolves it. Approval of exceptional terms does not automatically move the effective deadline; a future explicit extension will preserve the original deadline. Only an authorized explicit release can free an unpaid reserved seat.
 
@@ -180,12 +179,13 @@ It owns the period, pinned Program revision, charge mode, calendar guidance,
 and shared Facebook group. A new annual Offering chooses only a stage and the
 server resolves the current logical Program revision; its academic year comes
 from dates/current configured school-year logic. Annual and summer courses are always paid; events are free by
-default and may be made paid. These modes do not yet create prices, payment
-schedules, or obligations.
+default and may be made paid. Annual and summer Offering pricing is implemented:
+accepted registrations snapshot the selected payment-plan terms and create the
+corresponding payment obligations.
 
-A paid Offering may be created and scheduled before pricing exists, but future
-public registration must remain closed until it has a valid pricing basis and
-required payment-plan terms. That future configuration belongs in Offering
+A paid Offering may be created and scheduled before pricing exists, but public
+registration remains closed until it has a valid pricing basis, required
+payment-plan terms, and payment-collection readiness. That configuration belongs in Offering
 detail under `Төлбөрийн нөхцөл`, not in compact Offering creation.
 
 ### Registration Window
@@ -384,13 +384,15 @@ Accepted waitlist choices materialize one FIFO entry per child without requiring
 
 If initial payment has not been reconciled, the system may later send reminders, but elapsed time alone is never payment evidence and never releases the seat. A positive future bank/QPay signal may confirm money received; an absent signal must not release anything.
 
+Reminder timing is an admin-managed typed duration, snapshotted on each new obligation: the default initial reminder is six hours before its initial-payment deadline and the default later reminder is three days before its effective later-payment deadline. The durable notification record is separate from payment state and can later add SMS delivery for a verified phone channel. A parent who has already reported a transfer may still receive a reminder that explicitly says no second transfer is needed while staff checks it. An initial overdue notice never claims that a seat was cancelled. Waitlist-only entries have no payment obligation or payment reminders.
+
 An approved short extension can move the effective deadline without erasing the original deadline.
 
 ## Tuition
 
 ### Future Reminder, Accountant, and Settlement Direction
 
-This section is **future planned domain**, not implemented payment/accountant functionality. Standard plans remain one-time or two-installment; exceptional arrangements are private and teacher/admin-approved. Later-installment reminders should use effective due dates while preserving original dates, with restrained email, copyable Messenger text for a teacher, then a narrow accountant call queue after configurable overdue timing. Initial registration/payment holds remain a distinct time-sensitive process.
+This section is **future planned domain** beyond the implemented payment foundation. Standard plans remain one-time or two-installment; exceptional arrangements are private and teacher/admin-approved. The implemented later-installment email reminder uses effective due dates while preserving original dates. Still future are copyable Messenger escalation, grouped reminders, an accountant call queue, and broader overdue escalation policy. Initial registration/payment holds remain a distinct time-sensitive process.
 
 The first accountant view should be `Залгах шаардлагатай`: a derived queue of unresolved teacher-approved receivables. Contact outcomes and promise dates may be recorded, but a parent promise is not an official extension. Only teacher/admin approval changes an effective deadline.
 
@@ -795,7 +797,11 @@ afternoon classes, while a summer run may use another. Migration 0009's older
 academic-year/stage setting remains compatibility/history and is not a second
 write authority.
 
-Future registration data should be able to record a guardian's Facebook profile name or profile link when useful. After enrollment is confirmed, the system should eventually be able to show or send that Offering's Facebook group link so the parent/student can request to join.
+Registration collects a guardian Facebook name and supports an optional child
+Facebook-name snapshot. After confirmed enrollment, the registration status and
+confirmation email may show or send that Offering's private group link. Unconfirmed
+and waitlisted families do not receive that link. Facebook data supports
+operational communication only; it is never identity or authentication authority.
 
 Do not require a child to have a Facebook account. Do not plan automated Facebook group invitations, Facebook API integration, or Facebook Login as part of the core registration model.
 
@@ -805,7 +811,6 @@ The future teacher dashboard should stay small, Mongolian-language, and operatio
 
 - what needs attention today
 - payments awaiting confirmation
-- provisional email holds nearing expiry
 - overdue initial-payment reservations awaiting explicit reconciliation
 - installments due soon
 - overdue installments

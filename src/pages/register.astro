@@ -15,6 +15,7 @@ const formCopy = registrationFormCopy;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={registrationPrototype.description} />
     <title>{registrationPrototype.title} | {siteIdentity.name}</title>
+    <script is:inline>try { const value = localStorage.getItem("naranerdem.public-font"); if (value === "sans" || value === "serif") document.documentElement.dataset.publicFont = value; } catch {}</script>
   </head>
   <body class="register-page" data-registration-surface="booting">
     <header class="site-header">
@@ -504,6 +505,7 @@ const formCopy = registrationFormCopy;
             <label><span>${formCopy.child.gender} ${requiredMarker()}</span><select name="child-${index}-gender" data-child-gender required><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.genderOptions.map(optionHtml).join("")}</select></label>
             <label><span>${formCopy.child.dob} ${requiredMarker()}</span><input name="child-${index}-dob" data-child-dob type="date" required></label>
             <label><span>${formCopy.child.school}</span><input name="child-${index}-school" data-child-school></label>
+            <label><span>Facebook нэр</span><input name="child-${index}-facebook" data-child-facebook autocomplete="off" placeholder="Байвал оруулна уу"></label>
             <fieldset class="returning-field field-wide" data-returning-field>
               <legend>${formCopy.child.returning} ${requiredMarker()}</legend>
               <div class="segmented-choice">
@@ -713,6 +715,7 @@ const formCopy = registrationFormCopy;
             dateOfBirth: card.querySelector("[data-child-dob]").value,
             currentGrade: card.querySelector("[data-child-grade]").value,
             currentSchool: card.querySelector("[data-child-school]").value.trim(),
+            facebookName: card.querySelector("[data-child-facebook]").value.trim(),
             returningStatus: card.querySelector("[data-child-returning]:checked")?.value === "yes" ? "returning" : "new",
             previousStageCode: card.querySelector("[data-child-previous-stage]").value || undefined,
             selectedStageCode: card.querySelector("[data-child-stage]").value,
@@ -786,8 +789,8 @@ const formCopy = registrationFormCopy;
             const payment = child.canonicalEnrollmentStatus === "confirmed"
               ? `<span>Төлбөр орсон${child.laterInstallmentAmountMnt ? `<br>Дараагийн төлбөр: <strong>${escapeText(formatMnt(child.laterInstallmentAmountMnt))}</strong> · ${escapeText(formatDeadline(child.laterInstallmentDueAt))}` : ""}</span>`
               : child.initialPaymentAmountMnt ? `<span>Одоо төлөх: <strong>${escapeText(formatMnt(child.initialPaymentAmountMnt))}</strong>${child.secondPaymentAmountMnt ? `<br>Дараагийн төлбөр: ${escapeText(formatMnt(child.secondPaymentAmountMnt))} · ${escapeText(formatLocalDate(child.secondPaymentDueOn))}` : ""}</span>` : "";
-            const facebook = child.canonicalEnrollmentStatus === "confirmed" && child.offeringFacebookGroupUrl
-              ? `<span><a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэг</a><br>Эцэг эх Facebook бүлэгт нэгдэнэ үү. Хүүхэд Facebook хаягтай бол мөн нэгдэж болно. Наран Эрдэмийн Facebook хуудсанд өөрийн Facebook хаягаасаа нэг мессеж илгээнэ үү.</span>` : "";
+            const facebook = child.canonicalEnrollmentStatus === "confirmed"
+              ? `<span>${child.offeringFacebookGroupUrl ? `<a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэгт нэгдэх</a><br>` : ""}Хүүхэд Facebook хаягтай бол мөн бүлэгт нэгдэж болно.</span>` : "";
             return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
           showResult(hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : status.verifiedAt ? (alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle) : "Бүртгэлийн мэдээллийг хүлээн авлаа.", `

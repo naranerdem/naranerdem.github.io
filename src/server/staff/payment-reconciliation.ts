@@ -1,5 +1,6 @@
 import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { getPaymentReminderSetting } from "./payment-reminders";
 import { promotePaidDraftChildren } from "../services/canonical-enrollment-promotion";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
@@ -237,6 +238,7 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   if (!approvedPartial && input.remainingPaymentDueAt) throw new PaymentReconciliationError("invalid");
   const now = nowDate.toISOString();
   const grace = await getPaymentConfirmationGraceSetting(env);
+  const reminder = await getPaymentReminderSetting(env);
   const finalizeAfter = new Date(nowDate.getTime() + grace.graceMinutes * 60_000).toISOString();
   const paymentId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [env.DB.prepare(`INSERT INTO received_payment (
@@ -263,9 +265,11 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     { source: input.source, receivedAt, amountMnt: receivedAmount, allocatedAmountMnt: total, allocationCount: allocations.length, finalizeAfter, approvedPartial }, request, now));
   statements.push(env.DB.prepare(`INSERT INTO payment_confirmation (
     id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
-    remaining_payment_due_at, created_at, updated_at, is_test, test_run_id
-  ) VALUES (?, ?, ?, 'tentative', ?, ?, ?, ?, ?, ?, ?)`)
+    remaining_payment_due_at, remaining_reminder_lead_minutes, remaining_reminder_at, created_at, updated_at, is_test, test_run_id
+  ) VALUES (?, ?, ?, 'tentative', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(crypto.randomUUID(), paymentId, request.id, finalizeAfter, approvedPartial ? 1 : 0, approvedPartial ? remainingDueAt : null,
+      approvedPartial ? reminder.laterReminderLeadMinutes : null,
+      approvedPartial ? new Date(new Date(remainingDueAt!).getTime() - reminder.laterReminderLeadMinutes * 60_000).toISOString() : null,
       now, now, request.isTest, request.testRunId));
   await env.DB.batch(statements);
   return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial };

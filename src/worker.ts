@@ -2,6 +2,7 @@ import { handleApiRequest } from "./server/api/router";
 import type { WorkerEnv, WorkerExecutionContext, WorkerScheduledController } from "./server/env";
 import { handlePublicQrRedirect } from "./server/public-qr-redirects";
 import { finalizeDuePaymentConfirmations } from "./server/staff/payment-reconciliation";
+import { processDuePaymentReminders } from "./server/staff/payment-reminders";
 
 export default {
   async fetch(request: Request, env: WorkerEnv, context: WorkerExecutionContext): Promise<Response> {
@@ -10,6 +11,10 @@ export default {
     return handleApiRequest(request, env, context);
   },
   async scheduled(controller: WorkerScheduledController, env: WorkerEnv, context: WorkerExecutionContext): Promise<void> {
-    context.waitUntil(finalizeDuePaymentConfirmations(env, new Date(controller.scheduledTime)));
+    const now = new Date(controller.scheduledTime);
+    context.waitUntil(Promise.allSettled([
+      finalizeDuePaymentConfirmations(env, now),
+      processDuePaymentReminders(env, now),
+    ]));
   },
 };

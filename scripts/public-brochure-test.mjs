@@ -14,8 +14,19 @@ assert.equal((home.match(/href="\/register\/\?new=1"/g) || []).length, 2);
 assert.match(home, /brand-logo/); assert.doesNotMatch(home, /current-registration|stage-item|hero-logo|Одоо бүртгэж байна/);
 assert.match(prose, /startsWith\("## "\)/); assert.match(prose, /<p>/); assert.match(prose, /escapePublicText/);
 assert.doesNotMatch(prose, /markdown|<script>/i);
-assert.match(font, /font === "serif" \? "serif" : "sans"/);
+assert.match(font, /normalizePublicFont\(font\) \|\| "sans"/);
+assert.match(font, /PUBLIC_FONT_STORAGE_KEY = "naranerdem\.public-font"/);
+assert.match(font, /font === "serif" \|\| font === "sans"/);
+assert.match(font, /localStorage\.setItem\(PUBLIC_FONT_STORAGE_KEY, value\)/);
+for (const page of [home, register]) {
+  assert.match(page, /localStorage\.getItem\("naranerdem\.public-font"\)/, "public shells have the early font bootstrap");
+  assert.match(page, /value === "sans" \|\| value === "serif"/, "bootstrap accepts only public font enums");
+}
+assert.match(program, /loadPublicFont\(\)/, "program pages reconcile the authoritative font setting");
+assert.doesNotMatch(staff, /naranerdem\.public-font/, "staff pages do not bootstrap the public font");
 assert.match(styles, /\.simple-hero h1 \{[^}]*font-size: clamp\(2\.35rem, 9vw, 5\.5rem\)[^}]*white-space: nowrap/, "hero title stays on one line at a responsive size");
+assert.match(styles, /@media \(max-width: 32rem\)[\s\S]*data-public-font="serif"[\s\S]*font-size: 17px/, "serif public body text grows slightly on phones");
+assert.match(styles, /\.public-prose h2 \{ font-size: clamp\(1\.35rem, 2vw, 1\.85rem\)/, "brochure headings remain unchanged");
 assert.match(register, /loadPublicFont\(\)/); assert.match(program, /loadPublicFont\(\)/);
 assert.doesNotMatch(staff, /program-long-description|Дэлгэрэнгүй тайлбар/);
 

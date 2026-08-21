@@ -462,7 +462,7 @@ try {
   const fallbackSession = session(iso(7), iso(67));
   const fallbackConfirmed = await confirmRegistrationChallenge(env(database), fallbackChallenge, fallbackSession, new Date(iso(7)));
   assert.equal(fallbackConfirmed.hasPaymentHold, true);
-  assert.equal(fallbackConfirmed.paymentDeadlineAt, iso(7 + 24 * 60), "fresh payment hold starts at confirmation");
+  assert.equal(fallbackConfirmed.paymentDeadlineAt, iso(12), "existing accepted payment hold retains its snapshotted deadline through email confirmation");
   assert.equal(count(database, "registration_draft_waitlist_entry", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${fallback.draftId}')`), 1);
   const fallbackStatus = await registrationStatusForSession(database, fallbackSession.rawToken, new Date(iso(8)));
   assert.equal(fallbackStatus.id, fallback.draftId);

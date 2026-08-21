@@ -3,7 +3,7 @@ import { contact } from "../content/contact";
 import { siteIdentity } from "../content/homepage";
 import "../styles/global.css";
 ---
-<html lang="mn" data-public-font="sans"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content={siteIdentity.description} /><title>{siteIdentity.title}</title></head>
+<html lang="mn" data-public-font="sans"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content={siteIdentity.description} /><title>{siteIdentity.title}</title><script is:inline>try { const value = localStorage.getItem("naranerdem.public-font"); if (value === "sans" || value === "serif") document.documentElement.dataset.publicFont = value; } catch {}</script></head>
 <body class="public-page"><header class="site-header"><a class="brand-link" href="/"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>{siteIdentity.shortProgramLabel}</span></span></a></header>
 <main class="simple-home section-shell">
   <section class="simple-hero"><h1>Наран Эрдэм</h1><p class="simple-subtitle">ХҮҮХДИЙН ШИНЖЛЭХ УХААНЫ ЛАБОРАТОРИ</p><p id="homepage-intro" hidden></p><div class="action-row"><a class="button primary" href="/register/?new=1">Бүртгүүлэх</a><a id="homepage-facebook-top" class="button secondary" href={contact.facebook.href} target="_blank" rel="noreferrer">Facebook</a></div></section>

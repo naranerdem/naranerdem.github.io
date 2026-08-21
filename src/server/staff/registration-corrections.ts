@@ -28,6 +28,7 @@ export async function registrationCorrectionDetail(env: WorkerEnv, actor: StaffP
     registration_draft_child.id AS childId, registration_draft_child.surname, registration_draft_child.given_name AS givenName,
     registration_draft_child.gender, registration_draft_child.date_of_birth AS dateOfBirth,
     registration_draft_child.current_grade AS currentGrade, registration_draft_child.current_school AS currentSchool,
+    registration_draft_child.facebook_name AS childFacebookName,
     registration_draft_child.canonical_student_id AS canonicalStudentId
     FROM registration_draft_child INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     WHERE registration_draft_child.id = ?`).bind(childId).first<Record<string, unknown>>();
@@ -43,7 +44,7 @@ export async function saveRegistrationCorrection(env: WorkerEnv, actor: StaffPri
   const currentGrade = text(input.currentGrade, 20, true);
   if (!guardianName || !primaryPhone || !email || !surname || !givenName || !gender || !dateOfBirth || !currentGrade) throw new RegistrationCorrectionError("invalid");
   const next = { guardianName, primaryPhone, secondaryPhone: text(input.secondaryPhone, 40), email, facebookName: text(input.facebookName, 160),
-    homeAddress: text(input.homeAddress, 500, true), surname, givenName, gender, dateOfBirth, currentGrade, currentSchool: text(input.currentSchool, 160) };
+    homeAddress: text(input.homeAddress, 500, true), surname, givenName, gender, dateOfBirth, currentGrade, currentSchool: text(input.currentSchool, 160), childFacebookName: text(input.childFacebookName, 160) };
   if (!next.homeAddress) throw new RegistrationCorrectionError("invalid");
   const draftId = String(current.draftId); const canonicalGuardianId = current.canonicalGuardianId ? String(current.canonicalGuardianId) : "";
   // A verified/reused guardian can be shared by prior registrations; never silently rewrite it.
@@ -57,7 +58,7 @@ export async function saveRegistrationCorrection(env: WorkerEnv, actor: StaffPri
   }
   const before = { guardianName: current.guardianName, primaryPhone: current.primaryPhone, secondaryPhone: current.secondaryPhone, email: current.email,
     facebookName: current.facebookName, homeAddress: current.homeAddress, surname: current.surname, givenName: current.givenName, gender: current.gender,
-    dateOfBirth: current.dateOfBirth, currentGrade: current.currentGrade, currentSchool: current.currentSchool };
+    dateOfBirth: current.dateOfBirth, currentGrade: current.currentGrade, currentSchool: current.currentSchool, childFacebookName: current.childFacebookName };
   const fields = Object.keys(next).filter((key) => String((before as Record<string, unknown>)[key] ?? "") !== String((next as Record<string, unknown>)[key] ?? ""));
   if (!fields.length) return current;
   const now = new Date().toISOString();
@@ -67,8 +68,8 @@ export async function saveRegistrationCorrection(env: WorkerEnv, actor: StaffPri
     env.DB.prepare(`UPDATE registration_draft SET guardian_full_name = ?, primary_phone = ?, secondary_phone = ?, email = ?,
       normalized_email = lower(trim(?)), facebook_name = ?, home_address = ?, verified_at = CASE WHEN ? THEN NULL ELSE verified_at END,
       updated_at = ? WHERE id = ?`).bind(next.guardianName, next.primaryPhone, next.secondaryPhone, next.email, next.email, next.facebookName, next.homeAddress, emailChanged ? 1 : 0, now, draftId),
-    env.DB.prepare(`UPDATE registration_draft_child SET surname = ?, given_name = ?, gender = ?, date_of_birth = ?, current_grade = ?, current_school = ?, updated_at = ? WHERE id = ?`)
-      .bind(next.surname, next.givenName, next.gender, next.dateOfBirth, next.currentGrade, next.currentSchool, now, childId),
+    env.DB.prepare(`UPDATE registration_draft_child SET surname = ?, given_name = ?, gender = ?, date_of_birth = ?, current_grade = ?, current_school = ?, facebook_name = ?, updated_at = ? WHERE id = ?`)
+      .bind(next.surname, next.givenName, next.gender, next.dateOfBirth, next.currentGrade, next.currentSchool, next.childFacebookName, now, childId),
     env.DB.prepare(`INSERT INTO registration_data_correction (id, registration_draft_id, registration_draft_child_id, corrected_by_staff_account_id,
       before_json, after_json, created_at, is_test, test_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(crypto.randomUUID(), draftId, childId, actor.staffAccountId, JSON.stringify(before), JSON.stringify(next), now, flags?.isTest ?? 0, flags?.testRunId ?? null),

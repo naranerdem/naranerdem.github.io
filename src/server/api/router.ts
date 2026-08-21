@@ -76,6 +76,7 @@ import {
 } from "../staff/session-policy";
 import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
 import { InitialPaymentDeadlineError, updateInitialPaymentDeadlineSetting } from "../staff/initial-payment-deadline";
+import { PaymentReminderError, updatePaymentReminderSetting } from "../staff/payment-reminders";
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
 import { PublicContentError, saveCourseRule, updatePublicCenterInformation } from "../staff/public-content";
 import { getCourseRules } from "../staff/public-content";
@@ -1441,6 +1442,13 @@ export async function handleApiRequest(
             deadlineMinutes: Number(payload.deadlineMinutes), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "payment-reminder-setting.save":
+          await updatePaymentReminderSetting(env, principal, {
+            initialReminderLeadMinutes: Number(payload.initialReminderLeadMinutes),
+            laterReminderLeadMinutes: Number(payload.laterReminderLeadMinutes),
+            expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         case "public-site-font.save":
           try {
             await updatePublicSiteFont(env, principal, { font: payload.font, expectedUpdatedAt: payload.expectedUpdatedAt });
@@ -1473,6 +1481,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Төлбөр хийх хугацааны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof PaymentReminderError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "Сануулгын хугацааны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PublicSiteFontError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

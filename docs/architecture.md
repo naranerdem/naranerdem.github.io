@@ -122,7 +122,7 @@ It should emphasize:
 
 - what needs attention today
 - payment confirmations
-- provisional email holds nearing expiry, and overdue unresolved initial payments
+- overdue unresolved initial payments; provisional-email hold expiry is legacy compatibility only
 - due and overdue installments
 - granted extensions
 - quick student/family search
@@ -168,7 +168,7 @@ slot. A future Mongolian Content/Settings editor should support quick phone
 edits but remain desktop-comfortable for long rules. It must stay a collection
 of clear operational tools, not a generic heavyweight CMS.
 
-Small public operational content is typed and D1-authoritative: center contact/prose belongs to one `public_center_information` singleton, and recommended grade guidance plus public descriptions belong to the stable Program family rather than lesson-content revisions. Teacher/admin edit this through one phone-friendly `Мэдээлэл` surface and the existing Program screen. These fields never advance curriculum revisions or alter Offering pins. GitHub Pages uses checked-in safe defaults until a future public-page composition pass consumes the D1 content.
+Small public operational content is typed and D1-authoritative: center contact/prose belongs to one `public_center_information` singleton, and recommended grade guidance plus public descriptions belong to the stable Program family rather than lesson-content revisions. Teacher/admin edit this through one phone-friendly `Мэдээлэл` surface and the existing Program screen. These fields never advance curriculum revisions or alter Offering pins. The current homepage is the simple D1-backed brochure surface; GitHub Pages uses checked-in safe defaults when its static fallback cannot read D1.
 
 The public site consumes one narrow unauthenticated read model that combines only center information, annual Program-family public metadata, published lesson counts, and the existing registration catalog's safe availability result. It never returns lesson titles, notes, revisions, staff records, or payment instructions. Stable public annual Program routes are `/programs/stage-1/`, `/programs/stage-2/`, and `/programs/stage-3/`. Named summer Program detail routes remain a future extension; the static site does not need dynamic routing or SSR for this initial set.
 
@@ -286,9 +286,7 @@ Opening a course class is server-gated on valid Offering pricing and completed
 teacher/admin-managed operational payment collection information. The parent catalog exposes only safe
 plan amounts; bank name, account holder, optional IBAN, account number, and optional transfer
 instruction appear after accepted submission creates the initial-payment
-reservation with a 24-hour payment deadline. Initial payment confirmation and allocation reconciliation are
-implemented; adjustments, credits/refunds, bank adapters, and broader finance
-queues remain deliberately unimplemented.
+reservation with a snapshotted configured initial-payment deadline (default 1,440 minutes / 24 hours). Initial payment confirmation, allocation reconciliation, explicit released-payment credit, and manual refund marking are implemented; broader adjustments, bank adapters, and finance queues remain future work.
 
 Migration 0023 adds explicit teacher-managed `RegistrationWindow` membership
 for ordinary public registration. A class is newly registerable only when its
@@ -360,11 +358,15 @@ remain separate future work.
 
 ### Scheduled reminder jobs
 
+Migration 0033 adds a narrow typed reminder setting and durable, channel-neutral payment-notification milestones. New initial and later obligations snapshot their reminder lead time and scheduled timestamp; a later admin change never moves an existing obligation. The Worker Cron may queue one initial pre-deadline reminder, one initial overdue notice, one later-installment reminder, or one approved-partial-balance reminder as applicable. Processing is idempotent and retryable through `outbound_email`; delivery failure is operationally visible but cannot alter a hold, enrollment, payment, waitlist, or capacity state. Email is the current channel; the milestone record deliberately leaves room for a later verified phone/SMS delivery channel without treating email as the parent's only identity channel.
+
+An Offering remains the only authority for its optional private Facebook-group URL. A submitted child Facebook name is an optional registration snapshot for onboarding and teacher correction; it is not an identity proof. After confirmed enrollment, the registration status and confirmation email may show the Offering group and the configured public center Facebook page. Waitlist-only registrations receive neither onboarding link nor payment reminder.
+
 Reminder jobs should be configurable and should operate on effective deadlines rather than only original due dates.
 
 Initial payment reminders and later installment reminders may share scheduling machinery, but their consequences differ. An overdue initial payment is a teacher reconciliation item, not an automatic release. A late installment must not automatically delete or cancel a confirmed enrollment.
 
-Later-installment reminder policy is also **future planned**. One-time payment is simplest; two installments are expected to be common; exceptional private schedules should not become normal public choices. For ordinary installments, configurable escalation should support one restrained email before the effective deadline, a teacher task that produces copyable Messenger text, and an accountant call queue after an overdue threshold. Reminder timing uses effective due dates while retaining original due dates. The initial 24-hour registration/payment hold is a different, more time-sensitive workflow.
+Implemented reminder delivery is limited to one initial pre-deadline email, one initial overdue email, one later-installment reminder, and one approved-partial-balance reminder. One-time payment is simplest; two installments are expected to be common; exceptional private schedules should not become normal public choices. Still future are grouped sibling reminders, copyable Messenger workflow, accountant escalation/call queue, and broader escalation policy. Reminder timing uses effective due dates while retaining original due dates. The snapshotted configured initial-payment deadline (default 1,440 minutes / 24 hours) remains a distinct, more time-sensitive workflow.
 
 The future copyable Messenger payment message should contain only appropriate parent/child context, amount, due date, and a first-party opaque status/payment link such as `naranerdem.com/p/<opaque-token>`. No PII or amount belongs directly in the URL, and no third-party URL shortener is needed.
 

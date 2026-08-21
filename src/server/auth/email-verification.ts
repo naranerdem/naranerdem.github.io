@@ -255,7 +255,14 @@ export async function sendRegistrationPaymentMilestone(env: WorkerEnv, registrat
     .bind(id, draft.normalizedEmail, delivery.actualEmail, delivery.deliveryMode, now, `payment-confirmed/${registrationDraftId}`,
       draft.isTest, draft.testRunId, now, now, registrationDraftId).run();
   if (!existing && changeCount(inserted ?? undefined) !== 1) return true;
-  const template = paymentConfirmedTemplate();
+  const onboarding = await env.DB.prepare(`SELECT activity_offering.facebook_group_url AS facebookGroupUrl
+    FROM registration_draft_child INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+    WHERE registration_draft_child.registration_draft_id = ? AND registration_draft_child.canonical_enrollment_id IS NOT NULL
+    ORDER BY registration_draft_child.position LIMIT 1`).bind(registrationDraftId).first<{ facebookGroupUrl: string | null }>();
+  const center = await env.DB.prepare(`SELECT facebook_page_url AS facebookUrl FROM public_center_information WHERE singleton = 1`)
+    .first<{ facebookUrl: string | null }>();
+  const template = paymentConfirmedTemplate({ facebookGroupUrl: onboarding?.facebookGroupUrl, centerFacebookUrl: center?.facebookUrl });
   await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), {
     id, idempotencyKey: `payment-confirmed/${registrationDraftId}`,
     message: { from: env.EMAIL_FROM, to: existing?.actualDeliveryEmail ?? delivery.actualEmail, subject: template.subject, html: template.html, text: template.text },

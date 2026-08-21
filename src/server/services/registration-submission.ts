@@ -6,6 +6,7 @@ import { getPaymentCollectionSettings, getPaymentCollectionSettingsFromDatabase,
 import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
 import { assertCourseRuleVersions, PublicContentError } from "../staff/public-content";
 import { getInitialPaymentDeadlineSettingFromDatabase } from "../staff/initial-payment-deadline";
+import { getPaymentReminderSetting } from "../staff/payment-reminders";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -30,6 +31,7 @@ export interface RegistrationSubmissionInput {
     dateOfBirth: string;
     currentGrade: string;
     currentSchool?: string;
+    facebookName?: string;
     returningStatus: "new" | "returning";
     previousStageCode?: StageCode | "unknown";
     selectedStageCode: StageCode;
@@ -197,6 +199,7 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
       dateOfBirth: clean(source.dateOfBirth, 10),
       currentGrade: clean(source.currentGrade, 20),
       currentSchool: clean(source.currentSchool, 160),
+      facebookName: clean(source.facebookName, 160),
       returningStatus: source.returningStatus,
       previousStageCode: source.previousStageCode,
       selectedStageCode: source.selectedStageCode,
@@ -376,7 +379,9 @@ export async function createRegistrationDraft(
 
   const now = nowDate.toISOString();
   const paymentDeadline = await getInitialPaymentDeadlineSettingFromDatabase(env.DB);
+  const paymentReminder = await getPaymentReminderSetting(env);
   const paymentDeadlineAt = addSeconds(nowDate, paymentDeadline.deadlineMinutes * 60);
+  const initialReminderAt = addSeconds(nowDate, (paymentDeadline.deadlineMinutes - paymentReminder.initialReminderLeadMinutes) * 60);
   const expiresAt = addSeconds(nowDate, REGISTRATION_DRAFT_TTL_SECONDS);
   const draftId = crypto.randomUUID();
   const testRunId = `registration:${draftId}`;
@@ -409,15 +414,15 @@ export async function createRegistrationDraft(
     statements.push(env.DB.prepare(`
       INSERT INTO registration_draft_child (
         id, registration_draft_id, position, surname, given_name, gender,
-        date_of_birth, current_grade, current_school, returning_status,
+        date_of_birth, current_grade, current_school, facebook_name, returning_status,
         previous_stage_code, selected_stage_code, selected_class_session_id,
         preferred_waitlist_class_session_id, code_input, payment_plan_code,
         initial_payment_amount_mnt, second_payment_amount_mnt, second_payment_due_on, status, is_test,
         test_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
     `).bind(
       childIds[index], draftId, index, child.surname, child.givenName, child.gender,
-      child.dateOfBirth, child.currentGrade, child.currentSchool || null,
+      child.dateOfBirth, child.currentGrade, child.currentSchool || null, child.facebookName || null,
       child.returningStatus, child.previousStageCode || null, child.selectedStageCode,
       child.selectedClassSessionId || null, child.preferredWaitlistClassSessionId || null,
       child.codeInput || null, paymentSnapshots[index]?.code ?? null, paymentSnapshots[index]?.initial ?? null,
@@ -462,23 +467,23 @@ export async function createRegistrationDraft(
   `).bind(paymentRequestId, reference, description, now, now, draftId));
   statements.push(env.DB.prepare(`
     INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
-      amount_mnt, original_due_at, effective_due_at, status, created_at, updated_at, is_test, test_run_id)
+      amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, created_at, updated_at, is_test, test_run_id)
     SELECT registration_draft_child.id || ':initial-installment', ?, registration_draft_child.id, 1, 'initial',
-      registration_draft_child.initial_payment_amount_mnt, ?, ?, 'pending', ?, ?, registration_draft_child.is_test, registration_draft_child.test_run_id
+      registration_draft_child.initial_payment_amount_mnt, ?, ?, ?, ?, 'pending', ?, ?, registration_draft_child.is_test, registration_draft_child.test_run_id
     FROM registration_draft_child WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.selected_class_session_id IS NOT NULL AND registration_draft_child.initial_payment_amount_mnt IS NOT NULL
       AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
-  `).bind(paymentRequestId, paymentDeadlineAt, paymentDeadlineAt, now, now, draftId, paymentRequestId));
+  `).bind(paymentRequestId, paymentDeadlineAt, paymentDeadlineAt, paymentReminder.initialReminderLeadMinutes, initialReminderAt, now, now, draftId, paymentRequestId));
   statements.push(env.DB.prepare(`
     INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
-      amount_mnt, original_due_at, effective_due_at, status, created_at, updated_at, is_test, test_run_id)
+      amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, created_at, updated_at, is_test, test_run_id)
     SELECT registration_draft_child.id || ':later-installment', ?, registration_draft_child.id, 2, 'later',
       registration_draft_child.second_payment_amount_mnt, registration_draft_child.second_payment_due_on,
-      registration_draft_child.second_payment_due_on, 'pending', ?, ?, registration_draft_child.is_test, registration_draft_child.test_run_id
+      registration_draft_child.second_payment_due_on, ?, strftime('%Y-%m-%dT%H:%M:%fZ', datetime(registration_draft_child.second_payment_due_on, '-' || ? || ' minutes')), 'pending', ?, ?, registration_draft_child.is_test, registration_draft_child.test_run_id
     FROM registration_draft_child WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.second_payment_amount_mnt IS NOT NULL AND registration_draft_child.second_payment_due_on IS NOT NULL
       AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
-  `).bind(paymentRequestId, now, now, draftId, paymentRequestId));
+  `).bind(paymentRequestId, paymentReminder.laterReminderLeadMinutes, paymentReminder.laterReminderLeadMinutes, now, now, draftId, paymentRequestId));
 
   const results = await env.DB.batch(statements);
   const holdResult = results[results.length - 6];
@@ -696,7 +701,10 @@ export async function confirmRegistrationChallenge(
   if (!challenge.registrationDraftId) throw new RegistrationSubmissionError("challenge_not_registration");
   const draftId = challenge.registrationDraftId;
   const now = nowDate.toISOString();
-  const paymentDeadlineAt = addSeconds(nowDate, 24 * 60 * 60);
+  const paymentDeadline = await getInitialPaymentDeadlineSettingFromDatabase(env.DB);
+  const paymentReminder = await getPaymentReminderSetting(env);
+  const paymentDeadlineAt = addSeconds(nowDate, paymentDeadline.deadlineMinutes * 60);
+  const initialReminderAt = addSeconds(nowDate, (paymentDeadline.deadlineMinutes - paymentReminder.initialReminderLeadMinutes) * 60);
   const paymentRequestId = crypto.randomUUID();
   const reference = await unusedPaymentReference(env.DB);
   const counts = await env.DB.prepare(`
@@ -789,31 +797,31 @@ export async function confirmRegistrationChallenge(
   const initialInstallments = env.DB.prepare(`
     INSERT OR IGNORE INTO payment_installment (
       id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
-      amount_mnt, original_due_at, effective_due_at, status, created_at, updated_at, is_test, test_run_id
+      amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, created_at, updated_at, is_test, test_run_id
     ) SELECT registration_draft_child.id || ':initial-installment', ?, registration_draft_child.id, 1, 'initial',
-      registration_draft_child.initial_payment_amount_mnt, ?, ?, 'pending', ?, ?, registration_draft_child.is_test,
+      registration_draft_child.initial_payment_amount_mnt, ?, ?, ?, ?, 'pending', ?, ?, registration_draft_child.is_test,
       registration_draft_child.test_run_id
     FROM registration_draft_child
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.selected_class_session_id IS NOT NULL
       AND registration_draft_child.initial_payment_amount_mnt IS NOT NULL
       AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
-  `).bind(paymentRequestId, paymentDeadlineAt, paymentDeadlineAt, now, now, draftId, paymentRequestId);
+  `).bind(paymentRequestId, paymentDeadlineAt, paymentDeadlineAt, paymentReminder.initialReminderLeadMinutes, initialReminderAt, now, now, draftId, paymentRequestId);
   const laterInstallments = env.DB.prepare(`
     INSERT OR IGNORE INTO payment_installment (
       id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
-      amount_mnt, original_due_at, effective_due_at, status, created_at, updated_at, is_test, test_run_id
+      amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, created_at, updated_at, is_test, test_run_id
     ) SELECT registration_draft_child.id || ':later-installment', ?, registration_draft_child.id, 2, 'later',
       registration_draft_child.second_payment_amount_mnt,
       registration_draft_child.second_payment_due_on || '9999-12-31',
-      registration_draft_child.second_payment_due_on || '9999-12-31', 'pending', ?, ?, registration_draft_child.is_test,
+      registration_draft_child.second_payment_due_on || '9999-12-31', ?, strftime('%Y-%m-%dT%H:%M:%fZ', datetime(registration_draft_child.second_payment_due_on, '-' || ? || ' minutes')), 'pending', ?, ?, registration_draft_child.is_test,
       registration_draft_child.test_run_id
     FROM registration_draft_child
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.second_payment_amount_mnt IS NOT NULL
       AND registration_draft_child.second_payment_due_on IS NOT NULL
       AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
-  `).bind(paymentRequestId, now, now, draftId, paymentRequestId);
+  `).bind(paymentRequestId, paymentReminder.laterReminderLeadMinutes, paymentReminder.laterReminderLeadMinutes, now, now, draftId, paymentRequestId);
 
   const results = await env.DB.batch([sessionInsert, challengeUpdate, holdUpdate, waitlistInsert, draftVerified, paymentRequest, initialInstallments, laterInstallments]);
   if (changeCount(results[0]) !== 1 || changeCount(results[1]) !== 1 || changeCount(results[4]) !== 1) {
