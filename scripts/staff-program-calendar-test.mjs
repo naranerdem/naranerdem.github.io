@@ -207,7 +207,7 @@ try {
   assert.match(programsPage, /program\.publish[\s\S]*state\.edit = false/, "successful Program save returns to the ordinary Program view");
   assert.match(programsPage, /Зөвлөмжит анги/, "Program detail presents recommended grades directly");
   assert.match(programsPage, /Хичээлийн жагсаалт/, "curriculum editing is visibly attached to the lesson list");
-  assert.match(programsPage, /program-long-dialog/, "long public descriptions use a separate focused panel");
+  assert.doesNotMatch(programsPage, /program-long-dialog|program-long-description/, "routine Program editing does not expose the retired long-description editor");
   assert.match(infoPage, /querySelectorAll\("\[data-rule\]"\)/, "both rule edit buttons receive listeners");
   assert.match(programsPage, /Өмнө нь хичээл оруулах/, "the Program row menu supports insertion before a lesson");
   assert.match(programsPage, /data-staff-action-menu/, "Program row menus opt into the shared one-menu controller");
@@ -555,6 +555,11 @@ try {
   assert.equal(database.query(`SELECT starts_on AS startsOn FROM activity_offering WHERE id = ${quote(defaultStartOffering.id)}`)[0].startsOn, "2028-10-05", "a teacher can override the prepopulated annual start date");
   assert.ok(count(database, "audit_event", "action LIKE 'program_%' OR action LIKE 'calendar_%'") >= 7, "meaningful staff actions are audited");
   const overview = await service.getProgramCalendarOverview(runtime);
+  assert.equal(overview.publicSiteFont.font, "sans", "overview keeps the public font setting in its own field");
+  assert.equal("showSetupSection" in overview.publicSiteFont, false, "public font is not confused with dashboard preferences");
+  assert.equal(overview.teacherDashboardPreferences.showSetupSection, true, "overview keeps dashboard preferences in their own field");
+  assert.equal("font" in overview.teacherDashboardPreferences, false, "dashboard preferences are not confused with the public font");
+  assert.ok(Array.isArray(overview.courseRules) && overview.courseRules.every((rule) => typeof rule.code === "string" && typeof rule.versionId === "string"), "overview keeps course rules as rule documents");
   assert.equal(overview.classes.find((entry) => entry.id === "class-1").displayLabel, "1-р шат · Бямба 10:00–11:20", "teacher overview ignores a legacy manual class label");
   assert.equal(overview.classes.find((entry) => entry.id === "class-1").offeringId, "offering-annual-stage-1", "class remains attached to its offering");
   assert.equal(overview.classes.find((entry) => entry.id === "class-1").canDelete, false, "reference checks keep linked classes out of the delete path");

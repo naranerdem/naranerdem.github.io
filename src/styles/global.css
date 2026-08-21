@@ -3513,6 +3513,6 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
 .simple-hero h1 { color: #073aaf; font-size: clamp(3rem, 10vw, 5.5rem); margin: 0; }
 .simple-subtitle { color: #e56d18; letter-spacing: .08em; font-size: .9rem; margin: .5rem 0 1rem; }
 .public-prose { margin: 2rem 0; }
-.public-prose h2 { font-size: clamp(1.65rem, 3vw, 2.35rem); margin: 1.5rem 0 .5rem; }
+.public-prose h2 { font-size: clamp(1.35rem, 2vw, 1.85rem); margin: 1.5rem 0 .5rem; }
 .public-prose p { margin: 0 0 1rem; }
 .homepage-secondary-actions { margin-bottom: clamp(2rem, 5vw, 4rem); }

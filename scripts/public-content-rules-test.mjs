@@ -63,8 +63,10 @@ try {
   assert.match(publicSiteSource, /getPublicSiteFontForPresentation\(env\)/, "public projection uses presentation fallback");
   assert.match(overviewSource, /getPublicSiteFontForPresentation\(env\)/, "staff overview uses presentation fallback");
   const homepage = readFileSync("src/pages/index.astro", "utf8"); const styles = readFileSync("src/styles/global.css", "utf8");
+  const settingsPage = readFileSync("src/pages/staff/settings/index.astro", "utf8");
+  assert.match(settingsPage, /public-site-font\.save", \{ font: q\("#public-font"\)\.value, expectedUpdatedAt: fontSetting\.updatedAt \}/, "font form submits the font setting's optimistic-concurrency value");
   assert.match(homepage, /homepage-secondary-actions/, "second CTA row has explicit contact spacing hook");
-  assert.match(styles, /\.public-prose h2 \{ font-size: clamp\(1\.65rem, 3vw, 2\.35rem\)/, "public prose headings use the reduced size");
+  assert.match(styles, /\.public-prose h2 \{ font-size: clamp\(1\.35rem, 2vw, 1\.85rem\)/, "public prose headings use the reduced size");
   assert.match(styles, /\.homepage-secondary-actions \{ margin-bottom: clamp\(2rem, 5vw, 4rem\)/, "contact follows the second CTA with extra separation");
   console.log("ok typed public content, immutable course rules, stale provenance, permissions, and audit");
 } finally { rmSync(tempDir, { recursive: true, force: true }); }
