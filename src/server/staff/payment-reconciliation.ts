@@ -204,8 +204,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   capacity: capacity.results.map((item) => ({ ...item, capacity: Number(item.capacity), confirmedCount: Number(item.confirmedCount), reservedInitialPaymentCount: Number(item.reservedInitialPaymentCount), waitlistCount: Number(item.waitlistCount), freeSeats: Math.max(Number(item.capacity) - Number(item.confirmedCount) - Number(item.reservedInitialPaymentCount), 0) })),
   waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
-    registration_draft.primary_phone AS primaryPhone, class_session.display_label AS classLabel,
-    class_session.weekday AS weekday, class_session.start_time AS startTime, class_session.end_time AS endTime
+    registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone, registration_draft.email, registration_draft.facebook_name AS guardianFacebookName,
+    registration_draft_child.facebook_name AS childFacebookName, class_session.display_label AS classLabel,
+    class_session.weekday AS weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
+    (SELECT COUNT(*) FROM registration_draft_waitlist_entry AS earlier WHERE earlier.class_session_id = registration_draft_waitlist_entry.class_session_id
+      AND earlier.status = 'active' AND (earlier.created_at < registration_draft_waitlist_entry.created_at OR (earlier.created_at = registration_draft_waitlist_entry.created_at AND earlier.id <= registration_draft_waitlist_entry.id))) AS fifoPosition
     FROM registration_draft_waitlist_entry
     INNER JOIN registration_draft_child ON registration_draft_child.id = registration_draft_waitlist_entry.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id

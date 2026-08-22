@@ -989,16 +989,19 @@ const formCopy = registrationFormCopy;
         studentAcknowledged = false;
         childrenList.replaceChildren();
         childCount = 0;
+        catalog = null;
+        catalogState = "loading";
         renderChild(childCount, "");
         childCards().forEach((card) => { updateStageOptions(card); renderClasses(card); });
         showRegistrationForm();
         window.history.replaceState({}, "", "/register/?new=1");
+        void loadCatalog(true);
       }
       restoreDraftButton.addEventListener("click", () => storedDraft && restoreDraft(storedDraft));
       discardDraftButton.addEventListener("click", discardStoredDraft);
-      async function loadCatalog() {
+      async function loadCatalog(forceFresh = false) {
         try {
-          const response = await fetch("/api/registration/catalog", { headers: { Accept: "application/json" } });
+          const response = await fetch("/api/registration/catalog", { headers: { Accept: "application/json" }, cache: forceFresh ? "no-store" : "default" });
           if (!response.ok) throw new Error("Catalog unavailable");
           const payload = await response.json();
           if (!Array.isArray(payload.academicYears)) throw new Error("Invalid catalog");

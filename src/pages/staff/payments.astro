@@ -30,7 +30,7 @@ import "../../styles/global.css";
     <script>
       // @ts-nocheck
       import { escape, formatDate } from "../../scripts/staff-setup.js";
-      const state = { data: null, openId: "", pendingId: "", detailId: "" };
+      const state = { data: null, openId: "", pendingId: "", detailId: "", openWaitlistId: "" };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -54,7 +54,7 @@ import "../../styles/global.css";
         const tentative = item.tentativePaymentId ? `<p class="staff-muted"><button class="text-button" type="button" data-payment-undo="${escape(item.tentativePaymentId)}">Буцаах</button></p>` : "";
         return `<article class="staff-payment-item ${overdue ? "is-overdue" : ""}">
           <div><strong>${escape(item.childName)}</strong><p>${escape(item.classLabel)} · ${escape(item.weekday)} ${escape(item.startTime)}–${escape(item.endTime)}</p>
-          <p><strong>${escape(remaining > 0 ? mnt(remaining) : "Эхний төлбөр орсон")}</strong>${remaining > 0 ? " үлдсэн" : ""}</p>${remaining > 0 ? `<p>${escape(dueText({ ...item, paymentDueAt: effectiveDue }))}</p>` : ""}
+          <p><strong>${escape(remaining > 0 ? mnt(remaining) : item.laterAmountMnt ? "Эхний төлбөр баталгаажсан" : "Төлбөр баталгаажсан")}</strong>${remaining > 0 ? " үлдсэн" : ""}</p>${remaining > 0 ? `<p>${escape(dueText({ ...item, paymentDueAt: effectiveDue }))}</p>` : ""}
           ${item.laterAmountMnt ? `<p class="staff-muted">Дараагийн төлбөр: ${escape(mnt(item.laterAmountMnt))} · ${escape(localLabel(item.laterDueAt))}</p>` : ""}
           ${item.parentClaimed ? `<p class="staff-muted">Эцэг эх төлсөн гэж мэдэгдсэн</p>` : ""}
           ${item.seatConfirmationApproved ? `<p class="staff-muted">Суудал баталгаажсан</p>` : ""}</div>
@@ -76,7 +76,7 @@ import "../../styles/global.css";
         </article>`;
       }
       function creditMarkup(item) { return `<article class="staff-payment-item"><div><strong>${escape(item.guardianName || "")}</strong><p>${escape(item.childNames || "")}</p><p><strong>${escape(mnt(item.availableAmountMnt))}</strong> кредит / буцаалт</p></div><div class="staff-payment-actions"><button class="text-button" type="button" data-credit-refund="${escape(item.id)}">Буцаан төлсөн</button></div></article>`; }
-      function waitlistMarkup(item) { return `<article class="staff-payment-item"><div><strong>${escape(item.childName)}</strong><p>${escape(item.classLabel)} · ${escape(item.weekday)} ${escape(item.startTime)}–${escape(item.endTime)}</p><p class="staff-muted">${escape(item.primaryPhone || "")}</p></div><div class="staff-payment-actions"><button class="text-button" type="button">Нээх</button></div></article>`; }
+      function waitlistMarkup(item) { const open = state.openWaitlistId === item.id; return `<article class="staff-payment-item"><div><strong>${escape(item.childName)}</strong><p>${escape(item.classLabel)} · ${escape(item.weekday)} ${escape(item.startTime)}–${escape(item.endTime)}</p><p class="staff-muted">Хүлээлтэд ${item.fifoPosition}-рт</p></div><div class="staff-payment-actions"><button class="text-button" type="button" data-waitlist-detail="${escape(item.id)}">Нээх</button></div>${open ? `<div class="staff-payment-form"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>И-мэйл: ${escape(item.email || "")}</p>${item.guardianFacebookName ? `<p>Facebook: ${escape(item.guardianFacebookName)}</p>` : ""}${item.childFacebookName ? `<p>Хүүхдийн Facebook: ${escape(item.childFacebookName)}</p>` : ""}<p>Хүлээлтэд орсон: ${escape(localLabel(item.createdAt))}</p><p>Энэ ангид ${item.fifoPosition}-рт байна.</p><button class="button secondary" type="button" data-waitlist-close>Хаах</button></div>` : ""}</article>`; }
       function render() {
         const list = q("#payment-list"); const items = state.data?.items || []; const promotionItems = state.data?.promotionItems || [];
         const sections = ["Төлбөр хүлээж байна", "Хугацаа хэтэрсэн", "Хэсэгчлэн төлсөн", "Төлбөр баталгаажсан", "Кредит / буцаалт", "Хүлээлгийн жагсаалт", "Шалгах шаардлагатай"];
@@ -93,6 +93,8 @@ import "../../styles/global.css";
       q("#payment-list").addEventListener("click", async (event) => {
         const target = event.target.closest("button"); if (!target || target.disabled) return;
         if (target.dataset.paymentDetail) { state.openId = target.dataset.paymentDetail; render(); return; }
+        if (target.dataset.waitlistDetail) { state.openWaitlistId = target.dataset.waitlistDetail; render(); return; }
+        if (target.matches("[data-waitlist-close]")) { state.openWaitlistId = ""; render(); return; }
         if (target.matches("[data-payment-cancel]")) { state.openId = ""; render(); return; }
         if (target.dataset.paymentChecked) { try { await post({ action: "payment.checked-not-found", paymentRequestId: target.dataset.paymentChecked }); await refresh("Шалгаснаа тэмдэглэлээ."); } catch (error) { message(error.message); } return; }
         if (target.dataset.paymentUndo) { try { await post({ action: "payment.undo-tentative", receivedPaymentId: target.dataset.paymentUndo }); await refresh("Тэмдэглэлийг буцаалаа."); } catch (error) { message(error.message); } return; }
