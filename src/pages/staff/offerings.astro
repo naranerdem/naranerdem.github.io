@@ -133,7 +133,19 @@ import "../../styles/global.css";
       function saveOffering(event) { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; const kind = q("#offering-kind").value; const id = q("#offering-id").value; const payload = { action: "offering.save", id: id || undefined, expectedUpdatedAt: q("#offering-updated").value || undefined, kind, title: q("#offering-title")?.value, annualStageCode: q("#offering-annual-stage")?.value, programFamilyId: q("#offering-program-family")?.value, startsOn: q("#offering-starts")?.value, endsOn: q("#offering-ends")?.value, defaultClassDurationMinutes: Number(q("#offering-duration")?.value), initialClasses: id ? undefined : state.initialClasses, facebookGroupUrl: q("#offering-facebook")?.value || "" }; if (kind === "event") Object.assign(payload, { eventExpectedUpdatedAt: q("#event-updated").value || undefined, eventDate: q("#event-date").value, eventStartTime: q("#event-start").value, eventEndTime: q("#event-end").value, eventCapacity: Number(q("#event-capacity").value), eventRegistrationOpen: Boolean(q("#event-open")?.checked), chargeMode: q("#offering-charge").value, note: q("#offering-note").value }); run(() => postOverviewAction(payload.action, payload), id ? "Мэдээллийг хадгаллаа." : "Шинээр нэмлээ. Бүртгэл анх хаалттай байна."); }
       async function run(work, success) { message(); try { await work(); closeEditor(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       async function runPricing(work, success) { message(); try { await work(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
-      async function runClass(work, success) { message(); try { await work(); state.editingClass = ""; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
+      async function runClass(work, success) {
+        message();
+        try {
+          await work();
+          state.editingClass = "";
+          await refresh(success);
+        } catch (error) {
+          // Never leave a failed local edit looking like a saved class value.
+          state.editingClass = "";
+          try { await refresh(); } catch { render(); }
+          message(`Ангийн мэдээлэл хадгалагдсангүй. ${error.message || "Дахин оролдоно уу."}`);
+        }
+      }
       function render() { renderList(); renderEditor(); }
       q("#add-offering").onclick = () => { state.editingId = ""; state.creatingKind = "choose"; renderEditor(); };
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));

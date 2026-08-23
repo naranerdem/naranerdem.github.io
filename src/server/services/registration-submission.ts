@@ -297,9 +297,12 @@ export const acquireAllRequestedSeatsSql = `
   draft_holds AS MATERIALIZED (
     SELECT registration_capacity_hold.class_session_id, COUNT(*) AS count
     FROM registration_capacity_hold
+    LEFT JOIN registration_draft_child
+      ON registration_draft_child.id = registration_capacity_hold.registration_draft_child_id
     WHERE registration_capacity_hold.status = 'active'
       AND (registration_capacity_hold.hold_type = 'initial_payment'
         OR registration_capacity_hold.deadline_at > ?)
+      AND registration_draft_child.canonical_enrollment_id IS NULL
     GROUP BY registration_capacity_hold.class_session_id
   ),
   waitlist_offers AS MATERIALIZED (
@@ -673,6 +676,7 @@ export const reacquireAllRequestedSeatsSql = `
       AND (registration_capacity_hold.hold_type = 'initial_payment'
         OR registration_capacity_hold.deadline_at > ?)
       AND registration_draft_child.registration_draft_id != ?
+      AND registration_draft_child.canonical_enrollment_id IS NULL
     GROUP BY registration_capacity_hold.class_session_id
   ),
   waitlist_offers AS MATERIALIZED (

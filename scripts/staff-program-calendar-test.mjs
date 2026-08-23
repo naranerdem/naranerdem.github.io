@@ -257,6 +257,9 @@ try {
   assert.match(staffDashboardPage, /staff-information-link/, "information card has an independent presentation target");
   assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");
   assert.match(offeringsPage, /Facebook бүлгийн холбоос/, "Offering creation and editing own the Facebook-group value");
+  assert.match(offeringsPage, /async function runClass[\s\S]*state\.editingClass = "";[\s\S]*await refresh\(\);[\s\S]*Ангийн мэдээлэл хадгалагдсангүй/, "a failed class save discards the typed local value and reloads the authoritative class list");
+  const staffSetupSource = readFileSync("src/scripts/staff-setup.js", "utf8");
+  assert.match(staffSetupSource, /program-calendar[\s\S]*cache: "no-store"/, "program and class reads explicitly bypass browser cache");
   assert.match(offeringsPage, /Хоосон орхиж болно\./, "an Offering Facebook group is explicitly optional");
   assert.match(legacyPage, /url=\/staff\/schedule\//, "old bookmark redirects to the schedule tool");
   assert.match(routerSource, /"programId" in payload \|\| "firstCandidateDate" in payload/, "calendar generation rejects caller-selected program and start-date substitutions");
@@ -470,6 +473,86 @@ try {
   draft = database.query(`SELECT id, updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
   await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt });
   assert.equal(count(database, "class_calendar_revision", "status = 'published' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1);
+  sqlite(`INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-guardian', 'Тест асран', '99000000', '99000000', 'confirmed@example.test', 'confirmed@example.test', 'Хаяг', 'active', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-student', 'Тест', 'Баталгаатай', 'not_specified', '2015-01-01', 'active', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-pre-registration', 'capacity-guardian', 'year-2026', 'completed', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-application-child', 'capacity-pre-registration', 'capacity-student', 5, 'new', 'enrolled', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-enrollment', 'capacity-application-child', 'capacity-student', 'year-2026', 'class-1', 'confirmed', '${now}', 1, 'staff-program-test', '${now}', '${now}');`);
+  for (const suffix of ["one", "two"]) {
+    sqlite(`INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('capacity-draft-${suffix}', '${suffix.padEnd(64, "a")}', 'year-2026', 'Тест асран', 'Ээж', '99000000', '${suffix}@example.test', '${suffix}@example.test', 'Хаяг', 'single', 'p', 's', 'awaiting_initial_payment', '2030-01-01T00:00:00.000Z', 1, 'staff-program-test', '${now}', '${now}');
+      INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('capacity-child-${suffix}', 'capacity-draft-${suffix}', 0, 'Тест', '${suffix}', 'not_specified', '2015-01-01', '5', 'new', 'stage_1', 'class-1', 'awaiting_initial_payment', 1, 'staff-program-test', '${now}', '${now}');
+      INSERT INTO registration_capacity_hold (id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('capacity-hold-${suffix}', 'capacity-child-${suffix}', 'class-1', 'initial_payment', 'active', '2030-01-01T00:00:00.000Z', 1, 'staff-program-test', '${now}', '${now}');`);
+  }
+  for (const suffix of ["a", "b"]) {
+    sqlite(`INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('capacity-wait-draft-${suffix}', '${suffix.padEnd(64, "b")}', 'year-2026', 'Тест асран', 'Ээж', '99000000', 'wait-${suffix}@example.test', 'wait-${suffix}@example.test', 'Хаяг', 'single', 'p', 's', 'waitlisted', '2030-01-01T00:00:00.000Z', 1, 'staff-program-test', '${now}', '${now}');
+      INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, preferred_waitlist_class_session_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('capacity-wait-child-${suffix}', 'capacity-wait-draft-${suffix}', 0, 'Тест', 'Хүлээлт ${suffix}', 'not_specified', '2015-01-01', '5', 'new', 'stage_1', 'class-1', 'waitlisted', 1, 'staff-program-test', '${now}', '${now}');
+      INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('capacity-wait-entry-${suffix}', 'capacity-wait-child-${suffix}', 'class-1', 'active', 1, 'staff-program-test', '${now}', '${now}');`);
+  }
+  const classSave = (capacity) => ({ id: "class-1", expectedUpdatedAt: database.query("SELECT updated_at AS updatedAt FROM class_session WHERE id = 'class-1'")[0].updatedAt,
+    offeringId: "offering-annual-stage-1", recurrenceKind: "weekly", firstDate: "2026-09-05", weeklyWeekday: "Бямба", academicYearId: "", stageCode: "", weekday: "", startTime: "10:00", endTime: "11:20", capacity, registrationOpen: true });
+  const capacityBeforeConcurrentHold = database.query("SELECT capacity FROM class_session WHERE id = 'class-1'")[0].capacity;
+  const lowerBoundaryBeforeRegistration = classSave(3);
+  sqlite(`INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-draft-race', '${"race".padEnd(64, "c")}', 'year-2026', 'Тест асран', 'Ээж', '99000000', 'race@example.test', 'race@example.test', 'Хаяг', 'single', 'p', 's', 'awaiting_initial_payment', '2030-01-01T00:00:00.000Z', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-child-race', 'capacity-draft-race', 0, 'Тест', 'Уралдаан', 'not_specified', '2015-01-01', '5', 'new', 'stage_1', 'class-1', 'awaiting_initial_payment', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO registration_capacity_hold (id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at, is_test, test_run_id, created_at, updated_at)
+    VALUES ('capacity-hold-race', 'capacity-child-race', 'class-1', 'initial_payment', 'active', '2030-01-01T00:00:00.000Z', 1, 'staff-program-test', '${now}', '${now}');`);
+  await assert.rejects(() => service.saveClassSession(runtime, actor("teacher"), lowerBoundaryBeforeRegistration), /Program and calendar/, "a capacity decrease rechecks consumption inside its conditional update when a registration hold arrives without changing the class version");
+  assert.equal(database.query("SELECT capacity FROM class_session WHERE id = 'class-1'")[0].capacity, capacityBeforeConcurrentHold, "the stale lower-bound update cannot leave capacity below the newly consumed fourth seat");
+  sqlite("UPDATE registration_capacity_hold SET status = 'released' WHERE id = 'capacity-hold-race';");
+  await service.saveClassSession(runtime, actor("teacher"), classSave(3));
+  assert.equal(database.query("SELECT capacity FROM class_session WHERE id = 'class-1'")[0].capacity, 3, "a referenced class may reduce capacity to its consumed lower bound");
+  assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-1' AND status = 'active'"), 2, "capacity reduction never releases existing holds");
+  assert.equal(count(database, "enrollment", "class_session_id = 'class-1' AND status = 'confirmed'"), 1, "capacity reduction never releases confirmed enrollment");
+  await assert.rejects(() => service.saveClassSession(runtime, actor("teacher"), classSave(2)), /Program and calendar/, "capacity cannot drop below confirmed, reserved, and offered seats");
+  await service.saveClassSession(runtime, actor("teacher"), classSave(4));
+  assert.equal(count(database, "waitlist_seat_offer", "class_session_id = 'class-1' AND status = 'active'"), 1, "a capacity increase reserves the first FIFO waitlist seat atomically");
+  assert.equal(database.query("SELECT status FROM registration_draft_waitlist_entry WHERE id = 'capacity-wait-entry-a'")[0].status, "offered", "the first FIFO entry receives the offer");
+  assert.equal(database.query("SELECT status FROM registration_draft_waitlist_entry WHERE id = 'capacity-wait-entry-b'")[0].status, "active", "the next FIFO entry remains waiting");
+  const capacityDiagnostic = await (await import(pathToFileURL(path.join(tempDir, "capacity.mjs")).href).catch(async () => {
+    const output = path.join(tempDir, "capacity.mjs"); const bundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/services/class-capacity.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
+    if (bundled.status !== 0) throw new Error(bundled.stderr); return import(pathToFileURL(output).href);
+  })).getClassCapacityDiagnostic(database, "staging", "class-1", new Date(now));
+  assert.equal(capacityDiagnostic.projection.freeSeats, 0, "an offered waitlist seat keeps the newly increased public capacity unavailable");
+  assert.equal(capacityDiagnostic.confirmed.length, 1, "the diagnostic exposes the confirmed enrollment contributor exactly once");
+  assert.equal(capacityDiagnostic.reservedInitialPayment.length, 2, "the diagnostic exposes each active initial-payment contributor without changing data");
+  assert.equal(capacityDiagnostic.offeredWaitlist.length, 1, "the diagnostic exposes the active waitlist offer exactly once");
+  sqlite(`INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
+    VALUES ('legacy-capacity-year', 'Хуучин суудлын тестийн жил', 'draft', '2026-09-01', '2027-06-01', 0, 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, starts_on, ends_on, curriculum_program_id, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('legacy-capacity-offering', 'annual_course', 'Хуучин суудлын тест', 'legacy-capacity-year', 'stage_1', '2026-09-01', '2027-06-01', NULL, 1, 'paid', 'active', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test, test_run_id, created_at, updated_at, activity_offering_id)
+    VALUES ('legacy-capacity-class', 'legacy-capacity-year', 'stage_1', 'Хуучин суудлын анги', 'Бямба', '10:00', '11:20', 8, 'closed', 1, 'staff-program-test', '${now}', '${now}', 'legacy-capacity-offering');
+    INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, last_date, weekly_weekday, start_time, end_time, created_at, updated_at)
+    VALUES ('legacy-capacity-class', 'weekly', '2026-09-05', NULL, 'Бямба', '10:00', '11:20', '${now}', '${now}');
+    INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('legacy-capacity-calendar', 'legacy-capacity-class', 'Asia/Ulaanbaatar', 'active', 1, 'staff-program-test', '${now}', '${now}');`);
+  await service.saveClassSession(runtime, actor("teacher"), {
+    id: "legacy-capacity-class", expectedUpdatedAt: now, offeringId: "legacy-capacity-offering",
+    recurrenceKind: "weekly", firstDate: "2026-09-05", weeklyWeekday: "Бямба",
+    academicYearId: "", stageCode: "", weekday: "", startTime: "10:00", endTime: "11:20",
+    capacity: 3, registrationOpen: false,
+  });
+  assert.equal(database.query("SELECT capacity FROM class_session WHERE id = 'legacy-capacity-class'")[0].capacity, 3, "a referenced legacy class without a program pin can still receive a safe capacity correction");
+  const legacyCapacityUpdatedAt = database.query("SELECT updated_at AS updatedAt FROM class_session WHERE id = 'legacy-capacity-class'")[0].updatedAt;
+  await assert.rejects(() => service.saveClassSession(runtime, actor("teacher"), {
+    id: "legacy-capacity-class", expectedUpdatedAt: legacyCapacityUpdatedAt, offeringId: "legacy-capacity-offering",
+    recurrenceKind: "weekly", firstDate: "2026-09-05", weeklyWeekday: "Бямба",
+    academicYearId: "", stageCode: "", weekday: "", startTime: "11:00", endTime: "12:20",
+    capacity: 3, registrationOpen: false,
+  }), /Program and calendar/, "a legacy Offering without a program pin cannot use capacity editing to alter its schedule");
   const usedOffering = database.query("SELECT updated_at AS updatedAt, starts_on AS startsOn, ends_on AS endsOn, curriculum_program_id AS programId FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0];
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { id: "offering-annual-stage-1", expectedUpdatedAt: usedOffering.updatedAt, kind: "annual_course", startsOn: usedOffering.startsOn, endsOn: usedOffering.endsOn, curriculumProgramId: usedOffering.programId, useAcademicYearBreaks: true, chargeMode: "paid", facebookGroupUrl: "https://facebook.com/groups/after-publication" });
   assert.equal(database.query("SELECT facebook_group_url AS url FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0].url, "https://facebook.com/groups/after-publication", "a harmless Offering communication edit remains possible after calendar publication");

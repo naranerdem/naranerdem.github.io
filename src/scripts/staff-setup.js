@@ -24,6 +24,7 @@ export function formatDate(date) {
 export async function getOverview() {
   const response = await fetch("/api/staff/program-calendar", {
     credentials: "same-origin",
+    cache: "no-store",
     headers: { Accept: "application/json" },
   });
   if (!response.ok) throw new Error("өгөгдөл unavailable");

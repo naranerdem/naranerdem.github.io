@@ -189,10 +189,13 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
   const capacityRows = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
   const capacityLabels = await env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
-    FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
+    FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
+    ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
+      CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
+      start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
   const capacityById = new Map(capacityRows.map((row) => [row.classSessionId, row]));
   const capacity = capacityLabels.results.map((label) => ({ ...label, ...(capacityById.get(label.id) ?? {
-    capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, offeredWaitlistCount: 0, waitlistCount: 0, freeSeats: 0,
+    capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, legacyReservationCount: 0, offeredWaitlistCount: 0, waitlistCount: 0, freeSeats: 0,
   }) }));
   return { now, items: result.results.map((item) => ({ ...item,
     expectedAmountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),

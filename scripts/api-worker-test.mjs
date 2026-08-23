@@ -45,6 +45,7 @@ function catalogRow(id, options = {}) {
     confirmedCount,
     activeHoldCount,
     remainingSeats,
+    operationallyRegisterable: options.status === "closed" ? 0 : 1,
     publicAvailability: options.status === "closed"
       ? "unavailable"
       : remainingSeats > 0 ? "available" : "full",
@@ -81,7 +82,7 @@ function createDatabase(rows, options = {}) {
             assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
             return { success: true, results: filtered.map((row) => ({
               classSessionId: row.classSessionId, capacity: row.capacity, confirmedCount: row.confirmedCount,
-              reservedInitialPaymentCount: row.activeHoldCount, offeredWaitlistCount: 0, waitlistCount: 0,
+              reservedInitialPaymentCount: row.activeHoldCount, legacyReservationCount: 0, offeredWaitlistCount: 0, waitlistCount: 0,
             })) };
           }
           if (sql.includes("FROM class_calendar")) {
@@ -102,9 +103,8 @@ function createDatabase(rows, options = {}) {
           }
           if (options.catalogError) throw new Error("SQLITE_ERROR: no such table: class_session");
           assert.doesNotMatch(sql, /academic_year\.registration_status/, "registration windows, not the legacy academic-year state, control ordinary public opening");
-          assert.match(sql, /enrollment\.status = 'confirmed'/);
           assert.match(sql, /enrollment\.status = 'awaiting_initial_payment'/);
-          assert.doesNotMatch(sql, /enrollment\.effective_hold_deadline_at > \?/, "initial-payment capacity never expires by time");
+          assert.doesNotMatch(sql, /class_session\.capacity\s*-/, "catalog capacity is derived only by the shared projection");
           assert.match(sql, /hold_type = 'initial_payment'[\s\S]*deadline_at > \?/, "only provisional draft holds use a deadline comparison");
           assert.match(sql, /registration_capacity_hold/);
           assert.match(sql, /COALESCE\(draft_holds\.count, 0\)/);
@@ -119,7 +119,6 @@ function createDatabase(rows, options = {}) {
           assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
           assert.equal(bindings.slice(1, 5).every((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)), true, "catalog checks active Mongolia-local registration-window dates");
           assert.deepEqual(bindings.slice(5), productionQuery ? [0, 0, 0] : []);
-          if (productionQuery) assert.match(sql, /enrollment\.is_test = 0/);
           return { success: true, results: filtered };
         },
       };

@@ -16,6 +16,12 @@ type DecisionSource = "parent_link" | "staff_phone" | "staff_messenger" | "staff
 interface WaitlistCandidate { entryId: string; childId: string; classSessionId: string; isTest: number; testRunId: string | null; }
 interface OfferRow { id: string; waitlistEntryId: string; registrationDraftChildId: string; classSessionId: string; status: OfferStatus; respondByAt: string; }
 interface OfferContext extends OfferRow { childName: string; guardianName: string; phone: string; email: string; classLabel: string; weekday: string; startTime: string; endTime: string; }
+interface PreparedOffer { offerId: string; entryId: string; candidate: WaitlistCandidate; token: string; tokenHash: string; respondByAt: string; }
+
+export interface PreparedWaitlistOffers {
+  statements: D1PreparedStatement[];
+  dispatch(): Promise<Array<{ offer: OfferContext; token: string }>>;
+}
 
 export class WaitlistOfferError extends Error {
   constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "pricing_unavailable") {
@@ -99,54 +105,116 @@ async function contextForOffer(database: D1Database, id: string): Promise<OfferC
     INNER JOIN class_session ON class_session.id = waitlist_seat_offer.class_session_id WHERE waitlist_seat_offer.id = ?`).bind(id).first<OfferContext>();
 }
 
+function offerInsertStatement(env: WorkerEnv, offer: PreparedOffer, now: string, capacityOverride?: number, savedUpdatedAt?: string): D1PreparedStatement {
+  const capacity = capacityOverride === undefined ? "class_session.capacity" : "?";
+  const savedGuard = capacityOverride === undefined ? "" : "\n    AND EXISTS (SELECT 1 FROM class_session WHERE id = entry.class_session_id AND capacity = ? AND updated_at = ?)";
+  const statement = env.DB.prepare(`INSERT INTO waitlist_seat_offer (
+    id, waitlist_entry_id, registration_draft_child_id, class_session_id, status, response_token_hash,
+    offered_at, respond_by_at, is_test, test_run_id, created_at, updated_at
+  ) SELECT ?, entry.id, entry.registration_draft_child_id, entry.class_session_id, 'active', ?, ?, ?, entry.is_test, entry.test_run_id, ?, ?
+  FROM registration_draft_waitlist_entry AS entry
+  WHERE entry.id = ? AND entry.status = 'active'
+    AND EXISTS (SELECT 1 FROM class_session WHERE id = entry.class_session_id AND status IN ('available', 'full'))
+    AND NOT EXISTS (SELECT 1 FROM waitlist_seat_offer existing WHERE existing.waitlist_entry_id = entry.id)
+    AND NOT EXISTS (SELECT 1 FROM registration_draft_waitlist_entry earlier
+      LEFT JOIN waitlist_seat_offer earlier_offer ON earlier_offer.waitlist_entry_id = earlier.id
+      WHERE earlier.class_session_id = entry.class_session_id AND earlier.status = 'active' AND earlier_offer.id IS NULL
+        AND (earlier.created_at < entry.created_at OR (earlier.created_at = entry.created_at AND earlier.id < entry.id)))
+    AND (SELECT ${capacity}
+      - (SELECT COUNT(*) FROM enrollment INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+         INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+         WHERE enrollment.class_session_id = entry.class_session_id AND enrollment.status = 'confirmed'
+           AND application_child.status = 'enrolled' AND pre_registration.deleted_at IS NULL)
+      - (SELECT COUNT(*) FROM enrollment INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+         INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+         WHERE enrollment.class_session_id = entry.class_session_id AND enrollment.status = 'awaiting_initial_payment'
+           AND application_child.status = 'hold_created' AND pre_registration.deleted_at IS NULL)
+      - (SELECT COUNT(*) FROM registration_capacity_hold
+         LEFT JOIN registration_draft_child AS held_child ON held_child.id = registration_capacity_hold.registration_draft_child_id
+         WHERE registration_capacity_hold.class_session_id = entry.class_session_id AND registration_capacity_hold.status = 'active'
+           AND (registration_capacity_hold.hold_type = 'initial_payment' OR registration_capacity_hold.deadline_at > ?)
+           AND held_child.canonical_enrollment_id IS NULL)
+      - (SELECT COUNT(*) FROM waitlist_seat_offer WHERE class_session_id = entry.class_session_id AND status IN ('active', 'awaiting_transfer'))
+      FROM class_session WHERE class_session.id = entry.class_session_id) > 0${savedGuard}`);
+  return capacityOverride === undefined
+    ? statement.bind(offer.offerId, offer.tokenHash, now, offer.respondByAt, now, now, offer.entryId, now)
+    : statement.bind(offer.offerId, offer.tokenHash, now, offer.respondByAt, now, now, offer.entryId, capacityOverride, now, capacityOverride, savedUpdatedAt ?? now);
+}
+
+function offerFollowupStatements(env: WorkerEnv, offer: PreparedOffer, now: string): D1PreparedStatement[] {
+  return [
+    env.DB.prepare(`UPDATE registration_draft_waitlist_entry SET status = 'offered', offered_at = ?, offer_expires_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'active' AND EXISTS (SELECT 1 FROM waitlist_seat_offer WHERE id = ? AND status = 'active')`)
+      .bind(now, offer.respondByAt, now, offer.entryId, offer.offerId),
+    env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at)
+      SELECT ?, ?, 'system', NULL, 'waitlist_offer_created', 'waitlist_seat_offer', ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM waitlist_seat_offer WHERE id = ? AND status = 'active')`)
+      .bind(crypto.randomUUID(), now, offer.offerId, JSON.stringify({ respondByAt: offer.respondByAt }), env.APP_ENV,
+        offer.candidate.isTest, offer.candidate.testRunId, now, offer.offerId),
+  ];
+}
+
+async function preparedOffers(
+  env: WorkerEnv,
+  classSessionId: string,
+  freeSeats: number,
+  nowDate: Date,
+  capacityOverride?: number,
+  savedUpdatedAt?: string,
+): Promise<PreparedWaitlistOffers> {
+  const candidates = await candidatesForClass(env.DB, classSessionId, freeSeats);
+  const response = await getWaitlistOfferResponseSetting(env.DB);
+  const now = nowDate.toISOString();
+  const offers: PreparedOffer[] = [];
+  for (const candidate of candidates) {
+    const token = randomToken();
+    offers.push({ offerId: crypto.randomUUID(), entryId: candidate.entryId, candidate, token,
+      tokenHash: await sha256(token), respondByAt: nowPlus(nowDate, response.responseMinutes) });
+  }
+  return {
+    statements: offers.flatMap((offer) => [offerInsertStatement(env, offer, now, capacityOverride, savedUpdatedAt), ...offerFollowupStatements(env, offer, now)]),
+    async dispatch() {
+      const created: Array<{ offer: OfferContext; token: string }> = [];
+      for (const offer of offers) {
+        const context = await contextForOffer(env.DB, offer.offerId);
+        if (context?.status === "active") {
+          created.push({ offer: context, token: offer.token });
+          queueOfferEmail(env, context, offer.token).catch(() => undefined);
+        }
+      }
+      return created;
+    },
+  };
+}
+
+// Used by the class-capacity save transaction. The capacity update and FIFO
+// offers are one D1 batch, so a new public registration cannot claim the new
+// seat between them.
+export async function prepareWaitlistOffersForCapacityIncrease(
+  env: WorkerEnv,
+  classSessionId: string,
+  requestedCapacity: number,
+  nowDate = new Date(),
+  savedUpdatedAt?: string,
+): Promise<PreparedWaitlistOffers> {
+  const projection = (await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate, [classSessionId]))[0];
+  if (!projection) return { statements: [], dispatch: async () => [] };
+  const consumed = projection.confirmedCount + projection.reservedInitialPaymentCount
+    + projection.legacyReservationCount + projection.offeredWaitlistCount;
+  return preparedOffers(env, classSessionId, Math.max(requestedCapacity - consumed, 0), nowDate, requestedCapacity, savedUpdatedAt);
+}
+
 // Each INSERT independently rechecks capacity and its FIFO predecessor. SQLite
 // executes the condition with the write, so repeated/concurrent callers cannot
 // create two offers for one entry or overfill the class.
 export async function allocateWaitlistOffers(env: WorkerEnv, classSessionId?: string, nowDate = new Date()): Promise<Array<{ offer: OfferContext; token: string }>> {
-  const now = nowDate.toISOString();
   const projections = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate, classSessionId ? [classSessionId] : undefined);
   const created: Array<{ offer: OfferContext; token: string }> = [];
   for (const projection of projections) {
-    const candidates = await candidatesForClass(env.DB, projection.classSessionId, projection.freeSeats);
-    for (const candidate of candidates) {
-      const token = randomToken(); const tokenHash = await sha256(token); const offerId = crypto.randomUUID();
-      const response = await getWaitlistOfferResponseSetting(env.DB); const respondByAt = nowPlus(nowDate, response.responseMinutes);
-      const inserted = await env.DB.prepare(`INSERT INTO waitlist_seat_offer (
-        id, waitlist_entry_id, registration_draft_child_id, class_session_id, status, response_token_hash,
-        offered_at, respond_by_at, is_test, test_run_id, created_at, updated_at
-      ) SELECT ?, entry.id, entry.registration_draft_child_id, entry.class_session_id, 'active', ?, ?, ?, entry.is_test, entry.test_run_id, ?, ?
-      FROM registration_draft_waitlist_entry AS entry
-      WHERE entry.id = ? AND entry.status = 'active'
-        AND EXISTS (SELECT 1 FROM class_session WHERE id = entry.class_session_id AND status IN ('available', 'full'))
-        AND NOT EXISTS (SELECT 1 FROM waitlist_seat_offer existing WHERE existing.waitlist_entry_id = entry.id)
-        AND NOT EXISTS (SELECT 1 FROM registration_draft_waitlist_entry earlier
-          LEFT JOIN waitlist_seat_offer earlier_offer ON earlier_offer.waitlist_entry_id = earlier.id
-          WHERE earlier.class_session_id = entry.class_session_id AND earlier.status = 'active' AND earlier_offer.id IS NULL
-            AND (earlier.created_at < entry.created_at OR (earlier.created_at = entry.created_at AND earlier.id < entry.id)))
-        AND (SELECT class_session.capacity
-          - (SELECT COUNT(*) FROM enrollment INNER JOIN application_child ON application_child.id = enrollment.application_child_id
-             INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-             WHERE enrollment.class_session_id = entry.class_session_id AND enrollment.status = 'confirmed'
-               AND application_child.status = 'enrolled' AND pre_registration.deleted_at IS NULL)
-          - (SELECT COUNT(*) FROM enrollment INNER JOIN application_child ON application_child.id = enrollment.application_child_id
-             INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-             WHERE enrollment.class_session_id = entry.class_session_id AND enrollment.status = 'awaiting_initial_payment'
-               AND application_child.status = 'hold_created' AND pre_registration.deleted_at IS NULL)
-          - (SELECT COUNT(*) FROM registration_capacity_hold WHERE class_session_id = entry.class_session_id AND status = 'active'
-             AND (hold_type = 'initial_payment' OR deadline_at > ?))
-          - (SELECT COUNT(*) FROM waitlist_seat_offer WHERE class_session_id = entry.class_session_id AND status IN ('active', 'awaiting_transfer'))
-          FROM class_session WHERE class_session.id = entry.class_session_id) > 0`).bind(
-        offerId, tokenHash, now, respondByAt, now, now, candidate.entryId, now,
-      ).run();
-      if (changes(inserted) !== 1) continue;
-      await env.DB.batch([
-        env.DB.prepare(`UPDATE registration_draft_waitlist_entry SET status = 'offered', offered_at = ?, offer_expires_at = ?, updated_at = ? WHERE id = ? AND status = 'active'`)
-          .bind(now, respondByAt, now, candidate.entryId),
-        audit(env, null, "waitlist_offer_created", offerId, { respondByAt }, candidate.isTest, candidate.testRunId, now),
-      ]);
-      const offer = await contextForOffer(env.DB, offerId);
-      if (offer) { created.push({ offer, token }); queueOfferEmail(env, offer, token).catch(() => undefined); }
-    }
+    const prepared = await preparedOffers(env, projection.classSessionId, projection.freeSeats, nowDate);
+    if (prepared.statements.length) await env.DB.batch(prepared.statements);
+    created.push(...await prepared.dispatch());
   }
   return created;
 }

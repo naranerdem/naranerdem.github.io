@@ -11,11 +11,8 @@ interface CatalogRow {
   weekday: string;
   startTime: string;
   endTime: string;
-  capacity: number;
-  confirmedCount: number;
   activeHoldCount: number;
-  remainingSeats: number;
-  publicAvailability: "available" | "full" | "unavailable";
+  operationallyRegisterable: number;
   oneTimeAmountMnt: number | null;
   twoInstallmentEnabled: number | null;
   firstInstallmentAmountMnt: number | null;
@@ -36,7 +33,7 @@ export interface RegistrationCatalog {
       endTime: string;
       activeHoldCount: number;
       remainingSeats: number;
-      availability: CatalogRow["publicAvailability"];
+      availability: "available" | "full" | "unavailable";
       paymentOptions: Array<{
         code: "single" | "two_installment";
         totalAmountMnt: number;
@@ -69,36 +66,19 @@ const stagingCatalogSql = `
     pricing.first_installment_amount_mnt AS firstInstallmentAmountMnt,
     pricing.second_installment_amount_mnt AS secondInstallmentAmountMnt,
     pricing.second_installment_due_on AS secondInstallmentDueOn,
-    class_session.capacity AS capacity,
-    COALESCE(confirmed.count, 0) AS confirmedCount,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
-    MAX(class_session.capacity - COALESCE(confirmed.count, 0)
-      - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0), 0) AS remainingSeats,
     CASE
       WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
         OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
-        OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
-      WHEN class_session.capacity - COALESCE(confirmed.count, 0)
-        - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0) > 0 THEN 'available'
-      ELSE 'full'
-    END AS publicAvailability
+        OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 0
+      ELSE 1
+    END AS operationallyRegisterable
   FROM academic_year
   INNER JOIN class_session ON class_session.academic_year_id = academic_year.id
   LEFT JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
   LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
   LEFT JOIN payment_collection_settings AS payment_settings ON payment_settings.singleton = 1
-  LEFT JOIN (
-    SELECT enrollment.class_session_id, COUNT(*) AS count
-    FROM enrollment
-    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
-    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-    WHERE enrollment.status = 'confirmed'
-      AND application_child.status = 'enrolled'
-      AND pre_registration.status IN ('submitted', 'under_review', 'awaiting_assignment', 'completed')
-      AND pre_registration.deleted_at IS NULL
-    GROUP BY enrollment.class_session_id
-  ) AS confirmed ON confirmed.class_session_id = class_session.id
   LEFT JOIN (
     SELECT enrollment.class_session_id, COUNT(*) AS count
     FROM enrollment
@@ -117,13 +97,12 @@ const stagingCatalogSql = `
       AND (hold_type = 'initial_payment' OR deadline_at > ?)
     GROUP BY class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
-  LEFT JOIN (
-    SELECT class_session_id, COUNT(*) AS count FROM waitlist_seat_offer
-    WHERE status IN ('active', 'awaiting_transfer') GROUP BY class_session_id
-  ) AS waitlist_offers ON waitlist_offers.class_session_id = class_session.id
   WHERE ${activeWindowForOfferingSql("offering.id")}
     AND class_session.status IN ('available', 'full', 'closed')
-  ORDER BY academic_year.starts_on, academic_year.public_label, class_session.weekday, class_session.start_time
+  ORDER BY academic_year.starts_on, academic_year.public_label,
+    CASE class_session.stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
+    CASE class_session.weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
+    class_session.start_time, class_session.id
 `;
 
 const productionCatalogSql = `
@@ -141,39 +120,19 @@ const productionCatalogSql = `
     pricing.first_installment_amount_mnt AS firstInstallmentAmountMnt,
     pricing.second_installment_amount_mnt AS secondInstallmentAmountMnt,
     pricing.second_installment_due_on AS secondInstallmentDueOn,
-    class_session.capacity AS capacity,
-    COALESCE(confirmed.count, 0) AS confirmedCount,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
-    MAX(class_session.capacity - COALESCE(confirmed.count, 0)
-      - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0), 0) AS remainingSeats,
     CASE
       WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
         OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
-        OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
-      WHEN class_session.capacity - COALESCE(confirmed.count, 0)
-        - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0) > 0 THEN 'available'
-      ELSE 'full'
-    END AS publicAvailability
+        OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 0
+      ELSE 1
+    END AS operationallyRegisterable
   FROM academic_year
   INNER JOIN class_session ON class_session.academic_year_id = academic_year.id
   LEFT JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
   LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
   LEFT JOIN payment_collection_settings AS payment_settings ON payment_settings.singleton = 1
-  LEFT JOIN (
-    SELECT enrollment.class_session_id, COUNT(*) AS count
-    FROM enrollment
-    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
-    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-    WHERE enrollment.status = 'confirmed'
-      AND enrollment.is_test = 0
-      AND application_child.is_test = 0
-      AND pre_registration.is_test = 0
-      AND application_child.status = 'enrolled'
-      AND pre_registration.status IN ('submitted', 'under_review', 'awaiting_assignment', 'completed')
-      AND pre_registration.deleted_at IS NULL
-    GROUP BY enrollment.class_session_id
-  ) AS confirmed ON confirmed.class_session_id = class_session.id
   LEFT JOIN (
     SELECT enrollment.class_session_id, COUNT(*) AS count
     FROM enrollment
@@ -203,16 +162,15 @@ const productionCatalogSql = `
       AND registration_draft.is_test = 0
     GROUP BY registration_capacity_hold.class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
-  LEFT JOIN (
-    SELECT class_session_id, COUNT(*) AS count FROM waitlist_seat_offer
-    WHERE status IN ('active', 'awaiting_transfer') AND is_test = 0 GROUP BY class_session_id
-  ) AS waitlist_offers ON waitlist_offers.class_session_id = class_session.id
   WHERE ${activeWindowForOfferingSql("offering.id")}
     AND academic_year.is_test = ?
     AND class_session.is_test = ?
     AND class_session.is_test_only = ?
     AND class_session.status IN ('available', 'full', 'closed')
-  ORDER BY academic_year.starts_on, academic_year.public_label, class_session.weekday, class_session.start_time
+  ORDER BY academic_year.starts_on, academic_year.public_label,
+    CASE class_session.stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
+    CASE class_session.weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
+    class_session.start_time, class_session.id
 `;
 
 export async function getRegistrationCatalog(
@@ -232,7 +190,10 @@ export async function getRegistrationCatalog(
 
   for (const row of result.results) {
     const projection = projectionByClassId.get(row.classSessionId);
-    if (projection) row.remainingSeats = projection.freeSeats;
+    const remainingSeats = projection?.freeSeats ?? 0;
+    const availability = row.operationallyRegisterable
+      ? remainingSeats > 0 ? "available" : "full"
+      : "unavailable";
     let year = years.get(row.academicYearId);
     if (!year) {
       year = { id: row.academicYearId, label: row.academicYearLabel, classSessions: [] };
@@ -254,9 +215,11 @@ export async function getRegistrationCatalog(
       weekday: row.weekday,
       startTime: row.startTime,
       endTime: row.endTime,
-      activeHoldCount: row.activeHoldCount,
-      remainingSeats: row.remainingSeats,
-      availability: row.publicAvailability,
+      activeHoldCount: projection
+        ? projection.reservedInitialPaymentCount + projection.legacyReservationCount
+        : 0,
+      remainingSeats,
+      availability,
       paymentOptions,
     });
   }

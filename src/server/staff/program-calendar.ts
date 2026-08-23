@@ -27,13 +27,15 @@ import { getPaymentConfirmationGraceSetting } from "./payment-reconciliation";
 import { getInitialPaymentDeadlineSetting } from "./initial-payment-deadline";
 import { getPaymentReminderSetting } from "./payment-reminders";
 import { getWaitlistOfferResponseSetting } from "./waitlist-offer-response";
+import { classCapacityConsumedSql, getClassCapacityProjections } from "../services/class-capacity";
+import { prepareWaitlistOffersForCapacityIncrease } from "../services/waitlist-offers";
 
 const STAGES = ["stage_1", "stage_2", "stage_3"] as const;
 type StageCode = typeof STAGES[number];
 const WEEKDAYS = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"] as const;
 
 export class ProgramCalendarError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced" | "insufficient_slots") {
+  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced" | "insufficient_slots" | "capacity_below_consumed", public readonly minimumCapacity?: number) {
     super("Program and calendar operation failed.");
     this.name = "ProgramCalendarError";
   }
@@ -1336,11 +1338,13 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
   }
   if (!requestedOfferingId) throw new ProgramCalendarError("invalid");
   const offering = await offeringContext(env, requestedOfferingId);
-  if (offering.kind === "event" || !offering.programId || !offering.programAcademicYearId || !offering.programStageCode) {
+  const hasProgramContext = Boolean(offering.programId && offering.programAcademicYearId && offering.programStageCode);
+  if (offering.kind === "event" || (!input.id && !hasProgramContext)) {
     throw new ProgramCalendarError("invalid");
   }
   const academicYearId = offering.academicYearId ?? offering.programAcademicYearId;
   const stage = offering.stageCode ?? offering.programStageCode;
+  if (!academicYearId || !stage || !validStage(stage)) throw new ProgramCalendarError("invalid");
   const recurrence = (text(input.recurrenceKind, 20) || (offering.kind === "summer_course" ? "daily" : "weekly")) as MeetingRecurrenceKind;
   const firstDate = text(input.firstDate, 10) || offering.startsOn || "";
   const lastDate = optionalText(input.lastDate, 10) ?? (offering.kind === "summer_course" ? offering.endsOn : null);
@@ -1387,21 +1391,35 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
     || current.stageCode !== stage || current.recurrenceKind !== recurrence
     || current.firstDate !== firstDate || current.lastDate !== lastDate
     || current.weeklyWeekday !== weeklyWeekday || current.startTime !== input.startTime
-    || current.endTime !== endTime || current.capacity !== input.capacity;
+    || current.endTime !== endTime;
+  // Older, already-referenced Offerings may predate the program pin. Allow only
+  // their safe capacity correction; creating, opening, or rescheduling remains
+  // dependent on a complete Program context.
+  if (!hasProgramContext && (structuralChange || input.registrationOpen !== undefined && registrationOpen(current.status) !== input.registrationOpen)) {
+    throw new ProgramCalendarError("invalid");
+  }
   if (referenced && structuralChange) throw new ProgramCalendarError("immutable");
+  const capacityChanged = current.capacity !== input.capacity;
+  let preparedOffers: Awaited<ReturnType<typeof prepareWaitlistOffersForCapacityIncrease>> | null = null;
+  if (capacityChanged) {
+    if (input.capacity > current.capacity) {
+      preparedOffers = await prepareWaitlistOffersForCapacityIncrease(env, current.id, input.capacity, new Date(time), time);
+    }
+  }
   const status = input.registrationOpen === undefined
     ? current.status
     : input.registrationOpen ? "available" : "closed";
   if (status === "available" && current.status !== "available") {
     await assertOfferingRegistrationReady(env, offering.id);
   }
-  const result = await env.DB.batch([
+  const statements: D1PreparedStatement[] = [
     env.DB.prepare(`UPDATE class_session SET academic_year_id = ?, stage_code = ?, display_label = ?,
       weekday = ?, start_time = ?, end_time = ?, capacity = ?, status = ?,
-      activity_offering_id = ?, updated_at = ? WHERE id = ? AND updated_at = ?`)
+      activity_offering_id = ?, updated_at = ? WHERE id = ? AND updated_at = ?
+        AND ? >= ${classCapacityConsumedSql(env.APP_ENV, "class_session.id")}`)
       .bind(academicYearId, stage, label, weekday, input.startTime, endTime,
-        input.capacity, status, offering.id, time, current.id, input.expectedUpdatedAt),
-    env.DB.prepare(`INSERT INTO class_meeting_rule (
+        input.capacity, status, offering.id, time, current.id, input.expectedUpdatedAt, input.capacity, time),
+    ...(!referenced || structuralChange ? [env.DB.prepare(`INSERT INTO class_meeting_rule (
       class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
       start_time, end_time, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1409,13 +1427,23 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
       first_date = excluded.first_date, last_date = excluded.last_date,
       weekly_weekday = excluded.weekly_weekday, start_time = excluded.start_time,
       end_time = excluded.end_time, updated_at = excluded.updated_at`)
-      .bind(current.id, recurrence, firstDate, lastDate, weeklyWeekday, input.startTime, endTime, time, time),
+      .bind(current.id, recurrence, firstDate, lastDate, weeklyWeekday, input.startTime, endTime, time, time)] : []),
     audit(env, actor, "class_session_saved", "class_session", current.id, {
-      offeringId: offering.id, registrationOpen: registrationOpen(status), meetingRuleChanged: structuralChange,
+      offeringId: offering.id, registrationOpen: registrationOpen(status), meetingRuleChanged: structuralChange, capacityChanged,
     }, operationFlags(env, current), time),
     ...(structuralChange ? [audit(env, actor, "class_meeting_rule_changed", "class_session", current.id, { recurrenceKind: recurrence }, operationFlags(env, current), time)] : []),
-  ]);
-  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
+    ...(preparedOffers?.statements ?? []),
+  ];
+  const result = await env.DB.batch(statements);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) {
+    const projection = (await getClassCapacityProjections(env.DB, env.APP_ENV, new Date(), [current.id]))[0];
+    const consumed = projection
+      ? projection.confirmedCount + projection.reservedInitialPaymentCount + projection.legacyReservationCount + projection.offeredWaitlistCount
+      : 0;
+    if (input.capacity < consumed) throw new ProgramCalendarError("capacity_below_consumed", consumed);
+    throw new ProgramCalendarError("conflict");
+  }
+  if (preparedOffers) await preparedOffers.dispatch();
 }
 
 export async function deleteClassSession(env: WorkerEnv, actor: StaffPrincipal, input: { classSessionId: string; expectedUpdatedAt: string }): Promise<void> {

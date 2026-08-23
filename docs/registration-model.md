@@ -233,7 +233,7 @@ Offering can instead have `6/1–6/16 · 10:00–11:30` and
 `6/15–6/26 · 13:00–14:30` classes that share one program but use different
 periods and recurrences.
 
-Class/session capacity should be configurable. Historically a class has 10 children.
+Class/session capacity is configurable. Its minimum is the currently consumed seat count: confirmed enrollments, unresolved initial-payment reservations, active waitlist offers, and any genuinely active legacy `awaiting_initial_payment` enrollment. Plain waitlist entries do not consume capacity. Current registration creates the draft reservation representation; canonical promotion atomically transfers it to confirmed enrollment, so one child is not counted twice. Reducing capacity never releases those records; the lower bound is rechecked by the conditional class update itself. Increasing capacity atomically offers newly available seats to the FIFO queue before ordinary public registration can claim them. Historically a class has 10 children.
 
 ### Program And Published Calendar
 

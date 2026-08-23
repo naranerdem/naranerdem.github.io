@@ -329,6 +329,7 @@ function programCalendarError(caught: unknown): Response {
   if (caught.code === "conflict") return error("invalid_request", "Энэ мэдээлэл өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд өөрчлөлтөө шалгана уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "immutable") return error("invalid_request", "Хэвлэгдсэн эсвэл ашиглагдаж буй мэдээллийг шууд өөрчилж болохгүй. Шинэ ноорог үүсгэнэ үү.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "referenced") return error("invalid_request", "Энэ анги бүртгэл эсвэл хуваарьт ашиглагдсан тул устгаж болохгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "capacity_below_consumed") return error("invalid_request", `Одоогоор ${caught.minimumCapacity ?? 0} суудал эзлэгдсэн эсвэл хадгалагдсан тул суудлын тоог түүнээс бага болгох боломжгүй.`, 409, { "Cache-Control": "no-store" });
   if (caught.code === "insufficient_slots") return error("invalid_request", "Хөтөлбөрийн бүх хичээл сонгосон хугацаанд багтахгүй байна. Хугацааг сунгах, давтамжийг өөрчлөх эсвэл нэмэлт өдөр оруулна уу.", 422, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
