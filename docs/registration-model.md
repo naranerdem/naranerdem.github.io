@@ -340,11 +340,17 @@ A waitlist entry is separate from an unpaid seat hold. It represents interest in
 
 Ordinary parent-facing behavior permits at most one active preferred waitlist target. A parent may choose an available fallback class and one full preferred class at the same time. Once the fallback enrollment is confirmed, its preferred-class waitlist remains active. If every class is full, one waitlist target is enough for the future waitlist-only path; no fake primary class is required. The public registration and waitlist model has no ranked alternatives.
 
-When a seat becomes available, the first eligible active entry for that class receives a temporary transfer or acceptance offer. If it expires, the offer moves to the next entry. A public parent must not be able to join every full class.
+### Waitlist Seat Offer
+
+When a concrete class has a real free seat, the first eligible entry in that class's FIFO queue receives a separate active waitlist offer. A plain entry consumes zero capacity; an active offer consumes exactly one seat. The response target is snapshotted from the typed admin setting (default 24 hours), but it is soft: time alone never releases the seat or advances the queue. An overdue offer remains active until an explicit parent or staff decision.
+
+For a new enrollment, accepting an offer atomically replaces that offer with the existing initial-payment reservation, payment request, and installment model. The ordinary initial-payment deadline begins at acceptance, and capacity remains one seat throughout. Declining or closing an offer releases exactly that offered seat and immediately lets the allocator offer the next eligible FIFO entry. A confirmed fallback/backup enrollment remains intact while a preferred-class offer is active. Accepting that preferred offer records `awaiting transfer` and reserves the preferred seat, but does not create a second ordinary enrollment or release the backup; transfer is a separate later lifecycle operation.
+
+When a seat becomes available, the first eligible active entry for that class receives an offer. Its response target is soft: an overdue offer remains reserved until the parent or staff explicitly declines or closes it, at which point the allocator advances the next eligible entry. A public parent must not be able to join every full class.
 
 ### Transfer And Additional Enrollment
 
-A transfer replaces an existing enrollment only after the target has succeeded. If a child confirmed in class B is waiting for class A, an A offer temporarily reserves A while B remains confirmed. Declining, expiry, or an unpaid required difference releases A back to its queue and leaves B untouched. Only a completed transfer releases B, which may then trigger B's FIFO queue.
+A transfer replaces an existing enrollment only after the target has succeeded. If a child confirmed in class B is waiting for class A, an A offer temporarily reserves A while B remains confirmed. Its `respond_by_at` target is soft: time alone never releases A. Only an explicit parent decline, staff-recorded decline, or explicit staff closure releases A back to its queue and leaves B untouched. Any transfer price-difference settlement remains part of the future transfer lifecycle. Only a completed transfer releases B, which may then trigger B's FIFO queue.
 
 An exceptional additional enrollment is different: teacher/admin creates another enrollment, the original seat remains, and the second class has its own tuition/pricing obligation and any separately approved adjustment.
 

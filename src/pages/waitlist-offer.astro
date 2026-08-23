@@ -1,0 +1,30 @@
+---
+import { siteIdentity } from "../content/homepage";
+import "../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#073aaf" />
+    <title>Суудлын санал | {siteIdentity.name}</title>
+  </head>
+  <body>
+    <main class="register-shell">
+      <a class="brand-link" href="/"><img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} /><span><strong>{siteIdentity.name}</strong><span>Туршилт сургалтын лаборатори</span></span></a>
+      <section class="registration-form" aria-live="polite">
+        <p class="eyebrow">Хүлээлгийн жагсаалт</p><h1>Түр хүлээнэ үү</h1><p id="offer-message">Саналын мэдээллийг шалгаж байна.</p>
+        <div id="offer-actions" hidden></div>
+      </section>
+    </main>
+    <script>
+      // @ts-nocheck
+      const message = document.querySelector("#offer-message"); const actions = document.querySelector("#offer-actions");
+      const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+      async function request(payload) { const response = await fetch("/api/waitlist-offer", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ token, ...payload }) }); const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || "Саналын мэдээллийг авч чадсангүй."); return body; }
+      function show(offer) { const date = new Date(offer.respondByAt).toLocaleString("mn-MN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Ulaanbaatar" }); message.innerHTML = `<strong>Танд суудал гарлаа</strong><br>${offer.childName}<br>${offer.classLabel} · ${offer.weekday} ${offer.startTime}–${offer.endTime}<br>${offer.converted ? "Таны сонголтыг тэмдэглэлээ. Төлбөрийн мэдээллийг и-мэйлээр илгээнэ." : offer.overdue ? "Хариу өгөх хугацаа өнгөрсөн боловч суудлыг одоогоор танд хадгалж байна." : `Шийдвэрээ ${date} хүртэл мэдэгдэнэ үү.`}`; actions.hidden = false; actions.innerHTML = offer.converted ? "" : offer.awaitingTransfer ? "<p>Таны сонголтыг тэмдэглэлээ. Шилжүүлгийн дараагийн алхмыг багштай ярилцана уу.</p>" : `<label>Төлбөрийн хэлбэр<select id="plan"><option value="single">Нэг удаа</option><option value="two_installment">Хоёр хувааж</option></select></label><div class="registration-actions"><button class="button secondary" id="decline" type="button">Татгалзах</button><button class="button primary" id="accept" type="button">Зөвшөөрөх</button></div>`; document.querySelector("#decline")?.addEventListener("click", async () => { if (!confirm("Энэ саналаас татгалзах уу?")) return; await request({ action: "decline" }); message.textContent = "Татгалзсаныг тэмдэглэлээ."; actions.hidden = true; }); document.querySelector("#accept")?.addEventListener("click", async () => { const result = await request({ action: "accept", paymentPlanCode: document.querySelector("#plan").value }); message.textContent = result.state === "awaiting_transfer" ? "Таны сонголтыг тэмдэглэлээ. Багш шилжүүлгийн дараагийн алхмыг холбогдож тайлбарлана." : "Сонголтыг тэмдэглэлээ. Төлбөрийн мэдээллийг и-мэйлээр илгээнэ."; actions.hidden = true; }); }
+      (async () => { if (!token) throw new Error("Саналын холбоос дутуу байна."); show(await request({ action: "view" })); })().catch((error) => { message.textContent = error.message || "Энэ санал хүчингүй эсвэл идэвхгүй болсон байна."; });
+    </script>
+  </body>
+</html>

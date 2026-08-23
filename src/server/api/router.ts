@@ -40,6 +40,16 @@ import {
   updatePaymentConfirmationGraceSetting,
 } from "../staff/payment-reconciliation";
 import {
+  acceptWaitlistOffer,
+  declineOrCloseWaitlistOffer,
+  extendWaitlistOffer,
+  publicWaitlistOffer,
+  recordWaitlistContact,
+  reissueWaitlistOfferLink,
+  WaitlistOfferError,
+  waitlistOfferForPublicToken,
+} from "../services/waitlist-offers";
+import {
   CanonicalPromotionError,
   getPromotionReviewQueue,
   resolvePromotionIdentity,
@@ -77,6 +87,7 @@ import {
 import { AnnualCourseStartDefaultError, updateAnnualCourseStartDefault } from "../staff/annual-course-start-default";
 import { InitialPaymentDeadlineError, updateInitialPaymentDeadlineSetting } from "../staff/initial-payment-deadline";
 import { PaymentReminderError, updatePaymentReminderSetting } from "../staff/payment-reminders";
+import { WaitlistOfferResponseSettingError, updateWaitlistOfferResponseSetting } from "../staff/waitlist-offer-response";
 import { CoursePricingError, saveCoursePricing, updatePaymentCollectionSettings } from "../staff/course-pricing";
 import { PublicContentError, saveCourseRule, updatePublicCenterInformation } from "../staff/public-content";
 import { getCourseRules } from "../staff/public-content";
@@ -282,6 +293,15 @@ function paymentReconciliationError(caught: unknown): Response {
   if (caught.code === "already_paid") return error("invalid_request", "Төлбөр бүрэн баталгаажсан тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function waitlistOfferError(caught: unknown): Response {
+  if (!(caught instanceof WaitlistOfferError)) return error("internal_error", "Хүлээлгийн саналын мэдээллийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Санал олдсонгүй эсвэл идэвхгүй болсон байна.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", "Саналын төлөв өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "pricing_unavailable") return error("invalid_request", "Энэ ангид төлбөрийн нөхцөл одоогоор бэлэн биш байна.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 function canonicalPromotionError(caught: unknown): Response {
@@ -561,6 +581,25 @@ export async function handleApiRequest(
     } catch (caught) {
       return registrationError(caught);
     }
+  }
+
+  if (path === "/api/waitlist-offer") {
+    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    let payload: { token?: unknown; action?: unknown; paymentPlanCode?: unknown };
+    try { payload = await request.json() as typeof payload; } catch { return error("invalid_request", "Саналын мэдээллийг шалгана уу.", 400); }
+    if (typeof payload.token !== "string" || typeof payload.action !== "string") return error("invalid_request", "Саналын мэдээллийг шалгана уу.", 400);
+    try {
+      const offer = await waitlistOfferForPublicToken(env.DB, payload.token);
+      if (payload.action === "view") return json(await publicWaitlistOffer(env.DB, payload.token), 200, { "Cache-Control": "no-store" });
+      if (payload.action === "decline") return json({ ok: true, ...await declineOrCloseWaitlistOffer(env, offer.id, "parent_link", null) }, 200, { "Cache-Control": "no-store" });
+      if (payload.action === "accept") {
+        const code = payload.paymentPlanCode === "two_installment" ? "two_installment" : payload.paymentPlanCode === "single" ? "single" : null;
+        if (!code) throw new WaitlistOfferError("invalid");
+        return json({ ok: true, ...await acceptWaitlistOffer(env, offer.id, code, "parent_link") }, 200, { "Cache-Control": "no-store" });
+      }
+      return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+    } catch (caught) { return waitlistOfferError(caught); }
   }
 
   if (path === "/api/registration/status/payment-claim") {
@@ -978,6 +1017,24 @@ export async function handleApiRequest(
           return json({ ok: true }, 200, { "Cache-Control": "no-store" });
         case "payment.release-seat":
           return json({ ok: true, ...await releaseUnpaidSeat(env, principal, String(payload.paymentRequestId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "waitlist-offer.contact":
+          return json({ ok: true, ...await recordWaitlistContact(env, principal, String(payload.offerId ?? ""),
+            payload.channel === "messenger" ? "messenger" : payload.channel === "other" ? "other" : "phone") }, 200, { "Cache-Control": "no-store" });
+        case "waitlist-offer.extend":
+          return json({ ok: true, ...await extendWaitlistOffer(env, principal, String(payload.offerId ?? ""), String(payload.respondByAt ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "waitlist-offer.decline":
+          return json({ ok: true, ...await declineOrCloseWaitlistOffer(env, String(payload.offerId ?? ""),
+            payload.source === "staff_messenger" ? "staff_messenger" : payload.source === "staff_other" ? "staff_other" : "staff_phone", null, principal) }, 200, { "Cache-Control": "no-store" });
+        case "waitlist-offer.reissue-link":
+          return json({ ok: true, ...await reissueWaitlistOfferLink(env, principal, String(payload.offerId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "waitlist-offer.close":
+          return json({ ok: true, ...await declineOrCloseWaitlistOffer(env, String(payload.offerId ?? ""), "staff_other", String(payload.reason ?? "") || "Бусад", principal) }, 200, { "Cache-Control": "no-store" });
+        case "waitlist-offer.accept": {
+          const code = payload.paymentPlanCode === "two_installment" ? "two_installment" : payload.paymentPlanCode === "single" ? "single" : null;
+          if (!code) throw new WaitlistOfferError("invalid");
+          return json({ ok: true, ...await acceptWaitlistOffer(env, String(payload.offerId ?? ""), code,
+            payload.source === "staff_messenger" ? "staff_messenger" : payload.source === "staff_other" ? "staff_other" : "staff_phone", principal) }, 200, { "Cache-Control": "no-store" });
+        }
         case "promotion.use-existing-student":
           return json({ ok: true, ...await resolvePromotionIdentity(env, principal,
             String(payload.draftChildId ?? ""), { kind: "existing", studentId: String(payload.studentId ?? "") }) }, 200, { "Cache-Control": "no-store" });
@@ -988,7 +1045,8 @@ export async function handleApiRequest(
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
     } catch (caught) {
-      return caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught) : paymentReconciliationError(caught);
+      return caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)
+        : caught instanceof WaitlistOfferError ? waitlistOfferError(caught) : paymentReconciliationError(caught);
     }
   }
 
@@ -1449,6 +1507,11 @@ export async function handleApiRequest(
             expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "waitlist-offer-response-setting.save":
+          await updateWaitlistOfferResponseSetting(env, principal, {
+            responseMinutes: Number(payload.responseMinutes), updatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         case "public-site-font.save":
           try {
             await updatePublicSiteFont(env, principal, { font: payload.font, expectedUpdatedAt: payload.expectedUpdatedAt });
@@ -1488,6 +1551,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Сануулгын хугацааны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof WaitlistOfferResponseSettingError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "Саналын хариу өгөх хугацааны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PublicSiteFontError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

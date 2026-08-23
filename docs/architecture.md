@@ -88,7 +88,7 @@ Migration 0003 adds one-time verification challenges and short-lived verified-em
 
 New staging registration writes create an initial-payment reservation at accepted submission. Its deadline is snapshotted from the typed admin `initial_payment_deadline_setting` (default 1,440 minutes / 24 hours). Email verification runs in parallel and does not create, renew, or release that reservation. An active initial-payment reservation remains capacity-consuming after its deadline until staff explicitly records payment or explicitly releases the unpaid seat; no Cron, catalog query, or cleanup routine may infer non-payment from time. Historical provisional-email rows retain their legacy conversion behavior. A single conditional D1 write checks grouped per-class demand and inserts every requested child hold only when all classes have capacity.
 
-For a ClassSession, capacity consumption is the set of confirmed enrollments plus unresolved initial-payment reservations and any still-valid legacy reservation, counted once per child/seat. Promotion changes that representation from hold to enrollment without changing free capacity. Waitlist entries never consume capacity; an explicit release of a genuinely unresolved unpaid reservation restores one seat. A finalized teacher-approved partial confirmation remains a confirmed seat even when its remaining balance later becomes overdue.
+For a ClassSession, capacity consumption is the set of confirmed enrollments, unresolved initial-payment reservations, active waitlist offers, and any still-valid legacy reservation, counted once per child/seat. Promotion changes that representation from hold to enrollment without changing free capacity. A plain FIFO waitlist entry never consumes capacity. An active offer has its own snapshotted response target (default 1,440 minutes / 24 hours), remains capacity-consuming after that target, and is released only by an explicit parent/staff decision. Offer acceptance atomically changes the representation to an ordinary initial-payment reservation without a free-seat gap; an explicit unresolved-unpaid release restores one seat and then allocates the next eligible FIFO offer. A finalized teacher-approved partial confirmation remains a confirmed seat even when its remaining balance later becomes overdue.
 
 The browser-local pre-submission draft expires after 24 hours. Server drafts expire after seven days for incomplete recovery. New accepted registrations have an independent snapshotted payment deadline and a separately expiring confirmation link. Retention must never delete or release a financially unresolved initial-payment reservation. Resend and email-change actions use a 60-second cooldown, invalidate superseded challenges, and never move the payment deadline.
 
@@ -333,7 +333,11 @@ occurrence. Normal assignments use class plus lesson identity, so they follow a
 safe target-calendar date reflow. Correcting source attendance to present or
 late invalidates the active make-up decision without deleting history. This
 foundation changes neither enrollment nor source attendance and sends no
-message or financial consequence.
+message or financial consequence. Future daily-review policy is intentionally
+not implemented here: an unusually high number of effective absences should
+flag that occurrence/day for teacher review, make-up items should retain their
+source attendance, and a later attendance correction must invalidate any
+inappropriate downstream make-up effect.
 
 When no standard occurrence remains, the teacher may group compatible
 same-lesson absences into one capacity-limited special occurrence. Parent

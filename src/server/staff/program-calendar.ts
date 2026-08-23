@@ -26,6 +26,7 @@ import { getTeacherDashboardPreferences } from "./teacher-dashboard-preferences"
 import { getPaymentConfirmationGraceSetting } from "./payment-reconciliation";
 import { getInitialPaymentDeadlineSetting } from "./initial-payment-deadline";
 import { getPaymentReminderSetting } from "./payment-reminders";
+import { getWaitlistOfferResponseSetting } from "./waitlist-offer-response";
 
 const STAGES = ["stage_1", "stage_2", "stage_3"] as const;
 type StageCode = typeof STAGES[number];
@@ -571,7 +572,7 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, paymentConfirmationGrace, initialPaymentDeadline, paymentReminderSetting, publicQrRedirectSettings, publicCenterInformation, publicSiteFont, courseRules, teacherDashboardPreferences] = await Promise.all([
+  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, paymentConfirmationGrace, initialPaymentDeadline, paymentReminderSetting, waitlistOfferResponseSetting, publicQrRedirectSettings, publicCenterInformation, publicSiteFont, courseRules, teacherDashboardPreferences] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
@@ -633,6 +634,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     getPaymentConfirmationGraceSetting(env),
     getInitialPaymentDeadlineSetting(env),
     getPaymentReminderSetting(env),
+    getWaitlistOfferResponseSetting(env.DB),
     getPublicQrRedirectSettings(env),
     getPublicCenterInformation(env),
     getPublicSiteFontForPresentation(env),
@@ -737,6 +739,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     paymentConfirmationGrace,
     initialPaymentDeadline,
     paymentReminderSetting,
+    waitlistOfferResponseSetting,
     publicQrRedirectSettings,
     publicCenterInformation,
     courseRules,

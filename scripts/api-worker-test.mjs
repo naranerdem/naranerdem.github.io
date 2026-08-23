@@ -75,6 +75,15 @@ function createDatabase(rows, options = {}) {
           return { ok: 1 };
         },
         async all() {
+          if (sql.includes("AS offeredWaitlistCount") && sql.includes("FROM class_session")) {
+            const productionQuery = sql.includes("class_session.is_test = 0");
+            const filtered = productionQuery ? rows.filter((row) => row.isTest === 0 && row.isTestOnly === 0) : rows;
+            assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
+            return { success: true, results: filtered.map((row) => ({
+              classSessionId: row.classSessionId, capacity: row.capacity, confirmedCount: row.confirmedCount,
+              reservedInitialPaymentCount: row.activeHoldCount, offeredWaitlistCount: 0, waitlistCount: 0,
+            })) };
+          }
           if (sql.includes("FROM class_calendar")) {
             if (options.calendarError) throw new Error("SQLITE_ERROR: no such table: class_calendar");
             assert.match(sql, /class_calendar_revision\.status = 'published'/);

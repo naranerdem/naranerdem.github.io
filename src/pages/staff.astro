@@ -177,10 +177,15 @@ import "../styles/global.css";
           if (!response.ok) return;
           const data = await response.json();
           const now = new Date(data.now).getTime();
-          const old = (data.items || []).filter((item) => now - new Date(item.paymentDueAt).getTime() > 24 * 60 * 60 * 1000);
-          if (!old.length) return;
-          const oldestDays = Math.max(1, Math.floor(Math.max(...old.map((item) => now - new Date(item.paymentDueAt).getTime())) / (24 * 60 * 60 * 1000)));
-          node.textContent = `${oldestDays} өдөр шалгагдаагүй төлбөр байна`;
+          const overduePayments = new Set((data.items || []).filter((item) => Number(item.expectedAmountMnt) > Number(item.allocatedAmountMnt)
+            && new Date(item.remainingPaymentDueAt || item.paymentDueAt).getTime() < now).map((item) => item.installmentId));
+          const overdueOffers = new Set((data.waitlistOffers || []).filter((item) => item.status === "active"
+            && new Date(item.respondByAt).getTime() < now).map((item) => item.id));
+          const parts = [];
+          if (overduePayments.size) parts.push(`${overduePayments.size} төлбөр шалгах шаардлагатай`);
+          if (overdueOffers.size) parts.push(`${overdueOffers.size} хүлээлгийн саналын хугацаа хэтэрсэн`);
+          if (!parts.length) return;
+          node.textContent = parts.join(" · ");
           node.classList.add("staff-payment-summary-urgent");
         } catch {
           // The dashboard remains useful if the optional summary cannot load.

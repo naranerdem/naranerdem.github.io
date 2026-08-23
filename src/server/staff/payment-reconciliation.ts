@@ -2,6 +2,8 @@ import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { getPaymentReminderSetting } from "./payment-reminders";
 import { promotePaidDraftChildren } from "../services/canonical-enrollment-promotion";
+import { getClassCapacityProjections } from "../services/class-capacity";
+import { allocateWaitlistOffers } from "../services/waitlist-offers";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
 type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid";
@@ -185,23 +187,18 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     WHERE payment_credit.status = 'available'
     GROUP BY payment_credit.id
     ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
-  const capacity = await env.DB.prepare(`SELECT class_session.id, class_session.display_label AS classLabel,
-    class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime, class_session.capacity,
-    COALESCE(confirmed.count, 0) AS confirmedCount, COALESCE(reserved.count, 0) AS reservedInitialPaymentCount,
-    COALESCE(waitlist.count, 0) AS waitlistCount
-    FROM class_session
-    LEFT JOIN (SELECT enrollment.class_session_id, COUNT(*) AS count FROM enrollment
-      WHERE enrollment.status = 'confirmed' GROUP BY enrollment.class_session_id) confirmed ON confirmed.class_session_id = class_session.id
-    LEFT JOIN (SELECT class_session_id, COUNT(*) AS count FROM registration_capacity_hold
-      WHERE status = 'active' AND (hold_type = 'initial_payment' OR deadline_at > ?) GROUP BY class_session_id) reserved ON reserved.class_session_id = class_session.id
-    LEFT JOIN (SELECT class_session_id, COUNT(*) AS count FROM registration_draft_waitlist_entry
-      WHERE status = 'active' GROUP BY class_session_id) waitlist ON waitlist.class_session_id = class_session.id
-    WHERE class_session.status IN ('available', 'full') ORDER BY class_session.weekday, class_session.start_time`).bind(now).all<Record<string, unknown>>();
+  const capacityRows = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
+  const capacityLabels = await env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
+    FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
+  const capacityById = new Map(capacityRows.map((row) => [row.classSessionId, row]));
+  const capacity = capacityLabels.results.map((label) => ({ ...label, ...(capacityById.get(label.id) ?? {
+    capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, offeredWaitlistCount: 0, waitlistCount: 0, freeSeats: 0,
+  }) }));
   return { now, items: result.results.map((item) => ({ ...item,
     expectedAmountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),
     parentClaimed: Boolean(item.parentClaimed), laterAmountMnt: item.laterAmountMnt == null ? null : Number(item.laterAmountMnt),
   })), credits: credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt) })),
-  capacity: capacity.results.map((item) => ({ ...item, capacity: Number(item.capacity), confirmedCount: Number(item.confirmedCount), reservedInitialPaymentCount: Number(item.reservedInitialPaymentCount), waitlistCount: Number(item.waitlistCount), freeSeats: Math.max(Number(item.capacity) - Number(item.confirmedCount) - Number(item.reservedInitialPaymentCount), 0) })),
+  capacity,
   waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone, registration_draft.email, registration_draft.facebook_name AS guardianFacebookName,
@@ -214,7 +211,21 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     INNER JOIN class_session ON class_session.id = registration_draft_waitlist_entry.class_session_id
     WHERE registration_draft_waitlist_entry.status = 'active'
-    ORDER BY registration_draft_waitlist_entry.created_at ASC LIMIT 100`).all<Record<string, unknown>>()).results };
+    ORDER BY registration_draft_waitlist_entry.created_at ASC LIMIT 100`).all<Record<string, unknown>>()).results,
+  waitlistOffers: (await env.DB.prepare(`SELECT waitlist_seat_offer.id, waitlist_seat_offer.status,
+    waitlist_seat_offer.offered_at AS offeredAt, waitlist_seat_offer.respond_by_at AS respondByAt,
+    waitlist_seat_offer.contact_last_at AS contactLastAt, waitlist_seat_offer.contact_last_channel AS contactLastChannel,
+    registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+    registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
+    registration_draft.email, registration_draft.facebook_name AS guardianFacebookName, registration_draft_child.facebook_name AS childFacebookName,
+    class_session.display_label AS classLabel, class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
+    EXISTS(SELECT 1 FROM registration_draft_child AS backup WHERE backup.id = registration_draft_child.id AND backup.canonical_enrollment_id IS NOT NULL) AS hasBackupEnrollment
+    FROM waitlist_seat_offer
+    INNER JOIN registration_draft_child ON registration_draft_child.id = waitlist_seat_offer.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    INNER JOIN class_session ON class_session.id = waitlist_seat_offer.class_session_id
+    WHERE waitlist_seat_offer.status IN ('active', 'awaiting_transfer')
+    ORDER BY waitlist_seat_offer.respond_by_at, waitlist_seat_offer.offered_at LIMIT 100`).all<Record<string, unknown>>()).results };
 }
 
 export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal, input: {
@@ -402,6 +413,7 @@ export async function releaseUnpaidSeat(env: WorkerEnv, actor: StaffPrincipal, p
     ) VALUES (?, ?, ?, ?, 'available', ?, ?, ?, ?)`)
       .bind(`credit:${payment.id}`, payment.id, request.id, Number(payment.amountMnt), now, now, request.isTest, request.testRunId)),
   ]);
+  await allocateWaitlistOffers(env, undefined, nowDate);
   return { released: true, parentClaimed: Boolean(claim) };
 }
 

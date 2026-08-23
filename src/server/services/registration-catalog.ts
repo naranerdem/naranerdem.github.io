@@ -1,5 +1,6 @@
 import type { AppEnvironment, D1Database } from "../env";
 import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
+import { getClassCapacityProjections } from "./class-capacity";
 
 interface CatalogRow {
   academicYearId: string;
@@ -72,14 +73,14 @@ const stagingCatalogSql = `
     COALESCE(confirmed.count, 0) AS confirmedCount,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
     MAX(class_session.capacity - COALESCE(confirmed.count, 0)
-      - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0), 0) AS remainingSeats,
+      - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0), 0) AS remainingSeats,
     CASE
       WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
         OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
         OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
       WHEN class_session.capacity - COALESCE(confirmed.count, 0)
-        - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) > 0 THEN 'available'
+        - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0) > 0 THEN 'available'
       ELSE 'full'
     END AS publicAvailability
   FROM academic_year
@@ -116,6 +117,10 @@ const stagingCatalogSql = `
       AND (hold_type = 'initial_payment' OR deadline_at > ?)
     GROUP BY class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
+  LEFT JOIN (
+    SELECT class_session_id, COUNT(*) AS count FROM waitlist_seat_offer
+    WHERE status IN ('active', 'awaiting_transfer') GROUP BY class_session_id
+  ) AS waitlist_offers ON waitlist_offers.class_session_id = class_session.id
   WHERE ${activeWindowForOfferingSql("offering.id")}
     AND class_session.status IN ('available', 'full', 'closed')
   ORDER BY academic_year.starts_on, academic_year.public_label, class_session.weekday, class_session.start_time
@@ -140,14 +145,14 @@ const productionCatalogSql = `
     COALESCE(confirmed.count, 0) AS confirmedCount,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
     MAX(class_session.capacity - COALESCE(confirmed.count, 0)
-      - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0), 0) AS remainingSeats,
+      - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0), 0) AS remainingSeats,
     CASE
       WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
         OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
         OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 'unavailable'
       WHEN class_session.capacity - COALESCE(confirmed.count, 0)
-        - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) > 0 THEN 'available'
+        - COALESCE(active_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0) > 0 THEN 'available'
       ELSE 'full'
     END AS publicAvailability
   FROM academic_year
@@ -198,6 +203,10 @@ const productionCatalogSql = `
       AND registration_draft.is_test = 0
     GROUP BY registration_capacity_hold.class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
+  LEFT JOIN (
+    SELECT class_session_id, COUNT(*) AS count FROM waitlist_seat_offer
+    WHERE status IN ('active', 'awaiting_transfer') AND is_test = 0 GROUP BY class_session_id
+  ) AS waitlist_offers ON waitlist_offers.class_session_id = class_session.id
   WHERE ${activeWindowForOfferingSql("offering.id")}
     AND academic_year.is_test = ?
     AND class_session.is_test = ?
@@ -217,9 +226,13 @@ export async function getRegistrationCatalog(
     ? database.prepare(stagingCatalogSql).bind(now, localDate, localDate, localDate, localDate)
     : database.prepare(productionCatalogSql).bind(now, localDate, localDate, localDate, localDate, 0, 0, 0);
   const result = await statement.all<CatalogRow>();
+  const projectionByClassId = new Map((await getClassCapacityProjections(database, environment, nowDate))
+    .map((projection) => [projection.classSessionId, projection]));
   const years = new Map<string, RegistrationCatalog["academicYears"][number]>();
 
   for (const row of result.results) {
+    const projection = projectionByClassId.get(row.classSessionId);
+    if (projection) row.remainingSeats = projection.freeSeats;
     let year = years.get(row.academicYearId);
     if (!year) {
       year = { id: row.academicYearId, label: row.academicYearLabel, classSessions: [] };
