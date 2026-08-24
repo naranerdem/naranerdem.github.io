@@ -58,7 +58,8 @@ async function queueOfferEmail(env: WorkerEnv, offer: OfferContext, rawToken: st
   const delivery = resolveDeliveryAddress(env.APP_ENV, offer.email, env.STAGING_EMAIL_OVERRIDE_TO);
   const emailId = `${offer.id}:offer-email`;
   const url = `${env.APP_ORIGIN.replace(/\/$/, "")}/waitlist-offer/#token=${encodeURIComponent(rawToken)}`;
-  const template = waitlistOfferTemplate({ childName: offer.childName, classLabel: `${offer.classLabel} · ${offer.weekday} ${offer.startTime}–${offer.endTime}`, respondByAt: offer.respondByAt, url });
+  const template = waitlistOfferTemplate({ childName: offer.childName, classLabel: offer.classLabel, respondByAt: offer.respondByAt, url });
+  const now = new Date().toISOString();
   await env.DB.prepare(`INSERT OR IGNORE INTO outbound_email (id, event_type, template_key, intended_to_email,
     actual_delivery_email, delivery_mode, status, attempt_count, queued_at, context_json, idempotency_key,
     is_test, test_run_id, created_at, updated_at, registration_draft_id)
@@ -66,10 +67,13 @@ async function queueOfferEmail(env: WorkerEnv, offer: OfferContext, rawToken: st
       registration_draft.is_test, registration_draft.test_run_id, ?, ?, registration_draft.id
     FROM registration_draft_child INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     WHERE registration_draft_child.id = ?`).bind(emailId, offer.email, delivery.actualEmail, delivery.deliveryMode,
-      new Date().toISOString(), JSON.stringify({ offerId: offer.id, respondByAt: offer.respondByAt }), `waitlist-offer/${offer.id}`,
-      new Date().toISOString(), new Date().toISOString(), offer.registrationDraftChildId).run();
+      now, JSON.stringify({ offerId: offer.id, respondByAt: offer.respondByAt }), `waitlist-offer/${offer.id}`,
+      now, now, offer.registrationDraftChildId).run();
+  const queued = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail
+    FROM outbound_email WHERE id = ?`).bind(emailId).first<{ status: string; actualDeliveryEmail: string }>();
+  if (!queued || queued.status === "sent") return;
   await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), { id: emailId, idempotencyKey: `waitlist-offer/${offer.id}`,
-    message: { from: env.EMAIL_FROM, to: delivery.actualEmail, subject: template.subject, html: template.html, text: template.text } });
+    message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text } });
 }
 
 async function queuePaymentInstructions(env: WorkerEnv, offer: OfferRow & { draftId: string }, deadline: string): Promise<void> {
@@ -180,7 +184,9 @@ async function preparedOffers(
         const context = await contextForOffer(env.DB, offer.offerId);
         if (context?.status === "active") {
           created.push({ offer: context, token: offer.token });
-          queueOfferEmail(env, context, offer.token).catch(() => undefined);
+          // The offer is already committed. Await delivery so Worker lifetime does
+          // not discard it, while keeping email failure separate from seat state.
+          await queueOfferEmail(env, context, offer.token).catch(() => undefined);
         }
       }
       return created;
@@ -353,6 +359,8 @@ export async function reissueWaitlistOfferLink(env: WorkerEnv, actor: StaffPrinc
       .bind(await sha256(rawToken), now, offerId),
     audit(env, actor, "waitlist_offer_link_reissued", offerId, {}, offer.isTest, offer.testRunId, now),
   ]); if (changes(result[0]) !== 1) throw new WaitlistOfferError("conflict");
+  const context = await contextForOffer(env.DB, offerId);
+  if (context?.status === "active") await queueOfferEmail(env, context, rawToken).catch(() => undefined);
   return { url: `${env.APP_ORIGIN.replace(/\/$/, "")}/waitlist-offer/#token=${encodeURIComponent(rawToken)}` };
 }
 

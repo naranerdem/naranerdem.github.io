@@ -637,7 +637,7 @@ const formCopy = registrationFormCopy;
           const waitlist = sessionForId(waitlistId);
           const code = card.querySelector("[data-child-code]").value.trim();
           const plan = session?.paymentOptions?.find((option) => option.code === selectedPaymentPlanCode(card));
-          return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span>${session ? `<span>${escapeText(formCopy.review.selectedClassHeading)}: ${escapeText(`${classText(session)} · ${availabilityText(session)}`)}</span>` : ""}${plan ? `<span>Төлбөр: ${escapeText(plan.code === "single" ? "Нэг удаа төлөх" : "2 хувааж төлөх")} · ${escapeText(formatMnt(plan.initialAmountMnt))}${plan.secondAmountMnt ? `; дараагийн ${escapeText(formatMnt(plan.secondAmountMnt))} · ${escapeText(formatLocalDate(plan.secondDueOn))}` : ""}</span>` : ""}${waitlist ? `<span>${escapeText(formCopy.review.waitlistHeading)}: ${escapeText(classText(waitlist))}</span>` : ""}${code ? `<span>${escapeText(formCopy.review.codeHeading)}: ${escapeText(code)}</span>` : ""}</li>`;
+          return `<li><strong>${escapeText(`${card.querySelector("[data-child-surname]").value} ${card.querySelector("[data-child-name]").value}`.trim() || `${formCopy.child.cardTitle} ${index + 1}`)}</strong><span>${escapeText(stageLabels[card.querySelector("[data-child-stage]").value] || formCopy.messages.notSelected)}</span>${session ? `<span>${escapeText(formCopy.review.selectedClassHeading)}: ${escapeText(`${classText(session)} · ${availabilityText(session)}`)}</span>` : ""}${plan ? `<span>Төлбөр: ${escapeText(plan.code === "single" ? "Нэг удаа төлөх" : "2 хувааж төлөх")} · ${escapeText(formatMnt(plan.initialAmountMnt))}${plan.secondAmountMnt ? `; дараагийн ${escapeText(formatMnt(plan.secondAmountMnt))} · ${escapeText(formatLocalDate(plan.secondDueOn))}` : ""}</span>` : ""}${waitlist ? `<span>${escapeText(formCopy.review.waitlistHeading)}: ${escapeText(classText(waitlist))}</span><span>${escapeText(formCopy.review.waitlistExplanation)}</span>${session ? `<span>${escapeText(formCopy.review.backupWaitlistExplanation)}</span>` : ""}` : ""}${code ? `<span>${escapeText(formCopy.review.codeHeading)}: ${escapeText(code)}</span>` : ""}</li>`;
         }).join("");
         reviewSummary.innerHTML = `
           <section><h3>${escapeText(formCopy.review.guardianHeading)}</h3><p>${escapeText(value("#guardian-name"))} · ${escapeText(value("#guardian-phone"))}<br>${escapeText(value("#guardian-email"))}</p></section>
@@ -761,10 +761,10 @@ const formCopy = registrationFormCopy;
         const parts = [];
         if (child.canonicalEnrollmentStatus === "confirmed") parts.push(`<strong>Бүртгэл баталгаажлаа</strong>`);
         if (child.selectedClassLabel) {
-          parts.push(`<strong>${escapeText(child.selectedClassLabel)}</strong> · ${escapeText(`${child.selectedClassWeekday} ${child.selectedClassStartTime}–${child.selectedClassEndTime}`)}`);
+          parts.push(`<strong>${escapeText(child.selectedClassLabel)}</strong>`);
         }
         if (child.waitlistClassLabel && child.waitlistStatus) {
-          parts.push(`Хүлээлгийн жагсаалт: <strong>${escapeText(child.waitlistClassLabel)}</strong> · ${escapeText(`${child.waitlistClassWeekday} ${child.waitlistClassStartTime}–${child.waitlistClassEndTime}`)}`);
+          parts.push(`Хүлээлгийн жагсаалт: <strong>${escapeText(child.waitlistClassLabel)}</strong><br>${escapeText(formCopy.messages.waitlistStatus)}${child.selectedClassLabel ? `<br>${escapeText(formCopy.messages.backupWaitlistStatus)}` : ""}`);
         }
         return parts.join("<br>");
       }
