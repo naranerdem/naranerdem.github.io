@@ -58,6 +58,9 @@ try {
   assert.deepEqual(firstEmail, { status: "sent", attempts: 1, actualDeliveryEmail: "safe-inbox@example.test" }, "the first offer queues and delivers exactly one safe staging email");
   assert.equal(sentMessages.length, 1, "repeated allocation does not duplicate the offer email");
   assert.match(sentMessages[0].text, /waitlist-offer\/#token=/, "the offer email carries its opaque first-party response link");
+  assert.match(sentMessages[0].text, /2026 оны 8-р сарын 24-ний 16:00 цаг/, "the offer response target is localized for Mongolia");
+  assert.match(sentMessages[0].text, /Хэрэв энэ хугацаанд хариу өгөх боломжгүй бол бид тантай дахин холбогдоно\./, "the email presents a soft response target without claiming indefinite reservation");
+  assert.doesNotMatch(sentMessages[0].text, /Aug|AM|PM|автоматаар цуцлагдахгүй/, "the parent offer email contains no English deadline format or misleading automatic-release wording");
   assert.equal((await publicWaitlistOffer(database, offers[0].token, new Date(now(2000)))).overdue, true, "overdue remains active");
   providerShouldFail = true;
   await declineOrCloseWaitlistOffer(env, offers[0].offer.id, "staff_phone", null, { staffAccountId: "teacher", capabilities: ["payment.manage"] }, new Date(now(2000)));
