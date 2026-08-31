@@ -2,6 +2,7 @@ import { rulesContent } from "../../content/rules";
 import { normalizeEmail, validEmail } from "../auth/email-address";
 import { randomToken, sha256 } from "../auth/crypto";
 import type { D1Database, D1Result, WorkerEnv } from "../env";
+import { registrationWriteEnabled } from "../security/operational-gates";
 import { getPaymentCollectionSettings, getPaymentCollectionSettingsFromDatabase, type CoursePaymentPlanCode } from "../staff/course-pricing";
 import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
 import { assertCourseRuleVersions, PublicContentError } from "../staff/public-content";
@@ -119,11 +120,6 @@ function clean(value: unknown, max: number): string {
 
 function validDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
-}
-
-function registrationWritesAvailable(env: WorkerEnv): boolean {
-  return env.APP_ENV === "staging"
-    && env.REGISTRATION_WRITE_ENABLED === "true";
 }
 
 function compactPhone(value: string): string {
@@ -343,7 +339,7 @@ export async function createRegistrationDraft(
   rawInput: RegistrationSubmissionInput,
   nowDate = new Date(),
 ) {
-  if (!registrationWritesAvailable(env)) throw new RegistrationSubmissionError("disabled");
+  if (!registrationWriteEnabled(env)) throw new RegistrationSubmissionError("disabled");
   const input = validateSubmission(rawInput);
   const parentRulesVersion = clean(input.parentRulesVersion, 120) || rulesContent.parent.version;
   const studentRulesVersion = clean(input.studentRulesVersion, 120) || rulesContent.student.version;

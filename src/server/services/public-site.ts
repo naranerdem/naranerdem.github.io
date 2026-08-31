@@ -13,9 +13,9 @@ function durationMinutes(start: string, end: string): number | null {
 }
 export function publicProgramSlug(stage: StageCode): string { return ({ stage_1: "stage-1", stage_2: "stage-2", stage_3: "stage-3" })[stage]; }
 
-export async function getPublicSiteModel(env: WorkerEnv) {
+export async function getPublicSiteModel(env: WorkerEnv, nowDate = new Date()) {
   const [center, catalog, families, font] = await Promise.all([
-    getPublicCenterInformation(env), getRegistrationCatalog(env.DB, env.APP_ENV),
+    getPublicCenterInformation(env), getRegistrationCatalog(env.DB, env.APP_ENV, nowDate),
     env.DB.prepare(`SELECT family.annual_stage_code AS stageCode, family.display_name AS title,
       family.recommended_grade_min AS recommendedGradeMin, family.recommended_grade_max AS recommendedGradeMax,
       family.public_short_description AS shortDescription, family.public_long_description AS longDescription,

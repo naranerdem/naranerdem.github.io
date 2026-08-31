@@ -134,6 +134,8 @@ function testEnv(database, overrides = {}) {
     RESEND_API_KEY: "resend-secret-not-for-template",
     STAGING_EMAIL_OVERRIDE_TO: "safe-inbox@example.test",
     STAGING_AUTH_TEST_KEY: "parent-test-gate-not-for-template",
+    STAFF_AUTH_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+    STAFF_AUTH_TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
     DB: database,
     ...overrides,
   };
@@ -688,6 +690,7 @@ try {
   assert.deepEqual(await (await handleApiRequest(parentCookieRequest, env)).json(), { authenticated: false });
 
   const apiActiveProvider = provider();
+  globalThis.fetch = async () => Response.json({ success: true, action: "staff_login_start" });
   staff(database, "staff-api", "api@example.invalid", "API Тест", "teacher");
   const apiPrepared = await begin(env, "api@example.invalid", {
     now: baseTime, rawToken: "api-magic", rawClaimSecret: "api-claim",
@@ -696,12 +699,12 @@ try {
   const activeResponse = await api(env, "/api/staff/auth/start", {
     method: "POST",
     headers: { Origin: env.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.80", Cookie: cookiePair(apiPrepared.attemptCookie) },
-    body: { email: "api@example.invalid" },
+    body: { email: "api@example.invalid", turnstileToken: "staff-test-token" },
   });
   const unknownResponse = await api(env, "/api/staff/auth/start", {
     method: "POST",
     headers: { Origin: env.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.81" },
-    body: { email: "unknown-api@example.invalid" },
+    body: { email: "unknown-api@example.invalid", turnstileToken: "staff-test-token" },
   });
   assert.equal(activeResponse.status, 202);
   assert.equal(unknownResponse.status, 202);
@@ -710,6 +713,28 @@ try {
   assert.match(unknownResponse.headers.get("set-cookie") ?? "", new RegExp(STAFF_LOGIN_ATTEMPT_COOKIE));
   assert.equal((await api(env, "/api/staff/auth/start", { method: "GET" })).status, 405);
   assert.equal((await api(env, "/api/staff/auth/start", { method: "POST", body: { email: "api@example.invalid" } })).status, 403);
+  const missingTokenResponse = await api(env, "/api/staff/auth/start", {
+    method: "POST",
+    headers: { Origin: env.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.82" },
+    body: { email: "api@example.invalid" },
+  });
+  assert.equal(missingTokenResponse.status, 202);
+  assert.equal(missingTokenResponse.headers.get("set-cookie"), null, "missing Turnstile token creates no staff login attempt");
+  const limitedEnv = testEnv(database, {
+    STAFF_LOGIN_RATE_LIMITER: { limit: async () => ({ success: false }) },
+  });
+  const limitedResponse = await api(limitedEnv, "/api/staff/auth/start", {
+    method: "POST",
+    headers: { Origin: limitedEnv.APP_ORIGIN, "CF-Connecting-IP": "192.0.2.83" },
+    body: { email: "api@example.invalid", turnstileToken: "staff-test-token" },
+  });
+  assert.equal(limitedResponse.status, 202);
+  assert.equal(limitedResponse.headers.get("set-cookie"), null, "edge rate limiting rejects before a staff login attempt is created");
+  const staffAuthConfig = await api(env, "/api/staff/auth/config");
+  assert.deepEqual(await staffAuthConfig.json(), {
+    emailLoginEnabled: true,
+    turnstileSiteKey: "1x00000000000000000000AA",
+  }, "staff login exposes only its independent public Turnstile site key when enabled");
 
   const productionEnv = testEnv(database, {
     APP_ENV: "production",
@@ -717,11 +742,17 @@ try {
     EMAIL_ENABLED: "false",
     AUTH_EMAIL_ENABLED: "false",
     STAFF_AUTH_EMAIL_ENABLED: "false",
+    STAFF_AUTH_TURNSTILE_SITE_KEY: "production-site-key",
+    STAFF_AUTH_TURNSTILE_SECRET_KEY: "production-secret",
     STAGING_EMAIL_OVERRIDE_TO: undefined,
   });
   assert.equal((await api(productionEnv, "/api/staff/auth/start", {
     method: "POST", headers: { Origin: productionEnv.APP_ORIGIN }, body: { email: "admin@example.invalid" },
   })).headers.get("set-cookie"), null, "production-disabled start creates no claim state");
+  assert.deepEqual(await (await api(productionEnv, "/api/staff/auth/config")).json(), {
+    emailLoginEnabled: false,
+    turnstileSiteKey: null,
+  }, "production staff auth cannot become ready without the required edge limiter");
   assert.equal(count(database, "audit_event", "metadata_json LIKE '%teacher-magic%' OR metadata_json LIKE '%teacher-claim%'"), 0, "audit logs contain no raw auth token");
 
   await revokeStaffSession(env, adminLogin.rawSession, new Date(baseTime.getTime() + 3 * 86400_000));

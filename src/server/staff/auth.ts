@@ -8,6 +8,7 @@ import { EmailConfigurationError, deliverQueuedEmail } from "../email/service";
 import { staffLoginTemplate } from "../email/templates/staff-login";
 import { hasStaffCapability, resolveStaffPrincipal, type StaffPrincipal } from "./authorization";
 import { MAX_STAFF_ABSOLUTE_SECONDS } from "./session-policy";
+import { staffAuthEmailEnabled as staffAuthEmailGate } from "../security/operational-gates";
 
 export const STAFF_MAGIC_LINK_TTL_SECONDS = 15 * 60;
 export const STAFF_LOGIN_ATTEMPT_TTL_SECONDS = 15 * 60;
@@ -170,7 +171,18 @@ export function readStaffAttemptCookie(request: Request): string {
 }
 
 export function staffAuthEmailEnabled(env: WorkerEnv): boolean {
-  return env.EMAIL_ENABLED === "true" && env.STAFF_AUTH_EMAIL_ENABLED === "true";
+  return staffAuthEmailGate(env);
+}
+
+export async function staffLoginEdgeLimitAllowed(env: WorkerEnv, clientIp: string): Promise<boolean> {
+  const limiter = env.STAFF_LOGIN_RATE_LIMITER;
+  if (!limiter) return env.APP_ENV !== "production";
+  try {
+    const key = await sha256(`staff-login/ip/${clientIp}`);
+    return (await limiter.limit({ key })).success;
+  } catch {
+    return env.APP_ENV !== "production";
+  }
 }
 
 async function claimThrottle(

@@ -20,6 +20,10 @@ export interface D1Database {
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
 }
 
+export interface WorkerRateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 export interface WorkerEnv {
   APP_ENV: AppEnvironment;
   REGISTRATION_WRITE_ENABLED: "true" | "false";
@@ -33,6 +37,9 @@ export interface WorkerEnv {
   STAGING_AUTH_TEST_KEY?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
+  STAFF_AUTH_TURNSTILE_SITE_KEY?: string;
+  STAFF_AUTH_TURNSTILE_SECRET_KEY?: string;
+  STAFF_LOGIN_RATE_LIMITER?: WorkerRateLimiter;
   DB: D1Database;
 }
 

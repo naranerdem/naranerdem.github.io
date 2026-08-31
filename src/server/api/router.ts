@@ -54,7 +54,8 @@ import {
   getPromotionReviewQueue,
   resolvePromotionIdentity,
 } from "../services/canonical-enrollment-promotion";
-import { TurnstileError, verifyTurnstile } from "../security/turnstile";
+import { TurnstileError, verifyStaffLoginTurnstile, verifyTurnstile } from "../security/turnstile";
+import { registrationWriteEnabled } from "../security/operational-gates";
 import { hasStaffCapability, resolveStaffPrincipal, type StaffCapability } from "../staff/authorization";
 import {
   claimStaffLoginAttempt,
@@ -62,6 +63,8 @@ import {
   clearStaffSessionCookie,
   readStaffAttemptCookie,
   readStaffCookie,
+  staffAuthEmailEnabled,
+  staffLoginEdgeLimitAllowed,
   revokeStaffSession,
   revokeAllStaffSessions,
   startStaffLogin,
@@ -231,11 +234,6 @@ async function requireStaffCapability(
     return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
   }
   return null;
-}
-
-function registrationWritesAvailable(env: WorkerEnv): boolean {
-  return env.APP_ENV === "staging"
-    && env.REGISTRATION_WRITE_ENABLED === "true";
 }
 
 function registrationError(caught: unknown): Response {
@@ -431,8 +429,8 @@ export async function handleApiRequest(
     if (request.method !== "GET") return methodNotAllowed();
     return json({
       environment: env.APP_ENV,
-      writeEnabled: registrationWritesAvailable(env),
-      turnstileSiteKey: registrationWritesAvailable(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
+      writeEnabled: registrationWriteEnabled(env),
+      turnstileSiteKey: registrationWriteEnabled(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
     }, 200, { "Cache-Control": "no-store" });
   }
 
@@ -442,8 +440,8 @@ export async function handleApiRequest(
       return json({
         config: {
           environment: env.APP_ENV,
-          writeEnabled: registrationWritesAvailable(env),
-          turnstileSiteKey: registrationWritesAvailable(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
+          writeEnabled: registrationWriteEnabled(env),
+          turnstileSiteKey: registrationWriteEnabled(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
         },
         catalog: await getRegistrationCatalog(env.DB, env.APP_ENV),
         courseRules: await getCourseRules(env),
@@ -454,7 +452,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/registration/submit") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     let payload: RegistrationSubmissionInput;
     try {
@@ -492,7 +490,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/registration/email/resend") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     try {
       const draft = await draftForAccessToken(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
@@ -511,7 +509,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/registration/email/change") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     let email = "";
     let turnstileToken = "";
@@ -541,7 +539,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/registration/status") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "GET") return methodNotAllowed();
     try {
       const verified = readCookie(request, VERIFIED_EMAIL_COOKIE);
@@ -555,7 +553,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/registration/pending") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "GET") return methodNotAllowed();
     try {
       const pending = await pendingRegistrationForAccess(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
@@ -566,7 +564,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/registration/status/waitlist") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     let childId = "";
     try {
@@ -585,7 +583,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/waitlist-offer") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     let payload: { token?: unknown; action?: unknown; paymentPlanCode?: unknown };
     try { payload = await request.json() as typeof payload; } catch { return error("invalid_request", "Саналын мэдээллийг шалгана уу.", 400); }
@@ -604,7 +602,7 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/registration/status/payment-claim") {
-    if (!registrationWritesAvailable(env)) return authNotFound();
+    if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     try {
       requireSameOrigin(request, env);
@@ -701,10 +699,12 @@ export async function handleApiRequest(
   if (path === "/api/staff/auth/start") {
     if (request.method !== "POST") return methodNotAllowed("POST");
     let email = "";
+    let turnstileToken = "";
     try {
       requireSameOrigin(request, env);
-      const payload = await request.json() as { email?: unknown };
+      const payload = await request.json() as { email?: unknown; turnstileToken?: unknown };
       if (typeof payload.email === "string") email = payload.email;
+      if (typeof payload.turnstileToken === "string") turnstileToken = payload.turnstileToken;
     } catch (caught) {
       const securityResponse = staffSecurityError(caught);
       if (securityResponse) return securityResponse;
@@ -712,8 +712,12 @@ export async function handleApiRequest(
     }
 
     try {
+      if (!staffAuthEmailEnabled(env)) return staffLoginAccepted();
+      const clientIp = request.headers.get("CF-Connecting-IP") ?? undefined;
+      await verifyStaffLoginTurnstile(env, turnstileToken, clientIp);
+      if (!await staffLoginEdgeLimitAllowed(env, clientIp ?? "unknown")) return staffLoginAccepted();
       const result = await startStaffLogin(env, email, {
-        clientIp: request.headers.get("CF-Connecting-IP") ?? undefined,
+        clientIp,
         existingAttemptSecret: readStaffAttemptCookie(request),
       });
       if (result.delivery) {
@@ -725,6 +729,15 @@ export async function handleApiRequest(
     } catch {
       return staffLoginAccepted();
     }
+  }
+
+  if (path === "/api/staff/auth/config") {
+    if (request.method !== "GET") return methodNotAllowed();
+    const enabled = staffAuthEmailEnabled(env);
+    return json({
+      emailLoginEnabled: enabled,
+      turnstileSiteKey: enabled ? env.STAFF_AUTH_TURNSTILE_SITE_KEY ?? null : null,
+    }, 200, { "Cache-Control": "no-store" });
   }
 
   if (path === "/api/staff/auth/verify") {

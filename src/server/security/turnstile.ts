@@ -52,3 +52,15 @@ export async function verifyTurnstile(
     clearTimeout(timeout);
   }
 }
+
+export function verifyStaffLoginTurnstile(
+  env: WorkerEnv,
+  token: string,
+  remoteIp?: string,
+): Promise<void> {
+  const staffEnv: WorkerEnv = {
+    ...env,
+    TURNSTILE_SECRET_KEY: env.STAFF_AUTH_TURNSTILE_SECRET_KEY,
+  };
+  return verifyTurnstile(staffEnv, token, remoteIp, "staff_login_start");
+}

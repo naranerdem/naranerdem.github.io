@@ -62,7 +62,7 @@ Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:clo
 
 Use [docs/production-release.md](docs/production-release.md) for the production release and rollback procedure.
 
-Sensitive runtime values belong in Cloudflare Worker secrets, never source control: `RESEND_API_KEY`, `STAGING_EMAIL_OVERRIDE_TO`, `STAGING_AUTH_TEST_KEY`, and any future production `TURNSTILE_SECRET_KEY`. Staging uses Cloudflare's published Turnstile test credentials; the browser receives only the site key. The sending domain is `mail.naranerdem.com`; keep existing root-domain MX/TXT forwarding records unchanged and do not enable Resend inbound receiving.
+Sensitive runtime values belong in Cloudflare Worker secrets, never source control: `RESEND_API_KEY`, `STAGING_EMAIL_OVERRIDE_TO`, `STAGING_AUTH_TEST_KEY`, and future production registration/staff Turnstile secrets. Staging uses Cloudflare's published test credentials for separate registration and staff-login Turnstile boundaries; the browser receives only the relevant site key. The sending domain is `mail.naranerdem.com`; keep existing root-domain MX/TXT forwarding records unchanged and do not enable Resend inbound receiving.
 
 Staging test registrations can be inspected or removed by exact test-run ID with `npm run cleanup:registration:staging -- --test-run-id=registration:<draft-uuid>`. Cleanup is a dry run unless `--confirm` is added and refuses production.
 

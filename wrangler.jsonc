@@ -36,6 +36,13 @@
       "migrations_dir": "migrations"
     }
   ],
+  "ratelimits": [
+    {
+      "name": "STAFF_LOGIN_RATE_LIMITER",
+      "namespace_id": "734101",
+      "simple": { "limit": 8, "period": 60 }
+    }
+  ],
   "env": {
     "staging": {
       "name": "naran-erdem-staging",
@@ -50,7 +57,9 @@
         "STAFF_AUTH_EMAIL_ENABLED": "true",
         "EMAIL_FROM": "Наран Эрдэм <burtgel@mail.naranerdem.com>",
         "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
-        "TURNSTILE_SECRET_KEY": "1x0000000000000000000000000000000AA"
+        "TURNSTILE_SECRET_KEY": "1x0000000000000000000000000000000AA",
+        "STAFF_AUTH_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+        "STAFF_AUTH_TURNSTILE_SECRET_KEY": "1x0000000000000000000000000000000AA"
       },
       "d1_databases": [
         {
@@ -58,6 +67,13 @@
           "database_name": "naran-erdem-staging",
           "database_id": "53f6f70f-1235-4676-8e15-d72bfeaaa45f",
           "migrations_dir": "migrations"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "STAFF_LOGIN_RATE_LIMITER",
+          "namespace_id": "734101",
+          "simple": { "limit": 8, "period": 60 }
         }
       ]
     }

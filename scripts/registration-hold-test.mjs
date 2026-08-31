@@ -45,6 +45,9 @@ const {
 const { getRegistrationCatalog } = await import(pathToFileURL(catalogBundle).href);
 const { getPublicSiteModel } = await import(pathToFileURL(publicSiteBundle).href);
 const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstileBundle).href);
+const gatesBundle = path.join(tempDir, "operational-gates.mjs");
+bundle("src/server/security/operational-gates.ts", gatesBundle);
+const { registrationWriteEnabled } = await import(pathToFileURL(gatesBundle).href);
 const { verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
 const {
   claimParentPayment,
@@ -138,6 +141,7 @@ function env(database, overrides = {}) {
     APP_ORIGIN: "https://staging.example.test",
     EMAIL_FROM: "Наран Эрдэм <burtgel@mail.naranerdem.com>",
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
+    TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     DB: database,
     ...overrides,
   };
@@ -306,12 +310,18 @@ try {
   assert.equal(catalogSessions.find((entry) => entry.id === "class-closed")?.availability, "unavailable", "a closed concrete class remains unavailable despite an active window");
   const legacyStatusDraft = await createRegistrationDraft(env(database), submission("class-legacy-status"), new Date(iso(-5)));
   assert.ok(legacyStatusDraft.hasPaymentHold, "legacy academic-year registration status does not override a valid active window");
+  await assert.rejects(createRegistrationDraft(env(database, {
+    APP_ENV: "production",
+    REGISTRATION_WRITE_ENABLED: "true",
+    TURNSTILE_SITE_KEY: "production-site-key",
+    TURNSTILE_SECRET_KEY: "production-secret",
+  }), submission("class-closed"), new Date(iso(-4))), (error) => error.code === "invalid_class", "a reviewed production gate and real Turnstile configuration reach the normal registration service path");
   const fabricatedRules = submission("class-priced"); fabricatedRules.parentRulesVersion = "fabricated-rule-version";
   await assert.rejects(createRegistrationDraft(env(database), fabricatedRules, new Date(iso(-4))), (error) => error.code === "invalid_rules_version", "fabricated rule versions are rejected");
   database.query("UPDATE public_center_information SET homepage_intro = 'Нийтийн товч танилцуулга', teacher_bio = 'Тест багш' WHERE singleton = 1");
   database.query("INSERT INTO curriculum_program_family (id, kind, display_name, annual_stage_code, status, is_test, test_run_id, created_at, updated_at) VALUES ('annual-program-stage_1', 'annual_course', '1-р шат', 'stage_1', 'active', 1, 'registration-test', ?, ?)", [iso(), iso()]);
   database.query("UPDATE curriculum_program_family SET recommended_grade_min = '4', recommended_grade_max = '6', public_short_description = 'Нийтийн тайлбар', public_long_description = 'Нууц биш дэлгэрэнгүй' WHERE id = 'annual-program-stage_1'");
-  const publicSite = await getPublicSiteModel(env(database));
+  const publicSite = await getPublicSiteModel(env(database), new Date(iso()));
   const publicStageOne = publicSite.programs.find((program) => program.stageCode === "stage_1");
   assert.equal(publicSite.center.homepageIntro, "Нийтийн товч танилцуулга", "public site uses typed center information");
   assert.equal(publicStageOne.current, true, "only catalog-visible active-window classes make a public Program current");
@@ -609,6 +619,19 @@ try {
     AUTH_EMAIL_ENABLED: "false",
   });
   await assert.rejects(createRegistrationDraft(production, submission("class-roomy")), (error) => error.code === "disabled");
+  assert.equal(registrationWriteEnabled(env(database, { APP_ENV: "unknown" })), false, "unknown environment fails closed");
+  assert.equal(registrationWriteEnabled(env(database, {
+    APP_ENV: "production",
+    REGISTRATION_WRITE_ENABLED: "true",
+    TURNSTILE_SITE_KEY: "production-site-key",
+    TURNSTILE_SECRET_KEY: undefined,
+  })), false, "production requires a Turnstile secret");
+  assert.equal(registrationWriteEnabled(env(database, {
+    APP_ENV: "production",
+    REGISTRATION_WRITE_ENABLED: "true",
+    TURNSTILE_SITE_KEY: "production-site-key",
+    TURNSTILE_SECRET_KEY: "production-secret",
+  })), true, "production reaches the normal registration path only with its reviewed gate and real Turnstile configuration");
 
   let siteverifyCalls = 0;
   globalThis.fetch = async (_url, init) => {

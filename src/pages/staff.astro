@@ -13,6 +13,7 @@ import "../styles/global.css";
     <meta name="apple-mobile-web-app-title" content="Наран Эрдэм" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/images/naran-erdem-logo.jpg" />
+    <script is:inline src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
     <title>Ажилтны хэсэг | {siteIdentity.name}</title>
   </head>
   <body class="staff-page" data-staff-surface="booting">
@@ -40,6 +41,7 @@ import "../styles/global.css";
         <form id="staff-login-form" class="staff-login-form">
           <label for="staff-email">И-мэйл хаяг</label>
           <input id="staff-email" name="email" type="email" inputmode="email" autocomplete="email" required />
+          <div id="staff-turnstile" class="turnstile-widget" aria-label="Аюулгүй байдлын шалгалт"></div>
           <p id="staff-form-error" class="staff-error" role="alert" hidden></p>
           <button class="button primary" type="submit">Нэвтрэх холбоос авах</button>
         </form>
@@ -123,6 +125,8 @@ import "../styles/global.css";
       const toolLinks = document.getElementById("staff-tool-links");
       let pollTimer = 0;
       let polling = false;
+      let staffLoginConfig = { emailLoginEnabled: false, turnstileSiteKey: null };
+      let staffTurnstileWidget = null;
 
       function stopPolling() {
         window.clearTimeout(pollTimer);
@@ -134,6 +138,39 @@ import "../styles/global.css";
         for (const state of states) state.hidden = state.id !== id;
         document.body.dataset.staffSurface = id.replace("staff-", "");
         if (id !== "staff-waiting") stopPolling();
+      }
+
+      function showStaffLogin() {
+        show("staff-login");
+        void prepareStaffLogin();
+      }
+
+      async function waitForTurnstile() {
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          if (window.turnstile) return window.turnstile;
+          await new Promise((resolve) => window.setTimeout(resolve, 100));
+        }
+        return null;
+      }
+
+      async function prepareStaffLogin() {
+        try {
+          const response = await fetch("/api/staff/auth/config", { headers: { Accept: "application/json" }, credentials: "same-origin" });
+          if (!response.ok) throw new Error("staff login config unavailable");
+          staffLoginConfig = await response.json();
+        } catch {
+          staffLoginConfig = { emailLoginEnabled: false, turnstileSiteKey: null };
+        }
+        if (!staffLoginConfig.emailLoginEnabled || !staffLoginConfig.turnstileSiteKey) return false;
+        const turnstile = await waitForTurnstile();
+        if (!turnstile) return false;
+        if (staffTurnstileWidget === null) {
+          staffTurnstileWidget = turnstile.render("#staff-turnstile", {
+            sitekey: staffLoginConfig.turnstileSiteKey,
+            action: "staff_login_start",
+          });
+        }
+        return true;
       }
 
       async function showAuthenticated(session) {
@@ -280,9 +317,11 @@ import "../styles/global.css";
           const attempt = await claimAttempt();
           if (attempt.state === "pending") waitForApproval();
           else if (attempt.state === "expired" || attempt.state === "claimed") show("staff-attempt-expired");
-          else show("staff-login");
+          else {
+            showStaffLogin();
+          }
         } catch {
-          show("staff-login");
+          showStaffLogin();
           formError.textContent = "Нэвтрэх хэсгийг одоогоор нээж чадсангүй. Дахин оролдоно уу.";
           formError.hidden = false;
         }
@@ -292,6 +331,17 @@ import "../styles/global.css";
         event.preventDefault();
         if (!loginForm.reportValidity()) return;
         formError.hidden = true;
+        if (!await prepareStaffLogin()) {
+          formError.textContent = "Нэвтрэх хамгаалалтын шалгалтыг одоогоор нээж чадсангүй. Дахин оролдоно уу.";
+          formError.hidden = false;
+          return;
+        }
+        const turnstileToken = window.turnstile?.getResponse(staffTurnstileWidget) || "";
+        if (!turnstileToken) {
+          formError.textContent = "Хамгаалалтын шалгалтыг дахин хийнэ үү.";
+          formError.hidden = false;
+          return;
+        }
         const button = loginForm.querySelector("button[type='submit']");
         button.disabled = true;
         try {
@@ -299,21 +349,22 @@ import "../styles/global.css";
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/json" },
             credentials: "same-origin",
-            body: JSON.stringify({ email: emailInput.value }),
+            body: JSON.stringify({ email: emailInput.value, turnstileToken }),
           });
           if (!response.ok) throw new Error("start failed");
           waitForApproval();
         } catch {
           formError.textContent = "Хүсэлтийг одоогоор илгээж чадсангүй. Дахин оролдоно уу.";
           formError.hidden = false;
-        } finally {
-          button.disabled = false;
+          } finally {
+            if (staffTurnstileWidget !== null) window.turnstile?.reset(staffTurnstileWidget);
+            button.disabled = false;
         }
       });
 
-      document.getElementById("staff-try-again").addEventListener("click", () => show("staff-login"));
-      document.getElementById("staff-new-link").addEventListener("click", () => show("staff-login"));
-      document.getElementById("staff-restart").addEventListener("click", () => show("staff-login"));
+      document.getElementById("staff-try-again").addEventListener("click", showStaffLogin);
+      document.getElementById("staff-new-link").addEventListener("click", showStaffLogin);
+      document.getElementById("staff-restart").addEventListener("click", showStaffLogin);
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible" && document.body.dataset.staffSurface === "waiting") {
           pollAttempt();
