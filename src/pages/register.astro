@@ -167,6 +167,7 @@ const formCopy = registrationFormCopy;
     <script id="registration-data" type="application/json" is:inline set:html={JSON.stringify(registrationData)} />
     <script is:inline type="module">
       import { loadPublicFont } from "/scripts/public-font.js";
+      import { renderPublicProse } from "/scripts/public-prose.js";
       import {
         applyStageRecommendation,
         classSelectionIssue,
@@ -1027,8 +1028,8 @@ const formCopy = registrationFormCopy;
             runtimeRules = { parentRulesVersion: guardian.versionId, studentRulesVersion: student.versionId };
             document.getElementById("guardian-rules-title").textContent = guardian.title;
             document.getElementById("student-rules-title").textContent = student.title;
-            document.getElementById("guardian-rules-body").innerHTML = guardian.bodyText.split(/\n\s*\n/).map((paragraph) => `<p>${paragraph.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character])}</p>`).join("");
-            document.getElementById("student-rules-body").innerHTML = student.bodyText.split(/\n\s*\n/).map((paragraph) => `<p>${paragraph.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character])}</p>`).join("");
+            document.getElementById("guardian-rules-body").innerHTML = renderPublicProse(guardian.bodyText);
+            document.getElementById("student-rules-body").innerHTML = renderPublicProse(student.bodyText);
           }
           catalogState = "available";
           if (runtimeConfig.writeEnabled) {

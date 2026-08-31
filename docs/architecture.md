@@ -500,9 +500,11 @@ The homepage is intentionally a simple brochure surface. Live class availability
 and registration choices belong to `/register/`, not the homepage. Its public
 content is an optional `homepageIntro`, followed by `aboutCenterText` shown to
 teachers as `Хөтөлбөр` and `teacherBio` shown as `Танилцуулга`. Each nonempty
-line is a paragraph; only a line beginning with `## ` is a heading. It is not
-Markdown or a CMS, and HTML is escaped. Program long descriptions remain only
-for historical/API compatibility and are not routine public content.
+line is a paragraph; `## ` begins a major heading and `# ` a modest
+subheading. The same safe mini-format is available to the two immutable course
+rule documents when they are rendered during registration. It is not Markdown
+or a CMS, and HTML is escaped. Program long descriptions remain only for
+historical/API compatibility and are not routine public content.
 
 Public typography has exactly two admin-controlled values: `sans` (the current
 public sans stack) and `serif` (`Times New Roman`, Times, serif). Staff

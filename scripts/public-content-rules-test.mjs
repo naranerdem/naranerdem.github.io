@@ -32,12 +32,15 @@ try {
   assert.equal(guardian.versionId, "parent-rules-v1"); assert.equal(student.versionId, "student-rules-v1");
   const same = await content.saveCourseRule(env, actor("teacher"), { code: "guardian", bodyText: guardian.bodyText, expectedUpdatedAt: guardian.updatedAt });
   assert.equal(same.versionId, guardian.versionId, "identical rule save is a no-op");
-  const changed = await content.saveCourseRule(env, actor("admin"), { code: "guardian", bodyText: `${guardian.bodyText}\n\nШинэ мөр.`, expectedUpdatedAt: guardian.updatedAt });
+  const changed = await content.saveCourseRule(env, actor("admin"), { code: "guardian", bodyText: `## Том гарчиг\n# Дэд гарчиг\nЭнгийн мөр.`, expectedUpdatedAt: guardian.updatedAt });
   assert.notEqual(changed.versionId, guardian.versionId); assert.equal(database.query("SELECT COUNT(*) AS count FROM course_rule_version WHERE course_rule_document_id = 'course-rule-guardian'")[0].count, 2);
   await content.assertCourseRuleVersions(env, guardian.versionId, student.versionId);
   await assert.rejects(content.assertCourseRuleVersions(env, student.versionId, guardian.versionId), /Public content operation failed/);
   const infoPage = readFileSync("src/pages/staff/info.astro", "utf8");
   assert.ok(infoPage.indexOf('id="rules-information"') < infoPage.indexOf('id="center-information"') && infoPage.indexOf('id="center-information"') < infoPage.indexOf('id="payment-information"'), "staff info presents rules, then center information, then payment information");
+  assert.match(infoPage, /## Том гарчиг · # Дэд гарчиг/, "rules editor exposes the compact formatting hint");
+  assert.match(infoPage, /Нэмэлт заавар/, "global payment instruction uses its operational label");
+  assert.doesNotMatch(infoPage, /Шилжүүлгийн тайлбар/, "global instruction is not confused with a per-registration reference");
   const defaults = await preferences.getTeacherDashboardPreferences(env);
   assert.deepEqual([defaults.showSetupSection, defaults.showRegistration, defaults.showInformation], [true, true, true], "dashboard defaults preserve the existing teacher view");
   const updatedPreferences = await preferences.updateTeacherDashboardPreferences(env, actor("admin"), { expectedUpdatedAt: defaults.updatedAt, showSetupSection: false, showRegistration: false, showInformation: false });

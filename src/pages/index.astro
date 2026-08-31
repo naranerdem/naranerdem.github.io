@@ -14,9 +14,8 @@ import "../styles/global.css";
 </main>
 <script is:inline type="module">
   import { applyPublicFont } from "/scripts/public-font.js";
-  const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"})[c]);
-  const prose = (value) => String(value || "").replace(/\r\n?/g, "\n").split("\n").map((line) => line.trimEnd()).filter(Boolean).map((line) => line.startsWith("## ") ? `<h2>${escape(line.slice(3))}</h2>` : `<p>${escape(line)}</p>`).join("");
-  const showProse = (id, value) => { const node = document.querySelector(id); const html = prose(value); node.hidden = !html; node.innerHTML = html; };
+  import { escapePublicText as escape, renderPublicProse } from "/scripts/public-prose.js";
+  const showProse = (id, value) => { const node = document.querySelector(id); const html = renderPublicProse(value); node.hidden = !html; node.innerHTML = html; };
   fetch("/api/public-site", { headers: { Accept: "application/json" } }).then((r) => r.ok ? r.json() : Promise.reject()).then((data) => {
     const center = data.center || {}; applyPublicFont(data.publicSiteFont);
     const intro = document.querySelector("#homepage-intro"); intro.hidden = !center.homepageIntro; intro.textContent = center.homepageIntro || "";

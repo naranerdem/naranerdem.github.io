@@ -13,6 +13,7 @@ assert.ok(home.indexOf("Наран Эрдэм") < home.indexOf("ХҮҮХДИЙН
 assert.equal((home.match(/href="\/register\/\?new=1"/g) || []).length, 2);
 assert.match(home, /brand-logo/); assert.doesNotMatch(home, /current-registration|stage-item|hero-logo|Одоо бүртгэж байна/);
 assert.match(prose, /startsWith\("## "\)/); assert.match(prose, /<p>/); assert.match(prose, /escapePublicText/);
+assert.match(prose, /startsWith\("# "\)/); assert.match(prose, /<h3>/);
 assert.doesNotMatch(prose, /markdown|<script>/i);
 assert.match(font, /normalizePublicFont\(font\) \|\| "sans"/);
 assert.match(font, /PUBLIC_FONT_STORAGE_KEY = "naranerdem\.public-font"/);
@@ -28,6 +29,7 @@ assert.match(styles, /\.simple-hero h1 \{[^}]*font-size: clamp\(2\.35rem, 9vw, 5
 assert.match(styles, /@media \(max-width: 32rem\)[\s\S]*data-public-font="serif"[\s\S]*font-size: 17px/, "serif public body text grows slightly on phones");
 assert.match(styles, /\.public-prose h2 \{ font-size: clamp\(1\.35rem, 2vw, 1\.85rem\)/, "brochure headings remain unchanged");
 assert.match(register, /loadPublicFont\(\)/); assert.match(program, /loadPublicFont\(\)/);
+assert.match(register, /renderPublicProse\(guardian\.bodyText\)/, "registration renders rules with the shared public prose renderer");
 assert.doesNotMatch(staff, /program-long-description|Дэлгэрэнгүй тайлбар/);
 
 console.log("ok public brochure structure, prose grammar, and font wiring");
