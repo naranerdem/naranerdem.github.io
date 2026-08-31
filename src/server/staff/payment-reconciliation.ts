@@ -228,7 +228,17 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     INNER JOIN class_session ON class_session.id = waitlist_seat_offer.class_session_id
     WHERE waitlist_seat_offer.status IN ('active', 'awaiting_transfer')
-    ORDER BY waitlist_seat_offer.respond_by_at, waitlist_seat_offer.offered_at LIMIT 100`).all<Record<string, unknown>>()).results };
+    ORDER BY waitlist_seat_offer.respond_by_at, waitlist_seat_offer.offered_at LIMIT 100`).all<Record<string, unknown>>()).results,
+  recentWaitlistResponses: (await env.DB.prepare(`SELECT waitlist_seat_offer.id, waitlist_seat_offer.status,
+    waitlist_seat_offer.resolved_at AS resolvedAt, registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+    registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
+    class_session.display_label AS classLabel, class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime
+    FROM waitlist_seat_offer
+    INNER JOIN registration_draft_child ON registration_draft_child.id = waitlist_seat_offer.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    INNER JOIN class_session ON class_session.id = waitlist_seat_offer.class_session_id
+    WHERE waitlist_seat_offer.status IN ('converted', 'declined') AND waitlist_seat_offer.resolved_at >= datetime(?, '-7 days')
+    ORDER BY waitlist_seat_offer.resolved_at DESC LIMIT 20`).bind(now).all<Record<string, unknown>>()).results };
 }
 
 export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal, input: {

@@ -59,7 +59,7 @@ try {
   assert.equal(sentMessages.length, 1, "repeated allocation does not duplicate the offer email");
   assert.match(sentMessages[0].text, /waitlist-offer\/#token=/, "the offer email carries its opaque first-party response link");
   assert.match(sentMessages[0].text, /2026 оны 8-р сарын 24-ний 16:00 цаг/, "the offer response target is localized for Mongolia");
-  assert.match(sentMessages[0].text, /Хэрэв энэ хугацаанд хариу өгөх боломжгүй бол бид тантай дахин холбогдоно\./, "the email presents a soft response target without claiming indefinite reservation");
+  assert.doesNotMatch(sentMessages[0].text, /Хэрэв энэ хугацаанд хариу өгөх боломжгүй бол бид тантай дахин холбогдоно\./, "the offer email avoids an unsupported follow-up promise");
   assert.doesNotMatch(sentMessages[0].text, /Aug|AM|PM|автоматаар цуцлагдахгүй/, "the parent offer email contains no English deadline format or misleading automatic-release wording");
   assert.equal((await publicWaitlistOffer(database, offers[0].token, new Date(now(2000)))).overdue, true, "overdue remains active");
   providerShouldFail = true;
@@ -77,10 +77,20 @@ try {
   assert.equal((await database.prepare(`SELECT status FROM waitlist_seat_offer WHERE id = ?`).bind(secondOffer.id).first()).status, "closed", "staff closure remains distinct from an explicit decline");
   assert.equal((await database.prepare(`SELECT status FROM registration_draft_waitlist_entry WHERE id = ?`).bind(second.entry).first()).status, "deactivated", "staff closure preserves its separate queue outcome");
   const thirdOffer = await database.prepare(`SELECT id FROM waitlist_seat_offer WHERE status = 'active'`).first();
-  await acceptWaitlistOffer(env, thirdOffer.id, "single", "parent_link", null, new Date(now(2003)));
-  assert.equal((await acceptWaitlistOffer(env, thirdOffer.id, "single", "parent_link", null, new Date(now(2004)))).idempotent, true, "accepted offer retry is idempotent");
+  providerShouldFail = true;
+  const converted = await acceptWaitlistOffer(env, thirdOffer.id, "single", "parent_link", null, new Date(now(2003)));
+  assert.equal(converted.paymentStatus.children[0].initialPaymentAmountMnt, 100000, "converted offer returns the ordinary authoritative payment status");
+  assert.equal(converted.paymentStatus.children[0].paymentReference, "Хүүхэд third 99000000", "browser status uses the generated per-registration transfer description");
   assert.equal(Number((await database.prepare(`SELECT COUNT(*) AS count FROM registration_capacity_hold WHERE registration_draft_child_id = ? AND status = 'active'`).bind(third.child).first()).count), 1);
   assert.equal(Number((await database.prepare(`SELECT COUNT(*) AS count FROM payment_installment WHERE registration_draft_child_id = ?`).bind(third.child).first()).count), 1);
   assert.equal((await getClassCapacityProjections(database, "staging", new Date(now(2003))))[0].freeSeats, 0, "offer to initial hold preserves capacity");
+  assert.equal((await database.prepare(`SELECT status FROM outbound_email WHERE id = ?`).bind(`${thirdOffer.id}:payment-instructions`).first()).status, "failed", "payment-email failure is auditable without altering the converted hold");
+  providerShouldFail = false;
+  const retried = await acceptWaitlistOffer(env, thirdOffer.id, "single", "parent_link", null, new Date(now(2004)));
+  assert.equal(retried.idempotent, true, "accepted offer retry is idempotent while retrying failed delivery");
+  assert.equal((await database.prepare(`SELECT status FROM outbound_email WHERE id = ?`).bind(`${thirdOffer.id}:payment-instructions`).first()).status, "sent", "converted offer retry sends the same durable payment email");
+  const deliveriesAfterRetry = sentMessages.length;
+  await acceptWaitlistOffer(env, thirdOffer.id, "single", "parent_link", null, new Date(now(2005)));
+  assert.equal(sentMessages.length, deliveriesAfterRetry, "a delivered payment email is not sent again by repeated acceptance");
   console.log("ok waitlist offers: FIFO allocation, soft deadline, decline advance, and capacity-preserving conversion");
 } finally { globalThis.fetch = originalFetch; rmSync(dir, { recursive: true, force: true }); }

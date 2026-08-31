@@ -978,6 +978,15 @@ async function registrationStatusForDraft(
     } : null };
 }
 
+export async function registrationStatusForDraftId(database: D1Database, draftId: string, nowDate = new Date()) {
+  const draft = await database.prepare(`SELECT id, email, status, verified_at AS verifiedAt, guardian_full_name AS guardianFullName,
+    guardian_relationship AS relationship, primary_phone AS primaryPhone, secondary_phone AS secondaryPhone, facebook_name AS facebookName,
+    home_address AS homeAddress FROM registration_draft WHERE id = ?`).bind(draftId)
+    .first<{ id: string; email: string; status: string; verifiedAt: string | null; guardianFullName: string; relationship: string; primaryPhone: string; secondaryPhone: string | null; facebookName: string | null; homeAddress: string }>();
+  if (!draft) throw new RegistrationSubmissionError("draft_access_denied");
+  return registrationStatusForDraft(database, draft, nowDate);
+}
+
 export async function registrationStatusForSession(database: D1Database, rawSessionToken: string, nowDate = new Date()) {
   if (!rawSessionToken || rawSessionToken.length > 256) throw new RegistrationSubmissionError("session_required");
   const tokenHash = await sha256(rawSessionToken);

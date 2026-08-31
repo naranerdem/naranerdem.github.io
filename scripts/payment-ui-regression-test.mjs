@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const page = readFileSync("src/pages/staff/payments.astro", "utf8");
+const waitlistOfferPage = readFileSync("src/pages/waitlist-offer.astro", "utf8");
 assert.match(page, /timeZone: "Asia\/Ulaanbaatar"/);
 assert.match(page, /localDateTime\(new Date\(\)\)/);
 assert.doesNotMatch(page, /toISOString\(\)\.slice\(0, 16\)/);
@@ -17,6 +18,11 @@ assert.match(page, /copyMessengerOffer\(offerId\)/);
 assert.match(page, /new ClipboardItem\(/);
 assert.match(page, /document\.execCommand\?\.\("copy"\)/);
 assert.match(page, /message\("Хууллаа", true\)/);
+assert.match(page, /Саяхны хариу/);
+assert.match(page, /data-recent-offer=/);
+assert.match(waitlistOfferPage, /function paymentSummary\(status\)/);
+assert.match(waitlistOfferPage, /Гүйлгээний утга/);
+assert.match(waitlistOfferPage, /await request\(\{ action: "view" \}\)/, "accepted offer reloads its durable status projection");
 const offerMarkup = page.slice(page.indexOf("function offerMarkup"), page.indexOf("function render"));
 assert.doesNotMatch(offerMarkup, /classLabel\)} · \$\{escape\(item\.weekday\)/);
 

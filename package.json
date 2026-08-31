@@ -37,6 +37,7 @@
     "test:registration": "node scripts/registration-hold-test.mjs",
     "test:waitlist-offers": "node scripts/waitlist-offer-test.mjs",
     "test:payment-ui": "node scripts/payment-ui-regression-test.mjs && node scripts/scheduled-payment-finalization-test.mjs",
+    "test:payment-email-template": "node scripts/payment-email-template-test.mjs",
     "test:registration-windows": "node scripts/registration-windows-test.mjs",
     "test:public-qr": "node scripts/public-qr-redirect-test.mjs",
     "test:public-content": "node scripts/public-content-rules-test.mjs",
