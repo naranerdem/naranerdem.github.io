@@ -28,6 +28,7 @@ assert.doesNotMatch(staff, /naranerdem\.public-font/, "staff pages do not bootst
 assert.match(styles, /\.simple-hero h1 \{[^}]*font-size: clamp\(2\.35rem, 9vw, 5\.5rem\)[^}]*white-space: nowrap/, "hero title stays on one line at a responsive size");
 assert.match(styles, /@media \(max-width: 32rem\)[\s\S]*data-public-font="serif"[\s\S]*font-size: 17px/, "serif public body text grows slightly on phones");
 assert.match(styles, /\.public-prose h2 \{ font-size: clamp\(1\.35rem, 2vw, 1\.85rem\)/, "brochure headings remain unchanged");
+assert.match(styles, /\.public-prose h3, \.rules-dialog h3 \{ color: #073aaf; font-size: 1\.08em; font-style: italic; font-weight: 400;/, "brochure subheadings are compact blue italic text");
 assert.match(register, /loadPublicFont\(\)/); assert.match(program, /loadPublicFont\(\)/);
 assert.match(register, /renderPublicProse\(guardian\.bodyText\)/, "registration renders rules with the shared public prose renderer");
 assert.doesNotMatch(staff, /program-long-description|Дэлгэрэнгүй тайлбар/);
