@@ -42,7 +42,11 @@ export function executeRemoteD1File(environment, file) {
     encoding: "utf8",
     maxBuffer: 20 * 1024 * 1024,
   });
-  if (result.status !== 0) throw new Error(`The ${environment} private Program import failed atomically.`);
+  if (result.status !== 0) {
+    const output = `${result.stderr || ""}\n${result.stdout || ""}`.trim().replaceAll(/\s+/g, " ");
+    const diagnostic = output.length > 1000 ? `${output.slice(0, 500)} … ${output.slice(-500)}` : output;
+    throw new Error(`The ${environment} private configuration import failed atomically${diagnostic ? `: ${diagnostic}` : "."}`);
+  }
 }
 
 export function parseOptions(args, allowedFlags = []) {

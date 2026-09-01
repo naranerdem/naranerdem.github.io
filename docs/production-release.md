@@ -17,6 +17,7 @@ Never copy staging D1, fixtures, secrets, staff sessions, or rehearsal records i
 - Confirm `main`, the intended commit, and `git status --short`.
 - Run the relevant local tests, at minimum `npm run check`, `npm run build`, and `git diff --check`.
 - Deploy and rehearse the change in staging first: `npm run deploy:cloudflare:staging`.
+- Promote reviewed public center information, current course rules, and payment collection settings through an ignored private artifact: `npm run export:private-operational-config -- --env=staging`, then dry-run `npm run import:private-operational-config -- --env=production --file=<private-bundle.json> --dry-run`. This intentionally excludes registrations, staff, Offerings, classes, calendars, pricing, and registration windows.
 - Review pending production migrations without applying them:
   `npx wrangler d1 migrations list DB --remote`.
 - Require additive/backward-compatible migrations. Any destructive or incompatible migration needs its own reviewed plan.
