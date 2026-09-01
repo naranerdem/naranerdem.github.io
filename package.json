@@ -18,6 +18,7 @@
     "seed:operational-defaults": "node scripts/import-operational-defaults.mjs",
     "export:private-config": "node scripts/export-private-config.mjs",
     "import:private-config": "node scripts/import-private-config.mjs",
+    "reconcile:private-program-drafts": "node scripts/reconcile-private-program-drafts.mjs",
     "export:private-operational-config": "node scripts/export-private-operational-config.mjs",
     "import:private-operational-config": "node scripts/import-private-operational-config.mjs",
     "cleanup:registration:staging": "node scripts/cleanup-staging-registration-tests.mjs",

@@ -43,7 +43,7 @@ export function runImport(args = process.argv.slice(2)) {
   printPlan(target, bundle, checksum, plan);
   requireProductionConfirmation(options.environment, Boolean(options.dry_run), Boolean(options.confirm_production));
   if (options.dry_run) { console.log("Dry run only; D1 was not changed."); return { plan, checksum, changed: false }; }
-  const sql = buildPrivateProgramImportSql(plan);
+  const sql = buildPrivateProgramImportSql(plan, new Date().toISOString(), undefined, options.environment);
   if (!sql) { console.log("All Programs are unchanged; D1 was not changed."); return { plan, checksum, changed: false }; }
   const temp = mkdtempSync(path.join(tmpdir(), "naranerdem-private-program-import-"));
   const sqlPath = path.join(temp, "private-program-import.sql");

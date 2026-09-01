@@ -7,8 +7,10 @@ import {
   PRIVATE_PROGRAM_ROWS_QUERY,
   buildPrivateProgramImportPlan,
   buildPrivateProgramImportSql,
+  buildPrivateProgramDraftReconciliationSql,
   createPrivateConfigBundle,
   requireProductionConfirmation,
+  validatePrivateProgramDraftReconciliationPlan,
   validatePrivateConfigBundle,
 } from "./private-program-config.mjs";
 
@@ -71,9 +73,31 @@ try {
   unknownProgramField.programs[0].unexpected = true;
   assert.throws(() => validatePrivateConfigBundle(unknownProgramField), /unsupported or missing fields/);
 
+  sqlite(sourceDb, `
+    INSERT INTO curriculum_program (id, program_family_id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, based_on_program_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('fake-isolated-test-draft', 'fake-stage-one-family', 'fake-library', 'stage_1', 3, 'Fake isolated test draft', 'annual_course', 'draft', NULL, 1, 'private-program-test', '${time}', '${time}');
+  `);
+  const reconciliationPlan = {
+    schema_version: 1,
+    source_environment: "staging",
+    drafts: [
+      { action: "discard_isolated_test_draft", family_id: "fake-stage-one-family", program_id: "fake-isolated-test-draft", expected_current_program_id: "fake-source-revision", expected_updated_at: time, expected_lesson_count: 0, content_checksum: "0".repeat(64), expected_current_content_checksum: "2".repeat(64) },
+      { action: "discard_redundant_draft", family_id: "fake-stage-one-family", program_id: "fake-unsaved-draft", expected_current_program_id: "fake-source-revision", expected_updated_at: time, expected_lesson_count: 1, content_checksum: "1".repeat(64), expected_current_content_checksum: "2".repeat(64) },
+    ],
+  };
+  assert.doesNotThrow(() => validatePrivateProgramDraftReconciliationPlan(reconciliationPlan));
+  const reconciliationSql = buildPrivateProgramDraftReconciliationSql(reconciliationPlan, time, idFactory);
+  assert.doesNotMatch(reconciliationSql, /CREATE TEMP|PRAGMA/, "reconciliation uses portable D1 guards rather than unsupported temporary state");
+  assert.match(reconciliationSql, /private_program_import_guard_failure/, "stale reconciliation state fails closed");
+  sqlite(sourceDb, reconciliationSql);
+  assert.equal(Number(JSON.parse(sqlite(sourceDb, "SELECT COUNT(*) AS count FROM curriculum_program WHERE status = 'draft';", true))[0].count), 0, "reviewed unreferenced drafts are removed through the guarded reconciliation path");
+  assert.equal(Number(JSON.parse(sqlite(sourceDb, "SELECT COUNT(*) AS count FROM audit_event WHERE action = 'private_program_draft_discarded';", true))[0].count), 2, "each private reconciliation discard is audited");
+
   const firstPlan = buildPrivateProgramImportPlan(bundle, rows(targetDb));
   assert.deepEqual(firstPlan.map((entry) => entry.action), ["created"]);
-  sqlite(targetDb, buildPrivateProgramImportSql(firstPlan, time, idFactory));
+  const firstSql = buildPrivateProgramImportSql(firstPlan, time, idFactory);
+  assert.doesNotMatch(firstSql, /CREATE TEMP|PRAGMA/, "private Program promotion uses portable audited preconditions");
+  sqlite(targetDb, firstSql);
   const roundTrip = createPrivateConfigBundle(rows(targetDb), "production", time);
   assert.deepEqual(roundTrip.programs.map(({ source_revision_id, source_revision_number, ...program }) => program), bundle.programs.map(({ source_revision_id, source_revision_number, ...program }) => program), "fake private Program content round-trips semantically");
 

@@ -286,18 +286,20 @@ function privateContextId(program) {
   return `private-summer-program-${createHash("sha256").update(program.family_id).digest("hex").slice(0, 20)}`;
 }
 
-function guardSql(condition) {
-  return `INSERT INTO _private_program_import_guard (ok) SELECT CASE WHEN ${condition} THEN 1 ELSE 0 END;`;
+function guardedAuditSql(condition, id, action, subjectId, metadata, environment, isTest, testRunId, timestamp) {
+  const columns = "id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id, metadata_json, environment, is_test, test_run_id, created_at";
+  const accepted = `${quote(id)}, ${quote(timestamp)}, 'system', NULL, ${quote(action)}, 'curriculum_program', ${quote(subjectId)}, ${quote(JSON.stringify(metadata))}, ${quote(environment)}, ${isTest}, ${quote(testRunId)}, ${quote(timestamp)}`;
+  // The rejected actor type deliberately violates the audited enum. D1 rolls the
+  // import back rather than letting a stale precondition write partial data.
+  const rejected = `${quote(id)}, ${quote(timestamp)}, 'private_program_import_guard_failure', NULL, ${quote(action)}, 'curriculum_program', ${quote(subjectId)}, NULL, ${quote(environment)}, ${isTest}, ${quote(testRunId)}, ${quote(timestamp)}`;
+  return `INSERT INTO audit_event (${columns}) SELECT ${accepted} WHERE ${condition} UNION ALL SELECT ${rejected} WHERE NOT (${condition});`;
 }
 
-export function buildPrivateProgramImportSql(plan, timestamp = new Date().toISOString(), idFactory = randomUUID) {
+export function buildPrivateProgramImportSql(plan, timestamp = new Date().toISOString(), idFactory = randomUUID, environment = "production") {
+  expect(["staging", "production"].includes(environment), "private Program import environment is invalid");
   const changes = plan.filter((entry) => entry.action !== "unchanged");
   if (!changes.length) return "";
-  const lines = [
-    "-- Private Program promotion. Wrangler executes SQL files transactionally.",
-    "PRAGMA foreign_keys = ON;",
-    "CREATE TEMP TABLE _private_program_import_guard (ok INTEGER NOT NULL CHECK (ok = 1));",
-  ];
+  const lines = ["-- Private Program promotion. Guarded audit inserts fail closed on stale state."];
 
   for (const entry of changes) {
     const { program } = entry;
@@ -306,17 +308,23 @@ export function buildPrivateProgramImportSql(plan, timestamp = new Date().toISOS
     const revisionId = `private-program-${idFactory()}`;
     const contextLabel = program.kind === "annual_course" ? "Private Program library" : "Private summer Program context";
     const contextCondition = `NOT EXISTS (SELECT 1 FROM academic_year WHERE id = ${quote(contextId)}) OR EXISTS (SELECT 1 FROM academic_year WHERE id = ${quote(contextId)} AND starts_on IS NULL AND ends_on IS NULL AND is_current = 0 AND is_test = 0)`;
-    lines.push(guardSql(contextCondition));
+    let programCondition;
     if (entry.createFamily) {
       const identityCondition = program.kind === "annual_course"
         ? `NOT EXISTS (SELECT 1 FROM curriculum_program_family WHERE annual_stage_code = ${quote(program.annual_stage_code)})`
         : `NOT EXISTS (SELECT 1 FROM curriculum_program_family WHERE id = ${quote(entry.targetFamilyId)})`;
-      lines.push(guardSql(`${identityCondition} AND NOT EXISTS (SELECT 1 FROM curriculum_program_family WHERE id = ${quote(entry.targetFamilyId)})`));
+      programCondition = `${identityCondition} AND NOT EXISTS (SELECT 1 FROM curriculum_program_family WHERE id = ${quote(entry.targetFamilyId)})`;
     } else if (entry.action === "revised") {
-      lines.push(guardSql(`EXISTS (SELECT 1 FROM curriculum_program_family AS family INNER JOIN curriculum_program AS program ON program.id = family.current_published_program_id WHERE family.id = ${quote(entry.targetFamilyId)} AND family.current_published_program_id = ${quote(entry.targetRevisionId)} AND program.status = 'published') AND NOT EXISTS (SELECT 1 FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)} AND status = 'draft') AND (SELECT COALESCE(MAX(revision_number), 0) FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)}) = ${entry.expectedMaxRevision}`));
+      programCondition = `EXISTS (SELECT 1 FROM curriculum_program_family AS family INNER JOIN curriculum_program AS program ON program.id = family.current_published_program_id WHERE family.id = ${quote(entry.targetFamilyId)} AND family.current_published_program_id = ${quote(entry.targetRevisionId)} AND program.status = 'published') AND NOT EXISTS (SELECT 1 FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)} AND status = 'draft') AND (SELECT COALESCE(MAX(revision_number), 0) FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)}) = ${entry.expectedMaxRevision}`;
     } else {
-      lines.push(guardSql(`EXISTS (SELECT 1 FROM curriculum_program_family WHERE id = ${quote(entry.targetFamilyId)} AND current_published_program_id IS NULL) AND NOT EXISTS (SELECT 1 FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)} AND status = 'draft') AND (SELECT COALESCE(MAX(revision_number), 0) FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)}) = ${entry.expectedMaxRevision}`));
+      programCondition = `EXISTS (SELECT 1 FROM curriculum_program_family WHERE id = ${quote(entry.targetFamilyId)} AND current_published_program_id IS NULL) AND NOT EXISTS (SELECT 1 FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)} AND status = 'draft') AND (SELECT COALESCE(MAX(revision_number), 0) FROM curriculum_program WHERE program_family_id = ${quote(entry.targetFamilyId)}) = ${entry.expectedMaxRevision}`;
     }
+    lines.push(guardedAuditSql(`(${contextCondition}) AND (${programCondition})`, `private-program-import-${idFactory()}`, "private_program_imported", entry.targetFamilyId, {
+      action: entry.action,
+      sourceRevisionId: program.source_revision_id,
+      sourceRevisionNumber: program.source_revision_number,
+      lessonCount: program.lessons.length,
+    }, environment, 0, null, timestamp));
     lines.push(`INSERT OR IGNORE INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at) VALUES (${quote(contextId)}, ${quote(contextLabel)}, 'draft', NULL, NULL, 0, 0, NULL, ${quote(timestamp)}, ${quote(timestamp)});`);
     if (entry.createFamily) {
       lines.push(`INSERT INTO curriculum_program_family (id, kind, display_name, annual_stage_code, current_published_program_id, status, is_test, test_run_id, created_at, updated_at) VALUES (${quote(entry.targetFamilyId)}, ${quote(program.kind)}, ${quote(program.family_display_name)}, ${quote(program.annual_stage_code)}, NULL, 'active', 0, NULL, ${quote(timestamp)}, ${quote(timestamp)});`);
@@ -329,7 +337,54 @@ export function buildPrivateProgramImportSql(plan, timestamp = new Date().toISOS
     lines.push(`UPDATE curriculum_program SET status = 'published', published_at = ${quote(timestamp)}, updated_at = ${quote(timestamp)} WHERE id = ${quote(revisionId)} AND status = 'draft';`);
     lines.push(`UPDATE curriculum_program_family SET display_name = ${quote(program.family_display_name)}, current_published_program_id = ${quote(revisionId)}, updated_at = ${quote(timestamp)} WHERE id = ${quote(entry.targetFamilyId)};`);
   }
-  lines.push("DROP TABLE _private_program_import_guard;");
+  return `${lines.join("\n\n")}\n`;
+}
+
+const reconciliationActions = new Set(["discard_isolated_test_draft", "discard_redundant_draft"]);
+
+export function validatePrivateProgramDraftReconciliationPlan(plan) {
+  exactKeys(plan, ["schema_version", "source_environment", "drafts"], "draft reconciliation plan");
+  expect(plan.schema_version === 1, "unsupported draft reconciliation schema_version");
+  expect(plan.source_environment === "staging", "draft reconciliation source must be staging");
+  expect(Array.isArray(plan.drafts) && plan.drafts.length > 0, "draft reconciliation needs entries");
+  const programIds = new Set();
+  for (const [index, entry] of plan.drafts.entries()) {
+    const label = `draft reconciliation entry ${index + 1}`;
+    exactKeys(entry, ["action", "family_id", "program_id", "expected_current_program_id", "expected_updated_at", "expected_lesson_count", "content_checksum", "expected_current_content_checksum"], label);
+    expect(reconciliationActions.has(entry.action), `${label} action is invalid`);
+    const programId = requiredText(entry.program_id, `${label} program_id`, 100);
+    expect(!programIds.has(programId), `${label} duplicates a program`);
+    programIds.add(programId);
+    requiredText(entry.family_id, `${label} family_id`, 100);
+    requiredText(entry.expected_current_program_id, `${label} expected_current_program_id`, 100);
+    isoTimestamp(entry.expected_updated_at, `${label} expected_updated_at`);
+    expect(Number.isInteger(entry.expected_lesson_count) && entry.expected_lesson_count >= 0, `${label} expected_lesson_count is invalid`);
+    expect(typeof entry.content_checksum === "string" && /^[a-f0-9]{64}$/.test(entry.content_checksum), `${label} content_checksum is invalid`);
+    expect(typeof entry.expected_current_content_checksum === "string" && /^[a-f0-9]{64}$/.test(entry.expected_current_content_checksum), `${label} expected_current_content_checksum is invalid`);
+  }
+  return plan;
+}
+
+export function buildPrivateProgramDraftReconciliationSql(plan, timestamp = new Date().toISOString(), idFactory = randomUUID) {
+  validatePrivateProgramDraftReconciliationPlan(plan);
+  const lines = ["-- Staging-only private Program draft reconciliation. Guarded audit inserts fail closed on stale state."];
+  for (const entry of plan.drafts) {
+    const testCondition = entry.action === "discard_isolated_test_draft"
+      ? "program.is_test = 1 AND program.test_run_id IS NOT NULL AND program.based_on_program_id IS NULL"
+      : "program.is_test = 0 AND program.based_on_program_id = family.current_published_program_id";
+    const condition = `EXISTS (SELECT 1 FROM curriculum_program AS program INNER JOIN curriculum_program_family AS family ON family.id = program.program_family_id INNER JOIN curriculum_program AS current ON current.id = family.current_published_program_id WHERE program.id = ${quote(entry.program_id)} AND program.program_family_id = ${quote(entry.family_id)} AND program.status = 'draft' AND program.updated_at = ${quote(entry.expected_updated_at)} AND family.current_published_program_id = ${quote(entry.expected_current_program_id)} AND current.status = 'published' AND ${testCondition} AND (SELECT COUNT(*) FROM curriculum_lesson WHERE curriculum_program_id = program.id AND status = 'active') = ${entry.expected_lesson_count} AND NOT EXISTS (SELECT 1 FROM activity_offering WHERE curriculum_program_id = program.id) AND NOT EXISTS (SELECT 1 FROM class_calendar_revision WHERE curriculum_program_id = program.id))`;
+    lines.push(guardedAuditSql(condition, `private-program-draft-discard-${idFactory()}`, "private_program_draft_discarded", entry.program_id, {
+      action: entry.action,
+      programFamilyId: entry.family_id,
+      currentProgramId: entry.expected_current_program_id,
+      lessonCount: entry.expected_lesson_count,
+      contentChecksum: entry.content_checksum,
+      currentContentChecksum: entry.expected_current_content_checksum,
+      expectedUpdatedAt: entry.expected_updated_at,
+    }, "staging", entry.action === "discard_isolated_test_draft" ? 1 : 0, entry.action === "discard_isolated_test_draft" ? "private-program-reconciliation" : null, timestamp));
+    lines.push(`DELETE FROM curriculum_lesson WHERE curriculum_program_id = ${quote(entry.program_id)};`);
+    lines.push(`DELETE FROM curriculum_program WHERE id = ${quote(entry.program_id)} AND status = 'draft' AND updated_at = ${quote(entry.expected_updated_at)};`);
+  }
   return `${lines.join("\n\n")}\n`;
 }
 
