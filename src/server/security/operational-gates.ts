@@ -44,7 +44,6 @@ export function staffLoginTurnstileReady(env: WorkerEnv): boolean {
 export function staffAuthEmailEnabled(env: WorkerEnv): boolean {
   const currentEnvironment = environment(env);
   if (!currentEnvironment
-    || env.EMAIL_ENABLED !== "true"
     || env.STAFF_AUTH_EMAIL_ENABLED !== "true"
     || !staffLoginTurnstileReady(env)) return false;
 

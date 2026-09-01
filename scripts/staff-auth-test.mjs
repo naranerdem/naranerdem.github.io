@@ -763,6 +763,21 @@ try {
     emailLoginEnabled: false,
     turnstileSiteKey: null,
   }, "production staff auth cannot become ready without the required edge limiter");
+  const productionStaffOnlyEnv = testEnv(database, {
+    APP_ENV: "production",
+    APP_ORIGIN: "https://naranerdem.com",
+    EMAIL_ENABLED: "false",
+    AUTH_EMAIL_ENABLED: "false",
+    STAFF_AUTH_EMAIL_ENABLED: "true",
+    STAFF_AUTH_TURNSTILE_SITE_KEY: "production-site-key",
+    STAFF_AUTH_TURNSTILE_SECRET_KEY: "production-secret",
+    STAFF_LOGIN_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    STAGING_EMAIL_OVERRIDE_TO: undefined,
+  });
+  assert.deepEqual(await (await api(productionStaffOnlyEnv, "/api/staff/auth/config")).json(), {
+    emailLoginEnabled: true,
+    turnstileSiteKey: "production-site-key",
+  }, "production staff login is independently enabled while parent email remains disabled");
   assert.equal(count(database, "audit_event", "metadata_json LIKE '%teacher-magic%' OR metadata_json LIKE '%teacher-claim%'"), 0, "audit logs contain no raw auth token");
 
   await revokeStaffSession(env, adminLogin.rawSession, new Date(baseTime.getTime() + 3 * 86400_000));

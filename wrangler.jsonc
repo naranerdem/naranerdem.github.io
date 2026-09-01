@@ -10,7 +10,8 @@
     "APP_ORIGIN": "https://naranerdem.com",
     "EMAIL_ENABLED": "false",
     "AUTH_EMAIL_ENABLED": "false",
-    "STAFF_AUTH_EMAIL_ENABLED": "false",
+    "STAFF_AUTH_EMAIL_ENABLED": "true",
+    "STAFF_AUTH_TURNSTILE_SITE_KEY": "0x4AAAAAAEkBazLKKUTo12jt",
     "EMAIL_FROM": "Наран Эрдэм <burtgel@mail.naranerdem.com>"
   },
   "assets": {

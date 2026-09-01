@@ -59,7 +59,7 @@ Do not use D1 restore as routine code rollback. A Worker rollback must remain co
 
 ## Release Gates
 
-Current gates are `REGISTRATION_WRITE_ENABLED`, `EMAIL_ENABLED`, `AUTH_EMAIL_ENABLED`, and `STAFF_AUTH_EMAIL_ENABLED`. Keep them disabled until the related production configuration and rehearsal are explicitly approved. Future gates should stay narrow and typed; do not add a generic feature-flag system.
+Current gates are `REGISTRATION_WRITE_ENABLED`, `EMAIL_ENABLED`, `AUTH_EMAIL_ENABLED`, and `STAFF_AUTH_EMAIL_ENABLED`. Keep each gate disabled until its related production configuration and rehearsal are explicitly approved. Future gates should stay narrow and typed; do not add a generic feature-flag system.
 
 The guarded `npm run` commands are the normal production path. Direct `wrangler deploy` and `wrangler d1 migrations apply` commands bypass those local confirmation guards and are privileged/manual incident or recovery commands only.
 
@@ -68,7 +68,7 @@ The guarded `npm run` commands are the normal production path. Direct `wrangler 
 Code readiness does not enable either public boundary. Complete and rehearse the following external configuration before changing a production gate.
 
 - **Public registration:** create a production Turnstile widget restricted to `naranerdem.com`, configure its public site key and Worker secret, then leave `REGISTRATION_WRITE_ENABLED=false` until the complete registration/payment rehearsal is approved.
-- **Staff login:** create a separate production staff-login Turnstile widget and Worker secret, retain the `STAFF_LOGIN_RATE_LIMITER` Worker binding, configure the staff email sender/provider, and leave `STAFF_AUTH_EMAIL_ENABLED=false` until an approved staff identity completes the rehearsal.
+- **Staff login:** the separate production staff-login Turnstile widget/Worker secret, `STAFF_LOGIN_RATE_LIMITER`, sender/provider, and approved admin/teacher rehearsal are complete. `STAFF_AUTH_EMAIL_ENABLED=true` is independent of parent `EMAIL_ENABLED`; retain the other parent-facing gates until their separate rehearsal is approved.
 
 The committed Worker rate limit is eight login-start attempts per key per 60 seconds, before email work. The existing per-email/per-IP hourly limits and resend cooldown remain additional safeguards. Production gate readiness also fails closed if the staff-login rate-limit binding is absent.
 

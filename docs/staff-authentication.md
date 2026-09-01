@@ -55,7 +55,7 @@ The static manifest names the optional app `Наран Эрдэм`, starts at `/
 
 Staff email uses the existing provider interface, Resend adapter, `outbound_email` ledger, sender domain plan at `mail.naranerdem.com`, and stable idempotency keys. Fake staging identities keep their `@example.invalid` address as `intended_to_email` and require `STAGING_EMAIL_OVERRIDE_TO` as the only actual recipient. An active non-test staff identity explicitly entered by an administrator may receive its own staging login email. Unknown, disabled, public, and parent identities never use that direct path. `STAGING_AUTH_TEST_KEY` is unrelated to ordinary staff login and is never accepted as staff authentication.
 
-Production keeps `STAFF_AUTH_EMAIL_ENABLED=false`. Staff login has its own server-verified Turnstile boundary and a Worker rate-limit binding before email work, in addition to the existing per-email/per-IP limits and resend cooldown. Production remains fail-closed until its separate hostname-restricted Turnstile site key/secret, sender/provider configuration, and rate-limit binding are present and rehearsed; public responses remain generic.
+Production staff login is enabled with `STAFF_AUTH_EMAIL_ENABLED=true` after its separate hostname-restricted Turnstile site key/secret, sender/provider configuration, rate-limit binding, and approved identity rehearsal. It remains independently gated from parent email: production keeps `EMAIL_ENABLED=false` and `AUTH_EMAIL_ENABLED=false`. Staff login has its own server-verified Turnstile boundary and a Worker rate-limit binding before email work, in addition to the existing per-email/per-IP limits and resend cooldown; public responses remain generic.
 
 ## Provisioning And Audit
 
