@@ -39,7 +39,7 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
 - `waitlist_entry`: one FIFO queue entry for one concrete class, with future offer/expiry fields.
 - `referral`: explicit referral identity connecting a referring child/enrollment to a referred application child, with pending/qualified state only.
-- `outbound_email`: milestone email queue/delivery record, including intended/actual recipients, provider status, provider message ID, stable idempotency key, and compact failure code.
+- `outbound_email`: authoritative milestone email queue/delivery record, including intended/actual recipients, provider status, provider message ID, stable idempotency key, compact failure code, and (from migration 0035) a server-sanitized historical Outbox subject/text snapshot plus archive-BCC metadata. Raw bearer links and tokens are never stored for Outbox display.
 - `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, configurable registration-confirmation expiry (currently 24 hours), linked outbound email, and test provenance. It never stores the raw magic-link token.
 - `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
 - `registration_draft`: seven-day server-side guardian/contact snapshot, rule versions, payment-plan/code input, hashed draft-access token, and registration lifecycle. Staging rows are explicitly test-marked.
@@ -131,6 +131,8 @@ The table distinguishes:
 For example, staging may record `intended_to_email = fake-parent@example.com` and `actual_delivery_email = gantimur-controlled-test-address@example.com`. This preserves what would have happened without sending arbitrary email to fake or mistyped addresses.
 
 No provider credentials, API keys, raw magic-link tokens, session tokens, or full marketing-email system belong in this schema.
+
+The narrow `email_archive_bcc_setting` singleton is an admin-only optional list of at most five normalized internal addresses. It applies only to explicitly reviewed ordinary parent templates; login, verification, one-time challenge, and waitlist-response capability messages are never copied verbatim. The archive is secondary evidence, not payment, capacity, enrollment, or waitlist truth.
 
 ## Constraints And Indexes
 

@@ -639,6 +639,14 @@ try {
   const teacherSettings = await api(env, "/api/staff/settings/auth", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=teacher-session` } });
   assert.notEqual(teacherSettings.status, 200);
   assert.equal((await api(env, "/api/staff/settings/auth", { method: "POST" })).status, 405);
+  staff(database, "staff-outbox-teacher", "outbox-teacher@example.invalid", "Outbox Багш", "teacher");
+  const outboxTeacher = await sameContextLogin(env, "outbox-teacher@example.invalid", "outbox-teacher", new Date(baseTime.getTime() + 420_000));
+  const outboxTeacherCookie = `${STAFF_SESSION_COOKIE}=${outboxTeacher.rawSession}`;
+  assert.equal((await api(env, "/api/staff/outbox")).status, 401, "Outbox is never public");
+  assert.equal((await api(env, "/api/staff/outbox", { headers: { Cookie: adminCookie } })).status, 200, "admin can list the Outbox");
+  assert.equal((await api(env, "/api/staff/outbox", { headers: { Cookie: outboxTeacherCookie } })).status, 403, "teacher cannot list the Outbox");
+  assert.equal((await api(env, "/api/staff/settings/email-archive-bcc", { headers: { Cookie: adminCookie } })).status, 200, "admin can read archive BCC settings");
+  assert.equal((await api(env, "/api/staff/settings/email-archive-bcc", { headers: { Cookie: outboxTeacherCookie } })).status, 403, "teacher cannot read archive BCC settings");
 
   // Current roles and disabled status remain live authorization inputs.
   staff(database, "staff-role-change", "role-change@example.invalid", "Эрх Солих", "teacher");
@@ -651,6 +659,8 @@ try {
     headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` },
   });
   assert.equal(accountantPrograms.status, 403, "accountants cannot retrieve curriculum data through the staff API");
+  assert.equal((await api(env, "/api/staff/outbox", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` } })).status, 403, "accountant cannot list the Outbox");
+  assert.equal((await api(env, "/api/staff/settings/email-archive-bcc", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` } })).status, 403, "accountant cannot read archive BCC settings");
   const accountantAttendance = await api(env, "/api/staff/proof/attendance", {
     headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` },
   });

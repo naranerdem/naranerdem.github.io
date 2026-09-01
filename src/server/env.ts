@@ -34,6 +34,7 @@ export interface WorkerEnv {
   EMAIL_FROM: string;
   RESEND_API_KEY?: string;
   STAGING_EMAIL_OVERRIDE_TO?: string;
+  STAGING_EMAIL_ARCHIVE_BCC_TO?: string;
   STAGING_AUTH_TEST_KEY?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;

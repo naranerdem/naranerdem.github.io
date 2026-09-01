@@ -97,6 +97,8 @@ import { getCourseRules } from "../staff/public-content";
 import { PublicSiteFontError, updatePublicSiteFont } from "../staff/public-site-font";
 import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updateTeacherDashboardPreferences } from "../staff/teacher-dashboard-preferences";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
+import { EmailArchiveBccError, getEmailArchiveBccSetting, updateEmailArchiveBccSetting } from "../staff/email-archive-bcc";
+import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
 import { RegistrationCorrectionError, registrationCorrectionDetail, saveRegistrationCorrection } from "../staff/registration-corrections";
 import {
   CourseAttendanceError,
@@ -381,12 +383,40 @@ function staffAdministrationError(caught: unknown): Response {
   return error("invalid_request", "Нэр, и-мэйл хаяг, эрхийг шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
+function emailOutboxError(caught: unknown): Response {
+  if (!(caught instanceof EmailOutboxError)) return error("internal_error", "И-мэйлийн бүртгэлийг одоогоор авч чадсангүй.", 500, { "Cache-Control": "no-store" });
+  if (caught.code === "forbidden") return error("forbidden", "Энэ хэсгийг нээх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "И-мэйлийн бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Шүүлтүүрийн утгыг шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
 export async function handleApiRequest(
   request: Request,
   env: WorkerEnv,
   context?: WorkerExecutionContext,
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
+
+  if (path === "/api/staff/outbox") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    try {
+      const url = new URL(request.url);
+      const entryId = url.searchParams.get("email");
+      return json(entryId
+        ? { email: await getEmailOutboxEntry(env, principal, entryId) }
+        : await listEmailOutbox(env, principal, { status: url.searchParams.get("status"), search: url.searchParams.get("q") }), 200, { "Cache-Control": "no-store" });
+    } catch (caught) { return emailOutboxError(caught); }
+  }
+
+  if (path === "/api/staff/settings/email-archive-bcc") {
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    if (!hasStaffCapability(principal, "admin.settings.manage")) return error("forbidden", "Энэ тохиргоог харах эрх алга.", 403, { "Cache-Control": "no-store" });
+    if (request.method === "GET") return json({ setting: await getEmailArchiveBccSetting(env) }, 200, { "Cache-Control": "no-store" });
+    return methodNotAllowed("GET");
+  }
 
   if (path === "/api/health") {
     if (request.method !== "GET") return methodNotAllowed();
@@ -1534,6 +1564,12 @@ export async function handleApiRequest(
             return error("internal_error", "Нийтийн хуудасны фонтыг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
           }
           break;
+        case "email-archive-bcc.save":
+          await updateEmailArchiveBccSetting(env, principal, {
+            recipients: payload.recipients,
+            expectedUpdatedAt: payload.expectedUpdatedAt,
+          });
+          break;
         case "public-center-information.save":
           await updatePublicCenterInformation(env, principal, payload);
           break;
@@ -1579,6 +1615,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Фонтын утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof EmailArchiveBccError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "И-мэйлийн хаягуудыг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PublicQrRedirectSettingsError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

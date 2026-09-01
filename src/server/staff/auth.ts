@@ -408,6 +408,7 @@ export async function startStaffLogin(
   const delivery = deliverQueuedEmail(env, provider, {
     id: outboundEmailId,
     idempotencyKey,
+    templateKey: "staff_login_v2",
     message: {
       from: env.EMAIL_FROM,
       to: deliveryAddress.actualEmail,

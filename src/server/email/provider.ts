@@ -4,6 +4,7 @@ export interface EmailMessage {
   subject: string;
   html: string;
   text: string;
+  bcc?: string[];
 }
 
 export interface EmailSendOptions {

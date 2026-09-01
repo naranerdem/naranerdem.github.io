@@ -19,6 +19,7 @@ import "../../../styles/global.css";
         <section id="payment-reminder-setting" class="staff-operation-section" hidden></section>
         <section id="waitlist-offer-response-setting" class="staff-operation-section" hidden></section>
         <section id="public-font-setting" class="staff-operation-section" hidden></section>
+        <section id="email-archive-bcc-setting" class="staff-operation-section" hidden></section>
         <section id="public-qr-setting" class="staff-operation-section" hidden></section>
         <section id="teacher-dashboard-setting" class="staff-operation-section" hidden></section>
         <a id="auth-link" class="staff-settings-link" href="/staff/settings/auth/" hidden>Нэвтрэх хугацааны тохиргоо</a>
@@ -33,7 +34,7 @@ import "../../../styles/global.css";
       const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       function message(value = "", success = false) { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; }
-      async function refresh(success = "") { state.data = await getOverview(); render(); message(success, Boolean(success)); }
+      async function refresh(success = "") { state.data = await getOverview(); if (state.canManageAuth) { const response = await fetch("/api/staff/settings/email-archive-bcc", { credentials: "same-origin", cache: "no-store" }); if (response.ok) state.data.emailArchiveBccSetting = (await response.json()).setting; } render(); message(success, Boolean(success)); }
       function render() {
         q("#auth-link").hidden = !state.canManageAuth;
         const annualStart = q("#annual-start-setting"); const setting = state.data?.annualCourseStartDefault;
@@ -60,6 +61,10 @@ import "../../../styles/global.css";
         font.hidden = !state.canManageAuth || !fontSetting;
         font.innerHTML = font.hidden ? "" : `<details><summary>Нийтийн хуудасны фонт</summary><form id="public-font-form" class="staff-compact-form staff-settings-secondary"><label><select id="public-font"><option value="sans" ${fontSetting.font === "sans" ? "selected" : ""}>Sans — одоогийн</option><option value="serif" ${fontSetting.font === "serif" ? "selected" : ""}>Serif — Times New Roman</option></select></label><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;
         q("#public-font-form")?.addEventListener("submit", (event) => { event.preventDefault(); run(() => postOverviewAction("public-site-font.save", { font: q("#public-font").value, expectedUpdatedAt: fontSetting.updatedAt }), "Нийтийн хуудасны фонтыг хадгаллаа."); });
+        const archive = q("#email-archive-bcc-setting"); const archiveSetting = state.data?.emailArchiveBccSetting;
+        archive.hidden = !state.canManageAuth || !archiveSetting;
+        archive.innerHTML = archive.hidden ? "" : `<details><summary>И-мэйлийн дотоод хуулбар</summary><form id="email-archive-bcc-form" class="staff-compact-form staff-settings-secondary"><label class="staff-wide">Дотоод и-мэйл хаягууд (ихдээ 5)<textarea id="email-archive-bcc-recipients" rows="4" placeholder="name@example.com">${escapeHtml((archiveSetting.recipients || []).join("\\n"))}</textarea></label><p class="staff-muted">Эцэг эхэд зориулсан энгийн мэдэгдлийг нууц хуулбараар илгээнэ. Нэвтрэх, баталгаажуулах, үйлдлийн холбоостой и-мэйл хуулбарлагдахгүй.</p><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;
+        q("#email-archive-bcc-form")?.addEventListener("submit", (event) => { event.preventDefault(); const recipients = q("#email-archive-bcc-recipients").value.split(/[\\n,]+/).map((value) => value.trim()).filter(Boolean); run(() => postOverviewAction("email-archive-bcc.save", { recipients, expectedUpdatedAt: archiveSetting.updatedAt }), "И-мэйлийн дотоод хуулбарыг хадгаллаа."); });
         const qr = q("#public-qr-setting"); const qrSettings = state.data?.publicQrRedirectSettings;
         qr.hidden = !state.canManageAuth || !qrSettings;
         qr.innerHTML = qr.hidden ? "" : `<details><summary>QR холбоос</summary><form id="public-qr-form" class="staff-compact-form staff-settings-secondary"><label class="staff-wide">Наран Эрдэм <input id="public-qr-n" type="url" inputmode="url" required value="${escapeHtml(qrSettings.nDestinationUrl)}" /></label><label class="staff-wide">Цэнэг <input id="public-qr-t" type="url" inputmode="url" required value="${escapeHtml(qrSettings.tDestinationUrl)}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;

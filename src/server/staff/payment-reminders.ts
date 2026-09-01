@@ -215,6 +215,7 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
       });
       await deliverQueuedEmail(env, emailProvider, {
         id: emailId, idempotencyKey: `payment-reminder/${milestone.milestoneKey}`,
+        templateKey: "payment_reminder_v1",
         message: { from: env.EMAIL_FROM, to: existing?.actualDeliveryEmail ?? delivery.actualEmail, subject: template.subject, html: template.html, text: template.text },
       });
       await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'sent', sent_at = ?, outbound_email_id = ?, last_error_code = NULL, updated_at = ? WHERE id = ?`)

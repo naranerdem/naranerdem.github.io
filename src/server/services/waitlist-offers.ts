@@ -74,6 +74,7 @@ async function queueOfferEmail(env: WorkerEnv, offer: OfferContext, rawToken: st
     FROM outbound_email WHERE id = ?`).bind(emailId).first<{ status: string; actualDeliveryEmail: string }>();
   if (!queued || queued.status === "sent") return;
   await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), { id: emailId, idempotencyKey: `waitlist-offer/${offer.id}`,
+    templateKey: "waitlist_offer_v1",
     message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text } });
 }
 
@@ -99,7 +100,7 @@ async function queuePaymentInstructions(env: WorkerEnv, offer: OfferRow & { draf
   const queued = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email WHERE id = ?`).bind(id).first<{ status: string; actualDeliveryEmail: string }>();
   if (!queued || queued.status === "sent") return;
   const template = waitlistPaymentInstructionsTemplate({ childName: row.childName, amountMnt: Number(row.amountMnt), deadline, bankName: row.bankName, accountHolder: row.accountHolder, accountNumber: row.accountNumber, iban: row.iban, transferInstruction: row.transferInstruction, transferDescription: row.transferDescription });
-  await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), { id, idempotencyKey: `waitlist-payment/${offer.id}`, message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text } });
+  await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), { id, idempotencyKey: `waitlist-payment/${offer.id}`, templateKey: "waitlist_payment_instructions_v1", message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text } });
 }
 
 async function contextForOffer(database: D1Database, id: string): Promise<OfferContext | null> {

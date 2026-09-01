@@ -17,7 +17,7 @@ export function createResendProvider(apiKey: string, fetchImpl: typeof fetch = f
             "Idempotency-Key": options.idempotencyKey,
             "User-Agent": "NaranErdemWorker/1.0",
           },
-          body: JSON.stringify(message),
+          body: JSON.stringify(message.bcc?.length ? message : { ...message, bcc: undefined }),
         });
       } catch {
         throw new EmailProviderError("network_error", true);

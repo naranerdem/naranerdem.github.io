@@ -151,6 +151,7 @@ export async function startEmailVerification(
   const providerMessageId = await deliverQueuedEmail(env, provider, {
     id: outboundEmailId,
     idempotencyKey,
+    templateKey: options.registrationDraftId ? "registration_confirmation_v1" : "email_verification_v1",
     message: {
       from: env.EMAIL_FROM,
       to: delivery.actualEmail,
@@ -265,6 +266,7 @@ export async function sendRegistrationPaymentMilestone(env: WorkerEnv, registrat
   const template = paymentConfirmedTemplate({ facebookGroupUrl: onboarding?.facebookGroupUrl, centerFacebookUrl: center?.facebookUrl });
   await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), {
     id, idempotencyKey: `payment-confirmed/${registrationDraftId}`,
+    templateKey: "payment_confirmed_v1",
     message: { from: env.EMAIL_FROM, to: existing?.actualDeliveryEmail ?? delivery.actualEmail, subject: template.subject, html: template.html, text: template.text },
   });
   return true;
