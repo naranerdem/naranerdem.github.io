@@ -48,12 +48,14 @@ export function validateOperationalDefaults(defaults) {
 
 function academicYearSql(year, version, timestamp) {
   const yearId = `operational-default-year-${year.key}`;
+  const matchingYear = `(SELECT id FROM academic_year WHERE starts_on = ${quote(year.startsOn)} AND ends_on = ${quote(year.endsOn)} ORDER BY is_current DESC, id LIMIT 1)`;
   return [
-    `INSERT OR IGNORE INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
-      VALUES (${quote(yearId)}, ${quote(year.label)}, 'draft', ${quote(year.startsOn)}, ${quote(year.endsOn)}, 1, 0, NULL, ${quote(timestamp)}, ${quote(timestamp)});`,
+    `INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
+      SELECT ${quote(yearId)}, ${quote(year.label)}, 'draft', ${quote(year.startsOn)}, ${quote(year.endsOn)}, 1, 0, NULL, ${quote(timestamp)}, ${quote(timestamp)}
+      WHERE NOT EXISTS (SELECT 1 FROM academic_year WHERE starts_on = ${quote(year.startsOn)} AND ends_on = ${quote(year.endsOn)});`,
     `INSERT OR IGNORE INTO operational_default_import (template_key, template_version, template_kind, imported_at)
       SELECT ${quote(`academic-year:${year.key}`)}, ${quote(version)}, 'school_calendar_period', ${quote(timestamp)}
-      WHERE EXISTS (SELECT 1 FROM academic_year WHERE id = ${quote(yearId)});`,
+      WHERE EXISTS (SELECT 1 FROM academic_year WHERE id = ${matchingYear});`,
   ];
 }
 
@@ -63,11 +65,13 @@ export function buildOperationalDefaultsImport(defaults, timestamp = new Date().
   for (const year of defaults.academicYears) lines.push(...academicYearSql(year, defaults.version, timestamp));
   for (const period of defaults.schoolCalendarPeriods) {
     const marker = `school-period:${period.key}`;
-    const yearId = `operational-default-year-${period.academicYearKey}`;
+    const year = defaults.academicYears.find((entry) => entry.key === period.academicYearKey);
+    const yearId = `(SELECT id FROM academic_year WHERE starts_on = ${quote(year.startsOn)} AND ends_on = ${quote(year.endsOn)} ORDER BY is_current DESC, id LIMIT 1)`;
     const legacyBehavior = period.excludeFromGeneration ? "exclude_by_default" : "warn_only";
     lines.push(`INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, exclude_from_generation, warn_on_overlap, source_note, status, is_test, test_run_id, created_at, updated_at)
-      SELECT ${quote(`operational-default-school-period-${period.key}`)}, ${quote(yearId)}, ${quote(period.label)}, ${quote(period.startsOn)}, ${quote(period.endsOn)}, ${period.excludeFromGeneration ? 1 : 0}, ${quote(legacyBehavior)}, ${period.excludeFromGeneration ? 1 : 0}, ${period.warnOnOverlap ? 1 : 0}, 'Imported operational default', 'active', 0, NULL, ${quote(timestamp)}, ${quote(timestamp)}
+      SELECT ${quote(`operational-default-school-period-${period.key}`)}, ${yearId}, ${quote(period.label)}, ${quote(period.startsOn)}, ${quote(period.endsOn)}, ${period.excludeFromGeneration ? 1 : 0}, ${quote(legacyBehavior)}, ${period.excludeFromGeneration ? 1 : 0}, ${period.warnOnOverlap ? 1 : 0}, 'Imported operational default', 'active', 0, NULL, ${quote(timestamp)}, ${quote(timestamp)}
       WHERE NOT EXISTS (SELECT 1 FROM operational_default_import WHERE template_key = ${quote(marker)})
+        AND ${yearId} IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM academic_year_break WHERE id = ${quote(`operational-default-school-period-${period.key}`)});`);
     lines.push(`INSERT OR IGNORE INTO operational_default_import (template_key, template_version, template_kind, imported_at)
       SELECT ${quote(marker)}, ${defaults.version}, 'school_calendar_period', ${quote(timestamp)}

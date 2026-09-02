@@ -77,7 +77,9 @@ current published revision and derives the Offering's academic-year context
 from the selected date. Raw revision IDs and year selectors are never normal
 browser choices. The annual families are exactly `1-р шат`, `2-р шат`, and
 `3-р шат`; there is no Stage 4. Annual courses are always paid and apply
-school-calendar guidance automatically. Their actual final lesson date is
+school-calendar guidance automatically when planning periods have been
+configured. Missing holiday planning is a non-blocking setup warning, not a
+reason to reject Offering or calendar creation. Their actual final lesson date is
 derived from the explicit class calendar, not entered as an Offering end date.
 
 A summer course has a human title, planned period, and existing published summer
@@ -114,7 +116,10 @@ labels when two classes share a start time.
 
 ## Planning And Publishing
 
-Planning has three deliberately separate inputs. An `academic_year_break` is a
+Planning has three deliberately separate inputs. A dated `academic_year` is a
+lightweight annual identity shell; creating an annual Offering resolves or
+creates it from the existing September–June convention. An
+`academic_year_break` is an optional
 named inclusive school-calendar period for annual courses. It has two
 independent flags: `exclude_from_generation` skips habitual candidates in an
 initial draft, while `warn_on_overlap` marks any final teaching slot inside the
@@ -305,9 +310,11 @@ The protected Mongolian setup is organized around concrete work:
   without exposing them. Extra lessons and offering-wide `Тусгай өөрчлөлт`
   remain secondary controls; the latter clearly affects every class in the
   Offering.
-- `/staff/holidays/` records annual school-calendar periods with either an
-  initial exclusion or a warning-only behavior, and lists only real dated
-  school years rather than internal compatibility records.
+- `/staff/holidays/` records optional annual school-calendar periods with either
+  an initial exclusion or a warning-only behavior, and lists dated school-year
+  shells rather than internal compatibility records. It can prepare the next
+  shell and copy prior periods into editable, review-required dates; this never
+  changes the source year or published class calendars.
 - `/staff/settings/` stores genuinely global typed settings: the admin-only
   annual-start month/day default and separate admin authentication settings.
 - `/staff/attendance/` is the daily teacher/admin roster for annual and summer

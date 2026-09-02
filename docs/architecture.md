@@ -177,9 +177,11 @@ The public site consumes one narrow unauthenticated read model that combines onl
 Schedule is for selecting and editing an existing class calendar. Class
 creation, edit, and safe deletion belong to the selected Offering detail under
 `Сургалт, арга хэмжээ`, so each class has one operational owner in the staff
-interface. The real 2026–2027 school-calendar defaults are source-controlled,
-explicitly imported planning guidance; staging fixtures remain visibly test
-data and do not clutter the normal Holidays list.
+interface. A dated academic-year shell is lightweight identity and can be
+created automatically from an annual Offering's start date; named school-break
+periods are optional planning guidance, not an Offering prerequisite. The real
+2026–2027 school-calendar defaults are source-controlled, explicitly imported
+planning guidance.
 
 Real curricula are proprietary operational data. D1 is their authority and the
 public repository contains only fake curriculum fixtures. A whitelisted,
@@ -207,8 +209,9 @@ Class meeting rules support weekly, weekdays, and daily draft generation using
 Mongolia-local civil dates. The selected class inherits its Offering program;
 calendar generation does not ask the teacher or API caller to choose that
 program again. A new annual Offering selects only a stage; the server resolves
-that logical Program family's current revision and uses Offering dates to derive
-the configured academic-year context. A summer Offering selects a named summer
+that logical Program family's current revision and resolves the matching
+academic-year shell from the Offering dates, creating the conventional
+September–June shell when absent. A summer Offering selects a named summer
 Program family. Existing Offerings retain their exact revision after later
 publication. Raw revision IDs remain internal compatibility/history data.
 Annual and summer courses are always paid; events are normally free but
@@ -250,6 +253,8 @@ the ordered lesson-to-slot mapping reflow. A school-calendar skip can be
 restored for one class with a warning governed by that period's current
 guidance. Offering-wide course pauses remain a compact `Тусгай өөрчлөлт`; they
 affect every class in the Offering and cannot be silently overridden per class.
+Later school-calendar planning changes never rewrite an already published
+explicit class calendar.
 Annual planning and one-class planned maintenance stay on Schedule.
 `/staff/day-changes/` is the separate daily entry point for unexpected
 cancellations, whole-day closures, replacement days, and extra dates. It

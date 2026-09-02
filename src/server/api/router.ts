@@ -141,6 +141,8 @@ import {
   getProgramCalendarOverview,
   publishCalendarDraft,
   publishProgramFamilyDraft,
+  prepareNextAcademicYearShell,
+  copyPreviousAcademicYearBreaks,
   removeAcademicYearBreak,
   saveAcademicYearBreak,
   saveClassSession,
@@ -153,6 +155,7 @@ import {
 } from "../staff/program-calendar";
 import {
   OfferingError,
+  deleteUnusedCourseOffering,
   deleteUnusedEventOffering,
   saveActivityOffering,
   removeOfferingBreak,
@@ -318,6 +321,7 @@ function programCalendarError(caught: unknown): Response {
     if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
     if (caught.code === "not_found") return error("invalid_request", "Сонгосон мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
     if (caught.code === "conflict") return error("invalid_request", "Энэ мэдээлэл өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд өөрчлөлтөө шалгана уу.", 409, { "Cache-Control": "no-store" });
+    if (caught.code === "referenced") return error("invalid_request", "Энэ сургалт анги, хуваарь, бүртгэл эсвэл төлбөрийн мэдээлэлд ашиглагдсан тул устгаж болохгүй.", 409, { "Cache-Control": "no-store" });
     if (caught.code === "immutable") return error("invalid_request", "Ашиглагдаж буй мэдээллийг эндээс шууд өөрчилж болохгүй.", 409, { "Cache-Control": "no-store" });
     if (caught.code === "academic_year_unconfigured") return error("invalid_request", "Энэ эхлэх өдөрт тохирох хичээлийн жил одоогоор тохируулагдаагүй байна.", 400, { "Cache-Control": "no-store" });
     return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
@@ -1393,6 +1397,11 @@ export async function handleApiRequest(
             offeringId: String(payload.offeringId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "offering-course.delete":
+          await deleteUnusedCourseOffering(env, principal, {
+            offeringId: String(payload.offeringId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
         case "program.create-summer":
           await createSummerProgramFamilyDraft(env, principal, { displayName: String(payload.displayName ?? "") });
           break;
@@ -1475,6 +1484,12 @@ export async function handleApiRequest(
           break;
         case "break.remove":
           await removeAcademicYearBreak(env, principal, { breakId: String(payload.breakId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? "") });
+          break;
+        case "academic-year.prepare-next":
+          await prepareNextAcademicYearShell(env, principal);
+          break;
+        case "academic-year.copy-previous-breaks":
+          await copyPreviousAcademicYearBreaks(env, principal, { academicYearId: String(payload.academicYearId ?? "") });
           break;
         case "calendar.generate":
           if ("programId" in payload || "firstCandidateDate" in payload) throw new ProgramCalendarError("invalid");

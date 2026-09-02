@@ -13,7 +13,7 @@ import "../../styles/global.css";
       <section id="tool-app" hidden>
         <div class="staff-page-heading"><div><p class="eyebrow">Жилийн бэлтгэл</p><h1>Амралтын хуваарь</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <label class="staff-year-picker">Хичээлийн жил <select id="year-select"></select></label>
+        <div class="staff-year-picker"><label>Хичээлийн жил <select id="year-select"></select></label><button id="prepare-next-year" class="button secondary" type="button">Дараагийн хичээлийн жил бэлтгэх</button></div>
         <section class="staff-operation-section" aria-labelledby="holiday-title"><div class="staff-section-heading"><h2 id="holiday-title">Амралтын хугацаа</h2><button id="add-break" class="button primary" type="button">Амралтын хугацаа нэмэх</button></div><div id="break-editor"></div><div id="break-list" class="staff-record-list"></div></section>
       </section>
     </main>
@@ -32,13 +32,20 @@ import "../../styles/global.css";
         fillSelect(q("#year-select"), visibleYears(), state.yearId, (year) => year.label);
         const entry = breaks().find((item) => item.id === state.editing);
         q("#break-editor").innerHTML = entry || state.editing === "new" ? form(entry) : "";
-        q("#break-list").innerHTML = breaks().length ? breaks().map((item) => `<article><div><strong>${escape(item.label)}</strong><p>${formatDate(item.startsOn)} – ${formatDate(item.endsOn)}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-edit="${escape(item.id)}">Засах</button><button class="button secondary" type="button" data-remove="${escape(item.id)}">Устгах</button></div></article>`).join("") : `<p class="staff-empty">Амралтын хугацаа оруулаагүй байна.</p>`;
+        const currentYear = visibleYears().find((year) => year.id === state.yearId);
+        const hasPreviousYear = currentYear && visibleYears().some((year) => year.startsOn < currentYear.startsOn);
+        q("#break-list").innerHTML = breaks().length ? breaks().map((item) => `<article><div><strong>${escape(item.label)}</strong><p>${formatDate(item.startsOn)} – ${formatDate(item.endsOn)}</p></div><div class="staff-inline-actions"><button class="button secondary" type="button" data-edit="${escape(item.id)}">Засах</button><button class="button secondary" type="button" data-remove="${escape(item.id)}">Устгах</button></div></article>`).join("") : `<div class="staff-empty"><p>Амралтын хуваарь тохируулаагүй байна.</p>${hasPreviousYear ? `<p><button id="copy-previous-breaks" class="button secondary" type="button">Өмнөх жилээс хуулж эхлэх</button></p><small>Хуулсан огноог заавал шалгаж засна уу.</small>` : ""}</div>`;
         q("#break-editor form")?.addEventListener("submit", submit);
         q("#break-editor [data-cancel]")?.addEventListener("click", () => { state.editing = null; render(); });
         q("#break-list").querySelectorAll("[data-edit]").forEach((button) => button.onclick = () => { state.editing = button.dataset.edit; render(); q("#break-label").focus(); });
         q("#break-list").querySelectorAll("[data-remove]").forEach((button) => button.onclick = () => {
           const item = breaks().find((entry) => entry.id === button.dataset.remove);
           if (item && window.confirm("Энэ амралтын хугацааг устгах уу?")) run(() => postOverviewAction("break.remove", { breakId: item.id, expectedUpdatedAt: item.updatedAt }), "Амралтын хугацааг устгалаа.");
+        });
+        q("#copy-previous-breaks")?.addEventListener("click", () => {
+          if (window.confirm("Өмнөх жилийн амралтын хугацааг нэг жилээр шилжүүлж хуулах уу? Огноог дараа нь шалгаж засна уу.")) {
+            run(() => postOverviewAction("academic-year.copy-previous-breaks", { academicYearId: state.yearId }), "Өмнөх жилийн амралтын хугацааг хууллаа. Огноог шалгаж засна уу.");
+          }
         });
       }
       function form(entry) {
@@ -48,6 +55,7 @@ import "../../styles/global.css";
       async function run(work, success) { message(); try { await work(); state.editing = null; await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       q("#year-select").onchange = (event) => { state.yearId = event.target.value; state.editing = null; render(); };
       q("#add-break").onclick = () => { state.editing = "new"; render(); q("#break-label").focus(); };
+      q("#prepare-next-year").onclick = () => run(async () => { await postOverviewAction("academic-year.prepare-next"); state.yearId = ""; }, "Дараагийн хичээлийн жил бэлэн боллоо.");
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>

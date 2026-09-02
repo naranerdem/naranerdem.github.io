@@ -106,15 +106,18 @@ import "../../styles/global.css";
       function renderCalendar(offering) {
         const availableClasses = classes(offering.id); const container = q("#calendar-editor"); const selected = availableClasses.find((entry) => entry.id === state.selectedClassId);
         if (!selected) { container.innerHTML = `<p class="staff-empty">Эхлээд анги нэмнэ үү.</p>`; return; }
+        const holidayNotice = offering.kind === "annual_course" && selected.useAcademicYearBreaks
+          && !(state.data?.breaks || []).some((entry) => entry.academicYearId === selected.academicYearId && entry.status === "active")
+          ? `<p class="staff-muted">Амралтын хуваарь тохируулаагүй байна.</p>` : "";
         const revisions = (state.data.revisions || []).filter((entry) => entry.classSessionId === selected.id);
         const draft = revisions.find((entry) => entry.status === "draft"); const published = revisions.find((entry) => entry.status === "published");
         const calendar = draft || published;
         if (!calendar) {
-          container.innerHTML = `<div class="staff-empty"><p>Энэ ангид хуваарь үүсгээгүй байна.</p><p>Хөтөлбөр: <strong>${escape(offering.programName || "Бэлтгэж байна")}</strong></p>${offering.programStatus === "published" ? `<button class="button primary" id="calendar-generate" type="button">Хуваарь үүсгэх</button>` : `<p>Хуваарь үүсгэхийн өмнө хөтөлбөрөө эхлээд хадгална уу.</p>`}</div>`;
+          container.innerHTML = `<div class="staff-empty"><p>Энэ ангид хуваарь үүсгээгүй байна.</p><p>Хөтөлбөр: <strong>${escape(offering.programName || "Бэлтгэж байна")}</strong></p>${holidayNotice}${offering.programStatus === "published" ? `<button class="button primary" id="calendar-generate" type="button">Хуваарь үүсгэх</button>` : `<p>Хуваарь үүсгэхийн өмнө хөтөлбөрөө эхлээд хадгална уу.</p>`}</div>`;
           container.querySelector("#calendar-generate")?.addEventListener("click", () => run(() => postOverviewAction("calendar.generate", { classSessionId: selected.id }), "Хуваарь бэлэн боллоо."));
           return;
         }
-        renderCalendarView(container, calendar, offering, selected, Boolean(draft));
+        renderCalendarView(container, calendar, offering, selected, Boolean(draft), holidayNotice);
       }
       async function beginCalendarAction(selected, draft, slotKey, kind) {
         if (!draft) {
@@ -135,7 +138,7 @@ import "../../styles/global.css";
         return !sameCalendarEntries(calendar.slots || [], base.slots || [], ["localDate", "startTime", "endTime", "slotSource", "status", "lessonId", "cancelledLessonSequence", "cancelledLessonTitle", "reasonLabel"])
           || !sameCalendarEntries(calendar.overrides || [], base.overrides || [], ["localDate", "behavior", "reasonLabel"]);
       }
-      function renderCalendarView(container, calendar, offering, selected, editable) {
+      function renderCalendarView(container, calendar, offering, selected, editable, holidayNotice = "") {
         actionMenus.close();
         const rows = calendar.slots.map((slot) => calendarRow(slot, calendar)).join("");
         const dirty = editable && hasSavedCalendarChanges(calendar);
@@ -144,7 +147,7 @@ import "../../styles/global.css";
           : `<div class="staff-form-actions"><button id="calendar-close" class="button secondary" type="button">Болих</button><button id="calendar-save" class="button primary" type="button" ${dirty ? "" : "disabled"}>Хадгалах</button></div>`;
         const reportCalendar = (state.data.revisions || []).find((entry) => entry.classSessionId === selected.id && entry.status === "published");
         const reportActions = reportCalendar ? `<div class="staff-report-actions"><button id="class-schedule-print" class="button secondary" type="button">Хэвлэх / PDF</button><button id="class-schedule-copy" class="button secondary" type="button">Excel-д хуулах</button></div>` : "";
-        container.innerHTML = `<div class="staff-calendar-draft">${calendarSummary(calendar, offering)}${warningSummary(calendar)}${reportActions}${editable ? `<details class="staff-calendar-extra" ${state.calendarAction?.kind === "extra" ? "open" : ""}><summary>Нэмэлт хичээл оруулах</summary><form id="calendar-extra" class="staff-compact-form"><label>Өдөр <input id="extra-date" type="date" required /></label><label>Эхлэх цаг <input id="extra-start" type="time" required /></label><label class="staff-wide">Тэмдэглэл <input id="extra-reason" maxlength="160" /></label><div class="staff-form-actions staff-wide"><button class="button primary" type="submit">Оруулах</button></div></form></details>` : ""}<ol class="staff-calendar-list">${rows}</ol>${editable ? calendarActions : ""}</div>`;
+        container.innerHTML = `<div class="staff-calendar-draft">${calendarSummary(calendar, offering)}${holidayNotice}${warningSummary(calendar)}${reportActions}${editable ? `<details class="staff-calendar-extra" ${state.calendarAction?.kind === "extra" ? "open" : ""}><summary>Нэмэлт хичээл оруулах</summary><form id="calendar-extra" class="staff-compact-form"><label>Өдөр <input id="extra-date" type="date" required /></label><label>Эхлэх цаг <input id="extra-start" type="time" required /></label><label class="staff-wide">Тэмдэглэл <input id="extra-reason" maxlength="160" /></label><div class="staff-form-actions staff-wide"><button class="button primary" type="submit">Оруулах</button></div></form></details>` : ""}<ol class="staff-calendar-list">${rows}</ol>${editable ? calendarActions : ""}</div>`;
         const classReport = () => buildClassScheduleReport(offering, selected, reportCalendar);
         container.querySelector("#class-schedule-print")?.addEventListener("click", () => printReport(classReport()));
         container.querySelector("#class-schedule-copy")?.addEventListener("click", async () => { try { await copyReportToClipboard(classReport()); message("Excel-д хуулах хүснэгтийг хууллаа.", true); } catch { message("Хүснэгтийг хуулж чадсангүй."); } });

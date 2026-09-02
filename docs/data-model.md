@@ -25,7 +25,7 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `student`: persistent child identity with name, gender, date of birth, status, and test provenance.
 - `guardian_student_relationship`: persistent relationship between guardians and students, including whether the guardian is currently authorized to manage registration.
 - `family_group` and `family_group_member`: minimal explicit family-discount eligibility foundation. Family is not inferred from surname, address, payment origin, or Facebook identity.
-- `academic_year`: public label and registration status for a year/session without hard-coding unsupplied year details.
+- `academic_year`: lightweight dated annual identity (or an older internal compatibility context). A normal annual Offering can resolve/create the conventional dated shell; its legacy `registration_status` is not an ordinary public-registration gate.
 - `curriculum_program_family`: stable logical annual stage or named summer Program identity, with one current published revision pointer.
 - `curriculum_program`: immutable historical revision beneath a Program family; its ordered lessons are the taught content.
 - `activity_offering`: one annual course, summer course, or event, with typed period/context, pinned program revision, break policy, charge mode, optional shared Facebook group, status, and provenance. Its `facebook_group_url` is the sole operational write authority.

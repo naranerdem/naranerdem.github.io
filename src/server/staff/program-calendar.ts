@@ -27,6 +27,7 @@ import { getPaymentConfirmationGraceSetting } from "./payment-reconciliation";
 import { getInitialPaymentDeadlineSetting } from "./initial-payment-deadline";
 import { getPaymentReminderSetting } from "./payment-reminders";
 import { getWaitlistOfferResponseSetting } from "./waitlist-offer-response";
+import { ensureAnnualAcademicYearShell } from "./academic-year-shell";
 import { classCapacityConsumedSql, getClassCapacityProjections } from "../services/class-capacity";
 import { prepareWaitlistOffersForCapacityIncrease } from "../services/waitlist-offers";
 
@@ -474,11 +475,17 @@ async function classHasReferences(env: WorkerEnv, classSessionId: string): Promi
         WHERE selected_class_session_id = ? OR preferred_waitlist_class_session_id = ?)
       OR EXISTS (SELECT 1 FROM registration_capacity_hold WHERE class_session_id = ?)
       OR EXISTS (SELECT 1 FROM registration_draft_waitlist_entry WHERE class_session_id = ?)
+      OR EXISTS (SELECT 1 FROM waitlist_seat_offer WHERE class_session_id = ?)
       OR EXISTS (SELECT 1 FROM class_calendar WHERE class_session_id = ?)
+      OR EXISTS (SELECT 1 FROM course_attendance WHERE class_session_id = ?)
+      OR EXISTS (SELECT 1 FROM course_absence_notice WHERE class_session_id = ?)
+      OR EXISTS (SELECT 1 FROM course_makeup_resolution WHERE source_class_session_id = ?)
+      OR EXISTS (SELECT 1 FROM course_makeup_assignment WHERE target_class_session_id = ?)
     THEN 1 ELSE 0 END AS found
   `).bind(
     classSessionId, classSessionId, classSessionId, classSessionId,
     classSessionId, classSessionId, classSessionId, classSessionId,
+    classSessionId, classSessionId, classSessionId, classSessionId, classSessionId,
   ).first<{ found: number }>();
   return row?.found === 1;
 }
@@ -1493,6 +1500,86 @@ export async function removeAcademicYearBreak(env: WorkerEnv, actor: StaffPrinci
     env.DB.prepare("UPDATE academic_year_break SET status = 'archived', updated_at = ? WHERE id = ? AND status = 'active' AND updated_at = ?").bind(time, current.id, input.expectedUpdatedAt),
     audit(env, actor, "academic_year_break_removed", "academic_year_break", current.id, {}, operationFlags(env, current), time),
   ]); if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
+}
+
+export async function prepareNextAcademicYearShell(env: WorkerEnv, actor: StaffPrincipal): Promise<void> {
+  requireCapability(actor, "calendar.manage");
+  const latest = await env.DB.prepare(`SELECT starts_on AS startsOn FROM academic_year
+    WHERE starts_on IS NOT NULL AND ends_on IS NOT NULL
+    ORDER BY starts_on DESC LIMIT 1`).first<{ startsOn: string }>();
+  const baseYear = latest?.startsOn ? Number(latest.startsOn.slice(0, 4)) + 1 : new Date().getUTCFullYear();
+  // Preparing a school year is deliberate operational setup even on staging;
+  // isolated rehearsal fixtures remain explicitly test-provenanced elsewhere.
+  const flags = { isTest: 0, testRunId: null };
+  const resolved = await ensureAnnualAcademicYearShell(env, `${baseYear}-09-01`, flags);
+  if (!resolved.created) return;
+  const time = now();
+  await env.DB.batch([
+    audit(env, actor, "academic_year_shell_prepared", "academic_year", resolved.year.id, {
+      startsOn: resolved.year.startsOn,
+      endsOn: resolved.year.endsOn,
+    }, flags, time),
+  ]);
+}
+
+function shiftDateByYears(value: string, years: number): string {
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const shifted = new Date(Date.UTC(year + years, month - 1, day));
+  if (shifted.getUTCMonth() !== month - 1 || shifted.getUTCDate() !== day) throw new ProgramCalendarError("invalid");
+  return shifted.toISOString().slice(0, 10);
+}
+
+export async function copyPreviousAcademicYearBreaks(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { academicYearId: string },
+): Promise<void> {
+  requireCapability(actor, "calendar.manage");
+  const target = await one<YearRow>(env, env.DB.prepare(`SELECT id, public_label AS label,
+    starts_on AS startsOn, ends_on AS endsOn, is_current AS isCurrent,
+    is_test AS isTest, test_run_id AS testRunId FROM academic_year WHERE id = ?`).bind(input.academicYearId));
+  if (!target.startsOn || !target.endsOn) throw new ProgramCalendarError("invalid");
+  const existing = await env.DB.prepare(`SELECT id FROM academic_year_break
+    WHERE academic_year_id = ? AND status = 'active' LIMIT 1`).bind(target.id).first<{ id: string }>();
+  if (existing) throw new ProgramCalendarError("conflict");
+  const source = await env.DB.prepare(`SELECT academic_year.id FROM academic_year
+    WHERE academic_year.starts_on IS NOT NULL AND academic_year.ends_on IS NOT NULL
+      AND academic_year.starts_on < ?
+      AND EXISTS (SELECT 1 FROM academic_year_break
+        WHERE academic_year_break.academic_year_id = academic_year.id AND academic_year_break.status = 'active')
+    ORDER BY academic_year.starts_on DESC LIMIT 1`).bind(target.startsOn).first<{ id: string }>();
+  if (!source) throw new ProgramCalendarError("not_found");
+  const periods = await env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label,
+    starts_on AS startsOn, ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots,
+    generation_behavior AS generationBehavior, exclude_from_generation AS excludeFromGeneration,
+    warn_on_overlap AS warnOnOverlap, source_note AS sourceNote, status,
+    is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM academic_year_break WHERE academic_year_id = ? AND status = 'active'
+    ORDER BY starts_on, ends_on`).bind(source.id).all<BreakRow>();
+  if (!periods.results.length) throw new ProgramCalendarError("not_found");
+  const flags = operationFlags(env, target); const time = now();
+  const sourceYear = await env.DB.prepare("SELECT starts_on AS startsOn FROM academic_year WHERE id = ?").bind(source.id).first<{ startsOn: string }>();
+  if (!sourceYear?.startsOn) throw new ProgramCalendarError("not_found");
+  const yearShift = Number(target.startsOn.slice(0, 4)) - Number(sourceYear?.startsOn.slice(0, 4));
+  await env.DB.batch([
+    ...periods.results.map((period) => env.DB.prepare(`INSERT INTO academic_year_break (
+      id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots,
+      generation_behavior, exclude_from_generation, warn_on_overlap, source_note,
+      status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`).bind(
+      id(), target.id, period.label, shiftDateByYears(period.startsOn, yearShift), shiftDateByYears(period.endsOn, yearShift),
+      period.excludesHabitualSlots, period.generationBehavior, period.excludeFromGeneration,
+      period.warnOnOverlap, "Өмнөх хичээлийн жилээс хуулсан; огноог шалгана уу.",
+      flags.isTest, flags.testRunId, time, time,
+    )),
+    audit(env, actor, "academic_year_breaks_copied", "academic_year", target.id, {
+      sourceAcademicYearId: source.id,
+      periodCount: periods.results.length,
+      dateRule: "shifted_to_target_school_year_for_review",
+    }, flags, time),
+  ]);
 }
 
 async function nextRevisionNumber(env: WorkerEnv, calendarId: string): Promise<number> {

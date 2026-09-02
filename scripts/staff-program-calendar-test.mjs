@@ -10,6 +10,7 @@ const databasePath = path.join(tempDir, "staff-program-calendar.sqlite3");
 const bundlePath = path.join(tempDir, "staff-program-calendar.mjs");
 const offeringBundlePath = path.join(tempDir, "staff-offerings.mjs");
 const annualDefaultBundlePath = path.join(tempDir, "annual-course-start-default.mjs");
+const academicYearShellBundlePath = path.join(tempDir, "academic-year-shell.mjs");
 const coursePricingBundlePath = path.join(tempDir, "course-pricing.mjs");
 const routerBundlePath = path.join(tempDir, "router.mjs");
 
@@ -120,6 +121,8 @@ try {
   if (offeringBundled.status !== 0) throw new Error(offeringBundled.stderr);
   const annualDefaultBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/annual-course-start-default.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${annualDefaultBundlePath}`], { encoding: "utf8" });
   if (annualDefaultBundled.status !== 0) throw new Error(annualDefaultBundled.stderr);
+  const academicYearShellBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/academic-year-shell.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${academicYearShellBundlePath}`], { encoding: "utf8" });
+  if (academicYearShellBundled.status !== 0) throw new Error(academicYearShellBundled.stderr);
   const coursePricingBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/course-pricing.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${coursePricingBundlePath}`], { encoding: "utf8" });
   if (coursePricingBundled.status !== 0) throw new Error(coursePricingBundled.stderr);
   const routerBundled = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/api/router.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${routerBundlePath}`], { encoding: "utf8" });
@@ -127,6 +130,7 @@ try {
   const service = await import(pathToFileURL(bundlePath).href);
   const offeringService = await import(pathToFileURL(offeringBundlePath).href);
   const annualDefaultService = await import(pathToFileURL(annualDefaultBundlePath).href);
+  const academicYearShellService = await import(pathToFileURL(academicYearShellBundlePath).href);
   const coursePricingService = await import(pathToFileURL(coursePricingBundlePath).href);
   const { handleApiRequest } = await import(pathToFileURL(routerBundlePath).href);
   const database = new SqliteD1(); const runtime = env(database); const now = "2026-08-12T01:00:00.000Z";
@@ -224,7 +228,9 @@ try {
   assert.match(offeringsPage, /Арга хэмжээ/);
   assert.match(offeringsPage, /Үнэгүй/);
   assert.match(holidaysPage, /Амралтын хугацаа нэмэх/, "holiday tool is a separate focused screen");
-  assert.match(holidaysPage, /!year\.isTest \|\| \(state\.data\?\.breaks/, "teacher holiday choices exclude internal compatibility and isolated test records");
+  assert.match(holidaysPage, /year\.startsOn && year\.endsOn/, "dated academic-year shells remain visible even before holiday periods exist");
+  assert.match(holidaysPage, /Дараагийн хичээлийн жил бэлтгэх/, "holiday tool can prepare a lightweight next academic-year shell");
+  assert.match(holidaysPage, /Өмнөх жилээс хуулж эхлэх/, "holiday tool can start editable planning from the previous year");
   assert.match(offeringsPage, /Анги нэмэх/, "selected Offering details own class setup");
   assert.doesNotMatch(schedulePage, /Анги нэмэх|id="classes-title"/, "Schedule does not duplicate class setup beneath a calendar");
   assert.match(schedulePage, /id="schedule-overview"/, "Schedule opens with a class overview");
@@ -236,6 +242,7 @@ try {
   assert.doesNotMatch(offeringsPage, /offering-break|Сургалтын завсарлага|Завсарлага нэмэх/, "Offering metadata editing does not expose break controls");
   assert.match(schedulePage, />Хадгалах</, "calendar save uses ordinary teacher wording");
   assert.match(schedulePage, /data-calendar-action/, "future lessons use compact row actions");
+  assert.match(schedulePage, /Амралтын хуваарь тохируулаагүй байна/, "Schedule gives only a non-blocking notice when annual holiday planning is absent");
   assert.match(schedulePage, /data-staff-action-menu/, "Schedule row menus opt into the shared one-menu controller");
   assert.match(schedulePage, /createStaffActionMenuController/, "Schedule page initializes shared action-menu behavior");
   assert.match(schedulePage, /Нэмэлт хичээл оруулах/, "extra lessons are secondary schedule work");
@@ -318,6 +325,17 @@ try {
   await service.publishProgramFamilyDraft(runtime, actor("teacher"), { programId: summerDraft.id, expectedUpdatedAt: savedSummerDraft.updatedAt });
   const summerFamily = database.query(`SELECT program_family_id AS familyId FROM curriculum_program WHERE id = ${quote(summerDraft.id)}`)[0];
   await assert.rejects(() => offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Туршилтын зуны сургалт", startsOn: "2027-06-01", endsOn: "2027-06-14", programFamilyId: summerFamily.familyId, chargeMode: "free" }), /Offering operation/, "summer offerings reject a manual free charge mode");
+  await offeringService.saveActivityOffering(runtime, actor("teacher"), {
+    kind: "summer_course", title: "Устгах зуны сургалт", startsOn: "2027-07-01", endsOn: "2027-07-05", programFamilyId: summerFamily.familyId,
+    initialClasses: [{ recurrenceKind: "daily", startTime: "10:00", capacity: 8 }],
+  });
+  const removableCourse = database.query("SELECT id, updated_at AS updatedAt FROM activity_offering WHERE title = 'Устгах зуны сургалт'")[0];
+  const removableClass = database.query(`SELECT id FROM class_session WHERE activity_offering_id = ${quote(removableCourse.id)}`)[0];
+  await offeringService.deleteUnusedCourseOffering(runtime, actor("teacher"), { offeringId: removableCourse.id, expectedUpdatedAt: removableCourse.updatedAt });
+  assert.equal(count(database, "activity_offering", `id = ${quote(removableCourse.id)}`), 0, "an unused course Offering can be deleted safely");
+  assert.equal(count(database, "class_session", `id = ${quote(removableClass.id)}`), 0, "its unused class is deleted with the Offering");
+  assert.equal(count(database, "class_meeting_rule", `class_session_id = ${quote(removableClass.id)}`), 0, "its meeting rule cascades with the unused class");
+  assert.equal(count(database, "audit_event", `action = 'activity_offering_deleted' AND subject_id = ${quote(removableCourse.id)}`), 1, "unused course deletion is audited");
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Туршилтын зуны сургалт", startsOn: "2027-06-01", endsOn: "2027-06-14", programFamilyId: summerFamily.familyId, facebookGroupUrl: "https://facebook.com/groups/fake-summer" });
   const summerOffering = database.query("SELECT id, curriculum_program_id AS programId, academic_year_id AS academicYearId, charge_mode AS chargeMode, use_academic_year_breaks AS useBreaks, default_class_duration_minutes AS duration FROM activity_offering WHERE title = 'Туршилтын зуны сургалт'")[0];
   assert.equal(summerOffering.chargeMode, "paid", "summer charge defaults to paid");
@@ -333,6 +351,8 @@ try {
   assert.equal(database.query("SELECT end_time AS endTime FROM class_session WHERE activity_offering_id = " + quote(summerOffering.id) + " AND start_time = '16:00'")[0].endTime, "17:20", "new class end time derives from its Offering duration");
   await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: summerWeekdayClass.id });
   const summerDraftRevision = database.query(`SELECT revision.id, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = ${quote(summerWeekdayClass.id)} AND revision.status = 'draft'`)[0];
+  const usedSummerOffering = database.query(`SELECT updated_at AS updatedAt FROM activity_offering WHERE id = ${quote(summerOffering.id)}`)[0];
+  await assert.rejects(() => offeringService.deleteUnusedCourseOffering(runtime, actor("teacher"), { offeringId: summerOffering.id, expectedUpdatedAt: usedSummerOffering.updatedAt }), /Offering operation/, "a course Offering with a calendar cannot be deleted");
   assert.equal(database.query(`SELECT local_date AS localDate FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(summerDraftRevision.id)} AND status = 'scheduled' ORDER BY local_date DESC LIMIT 1`)[0].localDate, "2027-06-16", "a course break extends a daily summer plan beyond its soft end date");
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(summerDraftRevision.id)} AND local_date BETWEEN '2027-06-07' AND '2027-06-08' AND status = 'scheduled'`), 0, "an Offering break suppresses every daily candidate");
   await service.saveClassSession(runtime, actor("teacher"), { offeringId: summerOffering.id, recurrenceKind: "daily", firstDate: "2027-06-01", lastDate: "2027-06-14", academicYearId: "", stageCode: "", weekday: "", startTime: "13:00", endTime: "14:30", capacity: 12 });
@@ -630,11 +650,24 @@ try {
     INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
       VALUES ('year-default-start-test', 'Анхны өдрийн тест', 'draft', '2028-09-01', '2029-06-01', 1, 1, 'staff-program-test', '${now}', '${now}');
   `);
-  await assert.rejects(
-    () => offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1", startsOn: "2035-10-01" }),
-    (error) => error.code === "academic_year_unconfigured",
-    "a date outside configured academic years returns a specific setup error",
-  );
+  await offeringService.saveActivityOffering(runtime, actor("teacher"), {
+    kind: "annual_course", annualStageCode: "stage_1", startsOn: "2035-10-01",
+    initialClasses: [{ recurrenceKind: "weekly", weeklyWeekday: "Бямба", startTime: "10:00", capacity: 12 }],
+  });
+  const automaticShell = database.query("SELECT id, starts_on AS startsOn, ends_on AS endsOn FROM academic_year WHERE id = 'academic-year-2035-36'")[0];
+  assert.deepEqual([automaticShell.startsOn, automaticShell.endsOn], ["2035-09-01", "2036-06-01"], "an annual Offering creates the missing dated academic-year shell without holiday periods");
+  assert.equal(count(database, "academic_year_break", "academic_year_id = 'academic-year-2035-36'"), 0, "automatic shells do not fabricate holiday planning periods");
+  await academicYearShellService.ensureAnnualAcademicYearShell(runtime, "2035-10-01", { isTest: 1, testRunId: "staff-program-test" });
+  assert.equal(count(database, "academic_year", "id = 'academic-year-2035-36'"), 1, "repeated annual Offering saves reuse the deterministic academic-year shell");
+  await Promise.all([
+    academicYearShellService.ensureAnnualAcademicYearShell(runtime, "2037-10-01", { isTest: 1, testRunId: "staff-program-test" }),
+    academicYearShellService.ensureAnnualAcademicYearShell(runtime, "2037-10-01", { isTest: 1, testRunId: "staff-program-test" }),
+  ]);
+  assert.equal(count(database, "academic_year", "id = 'academic-year-2037-38'"), 1, "concurrent shell resolution cannot create duplicate deterministic years");
+  const shellClass = database.query("SELECT id FROM class_session WHERE academic_year_id = 'academic-year-2035-36' ORDER BY created_at LIMIT 1")[0];
+  await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: shellClass.id });
+  const shellRevision = database.query("SELECT id FROM class_calendar_revision WHERE class_calendar_id IN (SELECT id FROM class_calendar WHERE class_session_id = " + quote(shellClass.id) + ")")[0];
+  assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(shellRevision.id)} AND status = 'no_class'`), 0, "calendar generation without holiday periods has no automatic holiday exclusions");
   await offeringService.saveActivityOffering(runtime, actor("teacher"), {
     kind: "annual_course", annualStageCode: "stage_1", initialClasses: [{ recurrenceKind: "weekly", weeklyWeekday: "Бямба", startTime: "10:00", capacity: 12 }],
   });
@@ -642,6 +675,14 @@ try {
   assert.equal(defaultStartOffering.startsOn, "2028-09-25", "a new annual Offering uses the admin-configured default start date");
   assert.equal(defaultStartOffering.endsOn, "2029-06-01", "annual Offering end remains the derived academic-year compatibility value");
   assert.equal(count(database, "class_session", `activity_offering_id = ${quote(defaultStartOffering.id)} AND status = 'closed'`), 1, "a newly created Offering atomically creates its requested closed class");
+  await service.copyPreviousAcademicYearBreaks(runtime, actor("teacher"), { academicYearId: "year-default-start-test" });
+  const copiedBreak = database.query("SELECT id, starts_on AS startsOn, exclude_from_generation AS excluded, warn_on_overlap AS warned FROM academic_year_break WHERE academic_year_id = 'year-default-start-test' ORDER BY starts_on LIMIT 1")[0];
+  assert.ok(copiedBreak, "a dated shell with no periods can copy prior-year planning as editable rows");
+  const sourceBreak = database.query("SELECT starts_on AS startsOn FROM academic_year_break WHERE academic_year_id = 'year-2026' ORDER BY starts_on LIMIT 1")[0];
+  assert.equal(copiedBreak.startsOn.slice(0, 4), String(Number(sourceBreak.startsOn.slice(0, 4)) + 2), "copied holiday dates use the explicit calendar-year shift for review");
+  const copiedUpdatedAt = database.query(`SELECT updated_at AS updatedAt FROM academic_year_break WHERE id = ${quote(copiedBreak.id)}`)[0].updatedAt;
+  await service.saveAcademicYearBreak(runtime, actor("teacher"), { id: copiedBreak.id, expectedUpdatedAt: copiedUpdatedAt, academicYearId: "year-default-start-test", label: "Засаж шалгасан амралт", startsOn: copiedBreak.startsOn, endsOn: copiedBreak.startsOn, excludeFromGeneration: Boolean(copiedBreak.excluded), warnOnOverlap: Boolean(copiedBreak.warned) });
+  assert.equal(database.query(`SELECT label FROM academic_year_break WHERE id = ${quote(copiedBreak.id)}`)[0].label, "Засаж шалгасан амралт", "copied holiday planning remains editable");
   assert.ok(count(database, "audit_event", "action LIKE 'program_%' OR action LIKE 'calendar_%'") >= 7, "meaningful staff actions are audited");
   const overview = await service.getProgramCalendarOverview(runtime);
   assert.equal(overview.publicSiteFont.font, "sans", "overview keeps the public font setting in its own field");
