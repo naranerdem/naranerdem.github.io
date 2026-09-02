@@ -120,6 +120,16 @@ class FakeD1 {
       return this.result(1);
     }
 
+    if (sql.startsWith("UPDATE outbound_email") && sql.includes("outbox_subject IS NULL")) {
+      const row = this.outboundEmails.get(values[5]);
+      if (!row || row.outboxSubject) return this.result(0);
+      row.sensitivity = values[0];
+      row.outboxSubject = values[1];
+      row.outboxText = values[2];
+      row.bccRecipientsJson = values[3];
+      return this.result(1);
+    }
+
     if (sql.startsWith("UPDATE outbound_email") && sql.includes("status = 'failed'")) {
       const row = this.outboundEmails.get(values[4]);
       if (!row || !["queued", "failed"].includes(row.status)) return this.result(0);
@@ -162,6 +172,14 @@ class FakeD1 {
   first(statement) {
     const sql = statement.sql.replace(/\s+/g, " ").trim();
     const values = statement.bindings;
+    if (sql.includes("FROM outbound_email WHERE id = ?")) {
+      const row = this.outboundEmails.get(values[0]);
+      return row ? {
+        sensitivity: row.sensitivity ?? null,
+        bccRecipientsJson: row.bccRecipientsJson ?? null,
+        outboxSubject: row.outboxSubject ?? null,
+      } : null;
+    }
     if (sql.includes("FROM email_verification_challenge") && sql.includes("WHERE token_hash = ?")) {
       const challenge = [...this.challenges.values()].find((item) => item.tokenHash === values[0]);
       if (!challenge) return null;
@@ -290,7 +308,7 @@ try {
   };
 
   const started = await stagingWorker.fetch(startRequest(" Parent@Example.COM "), stagingEnv(successfulDb));
-  assert.equal(started.status, 202);
+  assert.equal(started.status, 202, await started.text());
   assert.equal(providerCalls.length, 2, "one retry follows an ambiguous network failure");
   assert.equal(providerCalls[0].key, providerCalls[1].key);
   assert.equal(logicalSends.size, 1, "provider idempotency keeps one logical send");

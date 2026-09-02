@@ -79,10 +79,13 @@ export async function startEmailVerification(
   const challengeId = crypto.randomUUID();
   const outboundEmailId = crypto.randomUUID();
   const idempotencyKey = `email-verification/${outboundEmailId}`;
-  const isTest = env.APP_ENV === "staging" ? 1 : 0;
-  const testRunId = isTest
-    ? options.registrationDraftId ? `registration:${options.registrationDraftId}` : `email-verification:${challengeId}`
+  const draftProvenance = options.registrationDraftId
+    ? await env.DB.prepare(`SELECT is_test AS isTest, test_run_id AS testRunId FROM registration_draft WHERE id = ?`)
+      .bind(options.registrationDraftId).first<{ isTest: number; testRunId: string | null }>()
     : null;
+  if (options.registrationDraftId && !draftProvenance) throw new EmailVerificationError("registration_not_found");
+  const isTest = draftProvenance?.isTest ?? (env.APP_ENV === "staging" ? 1 : 0);
+  const testRunId = draftProvenance?.testRunId ?? (isTest ? `email-verification:${challengeId}` : null);
 
   const outboundInsert = env.DB.prepare(`
     INSERT INTO outbound_email (

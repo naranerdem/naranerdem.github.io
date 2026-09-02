@@ -23,6 +23,7 @@
     "export:private-operational-config": "node scripts/export-private-operational-config.mjs",
     "import:private-operational-config": "node scripts/import-private-operational-config.mjs",
     "cleanup:registration:staging": "node scripts/cleanup-staging-registration-tests.mjs",
+    "test:staging-registration-cleanup": "node scripts/staging-registration-cleanup-test.mjs",
     "staff:create": "node scripts/staff-provision.mjs",
     "test:d1:local": "node scripts/d1-local-smoke.mjs",
     "test:api": "npm run build && node scripts/api-worker-test.mjs",

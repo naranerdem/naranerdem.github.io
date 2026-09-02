@@ -71,7 +71,7 @@ export const registrationFormCopy = {
     school: "Сургуулийн нэр",
     returning: "Өмнө нь Наран Эрдэмд сурсан уу?",
     previousStage: "Өмнө дүүргэсэн шат",
-    code: "Код",
+    code: "Урилгын код",
     codePlaceholder: "Байвал оруулна уу",
     stage: "Сургалтын шат",
     stageLabels: {
@@ -126,7 +126,7 @@ export const registrationFormCopy = {
     guardianHeading: "Асран хамгаалагч",
     childHeading: "Хүүхэд, анги",
     paymentHeading: "Төлбөрийн сонголт",
-    codeHeading: "Код",
+    codeHeading: "Урилгын код",
     selectedClassHeading: "Одоогийн сонгосон анги",
     waitlistHeading: "Хүлээлгийн жагсаалт",
     waitlistExplanation: "Энэ анги дүүрсэн тул та хүлээлгийн жагсаалтад орно. Одоо төлбөр төлөхгүй бөгөөд суудал хадгалагдахгүй. Суудал гарвал төвөөс утас, Messenger эсвэл и-мэйлээр холбоо барина. Саналыг зөвшөөрсний дараа төлбөрийн хэлбэрээ сонгож, төлбөр хийх хугацаа эхэлнэ.",

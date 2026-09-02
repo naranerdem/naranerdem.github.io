@@ -29,8 +29,11 @@ export async function registrationCorrectionDetail(env: WorkerEnv, actor: StaffP
     registration_draft_child.gender, registration_draft_child.date_of_birth AS dateOfBirth,
     registration_draft_child.current_grade AS currentGrade, registration_draft_child.current_school AS currentSchool,
     registration_draft_child.facebook_name AS childFacebookName,
-    registration_draft_child.canonical_student_id AS canonicalStudentId
+    registration_draft_child.canonical_student_id AS canonicalStudentId,
+    registration_draft_referral.captured_code AS referralCode,
+    registration_draft_referral.status AS referralStatus
     FROM registration_draft_child INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    LEFT JOIN registration_draft_referral ON registration_draft_referral.registration_draft_child_id = registration_draft_child.id
     WHERE registration_draft_child.id = ?`).bind(childId).first<Record<string, unknown>>();
   if (!row) throw new RegistrationCorrectionError("not_found");
   return row;

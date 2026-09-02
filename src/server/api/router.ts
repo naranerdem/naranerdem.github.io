@@ -253,6 +253,9 @@ function registrationError(caught: unknown): Response {
     if (caught.code === "registration_closed") {
       return error("registration_unavailable", "Энэ сургалтын бүртгэлийн хугацаа хаагдсан байна.", 409);
     }
+    if (caught.code === "invalid_referral_code") {
+      return error("invalid_request", "Урилгын код олдсонгүй. Кодоо шалгаад дахин оролдоно уу.", 400);
+    }
     if (caught.code === "resend_cooldown") {
       return error("invalid_request", "И-мэйлийг дахин илгээхийн өмнө түр хүлээнэ үү.", 429);
     }
@@ -499,7 +502,19 @@ export async function handleApiRequest(
 
     try {
       await verifyTurnstile(env, payload.turnstileToken, request.headers.get("CF-Connecting-IP") ?? undefined);
-      const draft = await createRegistrationDraft(env, payload);
+      const draft = await createRegistrationDraft(env, payload, new Date(), {
+        idempotencyKey: request.headers.get("Idempotency-Key"),
+      });
+      if (!draft.created) {
+        return json({
+          ok: true,
+          emailSent: true,
+          email: draft.email,
+          hasPaymentHold: draft.hasPaymentHold,
+          paymentDeadlineAt: draft.paymentDeadlineAt,
+          replayed: true,
+        }, 202, { "Cache-Control": "no-store" });
+      }
       try {
         await startEmailVerification(env, draft.email, { registrationDraftId: draft.draftId });
         await markRegistrationEmailSent(env.DB, draft.draftId);
@@ -511,7 +526,7 @@ export async function handleApiRequest(
           email: draft.email,
           hasPaymentHold: draft.hasPaymentHold,
           paymentDeadlineAt: draft.paymentDeadlineAt,
-        }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie });
+        }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie! });
       }
       return json({
         ok: true,
@@ -519,7 +534,7 @@ export async function handleApiRequest(
         email: draft.email,
         hasPaymentHold: draft.hasPaymentHold,
         paymentDeadlineAt: draft.paymentDeadlineAt,
-      }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie });
+      }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie! });
     } catch (caught) {
       return registrationError(caught);
     }

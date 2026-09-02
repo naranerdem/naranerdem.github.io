@@ -1,6 +1,7 @@
 import { sha256 } from "../auth/crypto";
 import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
+import { ensureEnrollmentReferralCode } from "./referral-codes";
 
 type ResolutionStatus = "promoted" | "needs_identity_review" | "needs_guardian_review" | "not_eligible" | "failed";
 
@@ -62,6 +63,13 @@ interface StudentRow {
   givenName: string;
   gender: "female" | "male" | "not_specified";
   dateOfBirth: string;
+}
+
+interface DraftReferralRow {
+  capturedCode: string;
+  referringEnrollmentId: string;
+  referringStudentId: string;
+  referringGuardianId: string;
 }
 
 interface ReviewRow {
@@ -154,14 +162,15 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
     WHERE registration_draft_child.id = ?`).bind(childId).first<PromotionRow>();
 }
 
-async function linkedStudents(database: D1Database, guardianId: string): Promise<StudentRow[]> {
+async function linkedStudents(database: D1Database, guardianId: string, isTest: number): Promise<StudentRow[]> {
   const result = await database.prepare(`SELECT student.id, student.surname, student.given_name AS givenName,
     student.gender, student.date_of_birth AS dateOfBirth
     FROM guardian_student_relationship
     INNER JOIN student ON student.id = guardian_student_relationship.student_id
     WHERE guardian_student_relationship.guardian_id = ?
-      AND guardian_student_relationship.status = 'active' AND student.status = 'active'`)
-    .bind(guardianId).all<StudentRow>();
+      AND guardian_student_relationship.status = 'active' AND student.status = 'active'
+      AND guardian_student_relationship.is_test = ? AND student.is_test = ?`)
+    .bind(guardianId, isTest, isTest).all<StudentRow>();
   return result.results;
 }
 
@@ -176,29 +185,44 @@ function exactStudents(rows: StudentRow[], row: PromotionRow): StudentRow[] {
 
 async function globalExactStudents(database: D1Database, row: PromotionRow): Promise<StudentRow[]> {
   const result = await database.prepare(`SELECT id, surname, given_name AS givenName, gender, date_of_birth AS dateOfBirth
-    FROM student WHERE date_of_birth = ? AND gender = ? AND status = 'active'`).bind(row.dateOfBirth, row.gender).all<StudentRow>();
+    FROM student WHERE date_of_birth = ? AND gender = ? AND status = 'active' AND is_test = ?`)
+    .bind(row.dateOfBirth, row.gender, row.childIsTest).all<StudentRow>();
   return exactStudents(result.results, row);
 }
 
 async function resolveGuardian(database: D1Database, row: PromotionRow): Promise<{ guardianId: string } | { needsReview: true }> {
   if (row.canonicalGuardianId) {
-    const guardian = await database.prepare("SELECT id, status FROM guardian_account WHERE id = ?")
-      .bind(row.canonicalGuardianId).first<GuardianRow>();
+    const guardian = await database.prepare("SELECT id, status FROM guardian_account WHERE id = ? AND is_test = ?")
+      .bind(row.canonicalGuardianId, row.draftIsTest).first<GuardianRow>();
     return guardian?.status === "active" ? { guardianId: guardian.id } : { needsReview: true };
   }
   // An unverified address is contact information, not identity authority. Keep
   // the paid enrollment on a distinct guardian record until a verified channel
   // can support a later reconciliation flow.
   if (!row.verifiedAt) return { guardianId: `${row.draftId}:unverified-guardian` };
-  const guardians = (await database.prepare(`SELECT id, status FROM guardian_account WHERE email_normalized = ?`)
-    .bind(row.normalizedEmail).all<GuardianRow>()).results;
+  const guardians = (await database.prepare(`SELECT id, status FROM guardian_account
+    WHERE email_normalized = ? AND is_test = ?`).bind(row.normalizedEmail, row.draftIsTest).all<GuardianRow>()).results;
   if (guardians.length === 0) return { guardianId: `guardian:${await sha256(row.normalizedEmail)}` };
   if (guardians.length === 1 && guardians[0].status === "active") return { guardianId: guardians[0].id };
   return { needsReview: true };
 }
 
-async function existingGuardian(database: D1Database, guardianId: string): Promise<boolean> {
-  return Boolean(await database.prepare("SELECT 1 AS value FROM guardian_account WHERE id = ?").bind(guardianId).first());
+async function existingGuardian(database: D1Database, guardianId: string, isTest: number): Promise<boolean> {
+  return Boolean(await database.prepare("SELECT 1 AS value FROM guardian_account WHERE id = ? AND is_test = ?")
+    .bind(guardianId, isTest).first());
+}
+
+async function capturedReferral(database: D1Database, childId: string): Promise<DraftReferralRow | null> {
+  return database.prepare(`SELECT registration_draft_referral.captured_code AS capturedCode,
+    registration_draft_referral.referring_enrollment_id AS referringEnrollmentId,
+    enrollment_referral_code.student_id AS referringStudentId,
+    pre_registration.guardian_id AS referringGuardianId
+    FROM registration_draft_referral
+    INNER JOIN enrollment_referral_code ON enrollment_referral_code.id = registration_draft_referral.referral_code_id
+    INNER JOIN enrollment ON enrollment.id = registration_draft_referral.referring_enrollment_id
+    INNER JOIN application_child ON application_child.id = enrollment.application_child_id
+    INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
+    WHERE registration_draft_referral.registration_draft_child_id = ?`).bind(childId).first<DraftReferralRow>();
 }
 
 export async function promotePaidDraftChild(
@@ -211,7 +235,12 @@ export async function promotePaidDraftChild(
   if (!hasStaffCapability(actor, "payment.manage")) throw new CanonicalPromotionError("forbidden");
   const row = await rowForChild(env.DB, draftChildId);
   if (!row) throw new CanonicalPromotionError("not_found");
-  if (row.canonicalEnrollmentId) return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
+  if (row.canonicalEnrollmentId) {
+    if (!row.canonicalStudentId) throw new CanonicalPromotionError("conflict");
+    await ensureEnrollmentReferralCode(env.DB, row.canonicalEnrollmentId, row.canonicalStudentId,
+      { isTest: row.childIsTest, testRunId: row.childTestRunId }, new Date().toISOString());
+    return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
+  }
   const now = nowDate.toISOString();
   if ((!row.initialInstallmentPaid && !row.partialSeatApproved) || !row.selectedClassSessionId || !row.activeInitialHold) {
     await env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'not_eligible',
@@ -231,7 +260,7 @@ export async function promotePaidDraftChild(
     ]);
     return { state: "needs_guardian_review" };
   }
-  const guardianAlreadyExists = await existingGuardian(env.DB, guardian.guardianId);
+  const guardianAlreadyExists = await existingGuardian(env.DB, guardian.guardianId, row.draftIsTest);
 
   const guardianInsert = () => env.DB.prepare(`INSERT OR IGNORE INTO guardian_account (
     id, full_name, primary_phone, primary_phone_normalized, secondary_phone, secondary_phone_normalized,
@@ -259,7 +288,7 @@ export async function promotePaidDraftChild(
     createStudent = true;
     createRelationship = true;
   } else if (!studentId) {
-    const candidates = exactStudents(await linkedStudents(env.DB, guardian.guardianId), row);
+    const candidates = exactStudents(await linkedStudents(env.DB, guardian.guardianId, row.childIsTest), row);
     if (candidates.length === 1) {
       studentId = candidates[0].id;
     } else if (candidates.length > 1 || row.returningStatus === "returning") {
@@ -286,6 +315,8 @@ export async function promotePaidDraftChild(
   const applicationChildId = row.canonicalApplicationChildId || `${row.childId}:application`;
   const enrollmentId = `${row.childId}:enrollment`;
   const grade = integerGrade(row.currentGrade);
+  const referral = await capturedReferral(env.DB, row.childId);
+  const sameFamilyReferral = Boolean(referral && (referral.referringStudentId === studentId || referral.referringGuardianId === guardian.guardianId));
   const statements: D1PreparedStatement[] = [];
   if (!guardianAlreadyExists) {
     statements.push(guardianInsert());
@@ -352,12 +383,28 @@ export async function promotePaidDraftChild(
       { guardianId: guardian.guardianId, studentId, enrollmentId, identityResolution: resolution },
       row.childIsTest, row.childTestRunId, now),
   );
+  if (referral) {
+    statements.push(
+      env.DB.prepare(`INSERT OR IGNORE INTO referral (
+        id, referral_code, referring_enrollment_id, referring_student_id, referred_application_child_id,
+        status, qualification_reason, qualified_at, is_test, test_run_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`)
+        .bind(`${row.childId}:referral`, referral.capturedCode, referral.referringEnrollmentId, referral.referringStudentId,
+          applicationChildId, sameFamilyReferral ? "disqualified" : "pending", sameFamilyReferral ? "same_family" : null,
+          row.childIsTest, row.childTestRunId, now, now),
+      env.DB.prepare(`UPDATE registration_draft_referral SET status = ?, disqualification_reason = ?, updated_at = ?
+        WHERE registration_draft_child_id = ?`).bind(sameFamilyReferral ? "disqualified" : "promoted",
+        sameFamilyReferral ? "same_family" : null, now, row.childId),
+    );
+  }
   await env.DB.batch(statements);
   const promoted = await env.DB.prepare(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child
     WHERE id = ? AND promotion_status = 'promoted'`).bind(row.childId).first<{ enrollmentId: string }>();
   if (!promoted?.enrollmentId) {
     throw new CanonicalPromotionError("conflict");
   }
+  await ensureEnrollmentReferralCode(env.DB, promoted.enrollmentId, studentId,
+    { isTest: row.childIsTest, testRunId: row.childTestRunId }, now);
   return { state: "promoted", enrollmentId: promoted.enrollmentId };
 }
 

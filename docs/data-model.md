@@ -35,10 +35,12 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `academic_year_stage_setting`: legacy 0009 annual Facebook setting retained for compatibility/history; new operational writes use `activity_offering.facebook_group_url`.
 - `annual_course_start_default`: one typed singleton month/day rule for the editable default start date of a new annual Offering; it is admin-managed, audited, and deliberately not a general key/value settings table.
 - `pre_registration`: yearly/transactional parent application before confirmed enrollment. One pre-registration may contain multiple children and, after canonical promotion, preserves accepted parent/student rule-version IDs.
-- `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, optional generic `code_input`, payment-plan choice, and one selected concrete `class_session`.
+- `application_child`: child-specific portion of a pre-registration, including current school, grade, returning/new status, captured received-code text, payment-plan choice, and one selected concrete `class_session`.
 - `enrollment`: initial seat-hold and confirmed-enrollment foundation, including original/effective hold deadlines and lifecycle timestamps.
 - `waitlist_entry`: one FIFO queue entry for one concrete class, with future offer/expiry fields.
-- `referral`: explicit referral identity connecting a referring child/enrollment to a referred application child, with pending/qualified state only.
+- `enrollment_referral_code`: one opaque, shareable, case-insensitive referral code owned by one confirmed enrollment/student. It contains no PII and is active only after confirmation.
+- `registration_draft_referral`: validated referral capture for one accepted draft child, retaining the specific referring enrollment and code until promotion.
+- `referral`: canonical referral identity connecting a referring child/enrollment to a referred application child, with pending/qualified/disqualified state. Capture itself does not calculate a discount.
 - `outbound_email`: authoritative milestone email queue/delivery record, including intended/actual recipients, provider status, provider message ID, stable idempotency key, compact failure code, and (from migration 0035) a server-sanitized historical Outbox subject/text snapshot plus archive-BCC metadata. Raw bearer links and tokens are never stored for Outbox display.
 - `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, configurable registration-confirmation expiry (currently 24 hours), linked outbound email, and test provenance. It never stores the raw magic-link token.
 - `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
@@ -86,7 +88,7 @@ Most operational tables include:
 - `is_test`
 - `test_run_id`
 
-Staging naturally contains test data, but test provenance is still useful for cleanup, analytics exclusion, and future production smoke tests.
+Staging naturally contains test data, but test provenance is still useful for cleanup, analytics exclusion, and future production smoke tests. It is record provenance, not an environment switch: ordinary non-test-like staging configuration and its accepted registrations remain non-test, while explicit fixtures and their descendants remain test.
 
 `is_test` must never mean "skip workflow logic." Staging and production smoke tests should exercise the same registration, hold, waitlist, tuition, reminder, email-generation, and teacher/admin workflows as real data. Production smoke-test records should eventually use dedicated test class/session data so they cannot consume real family seats.
 

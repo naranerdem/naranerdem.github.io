@@ -208,6 +208,7 @@ const formCopy = registrationFormCopy;
       const studentDialog = document.getElementById("student-rules-dialog");
       const stageLabels = formCopy.child.stageLabels;
       const initialStage = initialStageSelection(window.location.search);
+      const initialReferralCode = new URLSearchParams(window.location.search).get("ref")?.trim() || "";
       let childCount = 0;
       let catalog = null;
       let catalogState = "loading";
@@ -220,6 +221,7 @@ const formCopy = registrationFormCopy;
       let turnstileToken = "";
       let turnstileWidgetId = null;
       let guardianPrefill = null;
+      let submissionIdempotencyKey = "";
 
       function escapeText(value) {
         return String(value)
@@ -514,7 +516,7 @@ const formCopy = registrationFormCopy;
               </div>
             </fieldset>
             <label data-previous-stage-field hidden><span>${formCopy.child.previousStage} ${requiredMarker()}</span><select name="child-${index}-previous-stage" data-child-previous-stage disabled><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.previousStageOptions.map(optionHtml).join("")}</select></label>
-            <label><span>${formCopy.child.code}</span><input name="child-${index}-code" data-child-code autocomplete="off" placeholder="${formCopy.child.codePlaceholder}"></label>
+            <label><span>${formCopy.child.code}</span><input name="child-${index}-code" data-child-code autocomplete="off" value="${escapeText(initialReferralCode)}" placeholder="${formCopy.child.codePlaceholder}"></label>
           </div>
           <div class="class-picker">
             <label class="stage-field"><span>${formCopy.child.stage} ${requiredMarker()}</span><select name="child-${index}-stage" data-child-stage required><option value="">${formCopy.selectPlaceholder}</option>${stageOptions()}</select></label>
@@ -792,7 +794,7 @@ const formCopy = registrationFormCopy;
               : child.initialPaymentAmountMnt ? `<span>Одоо төлөх: <strong>${escapeText(formatMnt(child.initialPaymentAmountMnt))}</strong>${child.secondPaymentAmountMnt ? `<br>Дараагийн төлбөр: ${escapeText(formatMnt(child.secondPaymentAmountMnt))} · ${escapeText(formatLocalDate(child.secondPaymentDueOn))}` : ""}</span>` : "";
             const facebook = child.canonicalEnrollmentStatus === "confirmed"
               ? `<span>${child.offeringFacebookGroupUrl ? `<a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэгт нэгдэх</a><br>` : ""}Хүүхэд Facebook хаягтай бол мөн бүлэгт нэгдэж болно.</span>` : "";
-            return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
+            return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${classStatusText(child)}</span>${child.referralCode ? `<span>Найзаа урих код: <strong>${escapeText(child.referralCode)}</strong></span>` : ""}${child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
           showResult(hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : status.verifiedAt ? (alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle) : "Бүртгэлийн мэдээллийг хүлээн авлаа.", `
             ${hasPaymentHold ? `<p class="status-emphasis">${escapeText(formCopy.messages.paymentHold)}</p>` : ""}
@@ -921,9 +923,14 @@ const formCopy = registrationFormCopy;
         finishButton.textContent = formCopy.messages.submitting;
         turnstileMessage.textContent = "";
         try {
+          if (!submissionIdempotencyKey) submissionIdempotencyKey = crypto.randomUUID();
           const response = await fetch("/api/registration/submit", {
             method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              "Idempotency-Key": submissionIdempotencyKey,
+            },
             credentials: "same-origin",
             body: JSON.stringify(registrationPayload()),
           });

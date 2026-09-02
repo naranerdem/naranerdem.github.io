@@ -167,7 +167,7 @@ function submission(classId, waitlistId, children = 1, paymentPlanCode = "single
       selectedStageCode: "stage_1",
       selectedClassSessionId: classId || undefined,
       preferredWaitlistClassSessionId: waitlistId || undefined,
-      codeInput: "ANY-CODE",
+      codeInput: "",
       paymentPlanCode: classId ? paymentPlanCode : undefined,
     })),
     parentRulesAcknowledged: true,
@@ -632,6 +632,78 @@ try {
     TURNSTILE_SITE_KEY: "production-site-key",
     TURNSTILE_SECRET_KEY: "production-secret",
   })), true, "production reaches the normal registration path only with its reviewed gate and real Turnstile configuration");
+
+  database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, created_at, updated_at)
+    VALUES ('year-production', 'Бодит жил', 'closed', 1, 0, ?, ?),
+      ('year-production-outside', 'Өөр бодит жил', 'closed', 0, 0, ?, ?);
+    INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, created_at, updated_at)
+    VALUES ('offering-production', 'annual_course', 'Бодит сургалт', 'year-production', 'stage_1', 1, 'paid', 'active', 0, ?, ?),
+      ('offering-production-outside', 'annual_course', 'Хаалттай цонхтой', 'year-production-outside', 'stage_1', 1, 'paid', 'active', 0, ?, ?);
+    INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, created_at, updated_at)
+    VALUES ('class-production', 'offering-production', 'year-production', 'stage_1', 'Бодит анги', 'Бямба', '09:00', '10:20', 2, 'available', 0, 0, ?, ?),
+      ('class-production-closed', 'offering-production', 'year-production', 'stage_1', 'Бодит хаалттай анги', 'Бямба', '11:00', '12:20', 2, 'closed', 0, 0, ?, ?),
+      ('class-production-outside', 'offering-production-outside', 'year-production-outside', 'stage_1', 'Цонхны гаднах анги', 'Бямба', '13:00', '14:20', 2, 'available', 0, 0, ?, ?);
+    INSERT INTO offering_course_pricing (activity_offering_id, one_time_amount_mnt, two_installment_enabled, created_at, updated_at)
+    VALUES ('offering-production', 800000, 0, ?, ?), ('offering-production-outside', 800000, 0, ?, ?);
+    INSERT INTO registration_window (id, name, starts_on, ends_on, is_test, created_at, updated_at)
+    VALUES ('window-production', 'Бодит бүртгэл', '2026-08-01', '2026-08-31', 0, ?, ?);
+    INSERT INTO registration_window_offering (registration_window_id, activity_offering_id, created_at)
+    VALUES ('window-production', 'offering-production', ?);
+    INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, created_at, updated_at)
+    VALUES ('referrer-guardian', 'Уригч асран', '99110000', '99110000', 'referrer@example.test', 'referrer@example.test', 'Тест хаяг', 'active', 0, ?, ?);
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, created_at, updated_at)
+    VALUES ('referrer-student', 'Уригч', 'Хүүхэд', 'female', '2014-01-01', 'active', 0, ?, ?);
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, created_at, updated_at)
+    VALUES ('referrer-pre-registration', 'referrer-guardian', 'year-production', 'completed', 0, ?, ?);
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, selected_class_session_id, status, is_test, created_at, updated_at)
+    VALUES ('referrer-application', 'referrer-pre-registration', 'referrer-student', 5, 'new', 'class-production', 'enrolled', 0, ?, ?);
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, created_at, updated_at)
+    VALUES ('referrer-enrollment', 'referrer-application', 'referrer-student', 'year-production', 'class-production', 'confirmed', ?, 0, ?, ?);
+    INSERT INTO enrollment_referral_code (id, enrollment_id, student_id, code, status, activated_at, is_test, created_at, updated_at)
+    VALUES ('referrer-code', 'referrer-enrollment', 'referrer-student', 'NE-REF2345', 'active', ?, 0, ?, ?);`,
+  Array.from({ length: 35 }, () => iso()));
+  const productionEnabled = env(database, {
+    APP_ENV: "production", REGISTRATION_WRITE_ENABLED: "true", EMAIL_ENABLED: "false", AUTH_EMAIL_ENABLED: "false",
+    TURNSTILE_SITE_KEY: "production-site-key", TURNSTILE_SECRET_KEY: "production-secret",
+  });
+  const productionSubmission = submission("class-production");
+  productionSubmission.children[0].codeInput = "ne-ref2345";
+  const productionIdempotencyKey = "registration-test-idempotency-key";
+  const acceptedProductionDraft = await createRegistrationDraft(productionEnabled, productionSubmission, new Date(iso(-2)), {
+    idempotencyKey: productionIdempotencyKey,
+  });
+  assert.equal(acceptedProductionDraft.hasPaymentHold, true, "a production-like non-test class accepts through the same guarded service");
+  assert.equal(count(database, "registration_draft", `id = '${acceptedProductionDraft.draftId}' AND is_test = 0`), 1, "accepted production draft is not test provenance");
+  assert.equal(count(database, "registration_draft_child", `registration_draft_id = '${acceptedProductionDraft.draftId}' AND is_test = 0`), 1);
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${acceptedProductionDraft.draftId}') AND is_test = 0 AND status = 'active'`), 1);
+  assert.equal(count(database, "payment_request", `registration_draft_id = '${acceptedProductionDraft.draftId}' AND is_test = 0`), 1);
+  assert.equal(count(database, "payment_installment", `payment_request_id = (SELECT id FROM payment_request WHERE registration_draft_id = '${acceptedProductionDraft.draftId}') AND is_test = 0`), 1);
+  assert.equal(count(database, "registration_draft_referral", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${acceptedProductionDraft.draftId}')`), 1, "a valid active code is captured canonically at acceptance");
+  const retriedProductionDraft = await createRegistrationDraft(productionEnabled, productionSubmission, new Date(iso(-2)), {
+    idempotencyKey: productionIdempotencyKey,
+  });
+  assert.equal(retriedProductionDraft.created, false, "a repeated submission key returns the existing registration");
+  assert.equal(retriedProductionDraft.draftId, acceptedProductionDraft.draftId);
+  assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-production' AND status = 'active'"), 1,
+    "an idempotent retry does not reserve a second seat");
+  await assert.rejects(createRegistrationDraft(productionEnabled, submission("class-roomy"), new Date(iso(-2))),
+    (error) => error.code === "invalid_class", "production rejects an attacker-supplied test fixture class");
+  await assert.rejects(createRegistrationDraft(productionEnabled, submission("class-production-closed"), new Date(iso(-2))),
+    (error) => error.code === "invalid_class", "production rejects a closed class server-side");
+  await assert.rejects(createRegistrationDraft(productionEnabled, submission("class-production-outside"), new Date(iso(-2))),
+    (error) => error.code === "registration_closed", "production rejects a class outside its active registration window");
+  const invalidReferral = submission("class-production"); invalidReferral.children[0].codeInput = "NE-NOTFOUND";
+  await assert.rejects(createRegistrationDraft(productionEnabled, invalidReferral, new Date(iso(-2))),
+    (error) => error.code === "invalid_referral_code", "an invalid referral code is rejected for correction rather than stored as a relationship");
+  database.query("UPDATE enrollment_referral_code SET status = 'inactive' WHERE id = 'referrer-code'");
+  const inactiveReferral = submission("class-production"); inactiveReferral.children[0].codeInput = "NE-REF2345";
+  await assert.rejects(createRegistrationDraft(productionEnabled, inactiveReferral, new Date(iso(-2))),
+    (error) => error.code === "invalid_referral_code", "an inactive referral code cannot be captured");
+  database.query("UPDATE enrollment_referral_code SET status = 'active' WHERE id = 'referrer-code'");
+  database.query("UPDATE enrollment SET status = 'awaiting_initial_payment' WHERE id = 'referrer-enrollment'");
+  const unconfirmedReferral = submission("class-production"); unconfirmedReferral.children[0].codeInput = "NE-REF2345";
+  await assert.rejects(createRegistrationDraft(productionEnabled, unconfirmedReferral, new Date(iso(-2))),
+    (error) => error.code === "invalid_referral_code", "a code cannot be used until its source enrollment is confirmed");
 
   let siteverifyCalls = 0;
   globalThis.fetch = async (_url, init) => {

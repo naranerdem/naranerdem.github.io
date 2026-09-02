@@ -8,6 +8,7 @@ import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-wi
 import { assertCourseRuleVersions, PublicContentError } from "../staff/public-content";
 import { getInitialPaymentDeadlineSettingFromDatabase } from "../staff/initial-payment-deadline";
 import { getPaymentReminderSetting } from "../staff/payment-reminders";
+import { activeReferralCodes, normalizeReferralCode, type RegistrationProvenance } from "./referral-codes";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -48,11 +49,19 @@ export interface RegistrationSubmissionInput {
   turnstileToken: string;
 }
 
+export interface RegistrationSubmissionOptions {
+  idempotencyKey?: string | null;
+}
+
 interface ClassRow {
   id: string;
   academicYearId: string;
   stageCode: StageCode;
   status: string;
+  academicYearIsTest: number;
+  offeringIsTest: number;
+  classIsTest: number;
+  classIsTestOnly: number;
   registrationWindowActive: number;
   offeringId: string | null;
   oneTimeAmountMnt: number | null;
@@ -116,6 +125,11 @@ function changeCount(result: D1Result<unknown> | undefined): number {
 
 function clean(value: unknown, max: number): string {
   return typeof value === "string" ? value.normalize("NFKC").trim().slice(0, max) : "";
+}
+
+function normalizedIdempotencyKey(value: string | null | undefined): string | null {
+  const key = clean(value, 120);
+  return /^[A-Za-z0-9._:-]{16,120}$/.test(key) ? key : null;
 }
 
 function validDate(value: string): boolean {
@@ -234,7 +248,21 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
   return { ...input, guardian, children };
 }
 
-async function loadChosenClasses(database: D1Database, ids: string[], localDate: string): Promise<ClassRow[]> {
+function sourceProvenance(classes: ClassRow[], environment: WorkerEnv["APP_ENV"]): RegistrationProvenance {
+  const first = classes[0];
+  if (!first) throw new RegistrationSubmissionError("invalid_class");
+  const sourceFlagsAreConsistent = (item: ClassRow) => item.academicYearIsTest === item.offeringIsTest
+    && item.offeringIsTest === item.classIsTest
+    && item.classIsTestOnly === item.classIsTest;
+  if (classes.some((item) => !sourceFlagsAreConsistent(item))) throw new RegistrationSubmissionError("invalid_class");
+  const isTest = first.classIsTest;
+  if (classes.some((item) => item.classIsTest !== isTest)) throw new RegistrationSubmissionError("mixed_class_provenance");
+  if (environment === "production" && isTest) throw new RegistrationSubmissionError("invalid_class");
+  return { isTest, testRunId: null };
+}
+
+async function loadChosenClasses(env: WorkerEnv, ids: string[], localDate: string): Promise<ClassRow[]> {
+  const { DB: database } = env;
   const uniqueIds = [...new Set(ids.filter(Boolean))];
   if (!uniqueIds.length) return [];
   const placeholders = uniqueIds.map(() => "?").join(", ");
@@ -243,6 +271,10 @@ async function loadChosenClasses(database: D1Database, ids: string[], localDate:
       class_session.academic_year_id AS academicYearId,
       class_session.stage_code AS stageCode,
       class_session.status AS status,
+      academic_year.is_test AS academicYearIsTest,
+      offering.is_test AS offeringIsTest,
+      class_session.is_test AS classIsTest,
+      class_session.is_test_only AS classIsTestOnly,
       class_session.activity_offering_id AS offeringId,
       CASE WHEN ${activeWindowForOfferingSql("offering.id")} THEN 1 ELSE 0 END AS registrationWindowActive,
       pricing.one_time_amount_mnt AS oneTimeAmountMnt,
@@ -256,9 +288,11 @@ async function loadChosenClasses(database: D1Database, ids: string[], localDate:
       AND offering.kind IN ('annual_course', 'summer_course') AND offering.status = 'active'
     LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
     WHERE class_session.id IN (${placeholders})
-      AND class_session.is_test = 1
-      AND class_session.is_test_only = 1
-  `).bind(localDate, localDate, ...uniqueIds).all<ClassRow>();
+      AND (? != 'production' OR (
+        academic_year.is_test = 0 AND offering.is_test = 0
+        AND class_session.is_test = 0 AND class_session.is_test_only = 0
+      ))
+  `).bind(localDate, localDate, ...uniqueIds, env.APP_ENV).all<ClassRow>();
   if (result.results.length !== uniqueIds.length) throw new RegistrationSubmissionError("invalid_class");
   return result.results;
 }
@@ -326,7 +360,7 @@ export const acquireAllRequestedSeatsSql = `
   )
   SELECT registration_draft_child.id || ':hold', registration_draft_child.id,
     registration_draft_child.selected_class_session_id,
-    'initial_payment', 'active', ?, 1,
+    'initial_payment', 'active', ?, registration_draft_child.is_test,
     registration_draft_child.test_run_id, ?, ?
   FROM registration_draft_child
   WHERE registration_draft_child.registration_draft_id = ?
@@ -338,9 +372,11 @@ export async function createRegistrationDraft(
   env: WorkerEnv,
   rawInput: RegistrationSubmissionInput,
   nowDate = new Date(),
+  options: RegistrationSubmissionOptions = {},
 ) {
   if (!registrationWriteEnabled(env)) throw new RegistrationSubmissionError("disabled");
   const input = validateSubmission(rawInput);
+  const idempotencyKey = normalizedIdempotencyKey(options.idempotencyKey);
   const parentRulesVersion = clean(input.parentRulesVersion, 120) || rulesContent.parent.version;
   const studentRulesVersion = clean(input.studentRulesVersion, 120) || rulesContent.student.version;
   try { await assertCourseRuleVersions(env, parentRulesVersion, studentRulesVersion); }
@@ -349,15 +385,16 @@ export async function createRegistrationDraft(
     child.selectedClassSessionId ?? "",
     child.preferredWaitlistClassSessionId ?? "",
   ]);
-  const classes = await loadChosenClasses(env.DB, classIds, mongoliaCivilDate(nowDate));
+  const classes = await loadChosenClasses(env, classIds, mongoliaCivilDate(nowDate));
   const classById = new Map(classes.map((item) => [item.id, item]));
   const yearIds = new Set(classes.map((item) => item.academicYearId));
-  if (yearIds.size !== 1 || classes.some((item) => item.status === "closed" || item.status === "cancelled")) {
+  if (yearIds.size !== 1 || classes.some((item) => !["available", "full"].includes(item.status))) {
     throw new RegistrationSubmissionError("invalid_class");
   }
   if (classes.some((item) => item.registrationWindowActive !== 1)) {
     throw new RegistrationSubmissionError("registration_closed");
   }
+  const provenance = sourceProvenance(classes, env.APP_ENV);
   for (const child of input.children) {
     for (const id of [child.selectedClassSessionId, child.preferredWaitlistClassSessionId]) {
       if (id && classById.get(id)?.stageCode !== child.selectedStageCode) {
@@ -381,6 +418,15 @@ export async function createRegistrationDraft(
     throw new RegistrationSubmissionError("invalid_payment_plan");
   });
 
+  const referralCodes = await activeReferralCodes(env.DB, input.children.map((child) => child.codeInput ?? ""), provenance);
+  const referrals = input.children.map((child) => {
+    const code = normalizeReferralCode(child.codeInput);
+    if (!code) return null;
+    const referral = referralCodes.get(code);
+    if (!referral) throw new RegistrationSubmissionError("invalid_referral_code");
+    return referral;
+  });
+
   const now = nowDate.toISOString();
   const paymentDeadline = await getInitialPaymentDeadlineSettingFromDatabase(env.DB);
   const paymentReminder = await getPaymentReminderSetting(env);
@@ -388,7 +434,7 @@ export async function createRegistrationDraft(
   const initialReminderAt = addSeconds(nowDate, (paymentDeadline.deadlineMinutes - paymentReminder.initialReminderLeadMinutes) * 60);
   const expiresAt = addSeconds(nowDate, REGISTRATION_DRAFT_TTL_SECONDS);
   const draftId = crypto.randomUUID();
-  const testRunId = `registration:${draftId}`;
+  const testRunId = provenance.isTest ? `registration:${draftId}` : null;
   const rawAccessToken = randomToken();
   const accessTokenHash = await sha256(rawAccessToken);
   const normalizedEmail = normalizeEmail(input.guardian.email);
@@ -398,20 +444,52 @@ export async function createRegistrationDraft(
   const reference = await unusedPaymentReference(env.DB);
   const description = await transferDescription(env.DB, input.children[0]?.givenName || "Хүүхэд", input.guardian.primaryPhone);
 
+  async function existingIdempotentDraft() {
+    if (!idempotencyKey) return null;
+    return env.DB.prepare(`SELECT registration_draft.id AS draftId,
+      registration_draft.email AS email,
+      MAX(CASE WHEN registration_capacity_hold.status = 'active'
+        AND registration_capacity_hold.hold_type = 'initial_payment'
+        THEN registration_capacity_hold.deadline_at ELSE NULL END) AS paymentDeadlineAt
+      FROM registration_draft
+      LEFT JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
+      LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+      WHERE registration_draft.submission_idempotency_key = ?
+      GROUP BY registration_draft.id`).bind(idempotencyKey).first<{
+      draftId: string;
+      email: string;
+      paymentDeadlineAt: string | null;
+    }>();
+  }
+
+  const existing = await existingIdempotentDraft();
+  if (existing) {
+    return {
+      draftId: existing.draftId,
+      email: existing.email,
+      normalizedEmail: normalizeEmail(existing.email),
+      hasPaymentHold: Boolean(existing.paymentDeadlineAt),
+      paymentDeadlineAt: existing.paymentDeadlineAt,
+      paymentReference: null,
+      accessCookie: null,
+      created: false,
+    };
+  }
+
   const statements = [env.DB.prepare(`
     INSERT INTO registration_draft (
       id, access_token_hash, academic_year_id, guardian_full_name,
       guardian_relationship, primary_phone, secondary_phone, email,
       normalized_email, facebook_name, home_address, payment_plan_code,
       parent_rules_version, student_rules_version, status, expires_at,
-      is_test, test_run_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_initial_payment', ?, 1, ?, ?, ?)
+      submission_idempotency_key, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_initial_payment', ?, ?, ?, ?, ?, ?)
   `).bind(
     draftId, accessTokenHash, [...yearIds][0], input.guardian.fullName,
     input.guardian.relationship, input.guardian.primaryPhone, input.guardian.secondaryPhone || null,
     input.guardian.email, normalizedEmail, input.guardian.facebookName || null,
     input.guardian.homeAddress, "per_child", parentRulesVersion,
-    studentRulesVersion, expiresAt, testRunId, now, now,
+    studentRulesVersion, expiresAt, idempotencyKey, provenance.isTest, testRunId, now, now,
   )];
 
   input.children.forEach((child, index) => {
@@ -423,17 +501,29 @@ export async function createRegistrationDraft(
         preferred_waitlist_class_session_id, code_input, payment_plan_code,
         initial_payment_amount_mnt, second_payment_amount_mnt, second_payment_due_on, status, is_test,
         test_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)
     `).bind(
       childIds[index], draftId, index, child.surname, child.givenName, child.gender,
       child.dateOfBirth, child.currentGrade, child.currentSchool || null, child.facebookName || null,
       child.returningStatus, child.previousStageCode || null, child.selectedStageCode,
       child.selectedClassSessionId || null, child.preferredWaitlistClassSessionId || null,
       child.codeInput || null, paymentSnapshots[index]?.code ?? null, paymentSnapshots[index]?.initial ?? null,
-      paymentSnapshots[index]?.second ?? null, paymentSnapshots[index]?.due ?? null, testRunId, now, now,
+      paymentSnapshots[index]?.second ?? null, paymentSnapshots[index]?.due ?? null,
+      provenance.isTest, testRunId, now, now,
     ));
   });
 
+  referrals.forEach((referral, index) => {
+    if (!referral) return;
+    statements.push(env.DB.prepare(`INSERT INTO registration_draft_referral (
+      registration_draft_child_id, referral_code_id, referring_enrollment_id,
+      captured_code, status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'captured', ?, ?, ?, ?)`)
+      .bind(childIds[index], referral.id, referral.enrollmentId, referral.code,
+        provenance.isTest, testRunId, now, now));
+  });
+
+  const seatHoldStatementIndex = statements.length;
   statements.push(env.DB.prepare(acquireAllRequestedSeatsSql).bind(
     draftId, now, paymentDeadlineAt, now, now, draftId,
   ));
@@ -451,7 +541,7 @@ export async function createRegistrationDraft(
     INSERT OR IGNORE INTO registration_draft_waitlist_entry (
       id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at
     ) SELECT registration_draft_child.id || ':waitlist', registration_draft_child.id,
-      registration_draft_child.preferred_waitlist_class_session_id, 'active', 1,
+      registration_draft_child.preferred_waitlist_class_session_id, 'active', registration_draft_child.is_test,
       registration_draft_child.test_run_id, ?, ?
     FROM registration_draft_child
     INNER JOIN class_session ON class_session.id = registration_draft_child.preferred_waitlist_class_session_id
@@ -489,8 +579,26 @@ export async function createRegistrationDraft(
       AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
   `).bind(paymentRequestId, paymentReminder.laterReminderLeadMinutes, paymentReminder.laterReminderLeadMinutes, now, now, draftId, paymentRequestId));
 
-  const results = await env.DB.batch(statements);
-  const holdResult = results[results.length - 6];
+  let results: D1Result<unknown>[];
+  try {
+    results = await env.DB.batch(statements);
+  } catch (error) {
+    const duplicate = await existingIdempotentDraft();
+    if (duplicate) {
+      return {
+        draftId: duplicate.draftId,
+        email: duplicate.email,
+        normalizedEmail: normalizeEmail(duplicate.email),
+        hasPaymentHold: Boolean(duplicate.paymentDeadlineAt),
+        paymentDeadlineAt: duplicate.paymentDeadlineAt,
+        paymentReference: null,
+        accessCookie: null,
+        created: false,
+      };
+    }
+    throw error;
+  }
+  const holdResult = results[seatHoldStatementIndex];
   const heldSeatCount = changeCount(holdResult);
   if (selectedSeatCount > 0 && heldSeatCount !== selectedSeatCount) {
     await env.DB.batch([
@@ -515,6 +623,7 @@ export async function createRegistrationDraft(
     paymentDeadlineAt: heldSeatCount > 0 ? paymentDeadlineAt : null,
     paymentReference: heldSeatCount > 0 ? description : null,
     accessCookie: registrationDraftCookie(rawAccessToken, true),
+    created: true,
   };
 }
 
@@ -543,7 +652,7 @@ export async function draftForAccessToken(database: D1Database, rawToken: string
     SELECT id, normalized_email AS normalizedEmail, email, status,
       email_last_sent_at AS emailLastSentAt, expires_at AS expiresAt
     FROM registration_draft
-    WHERE access_token_hash = ? AND expires_at > ? AND is_test = 1
+    WHERE access_token_hash = ? AND expires_at > ?
   `).bind(tokenHash, nowDate.toISOString()).first<DraftAccessRow>();
   if (!row) throw new RegistrationSubmissionError("draft_access_denied");
   return row;
@@ -778,7 +887,7 @@ export async function confirmRegistrationChallenge(
       test_run_id, created_at, updated_at
     )
     SELECT registration_draft_child.id || ':waitlist', registration_draft_child.id,
-      registration_draft_child.preferred_waitlist_class_session_id, 'active', 1,
+      registration_draft_child.preferred_waitlist_class_session_id, 'active', registration_draft_child.is_test,
       registration_draft_child.test_run_id, ?, ?
     FROM registration_draft_child
     INNER JOIN class_session
@@ -947,6 +1056,7 @@ async function registrationStatusForDraft(
         WHERE later.registration_draft_child_id = registration_draft_child.id
           AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentDueAt,
       activity_offering.facebook_group_url AS offeringFacebookGroupUrl,
+      enrollment_referral_code.code AS referralCode,
       EXISTS(SELECT 1 FROM payment_evidence WHERE payment_evidence.payment_request_id = payment_request.id
         AND payment_evidence.evidence_type = 'parent_claim') AS parentPaymentClaimed
     FROM registration_draft_child
@@ -961,6 +1071,8 @@ async function registrationStatusForDraft(
       AND payment_installment.installment_kind = 'initial'
     LEFT JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
     LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+    LEFT JOIN enrollment_referral_code ON enrollment_referral_code.enrollment_id = enrollment.id
+      AND enrollment_referral_code.status = 'active'
     LEFT JOIN activity_offering ON activity_offering.id = selected_class.activity_offering_id
     WHERE registration_draft_child.registration_draft_id = ?
     ORDER BY registration_draft_child.position
@@ -996,7 +1108,7 @@ export async function registrationStatusForSession(database: D1Database, rawSess
     registration_draft.facebook_name AS facebookName, registration_draft.home_address AS homeAddress FROM verified_email_session
     INNER JOIN registration_draft ON registration_draft.id = verified_email_session.registration_draft_id
     WHERE verified_email_session.session_token_hash = ? AND verified_email_session.expires_at > ?
-      AND verified_email_session.revoked_at IS NULL AND registration_draft.is_test = 1`)
+      AND verified_email_session.revoked_at IS NULL`)
     .bind(tokenHash, nowDate.toISOString()).first<{ id: string; email: string; status: string; verifiedAt: string | null; guardianFullName: string; relationship: string; primaryPhone: string; secondaryPhone: string | null; facebookName: string | null; homeAddress: string }>();
   if (!draft) throw new RegistrationSubmissionError("session_required");
   return registrationStatusForDraft(database, draft, nowDate);
@@ -1029,7 +1141,7 @@ export async function joinOriginalClassWaitlist(
       test_run_id, created_at, updated_at
     )
     SELECT registration_draft_child.id || ':waitlist', registration_draft_child.id,
-      registration_draft_child.selected_class_session_id, 'active', 1,
+      registration_draft_child.selected_class_session_id, 'active', registration_draft_child.is_test,
       registration_draft_child.test_run_id, ?, ?
     FROM registration_draft
     INNER JOIN registration_draft_child

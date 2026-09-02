@@ -137,6 +137,34 @@ try {
   assert.equal(count(database, "payment_installment", `canonical_enrollment_id = '${first.childId}:enrollment'`), 1, "installment retains canonical linkage");
   assert.deepEqual(await promotePaidDraftChild(env(database), actor, first.childId), { state: "promoted", enrollmentId: `${first.childId}:enrollment` }, "promotion retry is idempotent");
   assert.equal(count(database, "enrollment"), 1);
+  const firstReferralCode = database.query(`SELECT id, code FROM enrollment_referral_code WHERE enrollment_id = ?`, [`${first.childId}:enrollment`])[0];
+  assert.match(firstReferralCode.code, /^NE-[A-Z2-9]{7}$/, "a confirmed child receives a short opaque referral code");
+  assert.doesNotMatch(firstReferralCode.code, /Тест|Хүүхэд|example/i, "a referral code contains no child or contact information");
+
+  const referred = seedDraft(database, "referred-family", { email: "referred@example.test" });
+  database.query(`INSERT INTO registration_draft_referral (
+    registration_draft_child_id, referral_code_id, referring_enrollment_id, captured_code,
+    status, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, 'captured', 1, 'promotion-test', ?, ?)`,
+  [referred.childId, firstReferralCode.id, `${first.childId}:enrollment`, firstReferralCode.code, now, now]);
+  await promotePaidDraftChild(env(database), actor, referred.childId);
+  assert.equal(count(database, "referral", `referred_application_child_id = '${referred.childId}:application' AND status = 'pending'`), 1,
+    "a captured active code becomes one canonical referral relationship without changing payment terms");
+  assert.equal(count(database, "enrollment_referral_code", `enrollment_id = '${referred.childId}:enrollment' AND status = 'active'`), 1,
+    "the newly confirmed referred child also receives an independent code");
+  await promotePaidDraftChild(env(database), actor, referred.childId);
+  assert.equal(count(database, "referral", `referred_application_child_id = '${referred.childId}:application'`), 1,
+    "promotion retry does not duplicate a referral relationship");
+
+  const selfReferral = seedDraft(database, "self-referral", { email: first.email, surname: "Өөр", givenName: "Дүү" });
+  database.query(`INSERT INTO registration_draft_referral (
+    registration_draft_child_id, referral_code_id, referring_enrollment_id, captured_code,
+    status, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, 'captured', 1, 'promotion-test', ?, ?)`,
+  [selfReferral.childId, firstReferralCode.id, `${first.childId}:enrollment`, firstReferralCode.code, now, now]);
+  await promotePaidDraftChild(env(database), actor, selfReferral.childId);
+  assert.equal(count(database, "referral", `referred_application_child_id = '${selfReferral.childId}:application' AND status = 'disqualified' AND qualification_reason = 'same_family'`), 1,
+    "a same-family referral is retained for audit but cannot qualify for a future benefit");
 
   const existingGuardianEmail = "returning@example.test";
   seedGuardian(database, "guardian-returning", existingGuardianEmail);

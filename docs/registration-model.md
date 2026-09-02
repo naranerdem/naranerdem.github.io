@@ -50,6 +50,10 @@ has one stable opaque internal reference and a separate human transfer descripti
 for the parent; it can cover several children while retaining individual obligations. Discounts,
 credits, and adjustments remain separate future layers.
 
+### Referral Capture Before Discounting
+
+At launch, an optional received referral code is validated against an active confirmed referring enrollment and captured for each accepted child. The referring child receives its own opaque code only after initial payment confirmation. Canonical promotion preserves a pending relationship without changing the accepted pricing snapshot, payment request, installment, or capacity reservation. A same-child or same-guardian relationship is retained as disqualified audit history rather than qualifying for a future benefit. The eventual family 10%, referrer 5%, and referred-child 2% rules need a separate audited pricing-adjustment/credit implementation; early captured relationships can then be evaluated retroactively against their immutable base terms.
+
 ## Privacy Principle
 
 Collect only information genuinely needed for enrollment, communication, tuition tracking, and safety. Do not design around collecting government identifiers or unnecessary sensitive personal data.
@@ -437,10 +441,10 @@ Possible reduction types include:
 - 10% merit award for selected good returning students
 - manually approved exceptional adjustment
 
-Percentage reductions are calculated independently against the chosen plan's pre-discount tuition total. If selected-plan tuition is `T`, two referral reductions are:
+Percentage reductions are calculated independently against the chosen plan's pre-discount tuition total. If selected-plan tuition is `T`, the eventual referrer and referred-child reductions are:
 
 ```text
-5% * T + 5% * T = 10% * T
+5% * T + 2% * T = 7% * T
 ```
 
 not:
@@ -459,7 +463,7 @@ Reduction records should preserve:
 - when it was approved/qualified
 - whether it affects the whole enrollment or specific installments
 
-Do not hard-code an arbitrary maximum discount. Advanced admin policy settings should conceptually control family discount rate, referral discount rate, whether referrals accumulate, optional referral cap, optional total automatic-discount cap, whether family + referral stack, whether merit award + automatic discounts stack, and future adjustment-combination rules. These settings belong in advanced admin, not teacher daily UI.
+Do not hard-code an arbitrary maximum discount. Advanced admin policy settings should conceptually control family, referrer, and referred-child discount rates, whether referrals accumulate, optional referral cap, optional total automatic-discount cap, whether family + referral stack, whether merit award + automatic discounts stack, and future adjustment-combination rules. These settings belong in advanced admin, not teacher daily UI.
 
 ### Automatic Family Discount
 
@@ -483,15 +487,15 @@ There is a normal referral program:
 - an existing/current child A may refer child B
 - B must still be registered by B's own parent/guardian
 - A does not register B
-- successful referral gives 5% tuition reduction to both A and B
+- successful referral is intended to give 5% to A and 2% to B
 - A may refer several children and can earn multiple 5% reductions
 - percentages add linearly, not multiplicatively
 
 A referral only financially qualifies when both relevant children have made their required initial payment / are confirmed.
 
-If B pays before A, B may initially pay full price. When A later pays and the referral becomes qualified, A's 5% can affect A's payment immediately where possible, and B receives equivalent account credit if B already paid too much.
+If B pays before A, B may initially pay full price. When the referral later qualifies, the applicable snapshotted adjustment or credit can be recorded without rewriting the original payment history.
 
-Model referral identity explicitly. Do not infer friendship/referral from school, address, Facebook, names, or payment origin. The optional public `Код` is generic: it may represent a referral, teacher award, one-time benefit, reusable event code, campaign, or another configured benefit. A referral remains a special code type with an explicit relationship because both families may receive reciprocal benefits. The family's own shareable referral code/link is not generated during registration; it becomes available only after the first required payment confirms enrollment.
+Model referral identity explicitly. Do not infer friendship/referral from school, address, Facebook, names, or payment origin. The optional public `Урилгын код` now resolves only to an active canonical referral code; capture is retained as a distinct relationship because both families may later receive different benefits. The family's own shareable referral code/link is not generated during registration; it becomes available only after the first required payment confirms enrollment.
 
 ### Private Teacher/Admin Financial Approval
 

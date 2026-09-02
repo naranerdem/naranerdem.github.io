@@ -56,8 +56,7 @@ assert.doesNotMatch(page, /second enrollment|өөр шат нэмэх|хоёр �
 assert.doesNotMatch(page, /fetch\([^\n]*\/api\/pre-registrations|method:\s*["']POST["'][^\n]*pre-registration/);
 assert.doesNotMatch(content, /\* тэмдэгтэй талбарыг бөглөнө үү\./);
 assert.match(content, /Өмнө нь Наран Эрдэмд сурсан уу\?/);
-assert.match(content, /code: "Код"/);
-assert.doesNotMatch(content, /Урилгын код/);
+assert.match(content, /code: "Урилгын код"/);
 assert.match(content, /Энэ шатны анги, цаг хараахан ороогүй байна\./);
 assert.match(content, /Төлбөр баталгаажихыг хүлээж буй: \{count\}/);
 assert.match(content, /Энэ анги дүүрсэн тул та хүлээлгийн жагсаалтад орно\./);
