@@ -47,7 +47,10 @@ try {
   assert.doesNotMatch(annualForm, /Хичээлийн жил|offering-charge|useAcademicYearBreaks/, "annual Offering creation has no redundant year, payment, or break controls");
   assert.match(offeringsPageSource, /offering-annual-stage/, "annual Offering creation submits a logical stage, not a raw revision ID");
   assert.match(offeringsPageSource, /function captureCreationDraft\(\)[\s\S]*?state\.creationDraft/s, "new Offering form values are captured before local editor rerenders");
+  assert.match(offeringsPageSource, /const DEFAULT_CLASS_CAPACITY = 10/, "new annual and summer classes begin with the operational capacity default of 10");
   assert.match(offeringsPageSource, /#add-initial-class[\s\S]*?captureCreationDraft\(\)[\s\S]*?state\.initialClasses\.push/s, "adding an initial class preserves the unsaved Offering values without submitting");
+  assert.match(offeringsPageSource, /state\.initialClasses\.push\([^\n]*capacity: DEFAULT_CLASS_CAPACITY/, "every added initial course class receives capacity 10");
+  assert.match(offeringsPageSource, /entry\?\.capacity \?\? DEFAULT_CLASS_CAPACITY/, "a new class editor defaults to 10 while an existing manually chosen capacity survives rerendering");
   assert.match(offeringsPageSource, /data-remove-initial-class[\s\S]*?captureCreationDraft\(\)[\s\S]*?state\.initialClasses\.splice/s, "removing an initial class preserves the remaining unsaved Offering values without submitting");
   assert.match(offeringsPageSource, /id="add-initial-class"[^>]*type="button"/, "adding an initial class is never a form submission button");
   assert.match(summerForm, /courseProgramField\(entry, "summer_course"\)/, "summer Offering creation selects an existing logical Program");

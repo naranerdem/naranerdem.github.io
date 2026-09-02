@@ -78,9 +78,11 @@ try {
   const schedulePage = readFileSync("src/pages/staff/schedule.astro", "utf8");
   const programsPage = readFileSync("src/pages/staff/programs.astro", "utf8");
   const staffDashboardPage = readFileSync("src/pages/staff.astro", "utf8");
+  const programCalendarSource = readFileSync("src/server/staff/program-calendar.ts", "utf8");
   assert.match(schedulePage, /slot\.status === "scheduled" && slot\.lessonSequence/, "a planned no-class row cannot render a curriculum lesson");
   assert.match(programsPage, /Хичээл оруулаагүй байна[\s\S]*?>Засах</, "an empty summer Program exposes its edit action");
   assert.match(programsPage, /family\.kind === "summer_course" \? `<div class="staff-danger-zone">/, "only summer Programs expose removal controls");
+  assert.match(programCalendarSource, /COALESCE\(class_meeting_rule\.start_time, class_session\.start_time\), class_session\.id/, "class ordering has a stable ID tie-breaker after weekday and start time");
   const migrations = readdirSync("migrations").filter((file) => file.endsWith(".sql")).sort();
   const offeringMigration = "0010_activity_offerings_and_meeting_rules.sql";
   const offeringMigrationIndex = migrations.indexOf(offeringMigration);
@@ -694,6 +696,19 @@ try {
   assert.equal(overview.classes.find((entry) => entry.id === "class-1").offeringId, "offering-annual-stage-1", "class remains attached to its offering");
   assert.equal(overview.classes.find((entry) => entry.id === "class-1").canDelete, false, "reference checks keep linked classes out of the delete path");
   assert.equal(overview.stageSettings.filter((entry) => entry.academicYearId === "year-2026" && entry.stageCode === "stage_1").length, 1, "stage settings remain one-per-year-and-stage");
+  sqlite(`
+    INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test, test_run_id, created_at, updated_at) VALUES
+      ('ordering-tuesday-0710', 'offering-annual-stage-1', 'year-2026', 'stage_1', 'A', 'Мягмар', '07:10', '08:30', 10, 'closed', 1, 'staff-program-test', '${now}', '${now}'),
+      ('ordering-tuesday-1310', 'offering-annual-stage-1', 'year-2026', 'stage_1', 'B', 'Мягмар', '13:10', '14:30', 10, 'closed', 1, 'staff-program-test', '${now}', '${now}'),
+      ('ordering-thursday-1310', 'offering-annual-stage-1', 'year-2026', 'stage_1', 'C', 'Пүрэв', '13:10', '14:30', 10, 'closed', 1, 'staff-program-test', '${now}', '${now}'),
+      ('ordering-saturday-1310', 'offering-annual-stage-1', 'year-2026', 'stage_1', 'D', 'Бямба', '13:10', '14:30', 10, 'closed', 1, 'staff-program-test', '${now}', '${now}');
+  `);
+  const orderedOverview = await service.getProgramCalendarOverview(runtime);
+  assert.deepEqual(
+    orderedOverview.classes.filter((entry) => entry.id.startsWith("ordering-")).map((entry) => entry.id),
+    ['ordering-tuesday-0710', 'ordering-tuesday-1310', 'ordering-thursday-1310', 'ordering-saturday-1310'],
+    "classes in one Offering use Monday-to-Sunday order, then time, then a stable ID tie-breaker",
+  );
   console.log("ok staff Offering/program/calendar permissions, compatibility settings, class safety, recurrence, reflow, and audit tests");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });

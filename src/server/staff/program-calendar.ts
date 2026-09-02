@@ -607,7 +607,11 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
       ORDER BY curriculum_program_id, sequence_number`).all<LessonRow>(),
     env.DB.prepare(`${CLASS_SELECT}
       ORDER BY activity_offering.starts_on DESC, class_session.stage_code,
-        class_meeting_rule.first_date, class_meeting_rule.start_time`).all<ClassRow>(),
+        CASE COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday)
+          WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3
+          WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6
+          WHEN 'Ням' THEN 7 ELSE 9 END,
+        COALESCE(class_meeting_rule.start_time, class_session.start_time), class_session.id`).all<ClassRow>(),
     env.DB.prepare(`SELECT id, academic_year_id AS academicYearId, label, starts_on AS startsOn,
       ends_on AS endsOn, excludes_habitual_slots AS excludesHabitualSlots,
       generation_behavior AS generationBehavior,
