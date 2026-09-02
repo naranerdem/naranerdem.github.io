@@ -8,7 +8,7 @@ export type OfferingKind = typeof OFFERING_KINDS[number];
 export type ChargeMode = typeof CHARGE_MODES[number];
 
 export class OfferingError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable") {
+  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "academic_year_unconfigured") {
     super("Offering operation failed.");
     this.name = "OfferingError";
   }
@@ -218,7 +218,7 @@ async function academicYearForAnnualOffering(env: WorkerEnv, startsOn: string): 
     WHERE starts_on IS NOT NULL AND ends_on IS NOT NULL
       AND starts_on <= ? AND ends_on >= ?
     ORDER BY is_current DESC, starts_on DESC LIMIT 1`).bind(startsOn, startsOn).first<{ id: string; label: string; endsOn: string }>();
-  if (!year) throw new OfferingError("invalid");
+  if (!year) throw new OfferingError("academic_year_unconfigured");
   return year;
 }
 

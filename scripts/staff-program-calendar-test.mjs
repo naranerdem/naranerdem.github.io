@@ -630,12 +630,18 @@ try {
     INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at)
       VALUES ('year-default-start-test', 'Анхны өдрийн тест', 'draft', '2028-09-01', '2029-06-01', 1, 1, 'staff-program-test', '${now}', '${now}');
   `);
-  await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1" });
+  await assert.rejects(
+    () => offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "annual_course", annualStageCode: "stage_1", startsOn: "2035-10-01" }),
+    (error) => error.code === "academic_year_unconfigured",
+    "a date outside configured academic years returns a specific setup error",
+  );
+  await offeringService.saveActivityOffering(runtime, actor("teacher"), {
+    kind: "annual_course", annualStageCode: "stage_1", initialClasses: [{ recurrenceKind: "weekly", weeklyWeekday: "Бямба", startTime: "10:00", capacity: 12 }],
+  });
   const defaultStartOffering = database.query("SELECT id, starts_on AS startsOn, ends_on AS endsOn, updated_at AS updatedAt FROM activity_offering WHERE academic_year_id = 'year-default-start-test'")[0];
   assert.equal(defaultStartOffering.startsOn, "2028-09-25", "a new annual Offering uses the admin-configured default start date");
   assert.equal(defaultStartOffering.endsOn, "2029-06-01", "annual Offering end remains the derived academic-year compatibility value");
-  await offeringService.saveActivityOffering(runtime, actor("teacher"), { id: defaultStartOffering.id, expectedUpdatedAt: defaultStartOffering.updatedAt, kind: "annual_course", startsOn: "2028-10-05" });
-  assert.equal(database.query(`SELECT starts_on AS startsOn FROM activity_offering WHERE id = ${quote(defaultStartOffering.id)}`)[0].startsOn, "2028-10-05", "a teacher can override the prepopulated annual start date");
+  assert.equal(count(database, "class_session", `activity_offering_id = ${quote(defaultStartOffering.id)} AND status = 'closed'`), 1, "a newly created Offering atomically creates its requested closed class");
   assert.ok(count(database, "audit_event", "action LIKE 'program_%' OR action LIKE 'calendar_%'") >= 7, "meaningful staff actions are audited");
   const overview = await service.getProgramCalendarOverview(runtime);
   assert.equal(overview.publicSiteFont.font, "sans", "overview keeps the public font setting in its own field");

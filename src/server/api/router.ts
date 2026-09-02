@@ -319,6 +319,7 @@ function programCalendarError(caught: unknown): Response {
     if (caught.code === "not_found") return error("invalid_request", "Сонгосон мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
     if (caught.code === "conflict") return error("invalid_request", "Энэ мэдээлэл өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд өөрчлөлтөө шалгана уу.", 409, { "Cache-Control": "no-store" });
     if (caught.code === "immutable") return error("invalid_request", "Ашиглагдаж буй мэдээллийг эндээс шууд өөрчилж болохгүй.", 409, { "Cache-Control": "no-store" });
+    if (caught.code === "academic_year_unconfigured") return error("invalid_request", "Энэ эхлэх өдөрт тохирох хичээлийн жил одоогоор тохируулагдаагүй байна.", 400, { "Cache-Control": "no-store" });
     return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
   }
   if (!(caught instanceof ProgramCalendarError)) {

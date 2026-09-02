@@ -24,7 +24,7 @@ import "../../styles/global.css";
       import { escape, getOverview, hasSetupAccess, postOverviewAction, stageLabel } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
-      const state = { data: null, editingId: params.get("offering") || "", creatingKind: "", editingClass: "", initialClasses: [] };
+      const state = { data: null, editingId: params.get("offering") || "", creatingKind: "", editingClass: "", initialClasses: [], creationDraft: {} };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const kindLabel = (kind) => ({ annual_course: "Жилийн сургалт", summer_course: "Зуны сургалт", event: "Арга хэмжээ" })[kind] || "";
@@ -42,21 +42,45 @@ import "../../styles/global.css";
         if (entry) return `<p class="staff-muted staff-wide">${kind === "annual_course" ? `Шат: ${escape(stageLabel(entry.stageCode))}` : `Хөтөлбөр: ${escape(entry.programFamilyName || entry.programName || "")}`}</p>`;
         const families = selectableFamilies(kind);
         if (!families.length) return `<p class="staff-empty staff-wide">Эхлээд <a href="/staff/programs/">Хөтөлбөр</a> хэсэгт хөтөлбөр бэлтгэнэ үү.</p>`;
-        if (kind === "annual_course") return `<label class="staff-wide">Шат <select id="offering-annual-stage" required><option value="">Сонгоно уу</option>${families.map((family) => `<option value="${escape(family.annualStageCode)}">${escape(stageLabel(family.annualStageCode))}</option>`).join("")}</select></label>`;
-        return `<label class="staff-wide">Хөтөлбөр <select id="offering-program-family" required><option value="">Сонгоно уу</option>${families.map((family) => `<option value="${escape(family.id)}">${escape(family.displayName)}</option>`).join("")}</select></label>`;
+        if (kind === "annual_course") {
+          const selected = entry?.stageCode || state.creationDraft.annualStageCode || "";
+          return `<label class="staff-wide">Шат <select id="offering-annual-stage" required><option value="">Сонгоно уу</option>${families.map((family) => `<option value="${escape(family.annualStageCode)}" ${family.annualStageCode === selected ? "selected" : ""}>${escape(stageLabel(family.annualStageCode))}</option>`).join("")}</select></label>`;
+        }
+        const selected = entry?.programFamilyId || state.creationDraft.programFamilyId || "";
+        return `<label class="staff-wide">Хөтөлбөр <select id="offering-program-family" required><option value="">Сонгоно уу</option>${families.map((family) => `<option value="${escape(family.id)}" ${family.id === selected ? "selected" : ""}>${escape(family.displayName)}</option>`).join("")}</select></label>`;
       }
       function annualDefaultDate() {
         const year = (state.data?.years || []).find((entry) => entry.isCurrent && entry.startsOn && entry.endsOn);
         const setting = state.data?.annualCourseStartDefault || { month: 10, day: 1 };
         return year ? `${year.startsOn.slice(0, 4)}-${String(setting.month).padStart(2, "0")}-${String(setting.day).padStart(2, "0")}` : "";
       }
+      function captureCreationDraft() {
+        if (state.editingId || !["annual_course", "summer_course"].includes(state.creatingKind)) return;
+        const value = (selector) => q(selector)?.value;
+        state.creationDraft = {
+          ...state.creationDraft,
+          title: value("#offering-title") ?? state.creationDraft.title ?? "",
+          annualStageCode: value("#offering-annual-stage") ?? state.creationDraft.annualStageCode ?? "",
+          programFamilyId: value("#offering-program-family") ?? state.creationDraft.programFamilyId ?? "",
+          startsOn: value("#offering-starts") ?? state.creationDraft.startsOn ?? "",
+          endsOn: value("#offering-ends") ?? state.creationDraft.endsOn ?? "",
+          defaultClassDurationMinutes: value("#offering-duration") ?? state.creationDraft.defaultClassDurationMinutes ?? "",
+          facebookGroupUrl: value("#offering-facebook") ?? state.creationDraft.facebookGroupUrl ?? "",
+        };
+        state.initialClasses = state.initialClasses.map((entry, index) => ({
+          recurrenceKind: value(`[data-initial-recurrence="${index}"]`) || entry.recurrenceKind,
+          weeklyWeekday: value(`[data-initial-weekday="${index}"]`) || entry.weeklyWeekday,
+          startTime: value(`[data-initial-start="${index}"]`) || entry.startTime,
+          capacity: Number(value(`[data-initial-capacity="${index}"]`) || entry.capacity),
+        }));
+      }
       function courseFields(entry, kind) {
-        const startsOn = entry?.startsOn || (kind === "annual_course" ? annualDefaultDate() : "");
-        const duration = entry?.defaultClassDurationMinutes || (kind === "annual_course" && entry?.stageCode === "stage_3" ? 105 : 80);
-        const facebook = `<label class="staff-wide">Facebook бүлгийн холбоос <input id="offering-facebook" type="url" inputmode="url" value="${escape(entry?.facebookGroupUrl || "")}" /><small>Хоосон орхиж болно.</small></label>`;
+        const startsOn = entry?.startsOn || state.creationDraft.startsOn || (kind === "annual_course" ? annualDefaultDate() : "");
+        const duration = entry?.defaultClassDurationMinutes || state.creationDraft.defaultClassDurationMinutes || (kind === "annual_course" && entry?.stageCode === "stage_3" ? 105 : 80);
+        const facebook = `<label class="staff-wide">Facebook бүлгийн холбоос <input id="offering-facebook" type="url" inputmode="url" value="${escape(entry?.facebookGroupUrl || state.creationDraft.facebookGroupUrl || "")}" /><small>Хоосон орхиж болно.</small></label>`;
         const durationField = `<label>Хичээлийн үргэлжлэх хугацаа (минут) <input id="offering-duration" type="number" min="15" max="360" required value="${duration}" /></label>`;
         if (kind === "annual_course") return `<label>Эхлэх өдөр <input id="offering-starts" type="date" required value="${escape(startsOn)}" /></label>${durationField}${facebook}`;
-        return `<label>Төлөвлөсөн эхлэх өдөр <input id="offering-starts" type="date" required value="${escape(startsOn)}" /></label><label>Төлөвлөсөн дуусах өдөр <input id="offering-ends" type="date" required value="${escape(entry?.endsOn || "")}" /></label>${durationField}${facebook}`;
+        return `<label>Төлөвлөсөн эхлэх өдөр <input id="offering-starts" type="date" required value="${escape(startsOn)}" /></label><label>Төлөвлөсөн дуусах өдөр <input id="offering-ends" type="date" required value="${escape(entry?.endsOn || state.creationDraft.endsOn || "")}" /></label>${durationField}${facebook}`;
       }
       function initialClassEditor(kind) {
         if (state.editingId) return "";
@@ -107,13 +131,16 @@ import "../../styles/global.css";
         container.querySelector("#pricing-form")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; const enabled = q("#pricing-two-enabled").checked; runPricing(() => postOverviewAction("offering-course-pricing.save", { offeringId: entry.id, expectedUpdatedAt: q("#pricing-updated").value || null, oneTimeAmountMnt: Number(q("#pricing-single").value), twoInstallmentEnabled: enabled, firstInstallmentAmountMnt: enabled ? Number(q("#pricing-first").value) : null, secondInstallmentAmountMnt: enabled ? Number(q("#pricing-second").value) : null, secondInstallmentDueOn: enabled ? q("#pricing-due").value : null }), "Төлбөрийн нөхцөлийг хадгаллаа."); });
         container.querySelector("[data-event-delete]")?.addEventListener("click", () => { if (entry && window.confirm("Энэ арга хэмжээг устгах уу?")) run(() => postOverviewAction("offering-event.delete", { offeringId: entry.id, expectedUpdatedAt: entry.updatedAt }), "Арга хэмжээг устгалаа."); });
         container.querySelector("#add-initial-class")?.addEventListener("click", () => {
+          captureCreationDraft();
           state.initialClasses.push({ recurrenceKind: kind === "summer_course" ? "daily" : "weekly", weeklyWeekday: "Бямба", startTime: "10:00", capacity: 12 });
           renderEditor();
         });
         container.querySelectorAll("[data-remove-initial-class]").forEach((button) => button.onclick = () => {
+          captureCreationDraft();
           state.initialClasses.splice(Number(button.dataset.removeInitialClass), 1); renderEditor();
         });
         container.querySelectorAll("[data-initial-recurrence]").forEach((select) => select.onchange = () => {
+          captureCreationDraft();
           state.initialClasses[Number(select.dataset.initialRecurrence)].recurrenceKind = select.value; renderEditor();
         });
         container.querySelectorAll("[data-initial-weekday]").forEach((select) => select.onchange = () => { state.initialClasses[Number(select.dataset.initialWeekday)].weeklyWeekday = select.value; });
@@ -121,6 +148,7 @@ import "../../styles/global.css";
         container.querySelectorAll("[data-initial-capacity]").forEach((input) => input.onchange = () => { state.initialClasses[Number(input.dataset.initialCapacity)].capacity = Number(input.value); });
         container.querySelector("#offering-annual-stage")?.addEventListener("change", (event) => {
           if (!entry) q("#offering-duration").value = event.currentTarget.value === "stage_3" ? "105" : "80";
+          captureCreationDraft();
         });
         container.querySelector("[data-add-class]")?.addEventListener("click", () => { state.editingClass = "new"; renderEditor(); q("#class-recurrence")?.focus(); });
         container.querySelector("[data-class-cancel]")?.addEventListener("click", () => { state.editingClass = ""; renderEditor(); });
@@ -129,8 +157,8 @@ import "../../styles/global.css";
         container.querySelector("[data-class-delete]")?.addEventListener("click", () => { const selected = classes(entry.id).find((item) => item.id === state.editingClass); if (selected && window.confirm(`${selected.displayLabel} ангийг бүрмөсөн устгах уу?`)) runClass(() => postOverviewAction("class.delete", { classSessionId: selected.id, expectedUpdatedAt: selected.updatedAt }), "Ангийг устгалаа."); });
         container.querySelector("#class-form")?.addEventListener("submit", (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; const id = q("#class-id").value; runClass(() => postOverviewAction("class.save", { id: id || undefined, expectedUpdatedAt: q("#class-updated").value || undefined, offeringId: entry.id, recurrenceKind: q("#class-recurrence").value, firstDate: q("#class-first").value, lastDate: undefined, weeklyWeekday: q("#class-weekday").disabled ? null : q("#class-weekday").value, startTime: q("#class-start").value, endTime: q("#class-end")?.value, capacity: Number(q("#class-capacity").value), registrationOpen: Boolean(q("#class-open")?.checked) }), id ? "Ангийг хадгаллаа." : "Ангийг үүслээ. Бүртгэл анх хаалттай байна."); });
       }
-      function closeEditor() { state.editingId = ""; state.creatingKind = ""; state.editingClass = ""; state.initialClasses = []; history.replaceState(null, "", location.pathname); renderEditor(); }
-      function saveOffering(event) { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; const kind = q("#offering-kind").value; const id = q("#offering-id").value; const payload = { action: "offering.save", id: id || undefined, expectedUpdatedAt: q("#offering-updated").value || undefined, kind, title: q("#offering-title")?.value, annualStageCode: q("#offering-annual-stage")?.value, programFamilyId: q("#offering-program-family")?.value, startsOn: q("#offering-starts")?.value, endsOn: q("#offering-ends")?.value, defaultClassDurationMinutes: Number(q("#offering-duration")?.value), initialClasses: id ? undefined : state.initialClasses, facebookGroupUrl: q("#offering-facebook")?.value || "" }; if (kind === "event") Object.assign(payload, { eventExpectedUpdatedAt: q("#event-updated").value || undefined, eventDate: q("#event-date").value, eventStartTime: q("#event-start").value, eventEndTime: q("#event-end").value, eventCapacity: Number(q("#event-capacity").value), eventRegistrationOpen: Boolean(q("#event-open")?.checked), chargeMode: q("#offering-charge").value, note: q("#offering-note").value }); run(() => postOverviewAction(payload.action, payload), id ? "Мэдээллийг хадгаллаа." : "Шинээр нэмлээ. Бүртгэл анх хаалттай байна."); }
+      function closeEditor() { state.editingId = ""; state.creatingKind = ""; state.editingClass = ""; state.initialClasses = []; state.creationDraft = {}; history.replaceState(null, "", location.pathname); renderEditor(); }
+      function saveOffering(event) { event.preventDefault(); captureCreationDraft(); if (!event.currentTarget.reportValidity()) return; const kind = q("#offering-kind").value; const id = q("#offering-id").value; const payload = { action: "offering.save", id: id || undefined, expectedUpdatedAt: q("#offering-updated").value || undefined, kind, title: q("#offering-title")?.value, annualStageCode: q("#offering-annual-stage")?.value, programFamilyId: q("#offering-program-family")?.value, startsOn: q("#offering-starts")?.value, endsOn: q("#offering-ends")?.value, defaultClassDurationMinutes: Number(q("#offering-duration")?.value), initialClasses: id ? undefined : state.initialClasses, facebookGroupUrl: q("#offering-facebook")?.value || "" }; if (kind === "event") Object.assign(payload, { eventExpectedUpdatedAt: q("#event-updated").value || undefined, eventDate: q("#event-date").value, eventStartTime: q("#event-start").value, eventEndTime: q("#event-end").value, eventCapacity: Number(q("#event-capacity").value), eventRegistrationOpen: Boolean(q("#event-open")?.checked), chargeMode: q("#offering-charge").value, note: q("#offering-note").value }); run(() => postOverviewAction(payload.action, payload), id ? "Мэдээллийг хадгаллаа." : "Шинээр нэмлээ. Бүртгэл анх хаалттай байна."); }
       async function run(work, success) { message(); try { await work(); closeEditor(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       async function runPricing(work, success) { message(); try { await work(); await refresh(success); } catch (error) { message(error.message || "Хадгалж чадсангүй."); } }
       async function runClass(work, success) {
@@ -147,7 +175,7 @@ import "../../styles/global.css";
         }
       }
       function render() { renderList(); renderEditor(); }
-      q("#add-offering").onclick = () => { state.editingId = ""; state.creatingKind = "choose"; renderEditor(); };
+      q("#add-offering").onclick = () => { state.editingId = ""; state.creationDraft = {}; state.creatingKind = "choose"; renderEditor(); };
       (async () => { if (!(await hasSetupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>
