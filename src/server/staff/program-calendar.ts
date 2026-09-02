@@ -1667,6 +1667,7 @@ async function rebuiltDraftSchedule(
   addedExtra?: ExtraTeachingSlot,
   proposedOverride?: CalendarOverride,
   restoredCancelledSlotId?: string,
+  removedOverrideLocalDate?: string,
 ): Promise<CalendarSlot[]> {
   const classSession = await classForCalendar(env, revision.calendarId);
   const attendanceProtectedSequence = await attendanceProtectedThroughSequence(env, classSession.id, revision.programId);
@@ -1675,6 +1676,9 @@ async function rebuiltDraftSchedule(
   const schoolCalendarPeriods = await applicableBreaks(env, classSession);
   const offeringBreaks = classSession.offeringId ? await offeringBreaksForOffering(env, classSession.offeringId) : [];
   let overrides = await overridesForRevision(env, revision.id);
+  if (removedOverrideLocalDate) {
+    overrides = overrides.filter((entry) => entry.localDate !== removedOverrideLocalDate);
+  }
   if (proposedOverride) {
     overrides = [...overrides.filter((entry) => entry.localDate !== proposedOverride.localDate), proposedOverride];
   }
@@ -1750,6 +1754,20 @@ export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrinc
   const target = slots.find((slot) => slot.id === input.slotId);
   if (!target || target.localDate < localToday()) throw new ProgramCalendarError("immutable");
   const attendanceProtectedSequence = await attendanceProtectedThroughSequence(env, classSession.id, revision.programId);
+  const restoresSchoolGuidance = target.slotSource === "manual_restore"
+    && overrides.some((entry) => entry.localDate === target.localDate && entry.behavior === "restore")
+    && schoolCalendarPeriods.some((period) => period.excludeFromGeneration
+      && period.startsOn <= target.localDate && target.localDate <= period.endsOn);
+  if (restoresSchoolGuidance) {
+    const rebuilt = await rebuiltDraftSchedule(env, revision, undefined, undefined, undefined, target.localDate);
+    await replaceDraftSlots(env, revision, rebuilt, actor, "calendar_school_guidance_restore_reverted", {
+      slotId: input.slotId,
+      localDate: target.localDate,
+      classSessionId: classSession.id,
+    }, [env.DB.prepare(`DELETE FROM class_calendar_revision_override
+      WHERE class_calendar_revision_id = ? AND local_date = ?`).bind(revision.id, target.localDate)]);
+    return;
+  }
   let result;
   try {
     result = reflowCancelledFutureSchedule({ lessons, ...scheduleInputForClass(classSession), schoolCalendarPeriods, offeringBreaks, overrides, existingSlots: slots, lockedThroughSequence: Math.max(revision.lockedThroughSequence, attendanceProtectedSequence), cancelSlotId: input.slotId });
