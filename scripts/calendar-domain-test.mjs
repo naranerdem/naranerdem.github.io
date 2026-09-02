@@ -57,7 +57,7 @@ function assertCompleteProgram(slots, count) {
 
 try {
   bundle();
-  const { generateCalendarPlan, generateCalendarSchedule, reflowCancelledFutureSchedule } = await import(pathToFileURL(bundlePath).href);
+  const { calendarWarnings, generateCalendarPlan, generateCalendarSchedule, reflowCancelledFutureSchedule } = await import(pathToFileURL(bundlePath).href);
 
   const sharedProgram = lessons(6, "stage-2");
   const sunday = generateCalendarSchedule({
@@ -123,6 +123,23 @@ try {
     assert.equal(finalPlan.slots.find((slot) => slot.localDate === "2026-10-18")?.status, "scheduled", "a class may teach on a school-calendar date without changing the period");
     assert.equal(finalPlan.warnings.some((warning) => warning.label === "Өвлийн амралт"), warnOnOverlap, `final overlap warning follows only its own flag (${excludeFromGeneration}/${warnOnOverlap})`);
   }
+
+  const warningPeriod = { id: "warning-boundary", label: "Өвлийн амралт", startsOn: "2026-10-18", endsOn: "2026-10-18", excludeFromGeneration: true, warnOnOverlap: true };
+  const warningBoundaryPlan = generateCalendarPlan({
+    lessons: lessons(4, "warning-boundary"), recurrenceKind: "daily", firstCandidateDate: "2026-10-17", startTime: "10:00", endTime: "11:20", schoolCalendarPeriods: [warningPeriod],
+  });
+  const holidayNoClass = warningBoundaryPlan.slots.find((slot) => slot.localDate === "2026-10-18");
+  const scheduledOutsideHoliday = warningBoundaryPlan.slots.find((slot) => slot.localDate === "2026-10-21");
+  assert.equal(holidayNoClass?.status, "no_class", "a holiday-generated candidate remains an explicit no-class row");
+  assert.equal(calendarWarnings([holidayNoClass], { schoolCalendarPeriods: [warningPeriod] }).length, 0, "a holiday no-class row has no redundant teaching-overlap warning");
+  assert.equal(calendarWarnings([scheduledOutsideHoliday], { schoolCalendarPeriods: [warningPeriod] }).length, 0, "the first civil date after an inclusive holiday range has no warning");
+  const restoredHoliday = generateCalendarPlan({
+    lessons: lessons(3, "warning-restore"), recurrenceKind: "daily", firstCandidateDate: "2026-10-17", startTime: "10:00", endTime: "11:20", schoolCalendarPeriods: [warningPeriod],
+    overrides: [{ id: "restore-warning-boundary", localDate: "2026-10-18", behavior: "restore" }],
+  });
+  const restoredHolidaySlot = restoredHoliday.slots.find((slot) => slot.localDate === "2026-10-18");
+  assert.equal(restoredHolidaySlot?.status, "scheduled", "a teacher-restored holiday slot is a teaching occurrence");
+  assert.equal(calendarWarnings([restoredHolidaySlot], { schoolCalendarPeriods: [warningPeriod] })[0]?.label, "Өвлийн амралт", "a restored holiday teaching slot retains its appropriate warning");
 
   const realOperationalPeriods = operationalDefaults.schoolCalendarPeriods.map((period) => ({
     ...period, id: period.key, excludesHabitualSlots: true,

@@ -129,6 +129,7 @@ import {
 import {
   ProgramCalendarError,
   cancelFutureCalendarSlot,
+  restoreFutureCancelledCalendarSlot,
   changeCalendarDraft,
   createCalendarChangeDraft,
   createSummerProgramFamilyDraft,
@@ -1505,6 +1506,11 @@ export async function handleApiRequest(
           break;
         case "calendar.cancel":
           await cancelFutureCalendarSlot(env, principal, {
+            revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), slotId: String(payload.slotId ?? ""),
+          });
+          break;
+        case "calendar.restore-cancelled":
+          await restoreFutureCancelledCalendarSlot(env, principal, {
             revisionId: String(payload.revisionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""), slotId: String(payload.slotId ?? ""),
           });
           break;

@@ -445,7 +445,6 @@ async function unusedCourseOffering(env: WorkerEnv, offeringId: string): Promise
         OR EXISTS (SELECT 1 FROM registration_capacity_hold WHERE class_session_id = class_row.id)
         OR EXISTS (SELECT 1 FROM registration_draft_waitlist_entry WHERE class_session_id = class_row.id)
         OR EXISTS (SELECT 1 FROM waitlist_seat_offer WHERE class_session_id = class_row.id)
-        OR EXISTS (SELECT 1 FROM class_calendar WHERE class_session_id = class_row.id)
         OR EXISTS (SELECT 1 FROM course_attendance WHERE class_session_id = class_row.id)
         OR EXISTS (SELECT 1 FROM course_absence_notice WHERE class_session_id = class_row.id)
         OR EXISTS (SELECT 1 FROM course_makeup_resolution WHERE source_class_session_id = class_row.id)
@@ -741,11 +740,34 @@ export async function deleteUnusedCourseOffering(
     .bind(current.id).first<{ count: number }>();
   const time = now();
   const result = await env.DB.batch([
+    // This context is the only narrow exception to normal calendar-revision
+    // immutability. It exists solely while deleting an otherwise unused
+    // Offering and disappears before the Offering itself is removed.
+    env.DB.prepare(`INSERT INTO unused_offering_deletion_context (activity_offering_id, created_at)
+      VALUES (?, ?)`).bind(current.id, time),
+    env.DB.prepare(`UPDATE class_calendar_revision
+      SET based_on_revision_id = NULL, status = 'draft'
+      WHERE class_calendar_id IN (
+        SELECT calendar.id FROM class_calendar AS calendar
+        INNER JOIN class_session AS class_row ON class_row.id = calendar.class_session_id
+        WHERE class_row.activity_offering_id = ?
+      )`).bind(current.id),
+    env.DB.prepare(`DELETE FROM class_calendar_revision
+      WHERE class_calendar_id IN (
+        SELECT calendar.id FROM class_calendar AS calendar
+        INNER JOIN class_session AS class_row ON class_row.id = calendar.class_session_id
+        WHERE class_row.activity_offering_id = ?
+      )`).bind(current.id),
+    env.DB.prepare(`DELETE FROM class_calendar
+      WHERE class_session_id IN (
+        SELECT id FROM class_session WHERE activity_offering_id = ?
+      )`).bind(current.id),
     // Meeting rules cascade from their unused classes. Configuration rows are
     // removed only after the service rejects every operational reference.
     env.DB.prepare("DELETE FROM activity_offering_break WHERE activity_offering_id = ?").bind(current.id),
     env.DB.prepare("DELETE FROM offering_course_pricing WHERE activity_offering_id = ?").bind(current.id),
     env.DB.prepare("DELETE FROM class_session WHERE activity_offering_id = ?").bind(current.id),
+    env.DB.prepare("DELETE FROM unused_offering_deletion_context WHERE activity_offering_id = ?").bind(current.id),
     env.DB.prepare(`DELETE FROM activity_offering
       WHERE id = ? AND updated_at = ? AND kind IN ('annual_course', 'summer_course')`).bind(current.id, input.expectedUpdatedAt),
     audit(env, actor, "activity_offering_deleted", "activity_offering", current.id, {
@@ -753,5 +775,5 @@ export async function deleteUnusedCourseOffering(
       deletedUnusedClassCount: classes?.count ?? 0,
     }, flags(env, current), time),
   ]);
-  if ((result[3]?.meta?.changes ?? 0) !== 1) throw new OfferingError("conflict");
+  if ((result[8]?.meta?.changes ?? 0) !== 1) throw new OfferingError("conflict");
 }

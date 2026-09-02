@@ -733,14 +733,19 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
           lessonId: slot.status === "scheduled" ? slot.lessonId : null,
           lessonSequence: slot.status === "scheduled" ? slot.lessonSequence : null,
           lessonTitle: slot.status === "scheduled" ? slot.lessonTitle : null,
-          holidayWarnings: schoolCalendarPeriods.filter((period) => period.warnOnOverlap && period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label),
+          holidayWarnings: slot.status === "scheduled"
+            ? schoolCalendarPeriods.filter((period) => period.warnOnOverlap && period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label)
+            : [],
+          schoolHolidayNoClass: slot.status === "no_class"
+            && schoolCalendarPeriods.some((period) => period.excludeFromGeneration && period.startsOn <= slot.localDate && slot.localDate <= period.endsOn),
           isHistorical: slot.localDate < today,
           canCancel: revision.status === "draft"
             && slot.status === "scheduled"
             && slot.localDate >= today
             && (slot.lessonSequence ?? 0) > revision.lockedThroughSequence,
-          canRestore: slot.status === "no_class"
+          canRestore: (slot.status === "no_class" || slot.status === "cancelled")
             && slot.localDate >= today
+            && (slot.status !== "cancelled" || (slot.cancelledLessonSequence ?? 0) > revision.lockedThroughSequence)
             && !sharedOfferingBreaks.some((period) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn),
         })),
       };
@@ -1644,9 +1649,9 @@ export async function createCalendarChangeDraft(env: WorkerEnv, actor: StaffPrin
     env.DB.prepare(`INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, based_on_revision_id, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?)`)
       .bind(revisionId, current.calendarId, current.programId, await nextRevisionNumber(env, current.calendarId), current.firstCandidateDate, protectedThroughSequence, current.id, flags.isTest, flags.testRunId, time, time),
     ...oldOverrides.map((override) => env.DB.prepare(`INSERT INTO class_calendar_revision_override (id, class_calendar_revision_id, local_date, behavior, reason_label, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id(), revisionId, override.localDate, override.behavior, override.reasonLabel, flags.isTest, flags.testRunId, time, time)),
+      .bind(id(), revisionId, override.localDate, override.behavior, override.reasonLabel ?? null, flags.isTest, flags.testRunId, time, time)),
     ...oldSlots.map((slot) => env.DB.prepare(`INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, cancelled_lesson_sequence, cancelled_lesson_title, reason_label, is_test, test_run_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id(), revisionId, slot.localDate, slot.startTime, slot.endTime, slot.slotSource, slot.status, slot.lessonId, slot.cancelledLessonSequence, slot.cancelledLessonTitle, slot.reasonLabel, flags.isTest, flags.testRunId, time, time)),
+      .bind(id(), revisionId, slot.localDate, slot.startTime, slot.endTime, slot.slotSource, slot.status, slot.lessonId ?? null, slot.cancelledLessonSequence ?? null, slot.cancelledLessonTitle ?? null, slot.reasonLabel ?? null, flags.isTest, flags.testRunId, time, time)),
     audit(env, actor, "calendar_change_draft_created", "class_calendar_revision", revisionId, {
       basedOnRevisionId: current.id,
       protectedHistoricalSequence: protectedThroughSequence,
@@ -1661,6 +1666,7 @@ async function rebuiltDraftSchedule(
   revision: RevisionRow,
   addedExtra?: ExtraTeachingSlot,
   proposedOverride?: CalendarOverride,
+  restoredCancelledSlotId?: string,
 ): Promise<CalendarSlot[]> {
   const classSession = await classForCalendar(env, revision.calendarId);
   const attendanceProtectedSequence = await attendanceProtectedThroughSequence(env, classSession.id, revision.programId);
@@ -1673,13 +1679,13 @@ async function rebuiltDraftSchedule(
     overrides = [...overrides.filter((entry) => entry.localDate !== proposedOverride.localDate), proposedOverride];
   }
   const oldSlots = await slotsForRevision(env, revision.id);
-  const cancelledSlots = oldSlots.filter((slot) => slot.status === "cancelled").map(toSlot);
-  const cancelledHabitualDates = new Set(oldSlots.filter((slot) => slot.status === "cancelled" && slot.slotSource !== "manual_extra").map((slot) => slot.localDate));
+  const cancelledSlots = oldSlots.filter((slot) => slot.status === "cancelled" && slot.id !== restoredCancelledSlotId).map(toSlot);
+  const cancelledHabitualDates = new Set(oldSlots.filter((slot) => slot.status === "cancelled" && slot.slotSource !== "manual_extra" && slot.id !== restoredCancelledSlotId).map((slot) => slot.localDate));
   overrides = [
     ...overrides.filter((entry) => !cancelledHabitualDates.has(entry.localDate)),
     ...[...cancelledHabitualDates].map((localDate) => ({ id: `cancelled-${localDate}`, localDate, behavior: "exclude" as const })),
   ];
-  const extraSlots: ExtraTeachingSlot[] = oldSlots.filter((slot) => slot.slotSource === "manual_extra" && slot.status === "scheduled").map((slot) => ({ id: slot.id, localDate: slot.localDate, startTime: slot.startTime, endTime: slot.endTime, reasonLabel: slot.reasonLabel ?? undefined }));
+  const extraSlots: ExtraTeachingSlot[] = oldSlots.filter((slot) => slot.slotSource === "manual_extra" && (slot.status === "scheduled" || slot.id === restoredCancelledSlotId)).map((slot) => ({ id: slot.id, localDate: slot.localDate, startTime: slot.startTime, endTime: slot.endTime, reasonLabel: slot.reasonLabel ?? undefined }));
   if (addedExtra) extraSlots.push(addedExtra);
   let rebuilt: CalendarSlot[];
   try {
@@ -1751,6 +1757,18 @@ export async function cancelFutureCalendarSlot(env: WorkerEnv, actor: StaffPrinc
     mapPlanningError(caught);
   }
   await replaceDraftSlots(env, revision, result.slots, actor, "calendar_future_slot_cancelled", { slotId: input.slotId, changedFutureLessonAssignments: result.changedFutureLessonAssignments, newFinalLessonDate: result.newFinalLessonDate });
+}
+
+export async function restoreFutureCancelledCalendarSlot(env: WorkerEnv, actor: StaffPrincipal, input: { revisionId: string; expectedUpdatedAt: string; slotId: string }): Promise<void> {
+  requireCapability(actor, "calendar.manage");
+  const revision = await revisionForUpdate(env, input.revisionId); if (revision.status !== "draft" || revision.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  const classSession = await classForCalendar(env, revision.calendarId); const slots = (await slotsForRevision(env, revision.id)).map(toSlot);
+  const target = slots.find((slot) => slot.id === input.slotId);
+  const attendanceProtectedSequence = await attendanceProtectedThroughSequence(env, classSession.id, revision.programId);
+  const protectedThroughSequence = Math.max(revision.lockedThroughSequence, attendanceProtectedSequence);
+  if (!target || target.status !== "cancelled" || target.localDate < localToday() || (target.cancelledLessonSequence ?? 0) <= protectedThroughSequence) throw new ProgramCalendarError("immutable");
+  const rebuilt = await rebuiltDraftSchedule(env, revision, undefined, undefined, input.slotId);
+  await replaceDraftSlots(env, revision, rebuilt, actor, "calendar_future_slot_restored", { slotId: input.slotId, classSessionId: classSession.id });
 }
 
 function sameCalendarSlots(left: readonly SlotRow[], right: readonly SlotRow[]): boolean {

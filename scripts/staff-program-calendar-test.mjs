@@ -250,6 +250,10 @@ try {
   assert.match(schedulePage, /Нэмэлт хичээл оруулах/, "extra lessons are secondary schedule work");
   assert.doesNotMatch(schedulePage, /Өөрчлөх ноорог эхлүүлэх|Хуваарь нийтлэх|Ноорог хуваарь|Нийтлэгдсэн хуваарь|calendar-date-action|Өдөр, цаг өөрчлөх|replacement:/, "ordinary schedule editing hides draft, publish, and arbitrary date-move machinery");
   assert.match(schedulePage, /Энэ өдөр хичээллэх/, "a school-calendar skip has a natural class-level restore action");
+  assert.match(schedulePage, /Хичээлтэй болгох/, "a future manually cancelled row exposes the natural reverse action");
+  assert.match(schedulePage, /calendar\.restore-cancelled/, "manual no-class restoration uses its dedicated server-authoritative operation");
+  assert.match(schedulePage, /beginCalendarAction[\s\S]*?catch \(error\)[\s\S]*?Хуваарийн өөрчлөлтийг эхлүүлж чадсангүй/, "a rejected change-draft request reports a visible Mongolian error instead of failing silently");
+  assert.match(programCalendarSource, /holidayWarnings: slot\.status === "scheduled"[\s\S]*?: \[\]/, "only active teaching slots receive school-period overlap labels");
   assert.match(schedulePage, /Энэ өдрөөс хойших хичээлүүдийн огноо өөрчлөгдөнө\./, "schedule consequences avoid misleading exact reflow counts");
   assert.match(schedulePage, /Хадгалаагүй хуваарийн өөрчлөлтүүдийг устгах уу\?/, "calendar batch cancellation confirms before discarding persisted edits");
   assert.match(schedulePage, /calendar\.discard/, "calendar batch cancellation uses the server-side draft discard operation");
@@ -333,10 +337,21 @@ try {
   });
   const removableCourse = database.query("SELECT id, updated_at AS updatedAt FROM activity_offering WHERE title = 'Устгах зуны сургалт'")[0];
   const removableClass = database.query(`SELECT id FROM class_session WHERE activity_offering_id = ${quote(removableCourse.id)}`)[0];
+  await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: removableClass.id });
+  const removableCalendar = database.query(`SELECT calendar.id AS calendarId, revision.id AS revisionId, revision.updated_at AS updatedAt
+    FROM class_calendar AS calendar
+    INNER JOIN class_calendar_revision AS revision ON revision.class_calendar_id = calendar.id
+    WHERE calendar.class_session_id = ${quote(removableClass.id)} AND revision.status = 'draft'`)[0];
+  await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: removableCalendar.revisionId, expectedUpdatedAt: removableCalendar.updatedAt });
+  assert.throws(() => sqlite(`DELETE FROM class_calendar_revision WHERE id = ${quote(removableCalendar.revisionId)}`), /published calendar revision cannot be deleted/, "a standalone published revision delete remains prohibited");
+  assert.throws(() => sqlite(`UPDATE class_calendar_revision SET locked_through_sequence = 1 WHERE id = ${quote(removableCalendar.revisionId)}`), /published calendar revision identity is immutable/, "a standalone published revision mutation remains prohibited");
   await offeringService.deleteUnusedCourseOffering(runtime, actor("teacher"), { offeringId: removableCourse.id, expectedUpdatedAt: removableCourse.updatedAt });
   assert.equal(count(database, "activity_offering", `id = ${quote(removableCourse.id)}`), 0, "an unused course Offering can be deleted safely");
   assert.equal(count(database, "class_session", `id = ${quote(removableClass.id)}`), 0, "its unused class is deleted with the Offering");
   assert.equal(count(database, "class_meeting_rule", `class_session_id = ${quote(removableClass.id)}`), 0, "its meeting rule cascades with the unused class");
+  assert.equal(count(database, "class_calendar", `id = ${quote(removableCalendar.calendarId)}`), 0, "its planning calendar is deleted only with the unused Offering aggregate");
+  assert.equal(count(database, "class_calendar_revision", `id = ${quote(removableCalendar.revisionId)}`), 0, "its published planning revision is deleted with the unused Offering aggregate");
+  assert.equal(count(database, "unused_offering_deletion_context"), 0, "the aggregate deletion context never persists");
   assert.equal(count(database, "audit_event", `action = 'activity_offering_deleted' AND subject_id = ${quote(removableCourse.id)}`), 1, "unused course deletion is audited");
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { kind: "summer_course", title: "Туршилтын зуны сургалт", startsOn: "2027-06-01", endsOn: "2027-06-14", programFamilyId: summerFamily.familyId, facebookGroupUrl: "https://facebook.com/groups/fake-summer" });
   const summerOffering = database.query("SELECT id, curriculum_program_id AS programId, academic_year_id AS academicYearId, charge_mode AS chargeMode, use_academic_year_breaks AS useBreaks, default_class_duration_minutes AS duration FROM activity_offering WHERE title = 'Туршилтын зуны сургалт'")[0];
@@ -354,7 +369,11 @@ try {
   await service.generateCalendarDraft(runtime, actor("teacher"), { classSessionId: summerWeekdayClass.id });
   const summerDraftRevision = database.query(`SELECT revision.id, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = ${quote(summerWeekdayClass.id)} AND revision.status = 'draft'`)[0];
   const usedSummerOffering = database.query(`SELECT updated_at AS updatedAt FROM activity_offering WHERE id = ${quote(summerOffering.id)}`)[0];
-  await assert.rejects(() => offeringService.deleteUnusedCourseOffering(runtime, actor("teacher"), { offeringId: summerOffering.id, expectedUpdatedAt: usedSummerOffering.updatedAt }), /Offering operation/, "a course Offering with a calendar cannot be deleted");
+  sqlite(`INSERT INTO registration_window (id, name, starts_on, ends_on, is_test, test_run_id, created_at, updated_at)
+    VALUES ('protected-offering-window', 'Хамгаалсан цонх', '2027-01-01', '2027-01-31', 1, 'staff-program-test', '${now}', '${now}');
+    INSERT INTO registration_window_offering (registration_window_id, activity_offering_id, created_at)
+    VALUES ('protected-offering-window', ${quote(summerOffering.id)}, '${now}');`);
+  await assert.rejects(() => offeringService.deleteUnusedCourseOffering(runtime, actor("teacher"), { offeringId: summerOffering.id, expectedUpdatedAt: usedSummerOffering.updatedAt }), /Offering operation/, "a course Offering with a registration reference cannot be deleted");
   assert.equal(database.query(`SELECT local_date AS localDate FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(summerDraftRevision.id)} AND status = 'scheduled' ORDER BY local_date DESC LIMIT 1`)[0].localDate, "2027-06-16", "a course break extends a daily summer plan beyond its soft end date");
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(summerDraftRevision.id)} AND local_date BETWEEN '2027-06-07' AND '2027-06-08' AND status = 'scheduled'`), 0, "an Offering break suppresses every daily candidate");
   await service.saveClassSession(runtime, actor("teacher"), { offeringId: summerOffering.id, recurrenceKind: "daily", firstDate: "2027-06-01", lastDate: "2027-06-14", academicYearId: "", stageCode: "", weekday: "", startTime: "13:00", endTime: "14:30", capacity: 12 });
@@ -585,6 +604,8 @@ try {
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt, revision.locked_through_sequence AS protectedThrough FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
   assert.equal(draft.protectedThrough, 1, "an existing stored historical prefix remains protected even without a teacher lock control");
+  const holidaySkippedOverview = await service.getProgramCalendarOverview(runtime);
+  assert.equal(holidaySkippedOverview.revisions.find((entry) => entry.id === draft.id).slots.find((slot) => slot.localDate === "2026-09-12").schoolHolidayNoClass, true, "a school-calendar no-class row retains restore context without a redundant overlap warning");
   await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, kind: "restore", localDate: "2026-09-12" });
   draft = database.query(`SELECT id, updated_at AS updatedAt, locked_through_sequence AS protectedThrough FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND local_date = '2026-09-12' AND status = 'scheduled'`), 1, "a teacher may restore a school-calendar skipped date for one class");
@@ -599,22 +620,47 @@ try {
   const breakBeforeRestoreWarning = database.query("SELECT updated_at AS updatedAt FROM academic_year_break WHERE id = 'school-restore-break'")[0];
   await service.saveAcademicYearBreak(runtime, actor("teacher"), { id: "school-restore-break", expectedUpdatedAt: breakBeforeRestoreWarning.updatedAt, academicYearId: "year-2026", label: "Өвлийн амралт", startsOn: "2026-09-12", endsOn: "2026-09-12", excludeFromGeneration: true, warnOnOverlap: true });
   assert.equal(restoredOverview.revisions.find((entry) => entry.classSessionId === "class-1" && entry.status === "published").id !== draft.id, true, "a saved calendar stays current until the working change is finally saved");
-  await service.discardCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt });
-  assert.equal(count(database, "class_calendar_revision", `id = ${quote(draft.id)}`), 0, "whole calendar cancel removes the persisted working revision");
+  await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt });
+  assert.equal(database.query(`SELECT status FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0].status, "published", "a saved holiday restore becomes the next immutable calendar revision");
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
+  assert.equal(count(database, "class_calendar_revision_override", `class_calendar_revision_id = ${quote(draft.id)} AND behavior = 'restore'`), 1, "a later change draft safely copies an optional-note holiday restore as SQL NULL rather than an unsupported value");
   assert.equal(count(database, "class_calendar_revision", "status = 'draft' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1, "a later row action creates one recoverable internal calendar draft");
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   assert.equal(count(database, "class_calendar_revision", "status = 'draft' AND class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1')"), 1, "reopening calendar editing resumes the existing working revision");
-  const futureSlot = database.query(`SELECT slot.id FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND lesson.sequence_number = 2`)[0];
+  const originalLessonMapping = database.query(`SELECT lesson.sequence_number AS sequenceNumber, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND slot.status = 'scheduled' ORDER BY lesson.sequence_number`);
+  const futureSlot = database.query(`SELECT slot.id, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND lesson.sequence_number = 3`)[0];
   await service.cancelFutureCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: futureSlot.id });
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`), 1, "future cancellation remains visible history");
+  const cancelledContext = database.query(`SELECT curriculum_lesson_id AS lessonId, cancelled_lesson_sequence AS sequenceNumber FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`)[0];
+  assert.deepEqual(cancelledContext, { lessonId: null, sequenceNumber: 3 }, "a no-class context row does not retain a second authoritative lesson assignment");
   const reflowedLesson = database.query(`SELECT lesson.sequence_number AS sequenceNumber, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND slot.status = 'scheduled' ORDER BY lesson.sequence_number`);
   assert.deepEqual(reflowedLesson.map((entry) => entry.sequenceNumber), [1, 2, 3], "removing an active slot preserves the ordered Program lesson sequence");
+  assert.notEqual(reflowedLesson.find((entry) => entry.sequenceNumber === 3)?.localDate, futureSlot.localDate, "the cancelled lesson reflows to a later active teaching slot instead of being deleted");
+  const cancelledDraft = database.query(`SELECT updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
+  await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: cancelledDraft.updatedAt });
+  const cancelledPublishedOverview = await service.getProgramCalendarOverview(runtime);
+  assert.equal(cancelledPublishedOverview.revisions.find((entry) => entry.classSessionId === "class-1" && entry.status === "published").slots.find((slot) => slot.status === "cancelled")?.cancelledLessonSequence, 3, "the manual no-class state survives save and overview reload before restoration");
+  await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
+  draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt, revision.locked_through_sequence AS protectedThrough FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
+  await service.restoreFutureCancelledCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: database.query(`SELECT id FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(draft.id)} AND status = 'cancelled'`)[0].id });
+  const restoredMapping = database.query(`SELECT lesson.sequence_number AS sequenceNumber, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND slot.status = 'scheduled' ORDER BY lesson.sequence_number`);
+  assert.deepEqual(restoredMapping, originalLessonMapping, "manual no-class restoration returns every lesson to its original ordered date");
+  assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM (SELECT curriculum_lesson_id FROM class_calendar_slot WHERE class_calendar_revision_id = ${quote(draft.id)} AND status = 'scheduled' GROUP BY curriculum_lesson_id HAVING COUNT(*) > 1)`)[0].count), 0, "restoring a cancelled slot cannot duplicate a CurriculumLesson assignment");
+  const restoredDraft = database.query(`SELECT updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
+  await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: restoredDraft.updatedAt });
+  const restoredPublishedOverview = await service.getProgramCalendarOverview(runtime);
+  assert.deepEqual(restoredPublishedOverview.revisions.find((entry) => entry.classSessionId === "class-1" && entry.status === "published").slots.filter((slot) => slot.status === "scheduled").map((slot) => ({ sequenceNumber: slot.lessonSequence, localDate: slot.localDate })), originalLessonMapping, "the restored mapping survives calendar save and overview reload");
+  await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
+  draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt, revision.locked_through_sequence AS protectedThrough FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
+  const protectedSlot = database.query(`SELECT slot.id, lesson.sequence_number AS sequenceNumber, lesson.title AS lessonTitle FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND lesson.sequence_number = 1`)[0];
+  sqlite(`UPDATE class_calendar_slot SET status = 'cancelled', curriculum_lesson_id = NULL, cancelled_lesson_sequence = ${protectedSlot.sequenceNumber}, cancelled_lesson_title = ${quote(protectedSlot.lessonTitle)} WHERE id = ${quote(protectedSlot.id)};`);
+  await assert.rejects(() => service.restoreFutureCancelledCalendarSlot(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, slotId: protectedSlot.id }), /Program and calendar/, "a historically protected no-class row cannot be restored through the future-slot action");
+  sqlite(`UPDATE class_calendar_slot SET status = 'scheduled', curriculum_lesson_id = (SELECT id FROM curriculum_lesson WHERE sequence_number = 1 AND curriculum_program_id = (SELECT curriculum_program_id FROM class_calendar_revision WHERE id = ${quote(draft.id)})), cancelled_lesson_sequence = NULL, cancelled_lesson_title = NULL WHERE id = ${quote(protectedSlot.id)};`);
   const changedDraft = database.query(`SELECT updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
   await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: changedDraft.updatedAt, kind: "extra", localDate: "2026-09-16", startTime: "10:00", endTime: "11:20", reasonLabel: "Нөхөх хичээл" });
   const addedSlot = database.query(`SELECT lesson.sequence_number AS sequenceNumber, slot.local_date AS localDate FROM class_calendar_slot AS slot INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id WHERE slot.class_calendar_revision_id = ${quote(draft.id)} AND slot.status = 'scheduled' ORDER BY slot.local_date, slot.start_time`);
-  assert.equal(addedSlot.find((entry) => entry.localDate === "2026-09-16")?.sequenceNumber, 2, "an extra dated slot joins chronological order and receives the next lesson automatically");
+  assert.equal(addedSlot.find((entry) => entry.localDate === "2026-09-16")?.sequenceNumber, 3, "an extra dated slot joins chronological order after the retained restored holiday lesson");
   const changedCalendarDraft = database.query(`SELECT updated_at AS updatedAt FROM class_calendar_revision WHERE id = ${quote(draft.id)}`)[0];
   const previousCalendar = database.query("SELECT id FROM class_calendar_revision WHERE class_calendar_id = (SELECT id FROM class_calendar WHERE class_session_id = 'class-1') AND status = 'published'")[0];
   await service.publishCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: changedCalendarDraft.updatedAt });
