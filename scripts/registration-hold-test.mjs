@@ -565,14 +565,47 @@ try {
     paymentRequestId: cashRequest.id, allocations: [{ installmentId: cashInstallment.id, amountMnt: Number(cashInstallment.amountMnt) }],
     source: 'staff_manual_cash', idempotencyKey: 'cash-overpayment',
   }), "allocation cannot exceed the remaining obligation");
+
+  const approvedPartialDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-13T09:12:00.000Z"));
+  const approvedPartialChallenge = addChallenge(database, approvedPartialDraft.draftId, approvedPartialDraft.normalizedEmail, "2026-08-13T09:12:00.000Z", "2026-08-14T09:12:00.000Z");
+  const approvedPartialSession = session("2026-08-13T09:13:00.000Z", "2026-08-16T10:13:00.000Z");
+  await confirmRegistrationChallenge(env(database), approvedPartialChallenge, approvedPartialSession, new Date("2026-08-13T09:13:00.000Z"));
+  const approvedPartialRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [approvedPartialDraft.draftId])[0];
+  const approvedPartialQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-13T09:14:00.000Z"));
+  const approvedPartialItem = approvedPartialQueue.items.find((item) => item.paymentRequestId === approvedPartialRequest.id);
+  const approvedPartialAmount = Math.floor(Number(approvedPartialItem.expectedAmountMnt) / 2);
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: approvedPartialRequest.id,
+    allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: approvedPartialAmount }],
+    source: 'staff_manual_bank', approveSeatConfirmation: true,
+    remainingPaymentDueAt: "2026-09-30T09:14:00.000Z", idempotencyKey: 'approved-partial-promotion',
+  }, new Date("2026-08-13T09:14:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:20:00.000Z"));
+  const approvedPartialChild = database.query(`SELECT id, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [approvedPartialDraft.draftId])[0];
+  assert.ok(approvedPartialChild.enrollmentId, "a finalized teacher-approved partial payment creates the canonical enrollment");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${approvedPartialChild.id}' AND status = 'active'`), 0, "partial promotion releases its former hold only after canonical enrollment exists");
+  assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}' AND status = 'confirmed'`), 1, "partial promotion creates exactly one confirmed enrollment");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'initial'`, [approvedPartialRequest.id])[0].status, 'partially_paid', "remaining tuition remains an independent financial obligation after enrollment promotion");
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:25:00.000Z"));
+  assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}'`), 1, "finalizer replay does not duplicate the approved-partial enrollment");
+  const approvedPartialRemaining = Number(approvedPartialItem.expectedAmountMnt) - approvedPartialAmount;
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: approvedPartialRequest.id,
+    allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: approvedPartialRemaining }],
+    source: 'staff_manual_bank', idempotencyKey: 'approved-partial-settlement',
+  }, new Date("2026-08-14T09:14:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-14T09:20:00.000Z"));
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'initial'`, [approvedPartialRequest.id])[0].status, 'paid', "a later full settlement resolves the remaining initial balance");
+  assert.equal(count(database, "payment_confirmation", `payment_request_id = '${approvedPartialRequest.id}' AND seat_confirmation_approved = 1 AND status = 'finalized'`), 1, "later settlement never removes the earlier durable seat approval");
+  assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}' AND status = 'confirmed'`), 1, "later settlement preserves the existing canonical enrollment");
   await claimParentPayment(database, cashRequest.id, cashDraft.draftId, cashSession.rawToken, new Date("2026-08-15T10:00:00.000Z"));
   await assert.rejects(claimParentPayment(database, cashRequest.id, cashDraft.draftId, "not-this-family", new Date("2026-08-15T10:00:00.000Z")), "another session cannot claim a family's payment");
   const released = await releaseUnpaidSeat(env(database), paymentStaff, cashRequest.id, new Date("2026-08-15T10:00:00.000Z"));
   assert.equal(released.released, true, "staff can explicitly release a genuinely unpaid overdue seat");
   assert.equal(released.parentClaimed, true, "release surfaces the parent's non-authoritative payment claim");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${cashDraft.draftId}') AND status = 'active'`), 0, "explicit release, not elapsed time, frees the seat");
-  assert.equal(count(database, "guardian_account"), 2, "only fully reconciled, verified paid drafts become canonical guardians");
-  assert.equal(count(database, "student"), 2, "partial or released payments never create canonical students");
+  assert.equal(count(database, "guardian_account"), 3, "fully paid and finalized teacher-approved partial drafts become canonical guardians");
+  assert.equal(count(database, "student"), 3, "a finalized teacher-approved partial creates a canonical student while ordinary partial or released payments do not");
 
   const closureDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-13T09:50:00.000Z"));
   const closureChallenge = addChallenge(

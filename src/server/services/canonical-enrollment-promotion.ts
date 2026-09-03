@@ -87,6 +87,26 @@ interface ReviewRow {
   identityResolutionStatus: string;
 }
 
+// Canonical identity/enrollment work may begin only after the initial
+// obligation is fully finalized, or after a teacher has finalized an explicit
+// partial-payment seat approval. The remaining balance is financial work, not
+// an enrollment-identity blocker.
+function promotionPaymentEligibleSql(childIdExpression: string): string {
+  return `(EXISTS (SELECT 1 FROM payment_installment
+      WHERE payment_installment.registration_draft_child_id = ${childIdExpression}
+        AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid')
+    OR EXISTS (SELECT 1 FROM payment_confirmation
+      INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+      INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+      WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
+        AND payment_installment.registration_draft_child_id = ${childIdExpression}
+        AND payment_installment.installment_kind = 'initial'))`;
+}
+
+function promotionPaymentEligible(row: PromotionRow): boolean {
+  return Boolean(row.initialInstallmentPaid || row.partialSeatApproved);
+}
+
 function normalizedText(value: string): string {
   return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -248,7 +268,7 @@ export async function promotePaidDraftChild(
     return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
   }
   const now = nowDate.toISOString();
-  if ((!row.initialInstallmentPaid && !row.partialSeatApproved) || !row.selectedClassSessionId || !row.activeInitialHold) {
+  if (!promotionPaymentEligible(row) || !row.selectedClassSessionId || !row.activeInitialHold) {
     await env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'not_eligible',
       promotion_status = 'not_eligible', updated_at = ? WHERE id = ?`).bind(now, row.childId).run();
     return { state: "not_eligible" };
@@ -430,14 +450,7 @@ export async function promotePaidDraftChildren(env: WorkerEnv, actor: StaffPrinc
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.selected_class_session_id IS NOT NULL
       AND registration_draft_child.canonical_enrollment_id IS NULL
-      AND (EXISTS (SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
-        AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid')
-        OR EXISTS (SELECT 1 FROM payment_confirmation
-          INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
-          INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
-          WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
-            AND payment_installment.registration_draft_child_id = registration_draft_child.id
-            AND payment_installment.installment_kind = 'initial'))`)
+      AND ${promotionPaymentEligibleSql("registration_draft_child.id")}`)
     .bind(registrationDraftId).all<{ id: string }>();
   const outcomes = [];
   for (const child of result.results) outcomes.push(await promotePaidDraftChild(env, actor, child.id, null, nowDate));
@@ -468,8 +481,7 @@ export async function getPromotionReviewQueue(env: WorkerEnv, actor: StaffPrinci
     INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
     WHERE registration_draft_child.canonical_enrollment_id IS NULL
       AND registration_draft_child.selected_class_session_id IS NOT NULL
-      AND EXISTS (SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
-        AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid')
+      AND ${promotionPaymentEligibleSql("registration_draft_child.id")}
     ORDER BY registration_draft_child.updated_at ASC`).all<ReviewRow>();
   const items = [];
   for (const item of result.results) {

@@ -153,6 +153,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     payment_installment.effective_due_at AS paymentDueAt, payment_installment.status AS installmentStatus,
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+    registration_draft_child.promotion_status AS promotionStatus,
+    registration_draft_child.identity_resolution_status AS identityResolutionStatus,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,
     class_session.start_time AS startTime, class_session.end_time AS endTime,
@@ -213,7 +215,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
   const capacityById = new Map(capacityRows.map((row) => [row.classSessionId, row]));
   const capacity = capacityLabels.results.map((label) => ({ ...label, ...(capacityById.get(label.id) ?? {
-    capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, legacyReservationCount: 0, offeredWaitlistCount: 0, waitlistCount: 0, freeSeats: 0,
+    capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, identityReviewCount: 0,
+    legacyReservationCount: 0, offeredWaitlistCount: 0, waitlistCount: 0, freeSeats: 0,
   }) }));
   const rawItems = result.results.map((item) => ({ ...item,
     expectedAmountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),

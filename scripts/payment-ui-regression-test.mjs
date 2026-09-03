@@ -14,6 +14,12 @@ assert.match(page, /data-discount-reverse=/, "admins have an auditable per-award
 assert.match(page, /хөнгөлөлтийн кредит/, "discount excess is distinct from received-payment credit");
 assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'), router.indexOf('if (path === "/api/staff/attendance")')), /case "discount-award\.reverse"/, "the payment detail routes discount reversal to its own staff endpoint");
 assert.match(page, /item\.seatConfirmationApproved \? "Хэсэгчлэн төлсөн"/);
+assert.match(page, /const seatApprovalControl = approvedSeat/, "already-approved seats use a separate form projection");
+assert.match(page, /!item\.seatConfirmationApproved/, "the payment form does not re-offer seat approval after it is durable");
+assert.match(page, /Boolean\(form\.elements\.approveSeat\?\.checked\)/, "later payments submit safely after the approval control is intentionally absent");
+assert.match(page, /if \(!seat\) return;/, "later payments remain usable when no seat-approval control is rendered");
+assert.match(page, /item\.identityResolutionStatus === "needs_identity_review"/, "only a durable identity-review state is flagged for staff");
+assert.match(page, /Шалгах \$\{review\}/, "capacity presentation distinguishes identity review from ordinary payment waiting");
 assert.match(page, /\$\{tentative\}/);
 assert.match(page, /data-offer-decline=\"\$\{escape\(item\.id\)\}\">Татгалзсаныг тэмдэглэх/);
 assert.match(page, /data-offer-close-action=\"\$\{escape\(item\.id\)\}\">Саналыг хаах/);

@@ -5,6 +5,7 @@ export interface ClassCapacityProjection {
   capacity: number;
   confirmedCount: number;
   reservedInitialPaymentCount: number;
+  identityReviewCount: number;
   legacyReservationCount: number;
   offeredWaitlistCount: number;
   waitlistCount: number;
@@ -28,6 +29,7 @@ interface CapacityRow {
   capacity: number;
   confirmedCount: number;
   reservedInitialPaymentCount: number;
+  identityReviewCount: number;
   legacyReservationCount: number;
   offeredWaitlistCount: number;
   waitlistCount: number;
@@ -83,6 +85,7 @@ export async function getClassCapacityProjections(
     SELECT class_session.id AS classSessionId, class_session.capacity,
       COALESCE(confirmed.count, 0) AS confirmedCount,
       COALESCE(reserved.count, 0) AS reservedInitialPaymentCount,
+      COALESCE(review.count, 0) AS identityReviewCount,
       COALESCE(legacy.count, 0) AS legacyReservationCount,
       COALESCE(offers.count, 0) AS offeredWaitlistCount,
       COALESCE(waiting.count, 0) AS waitlistCount
@@ -114,6 +117,16 @@ export async function getClassCapacityProjections(
       GROUP BY registration_capacity_hold.class_session_id
     ) reserved ON reserved.class_session_id = class_session.id
     LEFT JOIN (
+      SELECT registration_capacity_hold.class_session_id, COUNT(*) AS count
+      FROM registration_capacity_hold
+      INNER JOIN registration_draft_child ON registration_draft_child.id = registration_capacity_hold.registration_draft_child_id
+      WHERE registration_capacity_hold.status = 'active' AND registration_capacity_hold.hold_type = 'initial_payment'
+        AND registration_draft_child.canonical_enrollment_id IS NULL
+        AND registration_draft_child.promotion_status = 'pending'
+        AND registration_draft_child.identity_resolution_status = 'needs_identity_review' ${draftTestFilter}
+      GROUP BY registration_capacity_hold.class_session_id
+    ) review ON review.class_session_id = class_session.id
+    LEFT JOIN (
       SELECT class_session_id, COUNT(*) AS count FROM waitlist_seat_offer
       WHERE status IN ('active', 'awaiting_transfer') ${offerTestFilter}
       GROUP BY class_session_id
@@ -135,7 +148,7 @@ export async function getClassCapacityProjections(
     const consumed = Number(row.confirmedCount) + Number(row.reservedInitialPaymentCount)
       + Number(row.legacyReservationCount) + Number(row.offeredWaitlistCount);
     return { ...row, capacity: Number(row.capacity), confirmedCount: Number(row.confirmedCount),
-      reservedInitialPaymentCount: Number(row.reservedInitialPaymentCount), legacyReservationCount: Number(row.legacyReservationCount), offeredWaitlistCount: Number(row.offeredWaitlistCount),
+      reservedInitialPaymentCount: Number(row.reservedInitialPaymentCount), identityReviewCount: Number(row.identityReviewCount), legacyReservationCount: Number(row.legacyReservationCount), offeredWaitlistCount: Number(row.offeredWaitlistCount),
       waitlistCount: Number(row.waitlistCount), freeSeats: Math.max(Number(row.capacity) - consumed, 0) };
   });
 }
