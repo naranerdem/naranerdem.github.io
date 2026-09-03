@@ -9,7 +9,7 @@
     "REGISTRATION_WRITE_ENABLED": "false",
     "TURNSTILE_SITE_KEY": "0x4AAAAAAElUx-dJ1Bqo6Srw",
     "APP_ORIGIN": "https://naranerdem.com",
-    "EMAIL_ENABLED": "false",
+    "EMAIL_ENABLED": "true",
     "AUTH_EMAIL_ENABLED": "false",
     "STAFF_AUTH_EMAIL_ENABLED": "true",
     "STAFF_AUTH_TURNSTILE_SITE_KEY": "0x4AAAAAAEkBazLKKUTo12jt",
