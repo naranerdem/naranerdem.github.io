@@ -434,12 +434,12 @@ Use a conceptual value such as `pricingBasis` or `selectedPlanTuitionTotal`.
 
 ### Tuition Reduction
 
-Possible reduction types include:
+Implemented reduction types include:
 
 - automatic family discount
 - automatic referral discount
-- 10% merit award for selected good returning students
-- manually approved exceptional adjustment
+- future merit award for selected good returning students
+- future manually approved exceptional adjustment
 
 Percentage reductions are calculated independently against the chosen plan's pre-discount tuition total. If selected-plan tuition is `T`, the eventual referrer and referred-child reductions are:
 
@@ -463,22 +463,22 @@ Reduction records should preserve:
 - when it was approved/qualified
 - whether it affects the whole enrollment or specific installments
 
-Do not hard-code an arbitrary maximum discount. Advanced admin policy settings should conceptually control family, referrer, and referred-child discount rates, whether referrals accumulate, optional referral cap, optional total automatic-discount cap, whether family + referral stack, whether merit award + automatic discounts stack, and future adjustment-combination rules. These settings belong in advanced admin, not teacher daily UI.
+Migration 0039 implements a typed advanced-admin policy for the family, referrer, and referred-child rates, initially 10% / 5% / 2%. It snapshots the rate and chosen-plan base into a durable `discount_award`; later policy changes apply only to future awards. Family/referral awards accumulate independently with no arbitrary automatic cap, never make an installment negative, and are applied initial-installment first then later installments in integer MNT. The original plan snapshot, installment rows, and received-payment history are immutable. Excess after an already-paid or fully discounted obligation is an explicit discount-credit position. Future merit/exceptional adjustment policy remains separate.
 
 ### Automatic Family Discount
 
 There is a normal, public family discount: if two or more eligible children from the same family are enrolled in the same academic year, each receives a 10% tuition reduction.
 
-This is not a teacher-only exceptional discount. It should be modeled as an automatic business rule based on `FamilyGroup` eligibility.
+This is not a teacher-only exceptional discount. It is an automatic business rule applied either to two selected children in one accepted registration or, later, to two confirmed children with the same canonical guardian relationship.
 
 Recommended qualification semantics:
 
-- base the discount on genuinely participating/paid children, not fake or abandoned pre-registrations
-- consider the benefit final when at least two eligible family children have made the required initial payment / become confirmed
-- if children are processed together, the system may eventually generate an appropriately discounted combined payment
-- if one child paid earlier at full price and a second child later qualifies the family, the earlier child can receive account credit
+- never infer a family from matching surname, address, email, phone, Facebook identity, or payment origin
+- snapshot each accepted same-submission award before payment; cross-submission awards wait for canonical guardian evidence
+- if one child paid earlier at full price and a second child later qualifies the family, preserve received payment and record the resulting discount-credit position
+- do not automatically claw back a historical award if a family later drops below two children; an audited admin reversal is required
 
-Keep the precise activation algorithm configurable enough that backend implementation can refine it later.
+The bounded automatic rule is now implemented; future discretionary award types remain separate from it.
 
 ### Referral Discount
 
@@ -487,13 +487,12 @@ There is a normal referral program:
 - an existing/current child A may refer child B
 - B must still be registered by B's own parent/guardian
 - A does not register B
-- successful referral is intended to give 5% to A and 2% to B
+- accepted registration with a valid active code gives B a 2% award
+- confirmed enrollment for B gives A one 5% award for that successful referral
 - A may refer several children and can earn multiple 5% reductions
 - percentages add linearly, not multiplicatively
 
-A referral only financially qualifies when both relevant children have made their required initial payment / are confirmed.
-
-If B pays before A, B may initially pay full price. When the referral later qualifies, the applicable snapshotted adjustment or credit can be recorded without rewriting the original payment history.
+The referred-child award is calculated when the active code is captured at accepted registration. The referrer award qualifies only when B reaches canonical confirmed enrollment. If A has already paid, the referrer award reduces any remaining obligation or becomes an explicit discount-credit position without rewriting received-payment history.
 
 Model referral identity explicitly. Do not infer friendship/referral from school, address, Facebook, names, or payment origin. The optional public `Урилгын код` now resolves only to an active canonical referral code; capture is retained as a distinct relationship because both families may later receive different benefits. The family's own shareable referral code/link is not generated during registration; it becomes available only after the first required payment confirms enrollment.
 

@@ -99,6 +99,7 @@ import { PublicSiteFontError, updatePublicSiteFont } from "../staff/public-site-
 import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updateTeacherDashboardPreferences } from "../staff/teacher-dashboard-preferences";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import { EmailArchiveBccError, getEmailArchiveBccSetting, updateEmailArchiveBccSetting } from "../staff/email-archive-bcc";
+import { DiscountPolicyError, reverseDiscountAward, updateDiscountPolicySetting } from "../services/discounts";
 import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
 import { RegistrationCorrectionError, registrationCorrectionDetail, saveRegistrationCorrection } from "../staff/registration-corrections";
 import {
@@ -301,6 +302,14 @@ function paymentReconciliationError(caught: unknown): Response {
   if (caught.code === "already_paid") return error("invalid_request", "Төлбөр бүрэн баталгаажсан тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function discountPolicyError(caught: DiscountPolicyError): Response {
+  const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+  return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+    caught.code === "forbidden" ? "Энэ хөнгөлөлтийг өөрчлөх эрх алга."
+      : caught.code === "conflict" ? "Хөнгөлөлтийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу."
+        : "Хөнгөлөлтийн мэдээллээ шалгана уу.", status, { "Cache-Control": "no-store" });
 }
 
 function waitlistOfferError(caught: unknown): Response {
@@ -1081,6 +1090,10 @@ export async function handleApiRequest(
           return json({ ok: true }, 200, { "Cache-Control": "no-store" });
         case "payment.release-seat":
           return json({ ok: true, ...await releaseUnpaidSeat(env, principal, String(payload.paymentRequestId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "discount-award.reverse":
+          return json({ ok: true, ...await reverseDiscountAward(env, principal, {
+            awardId: String(payload.awardId ?? ""), reason: String(payload.reason ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
         case "waitlist-offer.contact":
           return json({ ok: true, ...await recordWaitlistContact(env, principal, String(payload.offerId ?? ""),
             payload.channel === "messenger" ? "messenger" : payload.channel === "other" ? "other" : "phone") }, 200, { "Cache-Control": "no-store" });
@@ -1109,7 +1122,8 @@ export async function handleApiRequest(
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
     } catch (caught) {
-      return caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)
+      return caught instanceof DiscountPolicyError ? discountPolicyError(caught)
+        : caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)
         : caught instanceof WaitlistOfferError ? waitlistOfferError(caught) : paymentReconciliationError(caught);
     }
   }
@@ -1580,6 +1594,19 @@ export async function handleApiRequest(
             deadlineMinutes: Number(payload.deadlineMinutes), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
+        case "discount-policy.save":
+          await updateDiscountPolicySetting(env, principal, {
+            familyMultiChildBasisPoints: Number(payload.familyMultiChildBasisPoints),
+            referrerBasisPoints: Number(payload.referrerBasisPoints),
+            referredChildBasisPoints: Number(payload.referredChildBasisPoints),
+            expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
+        case "discount-award.reverse":
+          await reverseDiscountAward(env, principal, {
+            awardId: String(payload.awardId ?? ""), reason: String(payload.reason ?? ""),
+          });
+          break;
         case "payment-reminder-setting.save":
           await updatePaymentReminderSetting(env, principal, {
             initialReminderLeadMinutes: Number(payload.initialReminderLeadMinutes),
@@ -1630,6 +1657,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
               : "Төлбөр хийх хугацааны утгыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof DiscountPolicyError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Хөнгөлөлтийн мэдээлэл өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "Хөнгөлөлтийн хувийг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PaymentReminderError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

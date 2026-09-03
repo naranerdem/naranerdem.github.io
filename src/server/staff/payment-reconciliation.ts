@@ -4,6 +4,7 @@ import { getPaymentReminderSetting } from "./payment-reminders";
 import { promotePaidDraftChildren } from "../services/canonical-enrollment-promotion";
 import { getClassCapacityProjections } from "../services/class-capacity";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
+import { discountAwardsForChildren, effectiveInstallmentsForRows, recalculateDiscountAwardBalances } from "../services/discounts";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
 type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid";
@@ -27,6 +28,7 @@ interface InstallmentRow {
   paymentRequestId: string;
   registrationDraftChildId: string;
   installmentKind: "initial" | "later";
+  installmentNumber: number;
   amountMnt: number;
   effectiveDueAt: string;
   status: "pending" | "partially_paid" | "paid" | "released";
@@ -69,7 +71,7 @@ async function requestForId(env: WorkerEnv, requestId: string): Promise<PaymentR
 async function installmentsForRequest(env: WorkerEnv, paymentRequestId: string): Promise<InstallmentRow[]> {
   const result = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.payment_request_id AS paymentRequestId,
     payment_installment.registration_draft_child_id AS registrationDraftChildId,
-    payment_installment.installment_kind AS installmentKind, payment_installment.amount_mnt AS amountMnt,
+    payment_installment.installment_kind AS installmentKind, payment_installment.installment_number AS installmentNumber, payment_installment.amount_mnt AS amountMnt,
     payment_installment.effective_due_at AS effectiveDueAt, payment_installment.status,
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt
     FROM payment_installment
@@ -79,7 +81,11 @@ async function installmentsForRequest(env: WorkerEnv, paymentRequestId: string):
     WHERE payment_installment.payment_request_id = ?
     GROUP BY payment_installment.id
     ORDER BY payment_installment.registration_draft_child_id, payment_installment.installment_number`).bind(paymentRequestId).all<InstallmentRow>();
-  return result.results.map((row) => ({ ...row, amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) }));
+  const raw = result.results.map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) }));
+  const effective = new Map((await effectiveInstallmentsForRows(env.DB, raw.map((row) => ({
+    id: row.id, registrationDraftChildId: row.registrationDraftChildId, installmentNumber: row.installmentNumber, amountMnt: row.amountMnt, allocatedAmountMnt: row.allocatedAmountMnt,
+  })))).map((row) => [row.id, row]));
+  return raw.map((row) => ({ ...row, amountMnt: effective.get(row.id)?.effectiveAmountMnt ?? row.amountMnt }));
 }
 
 export async function getPaymentConfirmationGraceSetting(env: WorkerEnv): Promise<PaymentConfirmationGraceSetting> {
@@ -142,13 +148,16 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   const result = await env.DB.prepare(`SELECT
     payment_request.id AS paymentRequestId, payment_request.payment_reference AS paymentReference,
     payment_request.transfer_description AS transferDescription,
-    payment_installment.id AS installmentId, payment_installment.amount_mnt AS expectedAmountMnt,
+    payment_installment.id AS installmentId, payment_installment.registration_draft_child_id AS registrationDraftChildId,
+    payment_installment.amount_mnt AS expectedAmountMnt,
     payment_installment.effective_due_at AS paymentDueAt, payment_installment.status AS installmentStatus,
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,
     class_session.start_time AS startTime, class_session.end_time AS endTime,
+    (SELECT later.id FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
+      AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentId,
     (SELECT later.amount_mnt FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
       AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterAmountMnt,
     (SELECT later.effective_due_at FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
@@ -187,6 +196,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     WHERE payment_credit.status = 'available'
     GROUP BY payment_credit.id
     ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
+  const discountCredits = await env.DB.prepare(`SELECT discount_award.id, discount_award.credit_amount_mnt AS availableAmountMnt,
+    registration_draft.guardian_full_name AS guardianName,
+    registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childNames,
+    discount_award.award_type AS awardType
+    FROM discount_award
+    INNER JOIN registration_draft_child ON registration_draft_child.id = discount_award.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    WHERE discount_award.status = 'active' AND discount_award.credit_amount_mnt > 0
+    ORDER BY discount_award.awarded_at`).all<Record<string, unknown>>();
   const capacityRows = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
   const capacityLabels = await env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
     FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
@@ -197,10 +215,32 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   const capacity = capacityLabels.results.map((label) => ({ ...label, ...(capacityById.get(label.id) ?? {
     capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, legacyReservationCount: 0, offeredWaitlistCount: 0, waitlistCount: 0, freeSeats: 0,
   }) }));
-  return { now, items: result.results.map((item) => ({ ...item,
+  const rawItems = result.results.map((item) => ({ ...item,
     expectedAmountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),
     parentClaimed: Boolean(item.parentClaimed), laterAmountMnt: item.laterAmountMnt == null ? null : Number(item.laterAmountMnt),
-  })), credits: credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt) })),
+  })) as Array<Record<string, unknown> & { installmentId: string; registrationDraftChildId: string; expectedAmountMnt: number; allocatedAmountMnt: number; parentClaimed: boolean; laterInstallmentId: string | null; laterAmountMnt: number | null }>;
+  const effectiveById = new Map((await effectiveInstallmentsForRows(env.DB, rawItems.flatMap((item) => [
+    {
+    id: String(item.installmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 1,
+    amountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),
+    },
+    item.laterInstallmentId && item.laterAmountMnt != null ? {
+      id: String(item.laterInstallmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 2,
+      amountMnt: Number(item.laterAmountMnt),
+    } : null,
+  ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
+  const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
+  return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"), items: rawItems.map((item) => {
+    const effective = effectiveById.get(String(item.installmentId));
+    const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
+    const awards = awardByChild.get(String(item.registrationDraftChildId)) ?? [];
+    return { ...item, expectedAmountMnt: effective?.effectiveAmountMnt ?? item.expectedAmountMnt,
+      laterAmountMnt: later?.effectiveAmountMnt ?? item.laterAmountMnt,
+      discountAmountMnt: effective?.discountAmountMnt ?? 0, discounts: awards };
+  }), credits: [
+    ...credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "payment" })),
+    ...discountCredits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "discount" })),
+  ],
   capacity,
   waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
@@ -314,6 +354,8 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
       approvedPartial ? new Date(new Date(remainingDueAt!).getTime() - reminder.laterReminderLeadMinutes * 60_000).toISOString() : null,
       now, now, request.isTest, request.testRunId));
   await env.DB.batch(statements);
+  await Promise.all([...new Set(installments.map((item) => item.registrationDraftChildId))]
+    .map((childId) => recalculateDiscountAwardBalances(env.DB, childId, now)));
   return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial };
 }
 
@@ -329,6 +371,9 @@ export async function undoTentativePaymentConfirmation(env: WorkerEnv, actor: St
   const result = await env.DB.prepare(`UPDATE payment_confirmation SET status = 'undone', undone_at = ?, undone_by_staff_account_id = ?, updated_at = ?
     WHERE id = ? AND status = 'tentative'`).bind(now, actor.staffAccountId, now, row.id).run();
   if (changes(result) !== 1) throw new PaymentReconciliationError("conflict");
+  const children = await env.DB.prepare(`SELECT DISTINCT registration_draft_child_id AS childId FROM payment_installment
+    WHERE payment_request_id = ?`).bind(row.paymentRequestId).all<{ childId: string }>();
+  await Promise.all(children.results.map((child) => recalculateDiscountAwardBalances(env.DB, child.childId, now)));
   await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
     metadata_json, environment, is_test, test_run_id, created_at) VALUES (?, ?, 'staff', ?, 'tentative_payment_undone',
     'payment_confirmation', ?, '{}', ?, ?, ?, ?)`)

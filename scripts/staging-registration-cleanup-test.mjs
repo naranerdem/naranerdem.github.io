@@ -25,6 +25,11 @@ assert.ok(
   "draft referral captures must be deleted before drafts",
 );
 assert.ok(
+  position('DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};')
+    < position('DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};'),
+  "discount awards must be deleted before their draft children and draft parents",
+);
+assert.ok(
   position('DELETE FROM email_verification_challenge WHERE ${scoped("email_verification_challenge")};')
     < position('DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};'),
   "email challenges must be deleted before drafts",

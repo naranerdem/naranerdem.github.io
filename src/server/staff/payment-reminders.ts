@@ -5,6 +5,7 @@ import type { EmailProvider } from "../email/provider";
 import { deliverQueuedEmail } from "../email/service";
 import { paymentReminderTemplate } from "../email/templates/payment-reminder";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { effectiveInstallmentsForRows } from "../services/discounts";
 
 export interface PaymentReminderSetting {
   initialReminderLeadMinutes: number;
@@ -24,7 +25,7 @@ interface MilestoneRow {
 }
 interface ReminderContext {
   email: string; normalizedEmail: string; childName: string; classLabel: string | null;
-  amountMnt: number; dueAt: string; installmentStatus: string; holdStatus: string | null;
+  installmentId: string; registrationDraftChildId: string; installmentNumber: number; rawAmountMnt: number; allocatedAmountMnt: number; amountMnt: number; dueAt: string; installmentStatus: string; holdStatus: string | null;
   enrollmentStatus: string | null; confirmationStatus: string | null; seatConfirmationApproved: number | null;
   parentClaimed: number; bankName: string | null; accountHolderName: string | null; accountNumber: string | null;
   iban: string | null; transferInstruction: string | null;
@@ -115,10 +116,13 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
 }
 
 async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Promise<ReminderContext | null> {
-  return env.DB.prepare(`SELECT registration_draft.email, registration_draft.normalized_email AS normalizedEmail,
+  return env.DB.prepare(`SELECT payment_installment.id AS installmentId, payment_installment.registration_draft_child_id AS registrationDraftChildId,
+    payment_installment.installment_number AS installmentNumber, registration_draft.email, registration_draft.normalized_email AS normalizedEmail,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     class_session.display_label AS classLabel,
     COALESCE(payment_confirmation.remaining_payment_due_at, payment_installment.effective_due_at) AS dueAt,
+    payment_installment.amount_mnt AS rawAmountMnt,
+    COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
     payment_installment.amount_mnt - COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS amountMnt,
     payment_installment.status AS installmentStatus, registration_capacity_hold.status AS holdStatus,
     enrollment.status AS enrollmentStatus, payment_confirmation.status AS confirmationStatus,
@@ -182,6 +186,16 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
     ).run();
     if (changes(claimed) !== 1) continue;
     const context = await contextForMilestone(env, milestone);
+    if (context) {
+      const raw = await env.DB.prepare(`SELECT id, registration_draft_child_id AS registrationDraftChildId,
+        installment_number AS installmentNumber, amount_mnt AS amountMnt FROM payment_installment
+        WHERE registration_draft_child_id = ?`).bind(context.registrationDraftChildId)
+        .all<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>();
+      const effective = (await effectiveInstallmentsForRows(env.DB, raw.results.map((item) => ({
+        ...item, installmentNumber: Number(item.installmentNumber), amountMnt: Number(item.amountMnt),
+      })))).find((item) => item.id === context.installmentId);
+      if (effective) context.amountMnt = Math.max(0, effective.effectiveAmountMnt - Number(context.allocatedAmountMnt));
+    }
     if (!eligible(milestone, context)) {
       await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ? WHERE id = ?`).bind(now, milestone.id).run();
       continue;

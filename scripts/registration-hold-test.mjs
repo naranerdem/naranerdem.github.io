@@ -418,6 +418,10 @@ try {
     FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [multiChildDraft.draftId]),
   [{ position: 0, paymentPlanCode: "two_installment", initialAmount: 500000 }, { position: 1, paymentPlanCode: "single", initialAmount: 700000 }],
   "siblings may retain independent Offering prices and payment plans");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${multiChildDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 2,
+    "two children accepted together each receive one family award before payment");
+  assert.deepEqual(database.query(`SELECT award_amount_mnt AS amountMnt FROM discount_award WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?) ORDER BY registration_draft_child_id`, [multiChildDraft.draftId]).map((row) => row.amountMnt).sort((a, b) => a - b), [70000, 100000],
+    "family awards snapshot ten percent of each selected plan, including independent installment plans");
   const multiChallenge = addChallenge(database, multiChildDraft.draftId, multiChildDraft.normalizedEmail, iso(-4), iso(56));
   const multiSession = session(iso(-3), iso(57));
   await confirmRegistrationChallenge(env(database), multiChallenge, multiSession, new Date(iso(-3)));
@@ -426,7 +430,7 @@ try {
     WHERE payment_request_id = ? AND installment_kind = 'initial' ORDER BY id`, [multiRequest.id]);
   await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: multiRequest.id,
-    allocations: multiInstallments.map((item) => ({ installmentId: item.id, amountMnt: Number(item.amountMnt) })),
+    allocations: multiInstallments.map((item) => ({ installmentId: item.id, amountMnt: Number(item.amountMnt) === 500000 ? 400000 : 630000 })),
     receivedAmountMnt: 1201000, source: 'staff_manual_bank', idempotencyKey: 'multi-child-transfer',
   }, new Date(iso(-2)));
   assert.equal(count(database, "payment_allocation", `received_payment_id = (SELECT id FROM received_payment WHERE idempotency_key = 'multi-child-transfer')`), 2, "one received payment can allocate across two children's initial obligations");
@@ -568,7 +572,7 @@ try {
   assert.equal(released.parentClaimed, true, "release surfaces the parent's non-authoritative payment claim");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${cashDraft.draftId}') AND status = 'active'`), 0, "explicit release, not elapsed time, frees the seat");
   assert.equal(count(database, "guardian_account"), 2, "only fully reconciled, verified paid drafts become canonical guardians");
-  assert.equal(count(database, "student"), 3, "partial or released payments never create canonical students");
+  assert.equal(count(database, "student"), 2, "partial or released payments never create canonical students");
 
   const closureDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-13T09:50:00.000Z"));
   const closureChallenge = addChallenge(
@@ -679,6 +683,10 @@ try {
   assert.equal(count(database, "payment_request", `registration_draft_id = '${acceptedProductionDraft.draftId}' AND is_test = 0`), 1);
   assert.equal(count(database, "payment_installment", `payment_request_id = (SELECT id FROM payment_request WHERE registration_draft_id = '${acceptedProductionDraft.draftId}') AND is_test = 0`), 1);
   assert.equal(count(database, "registration_draft_referral", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${acceptedProductionDraft.draftId}')`), 1, "a valid active code is captured canonically at acceptance");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${acceptedProductionDraft.draftId}') AND award_type = 'referral_referred' AND status = 'active' AND is_test = 0`), 1,
+    "a valid active referral immediately awards the referred child using the selected plan snapshot");
+  assert.equal(database.query(`SELECT award_amount_mnt AS amountMnt FROM discount_award WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?) AND award_type = 'referral_referred'`, [acceptedProductionDraft.draftId])[0].amountMnt, 16000,
+    "the referred-child award uses the default two percent of the one-time plan");
   const retriedProductionDraft = await createRegistrationDraft(productionEnabled, productionSubmission, new Date(iso(-2)), {
     idempotencyKey: productionIdempotencyKey,
   });
@@ -686,6 +694,8 @@ try {
   assert.equal(retriedProductionDraft.draftId, acceptedProductionDraft.draftId);
   assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-production' AND status = 'active'"), 1,
     "an idempotent retry does not reserve a second seat");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${acceptedProductionDraft.draftId}') AND award_type = 'referral_referred'`), 1,
+    "idempotent registration retry does not duplicate a referral award");
   await assert.rejects(createRegistrationDraft(productionEnabled, submission("class-roomy"), new Date(iso(-2))),
     (error) => error.code === "invalid_class", "production rejects an attacker-supplied test fixture class");
   await assert.rejects(createRegistrationDraft(productionEnabled, submission("class-production-closed"), new Date(iso(-2))),

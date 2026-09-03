@@ -13,6 +13,9 @@ function amount(value: number): string {
 export interface RegistrationReceiptItem {
   childName: string;
   classLabel: string;
+  originalPlanAmountMnt: number;
+  discountAmountMnt: number;
+  adjustedPlanAmountMnt: number;
   initialAmountMnt: number;
   paymentDeadlineAt: string;
 }
@@ -26,8 +29,12 @@ export function registrationReceiptTemplate(input: {
   iban: string | null;
   transferInstruction: string | null;
 }) {
-  const itemsHtml = input.items.map((item) => `<li><strong>${escape(item.childName)}</strong><br>${escape(item.classLabel)}<br>Одоо төлөх: <strong>${escape(amount(item.initialAmountMnt))}</strong><br>Хугацаа: <strong>${escape(mongolianDateTime(item.paymentDeadlineAt))}</strong></li>`).join("");
-  const itemsText = input.items.map((item) => `${item.childName}\n${item.classLabel}\nОдоо төлөх: ${amount(item.initialAmountMnt)}\nХугацаа: ${mongolianDateTime(item.paymentDeadlineAt)}`).join("\n\n");
+  const summaryHtml = (item: RegistrationReceiptItem) => item.discountAmountMnt > 0
+    ? `<br>Сургалтын төлбөр: ${escape(amount(item.originalPlanAmountMnt))}<br>Хөнгөлөлт: <strong>${escape(amount(item.discountAmountMnt))}</strong><br>Төлөх нийт дүн: <strong>${escape(amount(item.adjustedPlanAmountMnt))}</strong>` : "";
+  const summaryText = (item: RegistrationReceiptItem) => item.discountAmountMnt > 0
+    ? `\nСургалтын төлбөр: ${amount(item.originalPlanAmountMnt)}\nХөнгөлөлт: ${amount(item.discountAmountMnt)}\nТөлөх нийт дүн: ${amount(item.adjustedPlanAmountMnt)}` : "";
+  const itemsHtml = input.items.map((item) => `<li><strong>${escape(item.childName)}</strong><br>${escape(item.classLabel)}${summaryHtml(item)}<br>Одоо төлөх: <strong>${escape(amount(item.initialAmountMnt))}</strong><br>Хугацаа: <strong>${escape(mongolianDateTime(item.paymentDeadlineAt))}</strong></li>`).join("");
+  const itemsText = input.items.map((item) => `${item.childName}\n${item.classLabel}${summaryText(item)}\nОдоо төлөх: ${amount(item.initialAmountMnt)}\nХугацаа: ${mongolianDateTime(item.paymentDeadlineAt)}`).join("\n\n");
   const bankHtml = input.bankName && input.accountHolderName && input.accountNumber
     ? `<p>${escape(input.bankName)} · <strong>${escape(input.accountNumber)}</strong><br>${escape(input.accountHolderName)}${input.iban ? `<br>IBAN: ${escape(input.iban)}` : ""}${input.transferInstruction ? `<br>${escape(input.transferInstruction)}` : ""}</p>`
     : "";

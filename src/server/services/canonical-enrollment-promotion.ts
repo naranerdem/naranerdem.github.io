@@ -2,6 +2,7 @@ import { sha256 } from "../auth/crypto";
 import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 import { ensureEnrollmentReferralCode } from "./referral-codes";
+import { awardFamilyDiscountsForGuardian, awardReferrerDiscountForReferral, getDiscountPolicySettingFromDatabase, reverseReferralAwardForSameFamily } from "./discounts";
 
 type ResolutionStatus = "promoted" | "needs_identity_review" | "needs_guardian_review" | "not_eligible" | "failed";
 
@@ -239,6 +240,11 @@ export async function promotePaidDraftChild(
     if (!row.canonicalStudentId) throw new CanonicalPromotionError("conflict");
     await ensureEnrollmentReferralCode(env.DB, row.canonicalEnrollmentId, row.canonicalStudentId,
       { isTest: row.childIsTest, testRunId: row.childTestRunId }, new Date().toISOString());
+    const policy = await getDiscountPolicySettingFromDatabase(env.DB);
+    if (row.canonicalGuardianId) {
+      await awardFamilyDiscountsForGuardian(env, { guardianId: row.canonicalGuardianId, policy });
+    }
+    await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy });
     return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
   }
   const now = nowDate.toISOString();
@@ -388,9 +394,10 @@ export async function promotePaidDraftChild(
       env.DB.prepare(`INSERT OR IGNORE INTO referral (
         id, referral_code, referring_enrollment_id, referring_student_id, referred_application_child_id,
         status, qualification_reason, qualified_at, is_test, test_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(`${row.childId}:referral`, referral.capturedCode, referral.referringEnrollmentId, referral.referringStudentId,
-          applicationChildId, sameFamilyReferral ? "disqualified" : "pending", sameFamilyReferral ? "same_family" : null,
+          applicationChildId, sameFamilyReferral ? "disqualified" : "qualified", sameFamilyReferral ? "same_family" : "referred_child_confirmed",
+          sameFamilyReferral ? null : now,
           row.childIsTest, row.childTestRunId, now, now),
       env.DB.prepare(`UPDATE registration_draft_referral SET status = ?, disqualification_reason = ?, updated_at = ?
         WHERE registration_draft_child_id = ?`).bind(sameFamilyReferral ? "disqualified" : "promoted",
@@ -405,6 +412,15 @@ export async function promotePaidDraftChild(
   }
   await ensureEnrollmentReferralCode(env.DB, promoted.enrollmentId, studentId,
     { isTest: row.childIsTest, testRunId: row.childTestRunId }, now);
+  await env.DB.prepare(`UPDATE discount_award SET beneficiary_enrollment_id = ?, updated_at = ?
+    WHERE registration_draft_child_id = ? AND beneficiary_enrollment_id IS NULL`).bind(promoted.enrollmentId, now, row.childId).run();
+  const discountPolicy = await getDiscountPolicySettingFromDatabase(env.DB);
+  await awardFamilyDiscountsForGuardian(env, { guardianId: guardian.guardianId, policy: discountPolicy, now });
+  if (referral && sameFamilyReferral) {
+    await reverseReferralAwardForSameFamily(env, row.childId, now);
+  } else if (referral) {
+    await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy: discountPolicy, now });
+  }
   return { state: "promoted", enrollmentId: promoted.enrollmentId };
 }
 

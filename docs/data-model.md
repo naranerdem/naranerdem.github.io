@@ -40,7 +40,8 @@ Timestamps are stored as UTC ISO-8601 text strings. Age is not stored; it is der
 - `waitlist_entry`: one FIFO queue entry for one concrete class, with future offer/expiry fields.
 - `enrollment_referral_code`: one opaque, shareable, case-insensitive referral code owned by one confirmed enrollment/student. It contains no PII and is active only after confirmation.
 - `registration_draft_referral`: validated referral capture for one accepted draft child, retaining the specific referring enrollment and code until promotion.
-- `referral`: canonical referral identity connecting a referring child/enrollment to a referred application child, with pending/qualified/disqualified state. Capture itself does not calculate a discount.
+- `referral`: canonical referral identity connecting a referring child/enrollment to a referred application child, with qualified/disqualified state. A captured valid code awards the referred child at accepted registration; a qualified canonical referral awards the referrer once.
+- `discount_policy_setting` and `discount_award`: narrow typed 10%/5%/2% policy and immutable-style award ledger. Awards retain their chosen-plan base, basis-point rate, MNT amount, provenance, reason, active/reversed state, reversal audit, and applied-versus-discount-credit position without mutating raw payment snapshots.
 - `outbound_email`: authoritative milestone email queue/delivery record, including intended/actual recipients, provider status, provider message ID, stable idempotency key, compact failure code, and (from migration 0035) a server-sanitized historical Outbox subject/text snapshot plus archive-BCC metadata. Raw bearer links and tokens are never stored for Outbox display.
 - `email_verification_challenge`: normalized email, one-time token hash, purpose, lifecycle, configurable registration-confirmation expiry (currently 24 hours), linked outbound email, and test provenance. It never stores the raw magic-link token.
 - `verified_email_session`: normalized verified email, hashed session token, short expiry, optional revocation, and test provenance. It is not a guardian account or long-lived account session.
@@ -153,12 +154,11 @@ Indexes cover expected lookup paths without indexing everything: guardian email/
 
 This foundation deliberately does not implement:
 
-- credit ledger
-- refund ledger
-- full tuition adjustment engine
+- a general credit/refund allocation ledger
+- a full discretionary tuition-adjustment engine
 - Khan Bank SMS/API adapter
 
-`application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Migration 0021 adds initial-payment obligations, received payment, allocation, and evidence records without adding discounts, credits, refunds, bank adapters, or broader finance operations. Migration 0022 links those draft-origin obligations to the resulting canonical application/enrollment instead of recalculating current Offering prices.
+`application_child.selected_payment_plan_code` is only a registration-time placeholder for the selected standard payment plan. Migration 0021 adds initial-payment obligations, received payment, allocation, and evidence records. Migration 0022 links those draft-origin obligations to the resulting canonical application/enrollment instead of recalculating current Offering prices. Migration 0039 adds the bounded automatic discount ledger/projection without rewriting either raw selected-plan snapshots or received-payment allocations.
 
 ## Canonical Promotion
 

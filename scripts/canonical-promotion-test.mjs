@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-canonical-promotion-"));
 const databasePath = path.join(tempDir, "promotion.sqlite3");
 const bundlePath = path.join(tempDir, "canonical-promotion.mjs");
+const discountBundlePath = path.join(tempDir, "discounts.mjs");
 
 function sqlite(input, json = false) {
   const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], {
@@ -120,11 +121,61 @@ try {
   const bundled = spawnSync(esbuild, ["src/server/services/canonical-enrollment-promotion.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${bundlePath}`], { encoding: "utf8" });
   if (bundled.status !== 0) throw new Error(bundled.stderr);
   const { promotePaidDraftChild, getPromotionReviewQueue, resolvePromotionIdentity, CanonicalPromotionError } = await import(pathToFileURL(bundlePath).href);
+  const discountsBundle = spawnSync(esbuild, ["src/server/services/discounts.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${discountBundlePath}`], { encoding: "utf8" });
+  if (discountsBundle.status !== 0) throw new Error(discountsBundle.stderr);
+  const { getDiscountPolicySetting, updateDiscountPolicySetting, effectiveInstallments, DiscountPolicyError } = await import(pathToFileURL(discountBundlePath).href);
   const database = new SqliteD1();
   database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at)
     VALUES ('year', 'Тест жил', 'open', 1, 1, 'promotion-test', '${now}', '${now}');
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
     VALUES ('class-1', 'year', 'stage_1', '1-р шат', 'Бямба', '10:00', '11:20', 20, 'available', 1, 1, 'promotion-test', '${now}', '${now}');`);
+
+  const policy = await getDiscountPolicySetting(env(database));
+  assert.deepEqual({ family: policy.familyMultiChildBasisPoints, referrer: policy.referrerBasisPoints, referred: policy.referredChildBasisPoints }, { family: 1000, referrer: 500, referred: 200 }, "the typed policy starts at the reviewed 10/5/2 defaults");
+  const admin = { ...actor, roles: ["admin"], capabilities: ["admin.settings.manage"] };
+  const changedPolicy = await updateDiscountPolicySetting(env(database), admin, { familyMultiChildBasisPoints: 1100, referrerBasisPoints: 500, referredChildBasisPoints: 200, expectedUpdatedAt: policy.updatedAt });
+  assert.equal(changedPolicy.familyMultiChildBasisPoints, 1100, "admin policy update applies to future awards");
+  assert.equal(count(database, "audit_event", "action = 'discount_policy_changed'"), 1, "policy change is audited");
+  await assert.rejects(() => updateDiscountPolicySetting(env(database), actor, { familyMultiChildBasisPoints: 1000, referrerBasisPoints: 500, referredChildBasisPoints: 200, expectedUpdatedAt: changedPolicy.updatedAt }), DiscountPolicyError, "teacher cannot change discount policy");
+  await assert.rejects(() => updateDiscountPolicySetting(env(database), { ...actor, roles: ["accountant"], capabilities: ["payment.view"] }, { familyMultiChildBasisPoints: 1000, referrerBasisPoints: 500, referredChildBasisPoints: 200, expectedUpdatedAt: changedPolicy.updatedAt }), DiscountPolicyError, "accountant cannot change discount policy");
+  await updateDiscountPolicySetting(env(database), admin, { familyMultiChildBasisPoints: 1000, referrerBasisPoints: 500, referredChildBasisPoints: 200, expectedUpdatedAt: changedPolicy.updatedAt });
+  assert.deepEqual(effectiveInstallments([
+    { id: "first", registrationDraftChildId: "child", installmentNumber: 1, amountMnt: 40001 },
+    { id: "later", registrationDraftChildId: "child", installmentNumber: 2, amountMnt: 59999 },
+  ], new Map([["child", [{ awardAmountMnt: 10000 }]]])), [
+    { id: "first", registrationDraftChildId: "child", installmentNumber: 1, amountMnt: 40001, discountAmountMnt: 4000, effectiveAmountMnt: 36001 },
+    { id: "later", registrationDraftChildId: "child", installmentNumber: 2, amountMnt: 59999, discountAmountMnt: 6000, effectiveAmountMnt: 53999 },
+  ], "integer MNT discounts allocate proportionally with final-installment reconciliation");
+  assert.deepEqual(effectiveInstallments([
+    { id: "first", registrationDraftChildId: "equal", installmentNumber: 1, amountMnt: 650000 },
+    { id: "later", registrationDraftChildId: "equal", installmentNumber: 2, amountMnt: 650000 },
+  ], new Map([["equal", [{ awardAmountMnt: 130000 }]]])).map((item) => item.effectiveAmountMnt), [585000, 585000], "known ten-percent awards reduce equal installments proportionally");
+  assert.deepEqual(effectiveInstallments([
+    { id: "single", registrationDraftChildId: "one-time", installmentNumber: 1, amountMnt: 1200000 },
+  ], new Map([["one-time", [{ awardAmountMnt: 120000 }]]])).map((item) => item.effectiveAmountMnt), [1080000], "one-time pricing remains exact after a family award");
+  assert.deepEqual(effectiveInstallments([
+    { id: "first", registrationDraftChildId: "unequal", installmentNumber: 1, amountMnt: 40001 },
+    { id: "later", registrationDraftChildId: "unequal", installmentNumber: 2, amountMnt: 59999 },
+  ], new Map([["unequal", [{ awardAmountMnt: 10001 }]]])).map((item) => item.effectiveAmountMnt), [36001, 53998], "unequal installments reconcile integer rounding on the final unpaid installment");
+  assert.deepEqual(effectiveInstallments([
+    { id: "first", registrationDraftChildId: "stacked-plan", installmentNumber: 1, amountMnt: 650000 },
+    { id: "later", registrationDraftChildId: "stacked-plan", installmentNumber: 2, amountMnt: 650000 },
+  ], new Map([["stacked-plan", [{ awardAmountMnt: 130000 }, { awardAmountMnt: 26000 }]]])).map((item) => item.effectiveAmountMnt), [572000, 572000], "stacked original-plan awards total 156,000 MNT and remain proportional");
+  assert.deepEqual(effectiveInstallments([
+    { id: "first", registrationDraftChildId: "paid", installmentNumber: 1, amountMnt: 650000, allocatedAmountMnt: 650000 },
+    { id: "later", registrationDraftChildId: "paid", installmentNumber: 2, amountMnt: 650000 },
+  ], new Map([["paid", [{ awardAmountMnt: 65000 }]]])).map((item) => item.effectiveAmountMnt), [650000, 585000], "later awards reduce only the remaining unpaid installment");
+  assert.deepEqual(
+    effectiveInstallments([{ id: "stacked", registrationDraftChildId: "ordered", installmentNumber: 1, amountMnt: 1300000 }], new Map([["ordered", [{ awardAmountMnt: 130000 }, { awardAmountMnt: 26000 }]]])),
+    effectiveInstallments([{ id: "stacked", registrationDraftChildId: "ordered", installmentNumber: 1, amountMnt: 1300000 }], new Map([["ordered", [{ awardAmountMnt: 26000 }, { awardAmountMnt: 130000 }]]])),
+    "award insertion order cannot change the effective installment result",
+  );
+  const stackedInputs = [{ id: "single", registrationDraftChildId: "stacked", installmentNumber: 1, amountMnt: 100000 }];
+  assert.deepEqual(
+    effectiveInstallments(stackedInputs, new Map([["stacked", [{ awardAmountMnt: 10000 }, { awardAmountMnt: 2000 }]]])),
+    effectiveInstallments(stackedInputs, new Map([["stacked", [{ awardAmountMnt: 2000 }, { awardAmountMnt: 10000 }]]])),
+    "stacked awards have an order-independent payable result",
+  );
 
   const first = seedDraft(database, "new-family");
   assert.deepEqual(await promotePaidDraftChild(env(database), actor, first.childId), { state: "promoted", enrollmentId: `${first.childId}:enrollment` });
@@ -148,13 +199,19 @@ try {
   ) VALUES (?, ?, ?, ?, 'captured', 1, 'promotion-test', ?, ?)`,
   [referred.childId, firstReferralCode.id, `${first.childId}:enrollment`, firstReferralCode.code, now, now]);
   await promotePaidDraftChild(env(database), actor, referred.childId);
-  assert.equal(count(database, "referral", `referred_application_child_id = '${referred.childId}:application' AND status = 'pending'`), 1,
-    "a captured active code becomes one canonical referral relationship without changing payment terms");
+  assert.equal(count(database, "referral", `referred_application_child_id = '${referred.childId}:application' AND status = 'qualified'`), 1,
+    "a captured active code becomes a qualified canonical referral only after the referred child is confirmed");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${referred.childId}' AND award_type = 'referral_referred' AND status = 'active'`), 0,
+    "this fixture captures the historic referral directly, so it does not invent a referred-child registration award");
+  assert.equal(count(database, "discount_award", `source_referral_id = '${referred.childId}:referral' AND award_type = 'referral_referrer' AND status = 'active'`), 1,
+    "the referrer earns one award only after the referred child is confirmed");
   assert.equal(count(database, "enrollment_referral_code", `enrollment_id = '${referred.childId}:enrollment' AND status = 'active'`), 1,
     "the newly confirmed referred child also receives an independent code");
   await promotePaidDraftChild(env(database), actor, referred.childId);
   assert.equal(count(database, "referral", `referred_application_child_id = '${referred.childId}:application'`), 1,
     "promotion retry does not duplicate a referral relationship");
+  assert.equal(count(database, "discount_award", `source_referral_id = '${referred.childId}:referral' AND award_type = 'referral_referrer'`), 1,
+    "promotion retry does not duplicate the referrer award");
 
   const selfReferral = seedDraft(database, "self-referral", { email: first.email, surname: "Өөр", givenName: "Дүү" });
   database.query(`INSERT INTO registration_draft_referral (
@@ -221,6 +278,10 @@ try {
   assert.equal(count(database, "pre_registration", "id = 'siblings:pre-registration'"), 1, "siblings share one canonical registration container");
   assert.equal(count(database, "guardian_account", "email_normalized = 'siblings@example.test'"), 1, "siblings resolve one guardian");
   assert.equal(count(database, "enrollment", "id IN ('siblings-child:enrollment', 'siblings-child-two:enrollment') AND status = 'confirmed'"), 2, "safe siblings promote independently");
+  assert.equal(count(database, "discount_award", "registration_draft_child_id IN ('siblings-child', 'siblings-child-two') AND award_type = 'family_multi_child' AND status = 'active'"), 2,
+    "two confirmed children under one canonical guardian each receive exactly one family award");
+  assert.equal(database.query(`SELECT award_amount_mnt AS amountMnt FROM discount_award WHERE registration_draft_child_id = 'siblings-child' AND award_type = 'family_multi_child'`)[0].amountMnt, 10000,
+    "family award snapshots the default ten percent of the selected plan");
 
   const fallback = seedDraft(database, "fallback", { email: "fallback@example.test" });
   database.query(`INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)

@@ -9,6 +9,7 @@ import { assertCourseRuleVersions, PublicContentError } from "../staff/public-co
 import { getInitialPaymentDeadlineSettingFromDatabase } from "../staff/initial-payment-deadline";
 import { getPaymentReminderSetting } from "../staff/payment-reminders";
 import { activeReferralCodes, normalizeReferralCode, type RegistrationProvenance } from "./referral-codes";
+import { activeDiscountAwardsForChildren, discountAwardAudit, discountAwardInsert, effectiveInstallments, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances } from "./discounts";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -426,6 +427,7 @@ export async function createRegistrationDraft(
     if (!referral) throw new RegistrationSubmissionError("invalid_referral_code");
     return referral;
   });
+  const discountPolicy = await getDiscountPolicySettingFromDatabase(env.DB);
 
   const now = nowDate.toISOString();
   const paymentDeadline = await getInitialPaymentDeadlineSettingFromDatabase(env.DB);
@@ -439,6 +441,24 @@ export async function createRegistrationDraft(
   const accessTokenHash = await sha256(rawAccessToken);
   const normalizedEmail = normalizeEmail(input.guardian.email);
   const childIds = input.children.map(() => crypto.randomUUID());
+  const selectedFamilyChildren = input.children
+    .map((child, index) => ({ child, index }))
+    .filter(({ child }) => Boolean(child.selectedClassSessionId));
+  const discountAwards = input.children.flatMap((_child, index) => {
+    const snapshot = paymentSnapshots[index];
+    if (!snapshot) return [];
+    const baseAmountMnt = snapshot.initial + Number(snapshot.second ?? 0);
+    const awards: Array<{ id: string; childId: string; awardType: "family_multi_child" | "referral_referred"; basisPoints: number; reason: string }> = [];
+    if (selectedFamilyChildren.length >= 2 && discountPolicy.familyMultiChildBasisPoints > 0) {
+      awards.push({ id: `${childIds[index]}:discount:family`, childId: childIds[index], awardType: "family_multi_child",
+        basisPoints: discountPolicy.familyMultiChildBasisPoints, reason: "same_registration_guardian_multiple_children" });
+    }
+    if (referrals[index] && discountPolicy.referredChildBasisPoints > 0) {
+      awards.push({ id: `${childIds[index]}:discount:referred`, childId: childIds[index], awardType: "referral_referred",
+        basisPoints: discountPolicy.referredChildBasisPoints, reason: "active_referral_code_captured" });
+    }
+    return awards.map((award) => ({ ...award, baseAmountMnt }));
+  });
   const selectedSeatCount = input.children.filter((child) => child.selectedClassSessionId).length;
   const paymentRequestId = crypto.randomUUID();
   const reference = await unusedPaymentReference(env.DB);
@@ -611,8 +631,23 @@ export async function createRegistrationDraft(
     await env.DB.prepare(`UPDATE registration_draft SET status = 'waitlisted', updated_at = ?
       WHERE id = ? AND EXISTS (SELECT 1 FROM registration_draft_waitlist_entry
         INNER JOIN registration_draft_child ON registration_draft_child.id = registration_draft_waitlist_entry.registration_draft_child_id
-        WHERE registration_draft_child.registration_draft_id = registration_draft.id
-          AND registration_draft_waitlist_entry.status = 'active')`).bind(now, draftId).run();
+      WHERE registration_draft_child.registration_draft_id = registration_draft.id
+        AND registration_draft_waitlist_entry.status = 'active')`).bind(now, draftId).run();
+  }
+  if (heldSeatCount > 0 && discountAwards.length) {
+    const awardStatements = discountAwards.map((award) => discountAwardInsert(env.DB, {
+      ...award, isTest: provenance.isTest, testRunId, now,
+    })).filter((statement): statement is NonNullable<typeof statement> => Boolean(statement));
+    if (awardStatements.length) {
+      await env.DB.batch(awardStatements);
+      await env.DB.batch(discountAwards.map((award) => discountAwardAudit(env.DB, {
+        awardId: award.id, childId: award.childId, awardType: award.awardType,
+        basisPoints: award.basisPoints, baseAmountMnt: award.baseAmountMnt,
+        isTest: provenance.isTest, testRunId, environment: env.APP_ENV, now,
+      })));
+      await Promise.all([...new Set(discountAwards.map((award) => award.childId))]
+        .map((childId) => recalculateDiscountAwardBalances(env.DB, childId, now)));
+    }
   }
 
   return {
@@ -1046,15 +1081,30 @@ async function registrationStatusForDraft(
       registration_draft_waitlist_entry.status AS waitlistStatus,
       payment_request.id AS paymentRequestId,
       COALESCE(payment_request.transfer_description, payment_request.payment_reference) AS paymentReference,
+      payment_installment.id AS initialInstallmentId,
+      payment_installment.amount_mnt AS initialInstallmentAmountMnt,
       payment_installment.status AS initialInstallmentStatus,
+      COALESCE((SELECT SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END)
+        FROM payment_allocation INNER JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
+        LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
+        WHERE payment_allocation.payment_installment_id = payment_installment.id), 0) AS initialAllocatedAmountMnt,
       enrollment.status AS canonicalEnrollmentStatus,
       enrollment.confirmed_at AS canonicalEnrollmentConfirmedAt,
+      (SELECT later.id FROM payment_installment AS later
+        WHERE later.registration_draft_child_id = registration_draft_child.id
+          AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentId,
       (SELECT later.amount_mnt FROM payment_installment AS later
         WHERE later.registration_draft_child_id = registration_draft_child.id
           AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentAmountMnt,
       (SELECT later.effective_due_at FROM payment_installment AS later
         WHERE later.registration_draft_child_id = registration_draft_child.id
-          AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentDueAt,
+        AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentDueAt,
+      (SELECT COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+        FROM payment_allocation INNER JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
+        LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
+        WHERE payment_allocation.payment_installment_id = (SELECT later.id FROM payment_installment AS later
+          WHERE later.registration_draft_child_id = registration_draft_child.id AND later.installment_kind = 'later'
+          ORDER BY later.installment_number LIMIT 1)) AS laterAllocatedAmountMnt,
       activity_offering.facebook_group_url AS offeringFacebookGroupUrl,
       enrollment_referral_code.code AS referralCode,
       EXISTS(SELECT 1 FROM payment_evidence WHERE payment_evidence.payment_request_id = payment_request.id
@@ -1079,10 +1129,37 @@ async function registrationStatusForDraft(
   `).bind(draft.id).all<Record<string, unknown>>();
   const hasActiveInitialPaymentHold = children.results.some((child) => child.holdType === "initial_payment"
     && child.holdStatus === "active");
+  const childIds = children.results.map((child) => String(child.id));
+  const awardsByChild = await activeDiscountAwardsForChildren(database, childIds);
+  const rawInstallments = children.results.flatMap((child) => [
+    child.initialInstallmentId && child.initialInstallmentAmountMnt != null ? {
+      id: String(child.initialInstallmentId), registrationDraftChildId: String(child.id), installmentNumber: 1,
+      amountMnt: Number(child.initialInstallmentAmountMnt), allocatedAmountMnt: Number(child.initialAllocatedAmountMnt ?? 0),
+    } : null,
+    child.laterInstallmentId && child.laterInstallmentAmountMnt != null ? {
+      id: String(child.laterInstallmentId), registrationDraftChildId: String(child.id), installmentNumber: 2,
+      amountMnt: Number(child.laterInstallmentAmountMnt), allocatedAmountMnt: Number(child.laterAllocatedAmountMnt ?? 0),
+    } : null,
+  ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>);
+  const effectiveById = new Map(effectiveInstallments(rawInstallments, awardsByChild).map((item) => [item.id, item]));
+  const childrenWithDiscounts = children.results.map((child) => {
+    const initial = child.initialInstallmentId ? effectiveById.get(String(child.initialInstallmentId)) : null;
+    const later = child.laterInstallmentId ? effectiveById.get(String(child.laterInstallmentId)) : null;
+    const awards = awardsByChild.get(String(child.id)) ?? [];
+    return {
+      ...child,
+      originalPlanAmountMnt: Number(child.initialPaymentAmountMnt ?? 0) + Number(child.secondPaymentAmountMnt ?? 0),
+      totalDiscountAmountMnt: awards.reduce((sum, award) => sum + award.awardAmountMnt, 0),
+      discountCreditAmountMnt: awards.reduce((sum, award) => sum + award.creditAmountMnt, 0),
+      discounts: awards,
+      initialPaymentAmountMnt: initial?.effectiveAmountMnt ?? child.initialPaymentAmountMnt,
+      secondPaymentAmountMnt: later?.effectiveAmountMnt ?? child.secondPaymentAmountMnt,
+    };
+  });
   const paymentCollectionSettings = hasActiveInitialPaymentHold
     ? await getPaymentCollectionSettingsFromDatabase(database)
     : null;
-  return { ...draft, children: children.results, now: nowDate.toISOString(),
+  return { ...draft, children: childrenWithDiscounts, now: nowDate.toISOString(),
     paymentCollection: paymentCollectionSettings?.complete ? {
       bankName: paymentCollectionSettings.bankName, accountHolderName: paymentCollectionSettings.accountHolderName,
       accountNumber: paymentCollectionSettings.accountNumber, iban: paymentCollectionSettings.iban,

@@ -10,6 +10,7 @@ import { getPaymentReminderSetting } from "../staff/payment-reminders";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 import { getWaitlistOfferResponseSetting } from "../staff/waitlist-offer-response";
 import { registrationStatusForDraftId } from "./registration-submission";
+import { effectiveInstallmentsForRows } from "./discounts";
 
 type OfferStatus = "active" | "awaiting_transfer" | "converted" | "declined" | "closed";
 type DecisionSource = "parent_link" | "staff_phone" | "staff_messenger" | "staff_other";
@@ -82,24 +83,29 @@ async function queuePaymentInstructions(env: WorkerEnv, offer: OfferRow & { draf
   if (env.EMAIL_ENABLED !== "true" || !env.RESEND_API_KEY) return;
   const row = await env.DB.prepare(`SELECT registration_draft.email, registration_draft.normalized_email AS normalizedEmail,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
-    registration_draft_child.initial_payment_amount_mnt AS amountMnt, payment_request.transfer_description AS transferDescription,
+    registration_draft_child.initial_payment_amount_mnt AS amountMnt, payment_installment.id AS installmentId,
+    payment_request.transfer_description AS transferDescription,
     payment_collection_settings.bank_name AS bankName, payment_collection_settings.account_holder_name AS accountHolder,
     payment_collection_settings.account_number AS accountNumber, payment_collection_settings.iban,
     payment_collection_settings.transfer_instruction AS transferInstruction,
     registration_draft.is_test AS isTest, registration_draft.test_run_id AS testRunId
     FROM registration_draft_child INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     INNER JOIN payment_request ON payment_request.registration_draft_id = registration_draft.id
+    INNER JOIN payment_installment ON payment_installment.payment_request_id = payment_request.id
+      AND payment_installment.registration_draft_child_id = registration_draft_child.id AND payment_installment.installment_kind = 'initial'
     INNER JOIN payment_collection_settings ON payment_collection_settings.singleton = 1
     WHERE registration_draft_child.id = ? ORDER BY payment_request.created_at LIMIT 1`).bind(offer.registrationDraftChildId)
-    .first<{ email: string; normalizedEmail: string; childName: string; amountMnt: number; transferDescription: string; bankName: string; accountHolder: string; accountNumber: string; iban: string | null; transferInstruction: string | null; isTest: number; testRunId: string | null }>();
+    .first<{ email: string; normalizedEmail: string; childName: string; amountMnt: number; installmentId: string; transferDescription: string; bankName: string; accountHolder: string; accountNumber: string; iban: string | null; transferInstruction: string | null; isTest: number; testRunId: string | null }>();
   if (!row || !row.amountMnt || !row.bankName || !row.accountHolder || !row.accountNumber) return;
+  const effective = await effectiveInstallmentsForRows(env.DB, [{ id: row.installmentId, registrationDraftChildId: offer.registrationDraftChildId, installmentNumber: 1, amountMnt: Number(row.amountMnt) }]);
+  const amountMnt = effective[0]?.effectiveAmountMnt ?? Number(row.amountMnt);
   const delivery = resolveDeliveryAddress(env.APP_ENV, row.normalizedEmail, env.STAGING_EMAIL_OVERRIDE_TO); const id = `${offer.id}:payment-instructions`; const now = new Date().toISOString();
   await env.DB.prepare(`INSERT OR IGNORE INTO outbound_email (id, event_type, template_key, intended_to_email, actual_delivery_email, delivery_mode, status, attempt_count, queued_at, context_json, idempotency_key, is_test, test_run_id, created_at, updated_at, registration_draft_id)
     VALUES (?, 'waitlist_offer_converted', 'waitlist_payment_instructions_v1', ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, row.email, delivery.actualEmail, delivery.deliveryMode, now, JSON.stringify({ offerId: offer.id, deadline }), `waitlist-payment/${offer.id}`, row.isTest, row.testRunId, now, now, offer.draftId).run();
   const queued = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email WHERE id = ?`).bind(id).first<{ status: string; actualDeliveryEmail: string }>();
   if (!queued || queued.status === "sent") return;
-  const template = waitlistPaymentInstructionsTemplate({ childName: row.childName, amountMnt: Number(row.amountMnt), deadline, bankName: row.bankName, accountHolder: row.accountHolder, accountNumber: row.accountNumber, iban: row.iban, transferInstruction: row.transferInstruction, transferDescription: row.transferDescription });
+  const template = waitlistPaymentInstructionsTemplate({ childName: row.childName, amountMnt, deadline, bankName: row.bankName, accountHolder: row.accountHolder, accountNumber: row.accountNumber, iban: row.iban, transferInstruction: row.transferInstruction, transferDescription: row.transferDescription });
   await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), { id, idempotencyKey: `waitlist-payment/${offer.id}`, templateKey: "waitlist_payment_instructions_v1", message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text } });
 }
 

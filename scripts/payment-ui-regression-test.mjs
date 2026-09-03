@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const page = readFileSync("src/pages/staff/payments.astro", "utf8");
+const router = readFileSync("src/server/api/router.ts", "utf8");
 const waitlistOfferPage = readFileSync("src/pages/waitlist-offer.astro", "utf8");
 assert.match(page, /timeZone: "Asia\/Ulaanbaatar"/);
 assert.match(page, /localDateTime\(new Date\(\)\)/);
 assert.doesNotMatch(page, /toISOString\(\)\.slice\(0, 16\)/);
 assert.doesNotMatch(page, /finalizeAfter\?\.slice/);
 assert.match(page, /remaining <= 0 \? "Төлбөр баталгаажсан"/);
+assert.match(page, /family_multi_child: "Нэг гэр бүлийн хүүхэд"/);
+assert.match(page, /data-discount-reverse=/, "admins have an auditable per-award correction control");
+assert.match(page, /хөнгөлөлтийн кредит/, "discount excess is distinct from received-payment credit");
+assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'), router.indexOf('if (path === "/api/staff/attendance")')), /case "discount-award\.reverse"/, "the payment detail routes discount reversal to its own staff endpoint");
 assert.match(page, /item\.seatConfirmationApproved \? "Хэсэгчлэн төлсөн"/);
 assert.match(page, /\$\{tentative\}/);
 assert.match(page, /data-offer-decline=\"\$\{escape\(item\.id\)\}\">Татгалзсаныг тэмдэглэх/);

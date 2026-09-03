@@ -74,6 +74,11 @@ try {
     UPDATE payment_collection_settings SET bank_name = 'Тест банк', account_holder_name = 'Тест эзэмшигч', account_number = '0000000000', updated_at = ? WHERE singleton = 1;`,
   [now(), now(), now(), now(), now(), now(), now()]);
   seedDraft(database, "receipt");
+  database.query(`INSERT INTO discount_award (
+    id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+    status, reason, awarded_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('receipt-discount', 'receipt-child', 'family_multi_child', 1000, 1200000, 120000,
+    'active', 'test', ?, 1, 'email-test', ?, ?)`, [now(), now(), now()]);
   const messages = [];
   const provider = { async send(message, options) { messages.push({ message, options }); return { providerMessageId: `provider-${messages.length}` }; } };
   assert.equal(await sendRegistrationReceipt(env(database), "receipt", provider), true, "EMAIL_ENABLED sends an ordinary registration receipt even when auth email is disabled");
@@ -83,6 +88,10 @@ try {
   assert.match(messages[0].message.text, /Таны хүүхдийн мэдээлэл бүртгэгдлээ\./);
   assert.match(messages[0].message.text, /Төлбөр хийгдсэнээр таны хүүхдийн бүртгэл баталгаажна\./);
   assert.doesNotMatch(messages[0].message.text, /эхний төлбөр/i, "a single-payment receipt is plan-neutral");
+  assert.match(messages[0].message.text, /Сургалтын төлбөр: 1,200,000 ₮/);
+  assert.match(messages[0].message.text, /Хөнгөлөлт: 120,000 ₮/);
+  assert.match(messages[0].message.text, /Төлөх нийт дүн: 1,080,000 ₮/);
+  assert.match(messages[0].message.text, /Одоо төлөх: 1,080,000 ₮/);
   assert.doesNotMatch(messages[0].message.text, /verify-email|token=/i, "receipt contains no capability link");
   assert.equal(database.query("SELECT status FROM outbound_email WHERE id = 'receipt:registration-receipt'")[0].status, "sent");
   assert.equal(database.query("SELECT email_sensitivity AS sensitivity FROM outbound_email WHERE id = 'receipt:registration-receipt'")[0].sensitivity, "archive_bcc_safe");

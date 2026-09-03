@@ -85,6 +85,7 @@ const deleteSql = `
 DELETE FROM payment_notification_milestone WHERE ${scoped("payment_notification_milestone")};
 DELETE FROM waitlist_seat_offer WHERE ${childScoped("waitlist_seat_offer")};
 DELETE FROM registration_draft_referral WHERE ${childScoped("registration_draft_referral")};
+DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};
 DELETE FROM registration_data_correction WHERE ${childScoped("registration_data_correction")};
 DELETE FROM payment_evidence WHERE ${scoped("payment_evidence")};
 DELETE FROM payment_allocation WHERE ${installmentScoped("payment_allocation")};

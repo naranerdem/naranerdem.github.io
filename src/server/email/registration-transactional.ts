@@ -5,12 +5,14 @@ import { createResendProvider } from "./resend";
 import { deliverQueuedEmail } from "./service";
 import { paymentConfirmedTemplate } from "./templates/payment-confirmed";
 import { registrationReceiptTemplate, type RegistrationReceiptItem } from "./templates/registration-receipt";
+import { effectiveInstallmentsForRows } from "../services/discounts";
 
 interface ReceiptRow {
   email: string; normalizedEmail: string; transferDescription: string | null;
   bankName: string | null; accountHolderName: string | null; accountNumber: string | null;
   iban: string | null; transferInstruction: string | null; childName: string; classLabel: string;
-  initialAmountMnt: number; paymentDeadlineAt: string; isTest: number; testRunId: string | null;
+  childId: string; initialInstallmentId: string; initialAmountMnt: number; laterInstallmentId: string | null; laterAmountMnt: number | null;
+  paymentDeadlineAt: string; isTest: number; testRunId: string | null;
 }
 
 interface PaymentConfirmedRow { email: string; normalizedEmail: string; isTest: number; testRunId: string | null; }
@@ -31,7 +33,12 @@ export async function sendRegistrationReceipt(env: WorkerEnv, registrationDraftI
     payment_collection_settings.iban, payment_collection_settings.transfer_instruction,
     trim(registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childName,
     COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) || ' ' || COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' || COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
+    registration_draft_child.id AS childId, payment_installment.id AS initialInstallmentId,
     payment_installment.amount_mnt AS initialAmountMnt, payment_installment.effective_due_at AS paymentDeadlineAt,
+    (SELECT later.id FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
+      AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentId,
+    (SELECT later.amount_mnt FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
+      AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterAmountMnt,
     registration_draft.is_test AS isTest, registration_draft.test_run_id AS testRunId
     FROM registration_draft
     INNER JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
@@ -56,8 +63,16 @@ export async function sendRegistrationReceipt(env: WorkerEnv, registrationDraftI
   const queued = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email WHERE id = ?`)
     .bind(id).first<{ status: string; actualDeliveryEmail: string }>();
   if (!queued || queued.status === "sent") return Boolean(queued);
+  const effective = new Map((await effectiveInstallmentsForRows(env.DB, rows.results.flatMap((row) => [
+    { id: row.initialInstallmentId, registrationDraftChildId: row.childId, installmentNumber: 1, amountMnt: Number(row.initialAmountMnt) },
+    row.laterInstallmentId && row.laterAmountMnt != null ? { id: row.laterInstallmentId, registrationDraftChildId: row.childId, installmentNumber: 2, amountMnt: Number(row.laterAmountMnt) } : null,
+  ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
   const items: RegistrationReceiptItem[] = rows.results.map((row) => ({
-    childName: row.childName, classLabel: row.classLabel, initialAmountMnt: Number(row.initialAmountMnt), paymentDeadlineAt: row.paymentDeadlineAt,
+    childName: row.childName, classLabel: row.classLabel,
+    originalPlanAmountMnt: Number(row.initialAmountMnt) + Number(row.laterAmountMnt ?? 0),
+    discountAmountMnt: (effective.get(row.initialInstallmentId)?.discountAmountMnt ?? 0) + (row.laterInstallmentId ? effective.get(row.laterInstallmentId)?.discountAmountMnt ?? 0 : 0),
+    adjustedPlanAmountMnt: (effective.get(row.initialInstallmentId)?.effectiveAmountMnt ?? Number(row.initialAmountMnt)) + (row.laterInstallmentId ? effective.get(row.laterInstallmentId)?.effectiveAmountMnt ?? Number(row.laterAmountMnt ?? 0) : 0),
+    initialAmountMnt: effective.get(row.initialInstallmentId)?.effectiveAmountMnt ?? Number(row.initialAmountMnt), paymentDeadlineAt: row.paymentDeadlineAt,
   }));
   const template = registrationReceiptTemplate({
     items, transferDescription: context.transferDescription, bankName: context.bankName, accountHolderName: context.accountHolderName,

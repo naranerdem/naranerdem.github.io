@@ -52,6 +52,7 @@
     "test:public-prose": "node scripts/public-prose-test.mjs",
     "test:public-brochure": "node scripts/public-brochure-test.mjs",
     "test:canonical-promotion": "node scripts/canonical-promotion-test.mjs",
+    "test:discounts": "node scripts/registration-hold-test.mjs && node scripts/canonical-promotion-test.mjs && node scripts/registration-transactional-email-test.mjs",
     "test:calendar": "node scripts/calendar-domain-test.mjs",
     "test:schedule:preview": "npm run build && node scripts/schedule-preview-test.mjs",
     "test:offering-guidance": "node scripts/offering-guidance-test.mjs",
