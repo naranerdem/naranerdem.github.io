@@ -27,7 +27,10 @@ const nonTestDraftScope = `registration_draft.id IN (
   SELECT registration_draft.id
   FROM registration_draft
   INNER JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
-  INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+  INNER JOIN class_session ON class_session.id = COALESCE(
+    registration_draft_child.selected_class_session_id,
+    registration_draft_child.preferred_waitlist_class_session_id
+  )
   INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
   INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
   WHERE registration_draft.is_test = 0

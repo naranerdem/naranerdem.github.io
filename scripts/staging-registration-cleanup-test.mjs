@@ -13,6 +13,7 @@ assert.match(source, /\^registration:\[0-9a-f-\]\{36\}\$/);
 assert.match(source, /\^non-test:\[0-9a-f-\]\{36\}\$/);
 assert.match(source, /refuses production/);
 assert.match(source, /STAGING NON-TEST REHEARSAL/);
+assert.match(source, /COALESCE\(\s*registration_draft_child\.selected_class_session_id,\s*registration_draft_child\.preferred_waitlist_class_session_id\s*\)/);
 
 assert.ok(
   position('DELETE FROM payment_notification_milestone WHERE ${scoped("payment_notification_milestone")};')
