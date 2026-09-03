@@ -51,6 +51,9 @@ interface PromotionRow {
   initialInstallmentPaid: number;
   partialSeatApproved: number;
   activeInitialHold: number;
+  draftStatus: string;
+  childStatus: string;
+  canonicalEnrollmentStatus: string | null;
 }
 
 interface GuardianRow {
@@ -168,6 +171,8 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
     registration_draft_child.canonical_student_id AS canonicalStudentId,
     registration_draft_child.canonical_application_child_id AS canonicalApplicationChildId,
     registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
+    registration_draft.status AS draftStatus, registration_draft_child.status AS childStatus,
+    enrollment.status AS canonicalEnrollmentStatus,
     EXISTS(SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
       AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid') AS initialInstallmentPaid,
     EXISTS(SELECT 1 FROM payment_confirmation
@@ -180,6 +185,7 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
       AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active') AS activeInitialHold
     FROM registration_draft_child
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
     WHERE registration_draft_child.id = ?`).bind(childId).first<PromotionRow>();
 }
 
@@ -256,6 +262,9 @@ export async function promotePaidDraftChild(
   if (!hasStaffCapability(actor, "payment.manage")) throw new CanonicalPromotionError("forbidden");
   const row = await rowForChild(env.DB, draftChildId);
   if (!row) throw new CanonicalPromotionError("not_found");
+  if (row.draftStatus === "cancelled" || row.childStatus === "cancelled" || row.canonicalEnrollmentStatus === "cancelled") {
+    return { state: "not_eligible" };
+  }
   if (row.canonicalEnrollmentId) {
     if (!row.canonicalStudentId) throw new CanonicalPromotionError("conflict");
     await ensureEnrollmentReferralCode(env.DB, row.canonicalEnrollmentId, row.canonicalStudentId,
@@ -447,9 +456,12 @@ export async function promotePaidDraftChild(
 export async function promotePaidDraftChildren(env: WorkerEnv, actor: StaffPrincipal, registrationDraftId: string, nowDate = new Date()) {
   const result = await env.DB.prepare(`SELECT registration_draft_child.id
     FROM registration_draft_child
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.selected_class_session_id IS NOT NULL
       AND registration_draft_child.canonical_enrollment_id IS NULL
+      AND registration_draft.status != 'cancelled'
+      AND registration_draft_child.status != 'cancelled'
       AND ${promotionPaymentEligibleSql("registration_draft_child.id")}`)
     .bind(registrationDraftId).all<{ id: string }>();
   const outcomes = [];
@@ -481,6 +493,8 @@ export async function getPromotionReviewQueue(env: WorkerEnv, actor: StaffPrinci
     INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
     WHERE registration_draft_child.canonical_enrollment_id IS NULL
       AND registration_draft_child.selected_class_session_id IS NOT NULL
+      AND registration_draft.status != 'cancelled'
+      AND registration_draft_child.status != 'cancelled'
       AND ${promotionPaymentEligibleSql("registration_draft_child.id")}
     ORDER BY registration_draft_child.updated_at ASC`).all<ReviewRow>();
   const items = [];

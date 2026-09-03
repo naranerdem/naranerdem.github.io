@@ -84,7 +84,10 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
       payment_request.registration_draft_id, payment_installment.registration_draft_child_id, payment_installment.id,
       'email', 'initial_reminder', payment_installment.reminder_at, 'pending', ?, ?, payment_installment.is_test, payment_installment.test_run_id
     FROM payment_installment INNER JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
-    WHERE payment_installment.installment_kind = 'initial' AND payment_installment.reminder_at IS NOT NULL`).bind(now, now),
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
+    WHERE payment_installment.installment_kind = 'initial' AND payment_installment.reminder_at IS NOT NULL
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
     env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
       id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id,
       channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
@@ -92,7 +95,10 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
       payment_request.registration_draft_id, payment_installment.registration_draft_child_id, payment_installment.id,
       'email', 'initial_overdue', payment_installment.effective_due_at, 'pending', ?, ?, payment_installment.is_test, payment_installment.test_run_id
     FROM payment_installment INNER JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
-    WHERE payment_installment.installment_kind = 'initial'`).bind(now, now),
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
+    WHERE payment_installment.installment_kind = 'initial'
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
     env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
       id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id,
       channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
@@ -100,7 +106,10 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
       payment_request.registration_draft_id, payment_installment.registration_draft_child_id, payment_installment.id,
       'email', 'later_reminder', payment_installment.reminder_at, 'pending', ?, ?, payment_installment.is_test, payment_installment.test_run_id
     FROM payment_installment INNER JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
-    WHERE payment_installment.installment_kind = 'later' AND payment_installment.reminder_at IS NOT NULL`).bind(now, now),
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
+    WHERE payment_installment.installment_kind = 'later' AND payment_installment.reminder_at IS NOT NULL
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
     env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
       id, milestone_key, registration_draft_id, registration_draft_child_id, payment_confirmation_id,
       channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
@@ -110,8 +119,11 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
     FROM payment_confirmation
     INNER JOIN payment_request ON payment_request.id = payment_confirmation.payment_request_id
     INNER JOIN payment_installment ON payment_installment.payment_request_id = payment_request.id AND payment_installment.installment_kind = 'initial'
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
     WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
-      AND payment_confirmation.remaining_payment_due_at IS NOT NULL AND payment_confirmation.remaining_reminder_at IS NOT NULL`).bind(now, now),
+      AND payment_confirmation.remaining_payment_due_at IS NOT NULL AND payment_confirmation.remaining_reminder_at IS NOT NULL
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
   ]);
 }
 

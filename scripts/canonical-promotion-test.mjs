@@ -10,6 +10,8 @@ const databasePath = path.join(tempDir, "promotion.sqlite3");
 const bundlePath = path.join(tempDir, "canonical-promotion.mjs");
 const discountBundlePath = path.join(tempDir, "discounts.mjs");
 const capacityBundlePath = path.join(tempDir, "class-capacity.mjs");
+const cancellationBundlePath = path.join(tempDir, "registration-cancellation.mjs");
+const paymentBundlePath = path.join(tempDir, "payment-reconciliation.mjs");
 
 function sqlite(input, json = false) {
   const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], {
@@ -57,7 +59,7 @@ COMMIT; SELECT * FROM _batch_changes ORDER BY idx;`, true);
 
 function count(database, table, where = "1 = 1") { return Number(database.query(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`)[0].count); }
 const now = "2026-08-15T04:00:00.000Z";
-const actor = { staffAccountId: "teacher", displayName: "Тест Багш", roles: ["teacher"], capabilities: ["payment.view", "payment.manage"], sessionId: "test", sessionExpiresAt: now, sessionAbsoluteExpiresAt: now };
+const actor = { staffAccountId: "teacher", displayName: "Тест Багш", roles: ["teacher"], capabilities: ["payment.view", "payment.manage", "registration.manage"], sessionId: "test", sessionExpiresAt: now, sessionAbsoluteExpiresAt: now };
 
 function env(DB) {
   return { APP_ENV: "staging", REGISTRATION_WRITE_ENABLED: "true", EMAIL_ENABLED: "true", AUTH_EMAIL_ENABLED: "true", STAFF_AUTH_EMAIL_ENABLED: "true", APP_ORIGIN: "https://staging.example.test", EMAIL_FROM: "Наран Эрдэм <burtgel@mail.naranerdem.com>", DB };
@@ -91,7 +93,7 @@ function seedDraft(database, id, options = {}) {
   ) VALUES (?, ?, ?, 'initial_payment', 'active', '2026-08-16T04:00:00.000Z', 1, 'promotion-test', ?, ?)`,
   [`${id}-hold`, `${id}-child`, classId, now, now]);
   database.query(`INSERT INTO payment_request (id, registration_draft_id, payment_reference, created_at, updated_at, is_test, test_run_id)
-    VALUES (?, ?, ?, ?, ?, 1, 'promotion-test')`, [`${id}-request`, id, `NE-${id.slice(0, 6).toUpperCase()}`, now, now]);
+    VALUES (?, ?, ?, ?, ?, 1, 'promotion-test')`, [`${id}-request`, id, `NE-${id.toUpperCase()}`, now, now]);
   database.query(`INSERT INTO payment_installment (
     id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt,
     original_due_at, effective_due_at, status, paid_at, is_test, test_run_id, created_at, updated_at
@@ -100,7 +102,7 @@ function seedDraft(database, id, options = {}) {
   return { id, childId: `${id}-child`, email: email.toLowerCase() };
 }
 
-function markFinalizedApprovedPartial(database, draft, amount = 20000) {
+function markApprovedPartial(database, draft, amount = 20000, confirmationStatus = "finalized") {
   database.query(`UPDATE payment_installment SET status = 'partially_paid', paid_at = NULL WHERE id = ?`, [`${draft.id}-initial`]);
   database.query(`INSERT INTO received_payment (
     id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
@@ -115,8 +117,12 @@ function markFinalizedApprovedPartial(database, draft, amount = 20000) {
   database.query(`INSERT INTO payment_confirmation (
     id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
     remaining_payment_due_at, finalized_at, created_at, updated_at, is_test, test_run_id
-  ) VALUES (?, ?, ?, 'finalized', ?, 1, ?, ?, ?, ?, 1, 'promotion-test')`,
-  [`${draft.id}-confirmation`, `${draft.id}-payment`, `${draft.id}-request`, now, '2026-09-30T04:00:00.000Z', now, now, now]);
+  ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, 'promotion-test')`,
+  [`${draft.id}-confirmation`, `${draft.id}-payment`, `${draft.id}-request`, confirmationStatus, now, '2026-09-30T04:00:00.000Z', confirmationStatus === "finalized" ? now : null, now, now]);
+}
+
+function markFinalizedApprovedPartial(database, draft, amount = 20000) {
+  markApprovedPartial(database, draft, amount, "finalized");
 }
 
 function seedGuardian(database, id, email) {
@@ -144,6 +150,12 @@ try {
   const capacityBundled = spawnSync(esbuild, ["src/server/services/class-capacity.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${capacityBundlePath}`], { encoding: "utf8" });
   if (capacityBundled.status !== 0) throw new Error(capacityBundled.stderr);
   const { getClassCapacityProjections } = await import(pathToFileURL(capacityBundlePath).href);
+  const cancellationBundled = spawnSync(esbuild, ["src/server/staff/registration-cancellation.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${cancellationBundlePath}`], { encoding: "utf8" });
+  if (cancellationBundled.status !== 0) throw new Error(cancellationBundled.stderr);
+  const { cancelRegistration, RegistrationCancellationError } = await import(pathToFileURL(cancellationBundlePath).href);
+  const paymentBundled = spawnSync(esbuild, ["src/server/staff/payment-reconciliation.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${paymentBundlePath}`], { encoding: "utf8" });
+  if (paymentBundled.status !== 0) throw new Error(paymentBundled.stderr);
+  const { finalizeDuePaymentConfirmations } = await import(pathToFileURL(paymentBundlePath).href);
   const discountsBundle = spawnSync(esbuild, ["src/server/services/discounts.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${discountBundlePath}`], { encoding: "utf8" });
   if (discountsBundle.status !== 0) throw new Error(discountsBundle.stderr);
   const { getDiscountPolicySetting, updateDiscountPolicySetting, effectiveInstallments, DiscountPolicyError } = await import(pathToFileURL(discountBundlePath).href);
@@ -152,6 +164,9 @@ try {
     VALUES ('year', 'Тест жил', 'open', 1, 1, 'promotion-test', '${now}', '${now}');
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
     VALUES ('class-1', 'year', 'stage_1', '1-р шат', 'Бямба', '10:00', '11:20', 20, 'available', 1, 1, 'promotion-test', '${now}', '${now}');`);
+  database.query(`INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
+    VALUES ('class-cancel', 'year', 'stage_1', 'Цуцлалтын анги', 'Мягмар', '10:00', '11:20', 3, 'available', 1, 1, 'promotion-test', '${now}', '${now}'),
+      ('class-wait', 'year', 'stage_1', 'Хүлээлтийн анги', 'Пүрэв', '10:00', '11:20', 1, 'available', 1, 1, 'promotion-test', '${now}', '${now}');`);
 
   const policy = await getDiscountPolicySetting(env(database));
   assert.deepEqual({ family: policy.familyMultiChildBasisPoints, referrer: policy.referrerBasisPoints, referred: policy.referredChildBasisPoints }, { family: 1000, referrer: 500, referred: 200 }, "the typed policy starts at the reviewed 10/5/2 defaults");
@@ -343,6 +358,70 @@ try {
   await promotePaidDraftChild(env(database), actor, fallback.childId);
   const preservedWaitlist = database.query(`SELECT status, created_at AS createdAt, canonical_application_child_id AS applicationId FROM registration_draft_waitlist_entry WHERE id = 'fallback-waitlist'`)[0];
   assert.deepEqual(preservedWaitlist, { status: "active", createdAt: "2026-08-01T04:00:00.000Z", applicationId: `${fallback.childId}:application` }, "draft FIFO waitlist remains the one active authority with original priority");
+
+  const unpaidCancellation = seedDraft(database, "cancel-unpaid", { classId: "class-cancel", email: "cancel-unpaid@example.test" });
+  database.query(`UPDATE payment_installment SET status = 'pending', paid_at = NULL WHERE id = ?`, [`${unpaidCancellation.id}-initial`]);
+  const unpaidBefore = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
+  const unpaidCancelled = await cancelRegistration(env(database), actor, { registrationDraftChildId: unpaidCancellation.childId, reason: "guardian_request" });
+  assert.equal(unpaidCancelled.cancelled, true, "an unresolved initial-payment reservation can be cancelled");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${unpaidCancellation.childId}' AND status = 'active'`), 0, "cancellation resolves the active hold");
+  assert.equal(database.query(`SELECT status FROM registration_draft_child WHERE id = ?`, [unpaidCancellation.childId])[0].status, "cancelled");
+  const unpaidAfter = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
+  assert.equal(unpaidAfter.freeSeats, unpaidBefore.freeSeats + 1, "an unpaid cancellation releases exactly one seat");
+  assert.equal((await cancelRegistration(env(database), actor, { registrationDraftChildId: unpaidCancellation.childId, reason: "guardian_request" })).idempotent, true, "a replay cannot release another seat");
+  assert.equal((await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0].freeSeats, unpaidAfter.freeSeats, "replay leaves capacity unchanged");
+
+  const reviewCancellation = seedDraft(database, "cancel-review", { classId: "class-cancel", email: existingGuardianEmail, surname: "Хянах", givenName: "Хүүхэд", returning: "returning" });
+  markFinalizedApprovedPartial(database, reviewCancellation);
+  assert.equal((await promotePaidDraftChild(env(database), actor, reviewCancellation.childId)).state, "needs_identity_review");
+  database.query(`INSERT INTO payment_notification_milestone (id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id, channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id)
+    VALUES ('cancel-review-reminder', 'cancel-review-reminder', ?, ?, ?, 'email', 'initial_reminder', ?, 'pending', ?, ?, 1, 'promotion-test')`, [reviewCancellation.id, reviewCancellation.childId, `${reviewCancellation.id}-initial`, now, now, now]);
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: reviewCancellation.childId, reason: "payment_overdue" });
+  assert.equal(database.query(`SELECT status FROM registration_capacity_hold WHERE registration_draft_child_id = ?`, [reviewCancellation.childId])[0].status, "cancelled", "identity-review cancellation releases its hold");
+  assert.equal(database.query(`SELECT status FROM payment_notification_milestone WHERE id = 'cancel-review-reminder'`)[0].status, "cancelled", "cancellation stops future reminder work immediately");
+  assert.equal((await promotePaidDraftChild(env(database), actor, reviewCancellation.childId)).state, "not_eligible", "promotion replay cannot resurrect a cancelled review");
+  assert.ok(!(await getPromotionReviewQueue(env(database), actor)).items.some((item) => item.childId === reviewCancellation.childId), "cancelled review is absent from the staff queue");
+
+  const tentativeCancellation = seedDraft(database, "cancel-tentative", { classId: "class-cancel", email: "cancel-tentative@example.test" });
+  markApprovedPartial(database, tentativeCancellation, 20000, "tentative");
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: tentativeCancellation.childId, reason: "guardian_request" });
+  assert.equal(database.query(`SELECT status FROM payment_confirmation WHERE id = ?`, [`${tentativeCancellation.id}-confirmation`])[0].status, "undone", "cancellation ends an unshared tentative confirmation before Cron can finalize it");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE id = ?`, [`${tentativeCancellation.id}-initial`])[0].status, "released", "a cancelled tentative payment cannot become collectable again");
+  assert.equal(count(database, "payment_credit", `received_payment_id = '${tentativeCancellation.id}-payment' AND status = 'available'`), 1, "a cancelled tentative payment is retained as available credit rather than erased");
+  assert.equal(await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-16T04:00:00.000Z")), 0, "Cron skips the terminally undone confirmation");
+
+  const partialCancellation = seedDraft(database, "cancel-partial", { classId: "class-cancel", email: "cancel-partial@example.test" });
+  markFinalizedApprovedPartial(database, partialCancellation);
+  await promotePaidDraftChild(env(database), actor, partialCancellation.childId);
+  const partialBefore = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: partialCancellation.childId, reason: "other", note: "Тест" });
+  assert.equal(database.query(`SELECT status FROM enrollment WHERE id = ?`, [`${partialCancellation.childId}:enrollment`])[0].status, "cancelled", "confirmed partial enrollment becomes non-capacity-consuming");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE id = ?`, [`${partialCancellation.id}-initial`])[0].status, "released", "remaining partial obligation stops collecting");
+  assert.equal(count(database, "received_payment", `id = '${partialCancellation.id}-payment'`), 1, "received partial payment remains immutable history");
+  assert.equal(count(database, "payment_credit", `received_payment_id = '${partialCancellation.id}-payment' AND status = 'available'`), 1, "an unshared received partial payment becomes available credit");
+  const partialAfter = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
+  assert.equal(partialAfter.freeSeats, partialBefore.freeSeats + 1, "confirmed partial cancellation releases one seat");
+
+  const fullCancellation = seedDraft(database, "cancel-full", { classId: "class-cancel", email: "cancel-full@example.test" });
+  await promotePaidDraftChild(env(database), actor, fullCancellation.childId);
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: fullCancellation.childId, reason: "guardian_request" });
+  assert.equal(database.query(`SELECT status FROM enrollment WHERE id = ?`, [`${fullCancellation.childId}:enrollment`])[0].status, "cancelled", "fully paid canonical enrollment can be cancelled without deleting history");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE id = ?`, [`${fullCancellation.id}-initial`])[0].status, "paid", "fully paid installment remains historical rather than being rewritten as refunded");
+  await assert.rejects(() => cancelRegistration(env(database), { ...actor, roles: ["accountant"], capabilities: ["payment.view"] }, { registrationDraftChildId: fullCancellation.childId, reason: "guardian_request" }), RegistrationCancellationError, "accountant cannot cancel registrations");
+
+  const waitOccupied = seedDraft(database, "cancel-wait-occupied", { classId: "class-wait", email: "cancel-wait-occupied@example.test" });
+  await promotePaidDraftChild(env(database), actor, waitOccupied.childId);
+  const waiter = seedDraft(database, "cancel-waiter", { classId: "class-wait", email: "cancel-waiter@example.test" });
+  database.query(`UPDATE registration_capacity_hold SET status = 'released', released_at = ? WHERE registration_draft_child_id = ?;
+    UPDATE registration_draft_child SET selected_class_session_id = NULL, preferred_waitlist_class_session_id = 'class-wait', status = 'waitlisted' WHERE id = ?;
+    INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('cancel-waiter-entry', ?, 'class-wait', 'active', 1, 'promotion-test', '2026-08-01T00:00:00.000Z', ?);`, [now, waiter.childId, waiter.childId, waiter.childId, now]);
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: waitOccupied.childId, reason: "guardian_request" });
+  assert.equal(count(database, "waitlist_seat_offer", "class_session_id = 'class-wait' AND status = 'active'"), 1, "cancellation delegates one released seat to the FIFO offer allocator");
+  const waitProjection = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-wait"]))[0];
+  assert.equal(waitProjection.confirmedCount, 0);
+  assert.equal(waitProjection.offeredWaitlistCount, 1);
+  assert.equal(waitProjection.freeSeats, 0, "the replacement offer consumes the same released seat without overbooking");
 
   await assert.rejects(() => promotePaidDraftChild(env(database), { ...actor, roles: ["accountant"], capabilities: ["payment.view"] }, first.childId), CanonicalPromotionError, "accountant cannot promote identity or enrollment");
   console.log("ok canonical enrollment promotion identity, capacity, and waitlist tests");

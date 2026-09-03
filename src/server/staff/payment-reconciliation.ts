@@ -119,24 +119,30 @@ async function refreshInstallmentsAndDraft(env: WorkerEnv, request: PaymentReque
   const installments = await installmentsForRequest(env, request.id);
   const statements: D1PreparedStatement[] = [];
   for (const installment of installments) {
+    if (installment.status === "released") continue;
     const next = installment.allocatedAmountMnt >= installment.amountMnt ? "paid"
       : installment.allocatedAmountMnt > 0 ? "partially_paid" : "pending";
     if (next !== installment.status) {
-      statements.push(env.DB.prepare(`UPDATE payment_installment SET status = ?, paid_at = ?, updated_at = ? WHERE id = ?`)
+      statements.push(env.DB.prepare(`UPDATE payment_installment SET status = ?, paid_at = ?, updated_at = ?
+        WHERE id = ? AND status != 'released' AND EXISTS (
+          SELECT 1 FROM registration_draft_child
+          WHERE registration_draft_child.id = payment_installment.registration_draft_child_id
+            AND registration_draft_child.status != 'cancelled'
+        )`)
         .bind(next, next === "paid" ? now : null, now, installment.id));
     }
   }
-  const initial = installments.filter((item) => item.installmentKind === "initial");
+  const initial = installments.filter((item) => item.installmentKind === "initial" && item.status !== "released");
   for (const installment of initial) {
     if (installment.allocatedAmountMnt >= installment.amountMnt) {
       statements.push(env.DB.prepare(`UPDATE registration_draft_child SET initial_payment_reconciled_at = ?, updated_at = ?
-        WHERE id = ? AND initial_payment_reconciled_at IS NULL`).bind(now, now, installment.registrationDraftChildId));
+        WHERE id = ? AND status != 'cancelled' AND initial_payment_reconciled_at IS NULL`).bind(now, now, installment.registrationDraftChildId));
     }
   }
   const allInitialPaid = initial.length > 0 && initial.every((item) => item.allocatedAmountMnt >= item.amountMnt);
   if (allInitialPaid) {
     statements.push(env.DB.prepare(`UPDATE registration_draft SET initial_payment_reconciled_at = ?, updated_at = ?
-      WHERE id = ? AND initial_payment_reconciled_at IS NULL`).bind(now, now, request.registrationDraftId));
+      WHERE id = ? AND status != 'cancelled' AND initial_payment_reconciled_at IS NULL`).bind(now, now, request.registrationDraftId));
   }
   if (statements.length) await env.DB.batch(statements);
   return { installments, allInitialPaid };
@@ -184,6 +190,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
     WHERE payment_installment.installment_kind = 'initial'
       AND payment_installment.status IN ('pending', 'partially_paid', 'paid')
+      AND registration_draft.status != 'cancelled'
+      AND registration_draft_child.status != 'cancelled'
     GROUP BY payment_installment.id
     ORDER BY parentClaimed DESC, payment_installment.effective_due_at < ? DESC,
       payment_installment.effective_due_at ASC, payment_request.created_at ASC`).bind(now).all<Record<string, unknown>>();
@@ -207,6 +215,19 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     WHERE discount_award.status = 'active' AND discount_award.credit_amount_mnt > 0
     ORDER BY discount_award.awarded_at`).all<Record<string, unknown>>();
+  const cancelled = await env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
+    registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+    registration_draft.guardian_full_name AS guardianName, class_session.display_label AS classLabel,
+    class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
+    enrollment.cancelled_at AS cancelledAt, audit_event.metadata_json AS cancellationMetadata
+    FROM registration_draft_child
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    LEFT JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+    LEFT JOIN audit_event ON audit_event.subject_type = 'registration_draft_child'
+      AND audit_event.subject_id = registration_draft_child.id AND audit_event.action = 'registration_cancelled'
+    WHERE registration_draft_child.status = 'cancelled'
+    ORDER BY COALESCE(enrollment.cancelled_at, audit_event.occurred_at, registration_draft_child.updated_at) DESC LIMIT 50`).all<Record<string, unknown>>();
   const capacityRows = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
   const capacityLabels = await env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
     FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
@@ -233,7 +254,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     } : null,
   ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
   const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
-  return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"), items: rawItems.map((item) => {
+  return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"),
+  canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
     const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
     const awards = awardByChild.get(String(item.registrationDraftChildId)) ?? [];
@@ -244,7 +266,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ...credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "payment" })),
     ...discountCredits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "discount" })),
   ],
-  capacity,
+  capacity, cancelledItems: cancelled.results,
   waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone, registration_draft.email, registration_draft.facebook_name AS guardianFacebookName,

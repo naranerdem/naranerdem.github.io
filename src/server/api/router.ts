@@ -40,6 +40,7 @@ import {
   undoTentativePaymentConfirmation,
   updatePaymentConfirmationGraceSetting,
 } from "../staff/payment-reconciliation";
+import { cancelRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
 import {
   acceptWaitlistOffer,
   declineOrCloseWaitlistOffer,
@@ -302,6 +303,19 @@ function paymentReconciliationError(caught: unknown): Response {
   if (caught.code === "already_paid") return error("invalid_request", "Төлбөр бүрэн баталгаажсан тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function registrationCancellationError(caught: unknown): Response {
+  if (!(caught instanceof RegistrationCancellationError)) {
+    return error("internal_error", "Бүртгэлийг одоогоор цуцалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "withdrawal_required") {
+    return error("invalid_request", "Энэ бүртгэлд ирцийн түүх үүссэн тул энгийн цуцлалт хийх боломжгүй.", 409, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "conflict") return error("invalid_request", "Бүртгэлийн төлөв өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Цуцлах шалтгаан болон тайлбараа шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 function discountPolicyError(caught: DiscountPolicyError): Response {
@@ -1061,11 +1075,21 @@ export async function handleApiRequest(
     }
     const principal = await staffPrincipalForRequest(request, env);
     if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
-    if (!hasStaffCapability(principal, "payment.manage")) {
-      return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
-    }
     try {
       const payload = await request.json() as Record<string, unknown>;
+      if (payload.action === "registration.cancel") {
+        if (!hasStaffCapability(principal, "registration.manage")) {
+          return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        }
+        return json({ ok: true, ...await cancelRegistration(env, principal, {
+          registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+          reason: payload.reason,
+          note: payload.note,
+        }) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (!hasStaffCapability(principal, "payment.manage")) {
+        return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+      }
       switch (payload.action) {
         case "payment.record":
           return json({ ok: true, ...await recordManualPayment(env, principal, {
@@ -1122,7 +1146,8 @@ export async function handleApiRequest(
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
     } catch (caught) {
-      return caught instanceof DiscountPolicyError ? discountPolicyError(caught)
+      return caught instanceof RegistrationCancellationError ? registrationCancellationError(caught)
+        : caught instanceof DiscountPolicyError ? discountPolicyError(caught)
         : caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)
         : caught instanceof WaitlistOfferError ? waitlistOfferError(caught) : paymentReconciliationError(caught);
     }

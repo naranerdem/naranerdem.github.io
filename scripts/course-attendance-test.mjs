@@ -9,6 +9,7 @@ const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-course-attendance-")
 const databasePath = path.join(tempDir, "attendance.sqlite3");
 const attendanceBundle = path.join(tempDir, "course-attendance.mjs");
 const calendarBundle = path.join(tempDir, "program-calendar.mjs");
+const cancellationBundle = path.join(tempDir, "registration-cancellation.mjs");
 const esbuild = path.resolve("node_modules/esbuild/bin/esbuild");
 
 function quote(value) {
@@ -79,7 +80,7 @@ function civilWeekday(value) {
 function actor(role = "teacher") {
   const capabilities = role === "accountant"
     ? ["payment.view"]
-    : ["program.view", "program.manage", "calendar.view", "calendar.manage", "attendance.view", "attendance.manage"];
+    : ["program.view", "program.manage", "calendar.view", "calendar.manage", "attendance.view", "attendance.manage", "registration.manage"];
   return { staffAccountId: `${role}-staff`, displayName: role, roles: [role], capabilities, sessionId: "test", sessionExpiresAt: "2030-01-01T00:00:00.000Z", sessionAbsoluteExpiresAt: "2030-01-01T00:00:00.000Z" };
 }
 
@@ -98,12 +99,13 @@ try {
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   sqlite(migrations.map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
-  for (const [source, output] of [["src/server/staff/course-attendance.ts", attendanceBundle], ["src/server/staff/program-calendar.ts", calendarBundle]]) {
+  for (const [source, output] of [["src/server/staff/course-attendance.ts", attendanceBundle], ["src/server/staff/program-calendar.ts", calendarBundle], ["src/server/staff/registration-cancellation.ts", cancellationBundle]]) {
     const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
     if (result.status !== 0) throw new Error(`esbuild failed for ${source}\n${result.stderr}`);
   }
   const attendance = await import(pathToFileURL(attendanceBundle).href);
   const calendar = await import(pathToFileURL(calendarBundle).href);
+  const cancellation = await import(pathToFileURL(cancellationBundle).href);
   const database = new SqliteD1();
   const runtime = env(database);
   const now = new Date().toISOString();
@@ -215,6 +217,26 @@ try {
   assert.equal(completed.selected.rosterCount, 2);
   assert.equal(count(database, "class_calendar_revision"), 1, "attendance does not create a calendar revision");
   await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-past", enrollmentId: "enrollment-a", status: "absent" });
+  sqlite(`INSERT INTO registration_draft (
+    id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone,
+    email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version,
+    status, expires_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('attendance-cancel-draft', '${"a".repeat(64)}', 'year', 'Тест Асран хамгаалагч', 'Ээж', '99000000',
+    'attendance-cancel@example.invalid', 'attendance-cancel@example.invalid', 'Тест хаяг', 'single', 'rules', 'rules',
+    'awaiting_initial_payment', '${addCivilDays(today, 7)}T00:00:00.000Z', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO registration_draft_child (
+      id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade,
+      current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code,
+      initial_payment_amount_mnt, status, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('attendance-cancel-child', 'attendance-cancel-draft', 0, 'Бат', 'Анударь', 'female', '2015-01-01', '5',
+      'Тест сургууль', 'new', 'stage_1', 'class-a', 'single', 100000, 'awaiting_initial_payment', 'enrollment-a',
+      1, 'attendance-test', '${now}', '${now}');`);
+  await assert.rejects(
+    () => cancellation.cancelRegistration(runtime, actor(), { registrationDraftChildId: "attendance-cancel-child", reason: "guardian_request" }),
+    cancellation.RegistrationCancellationError,
+    "attendance history requires the later withdrawal workflow rather than ordinary registration cancellation",
+  );
+  assert.equal(database.query("SELECT status FROM registration_draft_child WHERE id = 'attendance-cancel-child'")[0].status, "awaiting_initial_payment", "a blocked cancellation leaves the historical enrollment untouched");
   sqlite(`UPDATE enrollment SET status = 'cancelled', cancelled_at = '${now}' WHERE id = 'enrollment-a';`);
   const withdrawnHistorical = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-past");
   assert.ok(withdrawnHistorical.selected.roster.some((entry) => entry.enrollmentId === "enrollment-a"), "existing attendance stays available after later enrollment cancellation");

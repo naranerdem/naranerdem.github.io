@@ -88,7 +88,7 @@ export async function sendRegistrationReceipt(env: WorkerEnv, registrationDraftI
 export async function sendPaymentConfirmedEmail(env: WorkerEnv, registrationDraftId: string, provider?: EmailProvider): Promise<boolean> {
   if (!enabled(env)) return false;
   const draft = await env.DB.prepare(`SELECT email, normalized_email AS normalizedEmail, is_test AS isTest, test_run_id AS testRunId
-    FROM registration_draft WHERE id = ?`).bind(registrationDraftId).first<PaymentConfirmedRow>();
+    FROM registration_draft WHERE id = ? AND status != 'cancelled'`).bind(registrationDraftId).first<PaymentConfirmedRow>();
   if (!draft) return false;
   const existing = await env.DB.prepare(`SELECT id, status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email
     WHERE registration_draft_id = ? AND event_type = 'registration_initial_payment_confirmed'`).bind(registrationDraftId)
@@ -108,8 +108,9 @@ export async function sendPaymentConfirmedEmail(env: WorkerEnv, registrationDraf
   if (!queued || queued.status === "sent") return Boolean(queued);
   const onboarding = await env.DB.prepare(`SELECT activity_offering.facebook_group_url AS facebookGroupUrl
     FROM registration_draft_child INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id AND enrollment.status = 'confirmed'
     INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
-    WHERE registration_draft_child.registration_draft_id = ? AND registration_draft_child.canonical_enrollment_id IS NOT NULL
+    WHERE registration_draft_child.registration_draft_id = ?
     ORDER BY registration_draft_child.position LIMIT 1`).bind(registrationDraftId).first<{ facebookGroupUrl: string | null }>();
   const center = await env.DB.prepare(`SELECT facebook_page_url AS facebookUrl FROM public_center_information WHERE singleton = 1`)
     .first<{ facebookUrl: string | null }>();

@@ -184,6 +184,37 @@ function staff(database, id, email, name, roles, status = "active", isTest = 1) 
   }
 }
 
+function seedCancellableRegistration(database, id) {
+  const now = "2026-08-11T08:00:00.000Z";
+  database.query(`INSERT OR IGNORE INTO academic_year (
+    id, public_label, registration_status, starts_on, ends_on, is_current, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('cancellation-year', 'Цуцлалтын тест жил', 'closed', '2026-09-01', '2027-05-31', 0, 1, 'staff-auth-test', ?, ?);`, [now, now]);
+  database.query(`INSERT OR IGNORE INTO class_session (
+    id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status,
+    is_test_only, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('cancellation-class', 'cancellation-year', 'stage_1', 'Цуцлалтын тест анги', 'Мягмар', '10:00', '11:20',
+    10, 'available', 1, 1, 'staff-auth-test', ?, ?);`, [now, now]);
+  database.query(`INSERT INTO registration_draft (
+    id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone,
+    email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version,
+    status, expires_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, 'cancellation-year', 'Цуцлалтын асран хамгаалагч', 'Ээж', '99000000', ?, ?, 'Тест хаяг', 'single',
+    'rules', 'rules', 'awaiting_initial_payment', '2026-08-18T08:00:00.000Z', 1, 'staff-auth-test', ?, ?)`,
+  [id, `${id}`.padEnd(64, "x"), `${id}@example.invalid`, `${id}@example.invalid`, now, now]);
+  database.query(`INSERT INTO registration_draft_child (
+    id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade,
+    current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code,
+    initial_payment_amount_mnt, status, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, 0, 'Тест', ?, 'female', '2015-05-10', '5', 'Тест сургууль', 'new', 'stage_1', 'cancellation-class',
+    'single', 100000, 'awaiting_initial_payment', 1, 'staff-auth-test', ?, ?)`,
+  [`${id}-child`, id, id, now, now]);
+  database.query(`INSERT INTO registration_capacity_hold (
+    id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, 'cancellation-class', 'initial_payment', 'active', '2026-08-16T08:00:00.000Z', 1, 'staff-auth-test', ?, ?)`,
+  [`${id}-hold`, `${id}-child`, now, now]);
+  return `${id}-child`;
+}
+
 async function api(env, pathname, options = {}) {
   const headers = new Headers(options.headers ?? {});
   if (options.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -667,6 +698,23 @@ try {
   assert.equal(accountantAttendance.status, 403, "accountants cannot view course attendance");
   staff(database, "staff-attendance-teacher", "attendance-teacher@example.invalid", "Ирцийн Багш", "teacher");
   const attendanceTeacher = await sameContextLogin(env, "attendance-teacher@example.invalid", "attendance-teacher", new Date(baseTime.getTime() + 432_500));
+  const teacherCancellationChild = seedCancellableRegistration(database, "teacher-cancellation");
+  const adminCancellationChild = seedCancellableRegistration(database, "admin-cancellation");
+  const cancellationBody = (registrationDraftChildId) => ({ action: "registration.cancel", registrationDraftChildId, reason: "guardian_request" });
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Origin: env.APP_ORIGIN }, body: cancellationBody(teacherCancellationChild),
+  })).status, 401, "registration cancellation is never public");
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}`, Origin: env.APP_ORIGIN }, body: cancellationBody(teacherCancellationChild),
+  })).status, 403, "accountants cannot cancel registrations");
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}`, Origin: env.APP_ORIGIN }, body: cancellationBody(teacherCancellationChild),
+  })).status, 200, "teachers can cancel an unused registration");
+  assert.equal(count(database, "registration_draft_child", `id = '${teacherCancellationChild}' AND status = 'cancelled'`), 1);
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Cookie: adminCookie, Origin: env.APP_ORIGIN }, body: cancellationBody(adminCancellationChild),
+  })).status, 200, "admins can cancel an unused registration");
+  assert.equal(count(database, "registration_draft_child", `id = '${adminCancellationChild}' AND status = 'cancelled'`), 1);
   const teacherAttendance = await api(env, "/api/staff/proof/attendance", {
     headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}` },
   });

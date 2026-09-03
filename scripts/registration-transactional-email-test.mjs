@@ -103,6 +103,10 @@ try {
   assert.match(messages[1].message.text, /Таны төлбөрийг хүлээн авч баталгаажууллаа\./);
   assert.doesNotMatch(messages[1].message.text, /эхний төлбөр/i, "payment confirmation is plan-neutral");
   assert.equal(database.query("SELECT status FROM outbound_email WHERE event_type = 'registration_initial_payment_confirmed'")[0].status, "sent");
+  seedDraft(database, "cancelled");
+  database.query("UPDATE registration_draft SET status = 'cancelled' WHERE id = 'cancelled'");
+  assert.equal(await sendPaymentConfirmedEmail(env(database), "cancelled", provider), false, "a cancelled registration cannot receive a late confirmation email");
+  assert.equal(messages.length, 2, "cancellation does not queue or send a parent confirmation");
   seedDraft(database, "failure");
   const failingProvider = { async send() { throw new Error("provider unavailable"); } };
   await assert.rejects(sendRegistrationReceipt(env(database), "failure", failingProvider), /Transactional email delivery failed/);
