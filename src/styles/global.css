@@ -1850,6 +1850,24 @@ textarea:focus {
   margin: 0;
 }
 
+.staff-page-heading h1 {
+  max-width: none;
+  font-size: clamp(1.55rem, 4vw, 2.45rem);
+  line-height: 1.08;
+}
+
+.staff-operation-section > h2,
+.staff-registration-status > h2 {
+  margin: 0;
+  color: var(--blue-deep);
+  font-size: clamp(1.2rem, 2.8vw, 1.55rem);
+  line-height: 1.2;
+}
+
+.staff-payment-page-title {
+  white-space: nowrap;
+}
+
 .staff-back-link {
   color: var(--blue-deep);
   font-weight: 800;
@@ -2172,7 +2190,13 @@ textarea:focus {
 }
 
 .staff-calendar-exception {
-  background: rgba(138, 61, 0, 0.045);
+  background: rgba(7, 58, 175, 0.035);
+}
+
+.staff-calendar-exception .staff-order,
+.staff-calendar-no-lesson {
+  color: var(--blue-deep) !important;
+  font-weight: 700;
 }
 
 .staff-calendar-menu {
@@ -2962,6 +2986,15 @@ textarea:focus {
   font-weight: 750;
 }
 
+.staff-window-date-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.staff-window-date-grid label,
+.staff-window-date-grid input {
+  min-width: 0;
+}
+
 .staff-team-list {
   display: grid;
 }
@@ -3207,8 +3240,12 @@ textarea:focus {
   }
 
   .staff-page-heading h1 {
-    font-size: 1.7rem;
+    font-size: clamp(1.35rem, 6vw, 1.7rem);
     line-height: 1.1;
+  }
+
+  .staff-window-date-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .staff-section-heading > label {
