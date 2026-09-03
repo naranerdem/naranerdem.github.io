@@ -12,6 +12,8 @@ const styles = readFileSync("src/styles/global.css", "utf8");
 assert.ok(home.indexOf("Наран Эрдэм") < home.indexOf("ХҮҮХДИЙН ШИНЖЛЭХ УХААНЫ ЛАБОРАТОРИ"));
 assert.equal((home.match(/href="\/register\/\?new=1"/g) || []).length, 2);
 assert.match(home, /brand-logo/); assert.doesNotMatch(home, /current-registration|stage-item|hero-logo|Одоо бүртгэж байна/);
+assert.match(home, /<span>Facebook<\/span><strong>Наран Эрдэмийн хуудас<\/strong>/, "Facebook contact card has a distinct link label");
+assert.equal((home.match(/<span>Facebook<\/span><strong>Наран Эрдэмийн хуудас<\/strong>/g) || []).length, 2, "runtime public contact projection keeps the same Facebook link label");
 assert.match(prose, /startsWith\("## "\)/); assert.match(prose, /<p>/); assert.match(prose, /escapePublicText/);
 assert.match(prose, /startsWith\("# "\)/); assert.match(prose, /<h3>/);
 assert.doesNotMatch(prose, /markdown|<script>/i);

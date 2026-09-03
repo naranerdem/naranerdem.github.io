@@ -50,7 +50,7 @@ export const registrationFormCopy = {
     facebook: "Facebook нэр",
     facebookHelp: "Ангийн Facebook группт нэгдэхэд танихад хэрэгтэй.",
     homeAddress: "Гэрийн хаягийн товч мэдээлэл",
-    homeAddressHelp: "Дүүргээ бичнэ үү. Хүсвэл хороо, хотхон зэрэг мэдээлэл нэмж болно.",
+    homeAddressHelp: "Дүүрэг хороогоо бичнэ үү. Хүсвэл бусад мэдээллээ нэмж болно.",
     relationshipOptions: ["Ээж", "Аав", "Асран хамгаалагч"],
   },
   child: {

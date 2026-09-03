@@ -173,7 +173,17 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN received_payment.id END) AS tentativePaymentId,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN payment_confirmation.finalize_after END) AS finalizeAfter,
     MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.seat_confirmation_approved ELSE 0 END) AS seatConfirmationApproved,
-    MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.remaining_payment_due_at END) AS remainingPaymentDueAt,
+    (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
+      WHERE confirmation.payment_request_id = payment_request.id
+        AND confirmation.status IN ('tentative', 'finalized')
+        AND confirmation.remaining_payment_due_at IS NOT NULL
+      ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1) AS remainingPaymentDueAt,
+    (SELECT code FROM enrollment_referral_code
+      WHERE enrollment_id = registration_draft_child.canonical_enrollment_id AND status = 'active'
+      ORDER BY activated_at DESC, id DESC LIMIT 1) AS ownReferralCode,
+    (SELECT captured_code FROM registration_draft_referral
+      WHERE registration_draft_child_id = registration_draft_child.id AND status = 'captured'
+      ORDER BY created_at DESC LIMIT 1) AS usedReferralCode,
     EXISTS(SELECT 1 FROM payment_evidence AS claim WHERE claim.payment_request_id = payment_request.id
       AND claim.evidence_type = 'parent_claim') AS parentClaimed,
     (SELECT MAX(recorded_at) FROM payment_evidence AS checked WHERE checked.payment_request_id = payment_request.id
@@ -255,6 +265,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
   const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
   return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"),
+  canManageReferrals: hasStaffCapability(actor, "registration.manage"),
   canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
     const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
@@ -339,10 +350,21 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   const initialAllocated = [...allocatedByInstallment.entries()].some(([id]) => installments.find((item) => item.id === id)?.installmentKind === "initial");
   const allInitialSatisfied = installments.filter((item) => item.installmentKind === "initial")
     .every((item) => item.allocatedAmountMnt + (allocatedByInstallment.get(item.id) ?? 0) >= item.amountMnt);
+  const priorConfirmation = await env.DB.prepare(`SELECT
+    MAX(CASE WHEN status IN ('tentative', 'finalized') THEN seat_confirmation_approved ELSE 0 END) AS seatApproved,
+    (SELECT remaining_payment_due_at FROM payment_confirmation
+      WHERE payment_request_id = ? AND status IN ('tentative', 'finalized') AND remaining_payment_due_at IS NOT NULL
+      ORDER BY created_at DESC, id DESC LIMIT 1) AS remainingDueAt
+    FROM payment_confirmation WHERE payment_request_id = ?`).bind(request.id, request.id)
+    .first<{ seatApproved: number; remainingDueAt: string | null }>();
+  const priorSeatApproved = Boolean(priorConfirmation?.seatApproved);
   const approvedPartial = Boolean(input.approveSeatConfirmation) && initialAllocated && !allInitialSatisfied;
-  const remainingDueAt = iso(input.remainingPaymentDueAt);
-  if (approvedPartial && (!remainingDueAt || new Date(remainingDueAt) <= nowDate)) throw new PaymentReconciliationError("invalid");
-  if (!approvedPartial && input.remainingPaymentDueAt) throw new PaymentReconciliationError("invalid");
+  if (input.approveSeatConfirmation && priorSeatApproved) throw new PaymentReconciliationError("invalid");
+  const needsRemainingDeadline = initialAllocated && !allInitialSatisfied && (approvedPartial || priorSeatApproved);
+  const suppliedRemainingDueAt = iso(input.remainingPaymentDueAt);
+  const remainingDueAt = needsRemainingDeadline ? suppliedRemainingDueAt ?? priorConfirmation?.remainingDueAt ?? null : null;
+  if (needsRemainingDeadline && (!remainingDueAt || new Date(remainingDueAt) <= nowDate)) throw new PaymentReconciliationError("invalid");
+  if (!needsRemainingDeadline && input.remainingPaymentDueAt) throw new PaymentReconciliationError("invalid");
   const now = nowDate.toISOString();
   const grace = await getPaymentConfirmationGraceSetting(env);
   const reminder = await getPaymentReminderSetting(env);
@@ -374,9 +396,9 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
     remaining_payment_due_at, remaining_reminder_lead_minutes, remaining_reminder_at, created_at, updated_at, is_test, test_run_id
   ) VALUES (?, ?, ?, 'tentative', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(crypto.randomUUID(), paymentId, request.id, finalizeAfter, approvedPartial ? 1 : 0, approvedPartial ? remainingDueAt : null,
-      approvedPartial ? reminder.laterReminderLeadMinutes : null,
-      approvedPartial ? new Date(new Date(remainingDueAt!).getTime() - reminder.laterReminderLeadMinutes * 60_000).toISOString() : null,
+    .bind(crypto.randomUUID(), paymentId, request.id, finalizeAfter, needsRemainingDeadline ? 1 : 0, remainingDueAt,
+      needsRemainingDeadline ? reminder.laterReminderLeadMinutes : null,
+      needsRemainingDeadline ? new Date(new Date(remainingDueAt!).getTime() - reminder.laterReminderLeadMinutes * 60_000).toISOString() : null,
       now, now, request.isTest, request.testRunId));
   await env.DB.batch(statements);
   await Promise.all([...new Set(installments.map((item) => item.registrationDraftChildId))]

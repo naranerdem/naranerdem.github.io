@@ -33,6 +33,10 @@ assert.match(page, /data-previous-stage-field hidden/);
 assert.match(page, /previous\.disabled = !visible/);
 assert.match(page, /previous\.required = visible/);
 assert.match(page, /field\.hidden = !visible/);
+assert.match(page, /class="previous-registration-fields field-wide"/, "invitation and previous-stage fields retain a stable shared row");
+assert.match(page, /data-child-code[\s\S]*?data-previous-stage-field hidden/, "invitation code remains before the conditional prior-stage field");
+assert.match(styles, /\.previous-registration-fields\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/, "wide registration layout reserves stable left and right slots");
+assert.match(styles, /@media \(max-width: 640px\)[\s\S]*?\.previous-registration-fields[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/, "phone layout stacks invitation code before prior stage");
 assert.match(page, /id="guardian-rules-dialog"/);
 assert.match(page, /id="student-rules-dialog"/);
 assert.match(page, /if \(parentAcknowledged && studentAcknowledged\) showReview\(\)/);
@@ -77,6 +81,7 @@ assert.doesNotMatch(page, /fetch\([^\n]*\/api\/pre-registrations|method:\s*["']P
 assert.doesNotMatch(content, /\* тэмдэгтэй талбарыг бөглөнө үү\./);
 assert.match(content, /Өмнө нь Наран Эрдэмд сурсан уу\?/);
 assert.match(content, /code: "Урилгын код"/);
+assert.match(content, /Дүүрэг хороогоо бичнэ үү\. Хүсвэл бусад мэдээллээ нэмж болно\./, "address helper uses the reviewed concise Mongolian copy");
 assert.match(content, /Энэ шатны анги, цаг хараахан ороогүй байна\./);
 assert.match(content, /Анги, суудлын мэдээлэл одоогоор түр боломжгүй байна\./, "catalog-fetch failure and a legitimately empty selected stage keep distinct public messages");
 assert.match(content, /Төлбөр баталгаажихыг хүлээж буй: \{count\}/);

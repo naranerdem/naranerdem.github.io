@@ -574,6 +574,10 @@ try {
   const approvedPartialQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-13T09:14:00.000Z"));
   const approvedPartialItem = approvedPartialQueue.items.find((item) => item.paymentRequestId === approvedPartialRequest.id);
   const approvedPartialAmount = Math.floor(Number(approvedPartialItem.expectedAmountMnt) / 2);
+  await assert.rejects(recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: approvedPartialRequest.id, allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: approvedPartialAmount }],
+    source: 'staff_manual_bank', approveSeatConfirmation: true, idempotencyKey: 'approved-partial-needs-deadline',
+  }, new Date("2026-08-13T09:14:00.000Z")), "a newly approved partial seat requires its first remaining-payment deadline");
   await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: approvedPartialRequest.id,
     allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: approvedPartialAmount }],
@@ -585,18 +589,41 @@ try {
   assert.ok(approvedPartialChild.enrollmentId, "a finalized teacher-approved partial payment creates the canonical enrollment");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${approvedPartialChild.id}' AND status = 'active'`), 0, "partial promotion releases its former hold only after canonical enrollment exists");
   assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}' AND status = 'confirmed'`), 1, "partial promotion creates exactly one confirmed enrollment");
+  const referralQueue = await getInitialPaymentQueue(env(database), { ...paymentStaff, capabilities: ['payment.view', 'payment.manage', 'registration.manage'] }, new Date("2026-08-13T09:25:00.000Z"));
+  const referralItem = referralQueue.items.find((item) => item.paymentRequestId === approvedPartialRequest.id);
+  assert.match(referralItem.ownReferralCode, /^NE-[A-Z2-9]{7}$/, "teacher/admin queue projection exposes the confirmed child's own active referral code");
+  assert.equal(referralItem.usedReferralCode ?? null, null, "a registration without a captured referral never fabricates a used code");
+  assert.equal((await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-13T09:25:00.000Z"))).canManageReferrals, false,
+    "accountant-style payment access does not receive the staff referral surface");
   assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'initial'`, [approvedPartialRequest.id])[0].status, 'partially_paid', "remaining tuition remains an independent financial obligation after enrollment promotion");
   await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:25:00.000Z"));
   assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}'`), 1, "finalizer replay does not duplicate the approved-partial enrollment");
   const approvedPartialRemaining = Number(approvedPartialItem.expectedAmountMnt) - approvedPartialAmount;
   await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: approvedPartialRequest.id, allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: 10000 }],
+    source: 'staff_manual_bank', idempotencyKey: 'approved-partial-follow-up-preserves-deadline',
+  }, new Date("2026-08-14T08:00:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-14T08:06:00.000Z"));
+  assert.equal(database.query(`SELECT remaining_payment_due_at AS dueAt FROM payment_confirmation WHERE payment_request_id = ? AND status = 'finalized' ORDER BY created_at DESC, id DESC LIMIT 1`, [approvedPartialRequest.id])[0].dueAt,
+    "2026-09-30T09:14:00.000Z", "a later partial payment preserves the existing approved-seat deadline without requiring it again");
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: approvedPartialRequest.id, allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: 10000 }],
+    source: 'staff_manual_bank', remainingPaymentDueAt: "2026-10-01T09:14:00.000Z", idempotencyKey: 'approved-partial-follow-up-changes-deadline',
+  }, new Date("2026-08-14T08:10:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-14T08:16:00.000Z"));
+  assert.equal(database.query(`SELECT remaining_payment_due_at AS dueAt FROM payment_confirmation WHERE payment_request_id = ? AND status = 'finalized' ORDER BY created_at DESC, id DESC LIMIT 1`, [approvedPartialRequest.id])[0].dueAt,
+    "2026-10-01T09:14:00.000Z", "an explicit later-payment deadline change persists authoritatively");
+  await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: approvedPartialRequest.id,
-    allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: approvedPartialRemaining }],
+    allocations: [{ installmentId: approvedPartialItem.installmentId, amountMnt: approvedPartialRemaining - 20000 }],
     source: 'staff_manual_bank', idempotencyKey: 'approved-partial-settlement',
   }, new Date("2026-08-14T09:14:00.000Z"));
   await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-14T09:20:00.000Z"));
   assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'initial'`, [approvedPartialRequest.id])[0].status, 'paid', "a later full settlement resolves the remaining initial balance");
-  assert.equal(count(database, "payment_confirmation", `payment_request_id = '${approvedPartialRequest.id}' AND seat_confirmation_approved = 1 AND status = 'finalized'`), 1, "later settlement never removes the earlier durable seat approval");
+  assert.equal(database.query(`SELECT remaining_payment_due_at AS dueAt FROM payment_confirmation WHERE payment_request_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, [approvedPartialRequest.id])[0].dueAt, null,
+    "a full remaining-balance settlement creates no artificial future deadline");
+  assert.ok(count(database, "payment_confirmation", `payment_request_id = '${approvedPartialRequest.id}' AND seat_confirmation_approved = 1 AND status = 'finalized'`) >= 1,
+    "later settlement never removes the earlier durable seat approval");
   assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}' AND status = 'confirmed'`), 1, "later settlement preserves the existing canonical enrollment");
   await claimParentPayment(database, cashRequest.id, cashDraft.draftId, cashSession.rawToken, new Date("2026-08-15T10:00:00.000Z"));
   await assert.rejects(claimParentPayment(database, cashRequest.id, cashDraft.draftId, "not-this-family", new Date("2026-08-15T10:00:00.000Z")), "another session cannot claim a family's payment");

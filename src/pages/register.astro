@@ -514,8 +514,10 @@ const formCopy = registrationFormCopy;
                 ${formCopy.child.returningOptions.map((option) => `<label><input type="radio" name="child-${index}-returning" value="${escapeText(option.value)}" data-child-returning required><span>${escapeText(option.label)}</span></label>`).join("")}
               </div>
             </fieldset>
-            <label data-previous-stage-field hidden><span>${formCopy.child.previousStage} ${requiredMarker()}</span><select name="child-${index}-previous-stage" data-child-previous-stage disabled><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.previousStageOptions.map(optionHtml).join("")}</select></label>
-            <label><span>${formCopy.child.code}</span><input name="child-${index}-code" data-child-code autocomplete="off" value="${escapeText(initialReferralCode)}" placeholder="${formCopy.child.codePlaceholder}"></label>
+            <div class="previous-registration-fields field-wide">
+              <label><span>${formCopy.child.code}</span><input name="child-${index}-code" data-child-code autocomplete="off" value="${escapeText(initialReferralCode)}" placeholder="${formCopy.child.codePlaceholder}"></label>
+              <label data-previous-stage-field hidden><span>${formCopy.child.previousStage} ${requiredMarker()}</span><select name="child-${index}-previous-stage" data-child-previous-stage disabled><option value="">${formCopy.selectPlaceholder}</option>${formCopy.child.previousStageOptions.map(optionHtml).join("")}</select></label>
+            </div>
           </div>
           <div class="class-picker">
             <label class="stage-field"><span>${formCopy.child.stage} ${requiredMarker()}</span><select name="child-${index}-stage" data-child-stage required><option value="">${formCopy.selectPlaceholder}</option>${stageOptions()}</select></label>
