@@ -1328,6 +1328,18 @@ textarea:focus {
   align-items: center;
 }
 
+.class-option-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.65rem;
+  min-width: 0;
+}
+
+.class-option-copy b {
+  white-space: nowrap;
+}
+
 .class-option .waitlist-choice {
   display: flex;
   align-items: center;
@@ -1852,8 +1864,18 @@ textarea:focus {
 
 .staff-page-heading h1 {
   max-width: none;
-  font-size: clamp(1.55rem, 4vw, 2.45rem);
+  font-size: clamp(1.45rem, 3vw, 2.1rem);
   line-height: 1.08;
+}
+
+.staff-page h2 {
+  font-size: clamp(1.15rem, 2vw, 1.45rem);
+  line-height: 1.2;
+}
+
+.staff-page h3 {
+  font-size: 1rem;
+  line-height: 1.25;
 }
 
 .staff-operation-section > h2,
@@ -1993,6 +2015,31 @@ textarea:focus {
 
 .staff-record-list .button,
 .staff-calendar-list .button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0.45rem 0.65rem;
+}
+
+.staff-list {
+  display: grid;
+  gap: 0;
+}
+
+.staff-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding: 0.7rem 0;
+}
+
+.staff-list-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.staff-list-row .button {
   flex: 0 0 auto;
   min-height: 44px;
   padding: 0.45rem 0.65rem;
@@ -3240,7 +3287,7 @@ textarea:focus {
   }
 
   .staff-page-heading h1 {
-    font-size: clamp(1.35rem, 6vw, 1.7rem);
+    font-size: clamp(1.3rem, 5.5vw, 1.6rem);
     line-height: 1.1;
   }
 
@@ -3266,6 +3313,10 @@ textarea:focus {
   .staff-danger-zone {
     align-items: start;
     flex-direction: column;
+  }
+
+  .staff-list-row {
+    align-items: start;
   }
 
   .staff-kind-choices,

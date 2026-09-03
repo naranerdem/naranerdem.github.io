@@ -13,7 +13,7 @@ export function paymentReminderTemplate(input: {
   const title = overdue ? "Төлбөрийн хугацаа өнгөрсөн байна" : "Төлбөрийн сануулга";
   const lead = overdue
     ? "Төлбөрийн хугацаа өнгөрсөн тул таны хүүхдийн суудал цуцлагдаж болзошгүйг анхаарна уу."
-    : later ? "Дараагийн төлбөрийн хугацаа ойртож байна." : "Эхний төлбөрийн хугацаа ойртож байна.";
+    : later ? "Дараагийн төлбөрийн хугацаа ойртож байна." : "Төлбөрийн хугацаа ойртож байна.";
   const claimed = input.parentClaimed ? "Хэрэв та төлбөрөө аль хэдийн шилжүүлсэн бол дахин төлөх шаардлагагүй. Бид орж ирсэн шилжүүлгийг шалгаж байна." : "";
   const bank = input.bankName && input.accountHolderName && input.accountNumber
     ? `${input.bankName} · ${input.accountNumber}<br>${input.accountHolderName}${input.iban ? `<br>IBAN: ${input.iban}` : ""}${input.transferInstruction ? `<br>${input.transferInstruction}` : ""}` : "";

@@ -4,6 +4,8 @@ import { registrationEnvironmentPresentation } from "../public/scripts/registrat
 
 const page = readFileSync("src/pages/register.astro", "utf8");
 const content = readFileSync("src/content/registration.ts", "utf8");
+const styles = readFileSync("src/styles/global.css", "utf8");
+const rulesPage = readFileSync("src/pages/staff/info.astro", "utf8");
 
 assert.match(page, /initialStageSelection\(window\.location\.search\)/);
 assert.match(page, /userStageSelection\(stage\.value\)/);
@@ -18,6 +20,11 @@ assert.match(page, /renderPaymentChoices/);
 assert.match(page, /target\.querySelectorAll\("\[data-child-waitlist\]"\)/);
 assert.match(page, /if \(other !== input\) other\.checked = false/);
 assert.match(page, /type="radio" name="child-\$\{card\.dataset\.childIndex\}-class"/);
+assert.match(page, /class="class-option-copy"/, "class labels and availability use a structural layout wrapper");
+assert.match(styles, /\.class-option-copy\s*\{[\s\S]*?display: flex;[\s\S]*?flex-wrap: wrap;[\s\S]*?gap: 0\.15rem 0\.65rem;/, "class label and capacity have an explicit responsive gap");
+assert.match(styles, /\.staff-list-row\s*\{[\s\S]*?justify-content: space-between;[\s\S]*?gap: 0\.75rem;/, "staff list rows separate their labels and actions");
+assert.match(rulesPage, /class="staff-list-row"[\s\S]*?class="button secondary"/, "Rules uses the shared label/action row layout");
+assert.match(styles, /\.staff-page h2\s*\{[\s\S]*?font-size: clamp\(1\.15rem, 2vw, 1\.45rem\)/, "staff section headings use compact operational typography");
 assert.doesNotMatch(page, /data-child-class required/);
 assert.match(page, /const firstSurname = childCards\(\)\[0\]\?\.querySelector\("\[data-child-surname\]"\)\?\.value \|\| ""/);
 assert.match(page, /data-child-surname value="\$\{escapeText\(surname\)\}"/);

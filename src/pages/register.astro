@@ -406,7 +406,7 @@ const formCopy = registrationFormCopy;
             option.innerHTML = `
               <label>
                 <input type="radio" name="child-${card.dataset.childIndex}-class" value="${escapeText(session.id)}" data-child-class ${selected === session.id ? "checked" : ""}>
-                <span><strong>${escapeText(classText(session))}</strong><small>${escapeText(formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats))}</small></span>
+                <span class="class-option-copy"><strong>${escapeText(classText(session))}</strong><small>${escapeText(formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats))}</small></span>
               </label>
             `;
           } else if (session.availability === "full") {

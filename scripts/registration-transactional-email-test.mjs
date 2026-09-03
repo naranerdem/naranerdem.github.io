@@ -80,6 +80,9 @@ try {
   assert.equal(messages.length, 1);
   assert.equal(messages[0].message.to, "safe@example.test", "staging delivery remains safely overridden");
   assert.deepEqual(messages[0].message.bcc, ["archive@example.test"], "the ordinary receipt is archive-BCC safe");
+  assert.match(messages[0].message.text, /Таны хүүхдийн мэдээлэл бүртгэгдлээ\./);
+  assert.match(messages[0].message.text, /Төлбөр хийгдсэнээр таны хүүхдийн бүртгэл баталгаажна\./);
+  assert.doesNotMatch(messages[0].message.text, /эхний төлбөр/i, "a single-payment receipt is plan-neutral");
   assert.doesNotMatch(messages[0].message.text, /verify-email|token=/i, "receipt contains no capability link");
   assert.equal(database.query("SELECT status FROM outbound_email WHERE id = 'receipt:registration-receipt'")[0].status, "sent");
   assert.equal(database.query("SELECT email_sensitivity AS sensitivity FROM outbound_email WHERE id = 'receipt:registration-receipt'")[0].sensitivity, "archive_bcc_safe");
@@ -88,6 +91,8 @@ try {
   assert.equal(messages.length, 1, "receipt retries are idempotent after success");
   assert.equal(await sendPaymentConfirmedEmail(env(database), "receipt", provider), true, "payment confirmation is also independent of auth email");
   assert.equal(messages.length, 2);
+  assert.match(messages[1].message.text, /Таны төлбөрийг хүлээн авч баталгаажууллаа\./);
+  assert.doesNotMatch(messages[1].message.text, /эхний төлбөр/i, "payment confirmation is plan-neutral");
   assert.equal(database.query("SELECT status FROM outbound_email WHERE event_type = 'registration_initial_payment_confirmed'")[0].status, "sent");
   seedDraft(database, "failure");
   const failingProvider = { async send() { throw new Error("provider unavailable"); } };
