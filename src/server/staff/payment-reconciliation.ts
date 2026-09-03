@@ -360,8 +360,8 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
         env.APP_ENV, row.isTest, row.testRunId, now).run();
     if (state.allInitialPaid) {
       try {
-        const { sendRegistrationPaymentMilestone } = await import("../auth/email-verification");
-        await sendRegistrationPaymentMilestone(env, request.registrationDraftId);
+        const { sendPaymentConfirmedEmail } = await import("../email/registration-transactional");
+        await sendPaymentConfirmedEmail(env, request.registrationDraftId);
       } catch {
         // The confirmation and its audit event are already durable; the queued email remains observable for retry.
       }

@@ -36,6 +36,9 @@ assert.match(page, /stage\.addEventListener\("change",[\s\S]*?delete card\.datas
 assert.match(page, /selectedClassSessionId: card\.querySelector\("\[data-child-class\]:checked"\)\?\.value \|\| undefined/, "the submission payload uses the selected authoritative class-session radio value");
 assert.match(page, /registrationEnvironmentPresentation/);
 assert.match(page, /document\.getElementById\("review-help"\)\.textContent = presentation\.showStagingNotice/, "bootstrap uses the resolved environment presentation instead of an obsolete staging variable");
+assert.match(page, /authEmailEnabled: false/, "static registration fallback keeps optional parent verification unavailable until authoritative bootstrap loads");
+assert.match(page, /runtimeConfig\.authEmailEnabled \? `<p>И-мэйлээ баталгаажуулснаар/, "optional verification copy is gated by the authoritative auth-email capability");
+assert.doesNotMatch(page, /И-мэйлээ баталгаажуулбал бүртгэлийн мэдээлэл, төлөвийн мэдэгдлийг и-мэйлээр авах боломжтой/, "registration payment screen never claims verification is required for ordinary notifications");
 assert.doesNotMatch(page, /review-help"\)\.textContent = staging\b/, "an obsolete staging variable cannot abort the registration bootstrap and discard a valid catalog");
 assert.match(page, /id="registration-environment-notice" class="prototype-notice" hidden/);
 assert.doesNotMatch(page, /Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ/);

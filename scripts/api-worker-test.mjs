@@ -290,6 +290,7 @@ try {
     environment: "production",
     writeEnabled: false,
     turnstileSiteKey: null,
+    authEmailEnabled: false,
   });
 
   const failedCatalog = await jsonResponse(

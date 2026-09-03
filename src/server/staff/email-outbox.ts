@@ -35,6 +35,7 @@ interface OutboxRow {
 const messageTypes: Record<string, string> = {
   email_verification_v1: "И-мэйл баталгаажуулалт",
   registration_confirmation_v1: "Бүртгэлийн баталгаажуулалт",
+  registration_receipt_v1: "Бүртгэл хүлээн авсан",
   staff_login_v2: "Ажилтны нэвтрэх холбоос",
   payment_confirmed_v1: "Төлбөр баталгаажсан",
   payment_reminder_v1: "Төлбөрийн сануулга",

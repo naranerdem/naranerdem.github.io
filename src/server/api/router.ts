@@ -2,6 +2,7 @@ import type { WorkerEnv, WorkerExecutionContext } from "../env";
 import { secureEqual } from "../auth/crypto";
 import { EmailVerificationError, startEmailVerification, verifyEmailToken } from "../auth/email-verification";
 import { VERIFIED_EMAIL_COOKIE } from "../auth/email-verification";
+import { sendRegistrationReceipt } from "../email/registration-transactional";
 import { EmailConfigurationError, EmailDeliveryError } from "../email/service";
 import { getRegistrationCatalog } from "../services/registration-catalog";
 import { getPublicSiteModel } from "../services/public-site";
@@ -470,6 +471,7 @@ export async function handleApiRequest(
       environment: env.APP_ENV,
       writeEnabled: registrationWriteEnabled(env),
       turnstileSiteKey: registrationWriteEnabled(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
+      authEmailEnabled: authEmailAvailable(env),
     }, 200, { "Cache-Control": "no-store" });
   }
 
@@ -481,6 +483,7 @@ export async function handleApiRequest(
           environment: env.APP_ENV,
           writeEnabled: registrationWriteEnabled(env),
           turnstileSiteKey: registrationWriteEnabled(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
+          authEmailEnabled: authEmailAvailable(env),
           stagingNotice: env.APP_ENV === "staging"
             ? "Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ. Бодит элсэлт, төлбөр үүсэхгүй."
             : null,
@@ -509,31 +512,22 @@ export async function handleApiRequest(
         idempotencyKey: request.headers.get("Idempotency-Key"),
       });
       if (!draft.created) {
+        let emailSent = false;
+        try { emailSent = await sendRegistrationReceipt(env, draft.draftId); } catch { /* delivery never changes accepted registration state */ }
         return json({
           ok: true,
-          emailSent: true,
+          emailSent,
           email: draft.email,
           hasPaymentHold: draft.hasPaymentHold,
           paymentDeadlineAt: draft.paymentDeadlineAt,
           replayed: true,
         }, 202, { "Cache-Control": "no-store" });
       }
-      try {
-        await startEmailVerification(env, draft.email, { registrationDraftId: draft.draftId });
-        await markRegistrationEmailSent(env.DB, draft.draftId);
-      } catch (caught) {
-        await markRegistrationEmailFailed(env.DB, draft.draftId);
-        return json({
-          ok: true,
-          emailSent: false,
-          email: draft.email,
-          hasPaymentHold: draft.hasPaymentHold,
-          paymentDeadlineAt: draft.paymentDeadlineAt,
-        }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie! });
-      }
+      let emailSent = false;
+      try { emailSent = await sendRegistrationReceipt(env, draft.draftId); } catch { /* delivery never changes accepted registration state */ }
       return json({
         ok: true,
-        emailSent: true,
+        emailSent,
         email: draft.email,
         hasPaymentHold: draft.hasPaymentHold,
         paymentDeadlineAt: draft.paymentDeadlineAt,
@@ -545,6 +539,7 @@ export async function handleApiRequest(
 
   if (path === "/api/registration/email/resend") {
     if (!registrationWriteEnabled(env)) return authNotFound();
+    if (!authEmailAvailable(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     try {
       const draft = await draftForAccessToken(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
@@ -564,6 +559,7 @@ export async function handleApiRequest(
 
   if (path === "/api/registration/email/change") {
     if (!registrationWriteEnabled(env)) return authNotFound();
+    if (!authEmailAvailable(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     let email = "";
     let turnstileToken = "";

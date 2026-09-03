@@ -4,6 +4,7 @@ import type { EmailMessage } from "./provider";
 export type EmailSensitivity = "archive_bcc_safe" | "sensitive_capability";
 
 const archiveSafeTemplateKeys = new Set([
+  "registration_receipt_v1",
   "payment_confirmed_v1",
   "payment_reminder_v1",
   "waitlist_payment_instructions_v1",

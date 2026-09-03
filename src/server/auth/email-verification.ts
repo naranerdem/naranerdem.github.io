@@ -4,7 +4,6 @@ import { createResendProvider } from "../email/resend";
 import { EmailConfigurationError, deliverQueuedEmail } from "../email/service";
 import { emailVerificationTemplate } from "../email/templates/email-verification";
 import { registrationConfirmationTemplate } from "../email/templates/registration-confirmation";
-import { paymentConfirmedTemplate } from "../email/templates/payment-confirmed";
 import {
   challengeForTokenHash,
   confirmRegistrationChallenge,
@@ -238,39 +237,4 @@ export async function verifyEmailToken(
     cookie: verifiedEmailCookie(rawSessionToken, true),
     redirectUrl: new URL("/register/?email=verified", env.APP_ORIGIN).toString(),
   };
-}
-
-export async function sendRegistrationPaymentMilestone(env: WorkerEnv, registrationDraftId: string) {
-  if (env.EMAIL_ENABLED !== "true" || env.AUTH_EMAIL_ENABLED !== "true" || !env.RESEND_API_KEY) return false;
-  const draft = await env.DB.prepare(`SELECT email, normalized_email AS normalizedEmail, is_test AS isTest, test_run_id AS testRunId
-    FROM registration_draft WHERE id = ?`).bind(registrationDraftId)
-    .first<{ email: string; normalizedEmail: string; isTest: number; testRunId: string | null }>();
-  if (!draft) return false;
-  const existing = await env.DB.prepare(`SELECT id, status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email WHERE registration_draft_id = ?
-    AND event_type = 'registration_initial_payment_confirmed'`).bind(registrationDraftId).first<{ id: string; status: string; actualDeliveryEmail: string }>();
-  if (existing?.status === "sent") return true;
-  const delivery = resolveDeliveryAddress(env.APP_ENV, draft.normalizedEmail, env.STAGING_EMAIL_OVERRIDE_TO);
-  const now = new Date().toISOString();
-  const id = existing?.id ?? crypto.randomUUID();
-  const inserted = existing ? null : await env.DB.prepare(`INSERT OR IGNORE INTO outbound_email (
-    id, event_type, template_key, intended_to_email, actual_delivery_email, delivery_mode, status, attempt_count,
-    queued_at, context_json, idempotency_key, is_test, test_run_id, created_at, updated_at, registration_draft_id
-  ) VALUES (?, 'registration_initial_payment_confirmed', 'payment_confirmed_v1', ?, ?, ?, 'queued', 0, ?, '{}', ?, ?, ?, ?, ?, ?)`)
-    .bind(id, draft.normalizedEmail, delivery.actualEmail, delivery.deliveryMode, now, `payment-confirmed/${registrationDraftId}`,
-      draft.isTest, draft.testRunId, now, now, registrationDraftId).run();
-  if (!existing && changeCount(inserted ?? undefined) !== 1) return true;
-  const onboarding = await env.DB.prepare(`SELECT activity_offering.facebook_group_url AS facebookGroupUrl
-    FROM registration_draft_child INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
-    INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
-    WHERE registration_draft_child.registration_draft_id = ? AND registration_draft_child.canonical_enrollment_id IS NOT NULL
-    ORDER BY registration_draft_child.position LIMIT 1`).bind(registrationDraftId).first<{ facebookGroupUrl: string | null }>();
-  const center = await env.DB.prepare(`SELECT facebook_page_url AS facebookUrl FROM public_center_information WHERE singleton = 1`)
-    .first<{ facebookUrl: string | null }>();
-  const template = paymentConfirmedTemplate({ facebookGroupUrl: onboarding?.facebookGroupUrl, centerFacebookUrl: center?.facebookUrl });
-  await deliverQueuedEmail(env, createResendProvider(env.RESEND_API_KEY), {
-    id, idempotencyKey: `payment-confirmed/${registrationDraftId}`,
-    templateKey: "payment_confirmed_v1",
-    message: { from: env.EMAIL_FROM, to: existing?.actualDeliveryEmail ?? delivery.actualEmail, subject: template.subject, html: template.html, text: template.text },
-  });
-  return true;
 }
