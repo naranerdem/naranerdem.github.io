@@ -998,7 +998,7 @@ const formCopy = registrationFormCopy;
         environmentNotice.textContent = presentation.showStagingNotice ? runtimeConfig.stagingNotice || "" : "";
         environmentNotice.classList.toggle("staging-notice", presentation.showStagingNotice);
         finishButton.textContent = formCopy.buttons.submitRegistration;
-        document.getElementById("review-help").textContent = staging
+        document.getElementById("review-help").textContent = presentation.showStagingNotice
           ? formCopy.review.stagingHelp
           : formCopy.review.help;
       }

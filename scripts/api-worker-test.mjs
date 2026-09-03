@@ -38,9 +38,9 @@ function catalogRow(id, options = {}) {
     classSessionId: id,
     stageCode: options.stageCode ?? "stage_1",
     displayLabel: options.displayLabel ?? id,
-    weekday: "Бямба",
-    startTime: "10:00",
-    endTime: "11:20",
+    weekday: options.weekday ?? "Бямба",
+    startTime: options.startTime ?? "10:00",
+    endTime: options.endTime ?? "11:20",
     capacity,
     confirmedCount,
     activeHoldCount,
@@ -227,11 +227,22 @@ try {
   assert.equal(stagingCalendar.body.calendars[0].classSession.label, "2-р шат · Ням 10:00", "published schedules use the generated class label");
 
   const productionWorker = (await bundleWorker("production", "production")).default;
+  const productionCatalogRows = [
+    catalogRow("production-stage-1-tuesday-0900", { stageCode: "stage_1", weekday: "Мягмар", startTime: "09:00", endTime: "10:20" }),
+    catalogRow("production-stage-1-tuesday-1500", { stageCode: "stage_1", weekday: "Мягмар", startTime: "15:00", endTime: "16:20" }),
+    catalogRow("production-stage-1-thursday-1500", { stageCode: "stage_1", weekday: "Пүрэв", startTime: "15:00", endTime: "16:20" }),
+    catalogRow("production-stage-1-saturday-1000", { stageCode: "stage_1", weekday: "Бямба", startTime: "10:00", endTime: "11:20" }),
+    catalogRow("production-stage-1-saturday-1400", { stageCode: "stage_1", weekday: "Бямба", startTime: "14:00", endTime: "15:20" }),
+    catalogRow("production-stage-2-wednesday-0900", { stageCode: "stage_2", weekday: "Лхагва", startTime: "09:00", endTime: "10:20" }),
+    catalogRow("production-stage-2-wednesday-1500", { stageCode: "stage_2", weekday: "Лхагва", startTime: "15:00", endTime: "16:20" }),
+    catalogRow("production-stage-2-sunday-1000", { stageCode: "stage_2", weekday: "Ням", startTime: "10:00", endTime: "11:20" }),
+    catalogRow("production-stage-3-sunday-1400", { stageCode: "stage_3", weekday: "Ням", startTime: "14:00", endTime: "16:00" }),
+  ];
   const productionEnv = {
     APP_ENV: "production",
     REGISTRATION_WRITE_ENABLED: "false",
     DB: createDatabase([
-      catalogRow("production-public-session", { confirmedCount: 3, activeHoldCount: 2 }),
+      ...productionCatalogRows,
       catalogRow("production-test-session", { isTest: 1, isTestOnly: 1, confirmedCount: 10 }),
     ], {
       calendarRows: [calendarRow("production-test-calendar", { isTest: 1 })],
@@ -243,10 +254,9 @@ try {
 
   const productionCatalog = await jsonResponse(productionWorker, "/api/registration/catalog", productionEnv);
   assert.equal(productionCatalog.response.status, 200);
-  assert.deepEqual(
-    productionCatalog.body.academicYears[0].classSessions.map((session) => [session.id, session.remainingSeats, session.activeHoldCount]),
-    [["production-public-session", 5, 2]],
-  );
+  const productionSessions = productionCatalog.body.academicYears[0].classSessions;
+  assert.deepEqual(Object.fromEntries(["stage_1", "stage_2", "stage_3"].map((stageCode) => [stageCode, productionSessions.filter((session) => session.stageCode === stageCode).length])), { stage_1: 5, stage_2: 3, stage_3: 1 }, "the production catalog response carries the complete 5/3/1 stage-to-class shape the public selector consumes");
+  assert.equal(productionSessions.every((session) => session.id !== "production-test-session" && session.availability === "available" && session.paymentOptions.length > 0), true, "production catalog excludes test classes while retaining authoritative selectable class IDs and pricing");
 
   const productionCalendar = await jsonResponse(productionWorker, "/api/calendar/published", productionEnv);
   assert.deepEqual(productionCalendar.body, { calendars: [] }, "production safely returns an empty unconfigured schedule");
