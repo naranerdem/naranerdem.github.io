@@ -6,7 +6,7 @@
   "workers_dev": true,
   "vars": {
     "APP_ENV": "production",
-    "REGISTRATION_WRITE_ENABLED": "true",
+    "REGISTRATION_WRITE_ENABLED": "false",
     "TURNSTILE_SITE_KEY": "0x4AAAAAAElUx-dJ1Bqo6Srw",
     "APP_ORIGIN": "https://naranerdem.com",
     "EMAIL_ENABLED": "true",

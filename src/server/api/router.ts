@@ -481,6 +481,9 @@ export async function handleApiRequest(
           environment: env.APP_ENV,
           writeEnabled: registrationWriteEnabled(env),
           turnstileSiteKey: registrationWriteEnabled(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
+          stagingNotice: env.APP_ENV === "staging"
+            ? "Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ. Бодит элсэлт, төлбөр үүсэхгүй."
+            : null,
         },
         catalog: await getRegistrationCatalog(env.DB, env.APP_ENV),
         courseRules: await getCourseRules(env),

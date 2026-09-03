@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { registrationEnvironmentPresentation } from "../public/scripts/registration-environment.js";
 
 const page = readFileSync("src/pages/register.astro", "utf8");
 const content = readFileSync("src/content/registration.ts", "utf8");
@@ -30,6 +31,10 @@ assert.match(page, /id="student-rules-dialog"/);
 assert.match(page, /if \(parentAcknowledged && studentAcknowledged\) showReview\(\)/);
 assert.match(page, /fetch\("\/api\/registration\/catalog"/);
 assert.match(page, /fetch\("\/api\/registration\/bootstrap"/);
+assert.match(page, /registrationEnvironmentPresentation/);
+assert.match(page, /id="registration-environment-notice" class="prototype-notice" hidden/);
+assert.doesNotMatch(page, /Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ/);
+assert.doesNotMatch(content, /Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ/);
 assert.match(page, /data-registration-surface="booting"/);
 assert.match(page, /id="registration-booting"/);
 assert.match(page, /id="registration-form" class="registration-form" novalidate hidden/);
@@ -45,7 +50,7 @@ assert.match(page, /id="start-new-registration"/);
 assert.match(page, /function startNewRegistration\(\)/);
 assert.match(page, /challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit/);
 assert.match(page, /if \(!runtimeConfig\.writeEnabled\)/);
-assert.match(page, /formCopy\.messages\.stagingNotice/);
+assert.match(page, /runtimeConfig\.stagingNotice/);
 assert.match(page, /formCopy\.messages\.alreadyVerifiedTitle/);
 assert.match(page, /classSelectionIssue/);
 assert.match(page, /issue\.focusTarget === "class-status"|card\.querySelector\("\[data-catalog-message\]"\)/);
@@ -77,5 +82,23 @@ assert.match(verificationPage, /class="verification-card"/);
 assert.match(verificationPage, /invalidResendHint/);
 assert.doesNotMatch(verificationPage, /class="review-panel"/);
 assert.doesNotMatch(content, /дараа нь өөрчил|өөрчилж болно|Авсан урилгын код|Нэг асран хамгаалагч хэд хэдэн хүүхэд|Өмнө сурч байсан бол сонгоно уу/);
+
+assert.deepEqual(registrationEnvironmentPresentation({ environment: "production", writeEnabled: true }), {
+  showStagingNotice: false,
+  showProductionClosed: false,
+});
+assert.deepEqual(registrationEnvironmentPresentation({ environment: "production", writeEnabled: false }), {
+  showStagingNotice: false,
+  showProductionClosed: true,
+});
+assert.deepEqual(registrationEnvironmentPresentation({ environment: "staging", writeEnabled: true }), {
+  showStagingNotice: true,
+  showProductionClosed: false,
+});
+
+const builtPage = readFileSync("dist/register/index.html", "utf8");
+assert.doesNotMatch(builtPage, /Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ/);
+assert.doesNotMatch(builtPage, /Туршилтын хувилбар/);
+assert.doesNotMatch(builtPage, /Туршилтаар дуусгах/);
 
 console.log("ok registration prototype structure tests");

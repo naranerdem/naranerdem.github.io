@@ -1,7 +1,7 @@
 ---
 import { contact } from "../content/contact";
 import { siteIdentity } from "../content/homepage";
-import { registrationFormCopy, registrationPrototype } from "../content/registration";
+import { registrationFormCopy } from "../content/registration";
 import { rulesContent } from "../content/rules";
 import "../styles/global.css";
 
@@ -13,8 +13,8 @@ const formCopy = registrationFormCopy;
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content={registrationPrototype.description} />
-    <title>{registrationPrototype.title} | {siteIdentity.name}</title>
+    <meta name="description" content="Наран Эрдэм сургалтын бүртгэл." />
+    <title>Бүртгэл | {siteIdentity.name}</title>
     <script is:inline>try { const value = localStorage.getItem("naranerdem.public-font"); if (value === "sans" || value === "serif") document.documentElement.dataset.publicFont = value; } catch {}</script>
   </head>
   <body class="register-page" data-registration-surface="booting">
@@ -34,7 +34,7 @@ const formCopy = registrationFormCopy;
 
     <main class="register-shell">
       <section class="prototype-hero" aria-labelledby="register-title">
-        <p id="registration-environment-notice" class="prototype-notice">{registrationPrototype.notice}</p>
+        <p id="registration-environment-notice" class="prototype-notice" hidden aria-live="polite"></p>
         <div class="register-title-row">
           <h1 id="register-title">Бүртгэлийн мэдээлэл</h1>
           <p id="registration-progress" class="registration-progress">1 / 4 · {formCopy.progress.information}</p>
@@ -125,9 +125,8 @@ const formCopy = registrationFormCopy;
         </div>
         <div class="form-actions review-actions">
           <button class="button secondary" type="button" id="edit-information">{formCopy.buttons.edit}</button>
-          <button class="button primary" type="button" id="finish-prototype">{formCopy.buttons.finish}</button>
+          <button class="button primary" type="button" id="submit-registration">{formCopy.buttons.submitRegistration}</button>
         </div>
-        <p id="prototype-complete" class="prototype-complete" role="status" hidden>{formCopy.messages.prototypeComplete}</p>
       </section>
 
       <section id="registration-result" class="registration-result" aria-live="polite" hidden>
@@ -181,6 +180,7 @@ const formCopy = registrationFormCopy;
         createRegistrationDraft,
         readRegistrationDraft,
       } from "/scripts/registration-draft.js";
+      import { registrationEnvironmentPresentation } from "/scripts/registration-environment.js";
       loadPublicFont();
 
       const registrationData = JSON.parse(document.getElementById("registration-data").textContent);
@@ -191,8 +191,7 @@ const formCopy = registrationFormCopy;
       const progress = document.getElementById("registration-progress");
       const reviewPanel = document.getElementById("review-panel");
       const reviewSummary = document.getElementById("review-summary");
-      const completeMessage = document.getElementById("prototype-complete");
-      const finishButton = document.getElementById("finish-prototype");
+      const finishButton = document.getElementById("submit-registration");
       const environmentNotice = document.getElementById("registration-environment-notice");
       const turnstileArea = document.getElementById("registration-turnstile");
       const turnstileWidget = document.getElementById("turnstile-widget");
@@ -216,7 +215,7 @@ const formCopy = registrationFormCopy;
       let studentAcknowledged = false;
       let returnFocusTo = null;
       let storedDraft = null;
-      let runtimeConfig = { environment: "production", writeEnabled: false, turnstileSiteKey: null };
+      let runtimeConfig = { environment: "production", writeEnabled: false, turnstileSiteKey: null, stagingNotice: null };
       let runtimeRules = { parentRulesVersion: registrationData.rulesContent.parent.version, studentRulesVersion: registrationData.rulesContent.student.version };
       let turnstileToken = "";
       let turnstileWidgetId = null;
@@ -903,15 +902,12 @@ const formCopy = registrationFormCopy;
       document.getElementById("edit-information").addEventListener("click", () => {
         reviewPanel.hidden = true;
         form.hidden = false;
-        completeMessage.hidden = true;
         progress.textContent = `1 / 4 · ${formCopy.progress.information}`;
         turnstileToken = "";
         document.getElementById("guardian-name").focus();
       });
       finishButton.addEventListener("click", async () => {
         if (!runtimeConfig.writeEnabled) {
-          completeMessage.hidden = false;
-          discardStoredDraft();
           return;
         }
         if (!turnstileToken) {
@@ -985,6 +981,27 @@ const formCopy = registrationFormCopy;
         document.body.dataset.registrationSurface = "form";
         if (storedDraft) draftNotice.hidden = false;
       }
+
+      function showRegistrationClosed() {
+        form.hidden = true;
+        reviewPanel.hidden = true;
+        resultPanel.hidden = true;
+        draftNotice.hidden = true;
+        bootingPanel.hidden = false;
+        bootingPanel.querySelector("p").textContent = formCopy.messages.registrationClosed;
+        document.body.dataset.registrationSurface = "closed";
+      }
+
+      function applyEnvironmentPresentation() {
+        const presentation = registrationEnvironmentPresentation(runtimeConfig);
+        environmentNotice.hidden = !presentation.showStagingNotice;
+        environmentNotice.textContent = presentation.showStagingNotice ? runtimeConfig.stagingNotice || "" : "";
+        environmentNotice.classList.toggle("staging-notice", presentation.showStagingNotice);
+        finishButton.textContent = formCopy.buttons.submitRegistration;
+        document.getElementById("review-help").textContent = staging
+          ? formCopy.review.stagingHelp
+          : formCopy.review.help;
+      }
       function startNewRegistration() {
         const guardian = guardianPrefill ? {
           guardianName: guardianPrefill.guardianFullName || "", guardianRelationship: guardianPrefill.relationship || "",
@@ -1039,12 +1056,7 @@ const formCopy = registrationFormCopy;
             document.getElementById("student-rules-body").innerHTML = renderPublicProse(student.bodyText);
           }
           catalogState = "available";
-          if (runtimeConfig.writeEnabled) {
-            environmentNotice.textContent = formCopy.messages.stagingNotice;
-            environmentNotice.classList.add("staging-notice");
-            finishButton.textContent = formCopy.buttons.submitRegistration;
-            document.getElementById("review-help").textContent = formCopy.review.stagingHelp;
-          }
+          applyEnvironmentPresentation();
         } catch {
           catalog = null;
           catalogState = "unavailable";
@@ -1058,6 +1070,10 @@ const formCopy = registrationFormCopy;
         await loadBootstrap();
         const parameters = new URLSearchParams(window.location.search);
         const status = parameters.get("status");
+        if (registrationEnvironmentPresentation(runtimeConfig).showProductionClosed) {
+          showRegistrationClosed();
+          return;
+        }
         if (parameters.get("new") === "1") { showRegistrationForm(); return; }
         if (runtimeConfig.writeEnabled && (status === "confirmed" || status === "already-verified")) {
           document.body.dataset.registrationSurface = "verified";

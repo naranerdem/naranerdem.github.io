@@ -7,12 +7,6 @@ export const registrationCopy = {
   statusLabel: "Бүртгэл нээгдэхэд энд шинэ мэдээлэл байрлана.",
 };
 
-export const registrationPrototype = {
-  title: "Бүртгэл",
-  description: "Наран Эрдэм сургалтын бүртгэлийн хөгжүүлэлтийн прототип.",
-  notice: "Туршилтын хувилбар — энд бөглөсөн мэдээлэл хадгалагдахгүй, бүртгэл үүсэхгүй.",
-};
-
 export const emailVerificationCopy = {
   processingTitle: "И-мэйл баталгаажуулж байна…",
   processingStatus: "Түр хүлээнэ үү.",
@@ -38,7 +32,6 @@ export const registrationFormCopy = {
     acknowledgeGuardian: "Уншиж танилцаж, зөвшөөрөв",
     acknowledgeStudent: "Уншиж танилцлаа",
     edit: "Мэдээлэл засах",
-    finish: "Туршилтаар дуусгах",
     submitRegistration: "Бүртгэл илгээх",
     resendEmail: "И-мэйл дахин илгээх",
     changeEmail: "И-мэйл хаяг өөрчлөх",
@@ -121,7 +114,7 @@ export const registrationFormCopy = {
   },
   review: {
     title: "Хянаж баталгаажуулах",
-    help: "Доорх хураангуйг шалгана уу. Энэ нь илгээгдэхгүй, хадгалагдахгүй.",
+    help: "Доорх хураангуйг шалгаад бүртгэлээ илгээнэ үү.",
     stagingHelp: "Доорх хураангуйг шалгана уу. Илгээхэд зөвхөн туршилтын бүртгэл үүснэ.",
     guardianHeading: "Асран хамгаалагч",
     childHeading: "Хүүхэд, анги",
@@ -138,10 +131,8 @@ export const registrationFormCopy = {
   messages: {
     booting: "Бүртгэлийн төлөвийг нээж байна…",
     requiredError: "Дутуу эсвэл буруу бөглөсөн талбарыг шалгана уу.",
-    prototypeComplete:
-      "Бүртгэлийн шинэ системийг бэлтгэж байна. Энэ үйлдлээр бодит бүртгэл, суудал барилт, төлбөрийн хүсэлт үүсэхгүй.",
+    registrationClosed: "Бүртгэл одоогоор нээлттэй биш байна.",
     notSelected: "Сонгоогүй",
-    stagingNotice: "Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ. Бодит элсэлт, төлбөр үүсэхгүй.",
     turnstileRequired: "Хамгаалалтын шалгалтыг дуусгана уу.",
     submitting: "Бүртгэлийг түр хадгалж байна…",
     submitFailed: "Бүртгэлийг одоогоор үргэлжлүүлж чадсангүй. Мэдээллээ шалгаад дахин оролдоно уу.",
