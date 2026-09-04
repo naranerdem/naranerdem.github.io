@@ -49,6 +49,7 @@ interface PromotionRow {
   canonicalApplicationChildId: string | null;
   canonicalEnrollmentId: string | null;
   initialInstallmentPaid: number;
+  laterInstallmentOutstanding: number;
   partialSeatApproved: number;
   activeInitialHold: number;
   draftStatus: string;
@@ -90,14 +91,16 @@ interface ReviewRow {
   identityResolutionStatus: string;
 }
 
-// Canonical identity/enrollment work may begin only after the initial
-// obligation is fully finalized, or after a teacher has finalized an explicit
-// partial-payment seat approval. The remaining balance is financial work, not
-// an enrollment-identity blocker.
+// Canonical identity/enrollment work may begin after all required installments
+// are finalized, or after a teacher has finalized an explicit seat approval.
+// A later scheduled installment remains financial work after that approval.
 function promotionPaymentEligibleSql(childIdExpression: string): string {
-  return `(EXISTS (SELECT 1 FROM payment_installment
+  return `((EXISTS (SELECT 1 FROM payment_installment
       WHERE payment_installment.registration_draft_child_id = ${childIdExpression}
         AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid')
+    AND NOT EXISTS (SELECT 1 FROM payment_installment
+      WHERE payment_installment.registration_draft_child_id = ${childIdExpression}
+        AND payment_installment.installment_kind = 'later' AND payment_installment.status != 'paid'))
     OR EXISTS (SELECT 1 FROM payment_confirmation
       INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
       INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
@@ -107,7 +110,7 @@ function promotionPaymentEligibleSql(childIdExpression: string): string {
 }
 
 function promotionPaymentEligible(row: PromotionRow): boolean {
-  return Boolean(row.initialInstallmentPaid || row.partialSeatApproved);
+  return Boolean(row.partialSeatApproved || (row.initialInstallmentPaid && !row.laterInstallmentOutstanding));
 }
 
 function normalizedText(value: string): string {
@@ -175,6 +178,8 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
     enrollment.status AS canonicalEnrollmentStatus,
     EXISTS(SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
       AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid') AS initialInstallmentPaid,
+    EXISTS(SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
+      AND payment_installment.installment_kind = 'later' AND payment_installment.status != 'paid') AS laterInstallmentOutstanding,
     EXISTS(SELECT 1 FROM payment_confirmation
       INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
       INNER JOIN payment_installment AS approved_installment ON approved_installment.id = payment_allocation.payment_installment_id

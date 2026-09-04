@@ -805,8 +805,8 @@ const formCopy = registrationFormCopy;
               ? `<span>${child.offeringFacebookGroupUrl ? `<a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэгт нэгдэх</a><br>` : ""}Хүүхэд Facebook хаягтай бол мөн бүлэгт нэгдэж болно.</span>` : "";
             return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${cancelled ? "Бүртгэл цуцлагдсан" : classStatusText(child)}</span>${referralAccepted ? `<span>Урилгын код хүчинтэй.</span>` : ""}${!cancelled && child.referralCode ? `<span>Найзаа урих код: <strong>${escapeText(child.referralCode)}</strong></span>` : ""}${discountSummary}${!cancelled && child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
-          showResult(hasCancelledRegistration ? "Бүртгэл цуцлагдсан" : hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : status.verifiedAt ? (alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle) : "Бүртгэлийн мэдээллийг хүлээн авлаа.", `
-            ${hasPaymentHold ? `<p class="status-emphasis">${escapeText(formCopy.messages.paymentHold)}</p>` : ""}
+          showResult(hasCancelledRegistration ? "Бүртгэл цуцлагдсан" : hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : hasPaymentHold ? "Бүртгэлийн мэдээллийг хүлээн авлаа." : status.verifiedAt ? (alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle) : "Бүртгэлийн мэдээллийг хүлээн авлаа.", `
+            ${hasPaymentHold ? `<p class="status-emphasis">Суудал баталгаажаагүй байна.<br>Төлбөр төлснөөр суудал баталгаажна.</p>` : ""}
             ${seatUnavailable ? `<p class="form-error">${escapeText(formCopy.messages.seatLost)}</p>` : ""}
             ${hasCancelledRegistration ? `<p class="status-emphasis">Энэ бүртгэл идэвхгүй болсон. Төлбөрийн түүх тусад нь хадгалагдсан.</p>` : ""}
             <ul class="status-children">${children}</ul>
@@ -825,7 +825,7 @@ const formCopy = registrationFormCopy;
                 credentials: "same-origin", body: JSON.stringify({ paymentRequestId: paymentRequest }),
               });
               if (!response.ok) throw new Error("claim unavailable");
-              message.textContent = "Таны мэдэгдлийг тэмдэглэлээ. Энэ нь төлбөр баталгаажсан гэсэн үг биш юм.";
+              message.textContent = "Таны мэдэгдлийг хүлээн авлаа. Бид төлбөрийг шалгаж баталгаажуулна.";
               button.textContent = "Төлбөр хийсэн гэж мэдэгдсэн";
             } catch {
               button.disabled = false;

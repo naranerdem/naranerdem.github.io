@@ -17,6 +17,9 @@ assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'),
 assert.match(page, /item\.seatConfirmationApproved \? "Хэсэгчлэн төлсөн"/);
 assert.match(page, /const seatApprovalControl = approvedSeat/, "already-approved seats use a separate form projection");
 assert.match(page, /!item\.seatConfirmationApproved/, "the payment form does not re-offer seat approval after it is durable");
+assert.match(page, /data-has-later-installment/, "a two-installment first payment retains an explicit seat-approval control");
+assert.match(page, /data-seat-approval/, "the complete seat-confirmation label is a tappable control");
+assert.match(page, /partial \|\| hasLaterInstallment/, "a full first installment of a two-installment plan does not hide or clear seat approval");
 assert.match(page, /Boolean\(form\.elements\.approveSeat\?\.checked\)/, "later payments submit safely after the approval control is intentionally absent");
 assert.match(page, /const alreadyApproved = !seat;/, "later payments remain usable when no seat-approval control is rendered");
 assert.match(page, /Үлдсэн төлбөрийн хугацаа: \$\{escape\(localLabel\(item\.remainingPaymentDueAt\)\)\}/, "an approved partial payment shows its existing remaining-balance deadline");
@@ -30,6 +33,8 @@ assert.match(page, /Өмнөх бүртгэл системээс олдсонг�
 const paymentService = readFileSync("src/server/staff/payment-reconciliation.ts", "utf8");
 assert.match(paymentService, /priorConfirmation/, "server reads the durable prior payment-confirmation state");
 assert.match(paymentService, /needsRemainingDeadline/, "server requires a deadline only while a confirmed partial balance remains");
+assert.match(paymentService, /hasLaterInstallment/, "server distinguishes a later installment from an incomplete first installment");
+assert.match(paymentService, /seatApprovalRequested/, "server persists teacher approval for a full first installment with a later balance");
 assert.match(paymentService, /suppliedRemainingDueAt \?\? priorConfirmation\?\.remainingDueAt/, "later partial payments preserve an existing deadline when staff does not replace it");
 assert.match(paymentService, /ownReferralCode/, "payment queue projects an active confirmed-enrollment referral code");
 assert.match(paymentService, /usedReferralCode/, "payment queue separately projects a referral used by the current registration");
@@ -47,6 +52,8 @@ assert.match(page, /Цуцлагдсан бүртгэл/, "cancelled records rem
 assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'), router.indexOf('if (path === "/api/staff/attendance")')), /case "registration\.cancel"|payload\.action === "registration\.cancel"/, "the protected payment surface routes registration cancellation");
 assert.match(router, /RegistrationCancellationError/, "cancellation failures have their own typed server handling");
 assert.match(registerPage, /hasCancelledRegistration/, "parent status recognizes a terminal cancellation");
+assert.match(registerPage, /Суудал баталгаажаагүй байна\.<br>Төлбөр төлснөөр суудал баталгаажна\./, "an ordinary initial-payment hold explains that payment confirms the seat");
+assert.match(registerPage, /Таны мэдэгдлийг хүлээн авлаа\. Бид төлбөрийг шалгаж баталгаажуулна\./, "parent payment claims receive a positive, non-final confirmation");
 assert.match(registerPage, /!cancelled && child\.holdDeadlineAt/, "a cancelled child no longer receives an active payment deadline prompt");
 assert.match(registerPage, /Энэ бүртгэл идэвхгүй болсон\. Төлбөрийн түүх тусад нь хадгалагдсан\./, "parent status remains truthful without promising a refund");
 assert.match(page, /setActionPending\(item\.registrationDraftChildId, "payment", true\)/, "payment submission immediately enters a per-registration pending state");

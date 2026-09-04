@@ -352,6 +352,7 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   const initialAllocated = [...allocatedByInstallment.entries()].some(([id]) => installments.find((item) => item.id === id)?.installmentKind === "initial");
   const allInitialSatisfied = installments.filter((item) => item.installmentKind === "initial")
     .every((item) => item.allocatedAmountMnt + (allocatedByInstallment.get(item.id) ?? 0) >= item.amountMnt);
+  const hasLaterInstallment = installments.some((item) => item.installmentKind === "later");
   const priorConfirmation = await env.DB.prepare(`SELECT
     MAX(CASE WHEN status IN ('tentative', 'finalized') THEN seat_confirmation_approved ELSE 0 END) AS seatApproved,
     (SELECT remaining_payment_due_at FROM payment_confirmation
@@ -360,9 +361,14 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     FROM payment_confirmation WHERE payment_request_id = ?`).bind(request.id, request.id)
     .first<{ seatApproved: number; remainingDueAt: string | null }>();
   const priorSeatApproved = Boolean(priorConfirmation?.seatApproved);
-  const approvedPartial = Boolean(input.approveSeatConfirmation) && initialAllocated && !allInitialSatisfied;
+  // A teacher may confirm the seat after either an explicitly approved partial
+  // first installment or a fully paid first installment that has a later plan
+  // installment. The latter keeps its normal later-installment due date.
+  const seatApprovalRequested = Boolean(input.approveSeatConfirmation) && initialAllocated
+    && (!allInitialSatisfied || hasLaterInstallment);
+  const approvedPartial = seatApprovalRequested && !allInitialSatisfied;
   if (input.approveSeatConfirmation && priorSeatApproved) throw new PaymentReconciliationError("invalid");
-  const needsRemainingDeadline = initialAllocated && !allInitialSatisfied && (approvedPartial || priorSeatApproved);
+  const needsRemainingDeadline = initialAllocated && !allInitialSatisfied && (seatApprovalRequested || priorSeatApproved);
   const suppliedRemainingDueAt = iso(input.remainingPaymentDueAt);
   const remainingDueAt = needsRemainingDeadline ? suppliedRemainingDueAt ?? priorConfirmation?.remainingDueAt ?? null : null;
   if (needsRemainingDeadline && (!remainingDueAt || new Date(remainingDueAt) <= nowDate)) throw new PaymentReconciliationError("invalid");
@@ -393,12 +399,12 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     .bind(crypto.randomUUID(), request.id, paymentId, request.registrationDraftId, input.source, now,
       actor.staffAccountId, JSON.stringify({ allocationCount: allocations.length }), now, request.isTest, request.testRunId));
   statements.push(audit(env, actor, "payment_recorded", "received_payment", paymentId,
-    { source: input.source, receivedAt, amountMnt: receivedAmount, allocatedAmountMnt: total, allocationCount: allocations.length, finalizeAfter, approvedPartial }, request, now));
+    { source: input.source, receivedAt, amountMnt: receivedAmount, allocatedAmountMnt: total, allocationCount: allocations.length, finalizeAfter, approvedPartial, seatApprovalRequested }, request, now));
   statements.push(env.DB.prepare(`INSERT INTO payment_confirmation (
     id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
     remaining_payment_due_at, remaining_reminder_lead_minutes, remaining_reminder_at, created_at, updated_at, is_test, test_run_id
   ) VALUES (?, ?, ?, 'tentative', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(crypto.randomUUID(), paymentId, request.id, finalizeAfter, needsRemainingDeadline ? 1 : 0, remainingDueAt,
+    .bind(crypto.randomUUID(), paymentId, request.id, finalizeAfter, seatApprovalRequested ? 1 : 0, remainingDueAt,
       needsRemainingDeadline ? reminder.laterReminderLeadMinutes : null,
       needsRemainingDeadline ? new Date(new Date(remainingDueAt!).getTime() - reminder.laterReminderLeadMinutes * 60_000).toISOString() : null,
       now, now, request.isTest, request.testRunId));

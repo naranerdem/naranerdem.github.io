@@ -69,6 +69,8 @@ assert.match(router, /Анги, цагаа дахин сонгоно уу\. Со
 assert.match(router, /И-мэйл хаягаа зөв бичсэн эсэхээ шалгана уу\./, "email validation is not reduced to a generic submission failure");
 assert.match(page, /fetch\("\/api\/registration\/status"/);
 assert.match(page, /id="registration-submit-warning"[\s\S]*?Бүртгэл хараахан илгээгдээгүй байна\.[\s\S]*?Мэдээллээ шалгаад доорх “Бүртгэл илгээх” товчийг заавал дарна уу\.[\s\S]*?id="turnstile-widget"/, "the final review explicitly says that submission still requires the final action");
+assert.match(page, /Суудал баталгаажаагүй байна\.<br>Төлбөр төлснөөр суудал баталгаажна\./, "an ordinary submitted registration uses the reviewed seat-confirmation wording");
+assert.match(page, /Таны мэдэгдлийг хүлээн авлаа\. Бид төлбөрийг шалгаж баталгаажуулна\./, "parent payment claims receive a positive pending-review message");
 assert.doesNotMatch(page, /fetch\("\/api\/registration\/pending"/);
 assert.match(page, /id="start-new-registration"/);
 assert.match(page, /function startNewRegistration\(\)/);

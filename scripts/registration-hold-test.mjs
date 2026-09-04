@@ -423,8 +423,38 @@ try {
   assert.equal(duplicatePayment.idempotent, true, "retrying the same manual confirmation does not create a duplicate payment");
   assert.equal(database.query(`SELECT received_at AS receivedAt, confirmed_at AS confirmedAt FROM received_payment WHERE idempotency_key = 'two-initial-exact'`)[0].receivedAt, '2026-08-11T07:53:00.000Z', "actual receipt time is preserved separately");
   assert.equal(database.query(`SELECT confirmed_at AS confirmedAt FROM received_payment WHERE idempotency_key = 'two-initial-exact'`)[0].confirmedAt, '2026-08-13T09:15:00.000Z', "staff confirmation time is preserved separately");
-  assert.equal(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0].enrollmentId != null, true, "reconciliation links the draft child to its canonical confirmed enrollment");
+  assert.equal(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [twoInstallment.draftId])[0].enrollmentId, null, "an unchecked full first installment keeps a two-installment seat reserved but unconfirmed");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${twoInstallment.draftId}') AND status = 'active'`), 1, "an unchecked full first installment continues to consume exactly its original reserved seat");
   assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'later'`, [twoRequest.id])[0].status, 'pending', "later installment remains independent of initial seat confirmation");
+
+  const approvedTwoInstallment = await createRegistrationDraft(env(database), submission("class-priced", undefined, 1, "two_installment"), new Date(iso(-3)));
+  const approvedTwoRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [approvedTwoInstallment.draftId])[0];
+  const approvedTwoQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()));
+  const approvedTwoItem = approvedTwoQueue.items.find((item) => item.paymentRequestId === approvedTwoRequest.id);
+  const approvedTwoPayment = await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: approvedTwoRequest.id,
+    allocations: [{ installmentId: approvedTwoItem.installmentId, amountMnt: Number(approvedTwoItem.expectedAmountMnt) }],
+    source: 'staff_manual_bank', approveSeatConfirmation: true, idempotencyKey: 'two-initial-approved',
+  }, new Date('2026-08-13T09:15:00.000Z'));
+  assert.equal(database.query(`SELECT seat_confirmation_approved AS approved, remaining_payment_due_at AS remainingDueAt FROM payment_confirmation WHERE received_payment_id = ?`, [approvedTwoPayment.id])[0].approved, 1,
+    "a checked full first installment persists the durable seat-approval decision");
+  assert.equal(database.query(`SELECT remaining_payment_due_at AS remainingDueAt FROM payment_confirmation WHERE received_payment_id = ?`, [approvedTwoPayment.id])[0].remainingDueAt, null,
+    "the existing later-installment due date is not replaced with an artificial remaining-balance deadline");
+  await finalizeDuePaymentConfirmations(env(database), new Date('2026-08-13T09:21:00.000Z'));
+  const approvedTwoChild = database.query(`SELECT id, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [approvedTwoInstallment.draftId])[0];
+  assert.ok(approvedTwoChild.enrollmentId, "a finalized checked full first installment creates the canonical enrollment before the later installment is paid");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${approvedTwoChild.id}' AND status = 'active'`), 0,
+    "promotion replaces the original hold instead of consuming a second seat");
+  assert.equal(count(database, "enrollment", `id = '${approvedTwoChild.enrollmentId}' AND status = 'confirmed'`), 1,
+    "checked first-installment promotion creates exactly one confirmed enrollment");
+  assert.equal(database.query(`SELECT effective_due_at AS dueAt, status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'later'`, [approvedTwoRequest.id])[0].status, 'pending',
+    "seat confirmation leaves the later installment active and independently due");
+  const approvedTwoRetry = await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: approvedTwoRequest.id,
+    allocations: [{ installmentId: approvedTwoItem.installmentId, amountMnt: Number(approvedTwoItem.expectedAmountMnt) }],
+    source: 'staff_manual_bank', approveSeatConfirmation: true, idempotencyKey: 'two-initial-approved',
+  }, new Date('2026-08-13T09:22:00.000Z'));
+  assert.equal(approvedTwoRetry.idempotent, true, "retrying a checked first-installment confirmation cannot create a second payment or seat");
   const multiChild = submission("class-priced", undefined, 1, "two_installment");
   multiChild.children.push({ ...multiChild.children[0], givenName: "Хүүхэд 2", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" });
   const multiChildDraft = await createRegistrationDraft(env(database), multiChild, new Date(iso(-4)));

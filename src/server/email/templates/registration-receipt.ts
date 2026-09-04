@@ -46,7 +46,7 @@ export function registrationReceiptTemplate(input: {
 
   return {
     subject: "Наран Эрдэм — Бүртгэлийн мэдээллийг хүлээн авлаа",
-    html: `<!doctype html><html lang="mn"><body style="margin:0;padding:24px;background:#f8fafc;color:#172033;font-family:Arial,sans-serif;line-height:1.5"><div style="max-width:560px;margin:0 auto;background:#fff;padding:24px;border:1px solid #dfe4ec;border-radius:8px"><h1 style="margin:0 0 16px;color:#052b83;font-size:24px">Бүртгэлийн мэдээллийг хүлээн авлаа</h1><p>Таны хүүхдийн мэдээлэл бүртгэгдлээ.<br>Төлбөр хийгдсэнээр таны хүүхдийн бүртгэл баталгаажна.</p><ul>${itemsHtml}</ul>${transferHtml}${bankHtml}<p>Төлбөрийн мэдээллийг бүртгэл илгээсний дараах дэлгэцээс мөн харж болно.</p></div></body></html>`,
-    text: `Наран Эрдэм — Бүртгэлийн мэдээллийг хүлээн авлаа\n\nТаны хүүхдийн мэдээлэл бүртгэгдлээ.\nТөлбөр хийгдсэнээр таны хүүхдийн бүртгэл баталгаажна.\n\n${itemsText}${transferText}${bankText}\n\nТөлбөрийн мэдээллийг бүртгэл илгээсний дараах дэлгэцээс мөн харж болно.`,
+    html: `<!doctype html><html lang="mn"><body style="margin:0;padding:24px;background:#f8fafc;color:#172033;font-family:Arial,sans-serif;line-height:1.5"><div style="max-width:560px;margin:0 auto;background:#fff;padding:24px;border:1px solid #dfe4ec;border-radius:8px"><h1 style="margin:0 0 16px;color:#052b83;font-size:24px">Бүртгэлийн мэдээллийг хүлээн авлаа</h1><p>Таны хүүхдийн мэдээлэл бүртгэгдлээ.<br>Төлбөр хийгдсэнээр суудал баталгаажна.</p><ul>${itemsHtml}</ul>${transferHtml}${bankHtml}<p>Төлбөрийн мэдээллийг бүртгэл илгээсний дараах дэлгэцээс мөн харж болно.</p></div></body></html>`,
+    text: `Наран Эрдэм — Бүртгэлийн мэдээллийг хүлээн авлаа\n\nТаны хүүхдийн мэдээлэл бүртгэгдлээ.\nТөлбөр хийгдсэнээр суудал баталгаажна.\n\n${itemsText}${transferText}${bankText}\n\nТөлбөрийн мэдээллийг бүртгэл илгээсний дараах дэлгэцээс мөн харж болно.`,
   };
 }

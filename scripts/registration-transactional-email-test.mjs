@@ -86,7 +86,8 @@ try {
   assert.equal(messages[0].message.to, "safe@example.test", "staging delivery remains safely overridden");
   assert.deepEqual(messages[0].message.bcc, ["archive@example.test"], "the ordinary receipt is archive-BCC safe");
   assert.match(messages[0].message.text, /Таны хүүхдийн мэдээлэл бүртгэгдлээ\./);
-  assert.match(messages[0].message.text, /Төлбөр хийгдсэнээр таны хүүхдийн бүртгэл баталгаажна\./);
+  assert.match(messages[0].message.text, /Төлбөр хийгдсэнээр суудал баталгаажна\./);
+  assert.match(messages[0].message.html, /Төлбөр хийгдсэнээр суудал баталгаажна\./);
   assert.doesNotMatch(messages[0].message.text, /эхний төлбөр/i, "a single-payment receipt is plan-neutral");
   assert.match(messages[0].message.text, /Сургалтын төлбөр: 1,200,000 ₮/);
   assert.match(messages[0].message.text, /Хөнгөлөлт: 120,000 ₮/);
