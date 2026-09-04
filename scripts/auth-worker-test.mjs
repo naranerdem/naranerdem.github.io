@@ -74,6 +74,7 @@ class FakeD1 {
     if (sql.startsWith("INSERT INTO outbound_email")) {
       const row = {
         id: values[0],
+        eventType: values[1],
         intendedEmail: values[3],
         actualEmail: values[4],
         deliveryMode: values[5],
@@ -178,6 +179,7 @@ class FakeD1 {
         sensitivity: row.sensitivity ?? null,
         bccRecipientsJson: row.bccRecipientsJson ?? null,
         outboxSubject: row.outboxSubject ?? null,
+        eventType: row.eventType,
       } : null;
     }
     if (sql.includes("FROM email_verification_challenge") && sql.includes("WHERE token_hash = ?")) {
@@ -192,6 +194,7 @@ class FakeD1 {
         registrationDraftId: challenge.registrationDraftId,
         isTest: challenge.isTest,
         testRunId: challenge.testRunId,
+        outboundEmailId: challenge.outboundEmailId,
       };
     }
     throw new Error(`Unexpected first() SQL in auth test: ${sql}`);

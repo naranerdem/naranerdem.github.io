@@ -4,6 +4,20 @@
 -- Run the explicit operational-default import first. The fake classes below
 -- deliberately use its real 2026–27 calendar guidance.
 
+-- Keep the fixture aggregate internally test-provenance consistent. It may
+-- coexist with the non-test operational-default planning shell, but must not
+-- borrow that shell for public-registration source validation.
+INSERT OR IGNORE INTO academic_year (
+  id, public_label, registration_status, starts_on, ends_on, is_current,
+  is_test, test_run_id, created_at, updated_at
+) VALUES (
+  'staging-catalog-fixture-year-2026-27',
+  'Staging catalog fixture · 2026–2027',
+  'draft', '2026-09-01', '2027-06-01', 0,
+  1, 'staging-catalog-fixture',
+  '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
+);
+
 INSERT OR IGNORE INTO academic_year_stage_setting (
   id, academic_year_id, stage_code, facebook_group_url, is_test, test_run_id,
   created_at, updated_at
@@ -38,6 +52,29 @@ INSERT OR IGNORE INTO activity_offering (
     '2026-09-01', '2027-06-01', NULL, 1, 'paid',
     'https://example.invalid/naran-erdem/stage-3', 'active', 1, 'staging-catalog-fixture',
     '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z');
+
+-- The catalog only exposes Offerings included in an active registration
+-- window. Keep this deliberately test-only window current for the staging
+-- parent-access rehearsal; it is never applied to production.
+INSERT OR IGNORE INTO registration_window (
+  id, name, starts_on, ends_on, is_test, test_run_id, created_at, updated_at
+) VALUES (
+  'staging-catalog-fixture-window-2026-09',
+  'Staging catalog fixture · 2026-09',
+  '2026-09-03',
+  '2026-09-28',
+  1,
+  'staging-catalog-fixture',
+  '2026-08-10T00:00:00Z',
+  '2026-08-10T00:00:00Z'
+);
+
+INSERT OR IGNORE INTO registration_window_offering (
+  registration_window_id, activity_offering_id, created_at
+) VALUES
+  ('staging-catalog-fixture-window-2026-09', 'annual-offering-operational-default-year-2026-27-stage_1', '2026-08-10T00:00:00Z'),
+  ('staging-catalog-fixture-window-2026-09', 'annual-offering-operational-default-year-2026-27-stage_2', '2026-08-10T00:00:00Z'),
+  ('staging-catalog-fixture-window-2026-09', 'annual-offering-operational-default-year-2026-27-stage_3', '2026-08-10T00:00:00Z');
 
 INSERT OR IGNORE INTO class_session (
   id, academic_year_id, stage_code, display_label, weekday, start_time,
@@ -87,63 +124,6 @@ INSERT OR IGNORE INTO class_session (
     'annual-offering-operational-default-year-2026-27-stage_3'
   );
 
-UPDATE class_session
-SET
-  capacity = CASE
-    WHEN id = 'staging-fixture-stage-2-tuesday' THEN 8
-    WHEN id = 'staging-fixture-stage-3-tuesday' THEN 6
-    ELSE 10
-  END,
-  status = CASE
-    WHEN id IN ('staging-fixture-stage-1-afternoon', 'staging-fixture-stage-3-sunday') THEN 'full'
-    ELSE 'available'
-  END,
-  is_test_only = 1,
-  is_test = 1,
-  test_run_id = 'staging-catalog-fixture',
-  academic_year_id = 'operational-default-year-2026-27',
-  activity_offering_id = CASE stage_code
-    WHEN 'stage_1' THEN 'annual-offering-operational-default-year-2026-27-stage_1'
-    WHEN 'stage_2' THEN 'annual-offering-operational-default-year-2026-27-stage_2'
-    ELSE 'annual-offering-operational-default-year-2026-27-stage_3'
-  END,
-  updated_at = '2026-08-10T00:00:00Z'
-WHERE id IN (
-  'staging-fixture-stage-1-saturday',
-  'staging-fixture-stage-1-afternoon',
-  'staging-fixture-stage-2-sunday',
-  'staging-fixture-stage-2-tuesday',
-  'staging-fixture-stage-3-sunday',
-  'staging-fixture-stage-3-tuesday'
-)
-AND (
-  capacity != CASE
-    WHEN id = 'staging-fixture-stage-2-tuesday' THEN 8
-    WHEN id = 'staging-fixture-stage-3-tuesday' THEN 6
-    ELSE 10
-  END
-  OR status != CASE
-    WHEN id IN ('staging-fixture-stage-1-afternoon', 'staging-fixture-stage-3-sunday') THEN 'full'
-    ELSE 'available'
-  END
-  OR is_test_only != 1
-  OR is_test != 1
-  OR test_run_id != 'staging-catalog-fixture'
-  OR academic_year_id != 'operational-default-year-2026-27'
-  OR activity_offering_id IS NULL
-  OR updated_at != '2026-08-10T00:00:00Z'
-);
-
--- Earlier staging fixtures used their own synthetic school year. Once their
--- classes are attached to the explicit operational year, the orphaned test
--- Offerings are no longer useful in the ordinary staff lists.
-DELETE FROM activity_offering
-WHERE id IN (
-  'annual-offering-staging-fixture-2026-27-stage_1',
-  'annual-offering-staging-fixture-2026-27-stage_2',
-  'annual-offering-staging-fixture-2026-27-stage_3'
-) AND is_test = 1;
-
 INSERT OR IGNORE INTO class_meeting_rule (
   class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
   start_time, end_time, created_at, updated_at
@@ -191,7 +171,7 @@ INSERT OR IGNORE INTO pre_registration (
 )
 SELECT
   'staging-fixture-prereg-' || n, 'staging-fixture-guardian',
-  'operational-default-year-2026-27', 'submitted', 1, 'staging-catalog-fixture',
+  'staging-catalog-fixture-year-2026-27', 'submitted', 1, 'staging-catalog-fixture',
   '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z'
 FROM fixture_number;
 
@@ -240,7 +220,7 @@ SELECT
   'staging-fixture-enrollment-' || n,
   'staging-fixture-application-child-' || n,
   'staging-fixture-student-' || n,
-  'operational-default-year-2026-27',
+  'staging-catalog-fixture-year-2026-27',
   CASE
     WHEN n <= 4 THEN 'staging-fixture-stage-1-saturday'
     WHEN n <= 13 THEN 'staging-fixture-stage-2-sunday'
@@ -257,3 +237,88 @@ SELECT
   '2026-08-10T00:00:00Z',
   '2026-08-10T00:00:00Z'
 FROM fixture_number;
+
+-- The original fixture aggregate has durable synthetic history and cannot be
+-- retargeted to a different academic-year identity. Keep it historical, and
+-- provide a fresh, internally consistent aggregate for live staging rehearsal.
+UPDATE registration_window
+SET ends_on = '2026-09-03', updated_at = '2026-09-04T00:00:00Z'
+WHERE id = 'staging-catalog-fixture-window-2026-09'
+  AND is_test = 1 AND test_run_id = 'staging-catalog-fixture';
+
+INSERT OR IGNORE INTO academic_year (
+  id, public_label, registration_status, starts_on, ends_on, is_current,
+  is_test, test_run_id, created_at, updated_at
+) VALUES (
+  'staging-registration-v2-year-2026-27',
+  'Staging rehearsal · 2026–2027',
+  'draft', '2026-09-01', '2027-06-01', 0,
+  1, 'staging-registration-v2',
+  '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'
+);
+
+INSERT OR IGNORE INTO activity_offering (
+  id, kind, title, academic_year_id, stage_code, starts_on, ends_on,
+  curriculum_program_id, use_academic_year_breaks, charge_mode,
+  facebook_group_url, status, is_test, test_run_id, created_at, updated_at
+) VALUES
+  ('staging-registration-v2-offering-stage-1', 'annual_course',
+    'Staging rehearsal · 1-р шат', 'staging-registration-v2-year-2026-27', 'stage_1',
+    '2026-09-01', '2027-06-01', NULL, 1, 'paid', NULL, 'active', 1, 'staging-registration-v2',
+    '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-offering-stage-2', 'annual_course',
+    'Staging rehearsal · 2-р шат', 'staging-registration-v2-year-2026-27', 'stage_2',
+    '2026-09-01', '2027-06-01', NULL, 1, 'paid', NULL, 'active', 1, 'staging-registration-v2',
+    '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-offering-stage-3', 'annual_course',
+    'Staging rehearsal · 3-р шат', 'staging-registration-v2-year-2026-27', 'stage_3',
+    '2026-09-01', '2027-06-01', NULL, 1, 'paid', NULL, 'active', 1, 'staging-registration-v2',
+    '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z');
+
+INSERT OR IGNORE INTO offering_course_pricing (
+  activity_offering_id, one_time_amount_mnt, two_installment_enabled,
+  first_installment_amount_mnt, second_installment_amount_mnt,
+  second_installment_due_on, created_at, updated_at
+) VALUES
+  ('staging-registration-v2-offering-stage-1', 1000000, 1, 550000, 550000, '2027-01-15', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-offering-stage-2', 1000000, 1, 550000, 550000, '2027-01-15', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-offering-stage-3', 1200000, 1, 650000, 650000, '2027-01-15', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z');
+
+INSERT OR IGNORE INTO class_session (
+  id, academic_year_id, stage_code, display_label, weekday, start_time,
+  end_time, capacity, status, is_test_only, is_test, test_run_id,
+  created_at, updated_at, activity_offering_id
+) VALUES
+  ('staging-registration-v2-stage-1-tuesday', 'staging-registration-v2-year-2026-27', 'stage_1',
+    'Staging rehearsal · 1-р шат · Мягмар 09:00', 'Мягмар', '09:00', '10:20', 10, 'available', 1, 1, 'staging-registration-v2',
+    '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z', 'staging-registration-v2-offering-stage-1'),
+  ('staging-registration-v2-stage-2-tuesday', 'staging-registration-v2-year-2026-27', 'stage_2',
+    'Staging rehearsal · 2-р шат · Мягмар 16:00', 'Мягмар', '16:00', '17:20', 10, 'available', 1, 1, 'staging-registration-v2',
+    '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z', 'staging-registration-v2-offering-stage-2'),
+  ('staging-registration-v2-stage-3-sunday', 'staging-registration-v2-year-2026-27', 'stage_3',
+    'Staging rehearsal · 3-р шат · Ням 14:00', 'Ням', '14:00', '15:20', 10, 'available', 1, 1, 'staging-registration-v2',
+    '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z', 'staging-registration-v2-offering-stage-3');
+
+INSERT OR IGNORE INTO class_meeting_rule (
+  class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
+  start_time, end_time, created_at, updated_at
+) VALUES
+  ('staging-registration-v2-stage-1-tuesday', 'weekly', '2026-09-08', NULL, 'Мягмар', '09:00', '10:20', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-stage-2-tuesday', 'weekly', '2026-09-08', NULL, 'Мягмар', '16:00', '17:20', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-stage-3-sunday', 'weekly', '2026-09-06', NULL, 'Ням', '14:00', '15:20', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z');
+
+INSERT OR IGNORE INTO registration_window (
+  id, name, starts_on, ends_on, is_test, test_run_id, created_at, updated_at
+) VALUES (
+  'staging-registration-v2-window-2026-09',
+  'Staging rehearsal · 2026-09',
+  '2026-09-03', '2026-09-28', 1, 'staging-registration-v2',
+  '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z'
+);
+
+INSERT OR IGNORE INTO registration_window_offering (
+  registration_window_id, activity_offering_id, created_at
+) VALUES
+  ('staging-registration-v2-window-2026-09', 'staging-registration-v2-offering-stage-1', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-window-2026-09', 'staging-registration-v2-offering-stage-2', '2026-09-04T00:00:00Z'),
+  ('staging-registration-v2-window-2026-09', 'staging-registration-v2-offering-stage-3', '2026-09-04T00:00:00Z');

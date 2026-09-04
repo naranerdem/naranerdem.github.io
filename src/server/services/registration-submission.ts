@@ -79,6 +79,7 @@ interface ChallengeRow {
   expiresAt: string;
   invalidatedAt: string | null;
   registrationDraftId: string | null;
+  outboundEmailId: string;
   isTest: number;
   testRunId: string | null;
 }
@@ -775,7 +776,7 @@ export async function challengeForTokenHash(database: D1Database, tokenHash: str
   return database.prepare(`
     SELECT id, normalized_email AS normalizedEmail, status, expires_at AS expiresAt,
       invalidated_at AS invalidatedAt, registration_draft_id AS registrationDraftId,
-      is_test AS isTest, test_run_id AS testRunId
+      outbound_email_id AS outboundEmailId, is_test AS isTest, test_run_id AS testRunId
     FROM email_verification_challenge
     WHERE token_hash = ?
   `).bind(tokenHash).first<ChallengeRow>();

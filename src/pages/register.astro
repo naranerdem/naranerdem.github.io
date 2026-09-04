@@ -120,6 +120,7 @@ const formCopy = registrationFormCopy;
         </div>
         <div id="review-summary" class="review-summary"></div>
         <div id="registration-turnstile" class="turnstile-area" hidden>
+          <p id="registration-submit-warning" class="registration-submit-warning" role="note">Бүртгэл хараахан илгээгдээгүй байна.<br>Мэдээллээ шалгаад доорх “Бүртгэл илгээх” товчийг заавал дарна уу.</p>
           <div id="turnstile-widget"></div>
           <p id="turnstile-message" class="catalog-message" role="status"></p>
         </div>
@@ -682,6 +683,7 @@ const formCopy = registrationFormCopy;
           turnstileWidgetId = turnstile.render(turnstileWidget, {
             sitekey: runtimeConfig.turnstileSiteKey,
             action: "registration_submit",
+            appearance: "interaction-only",
             callback(token) {
               turnstileToken = token;
               turnstileMessage.textContent = "";
@@ -945,6 +947,7 @@ const formCopy = registrationFormCopy;
           await showVerifiedStatus(false);
         } catch (caught) {
           turnstileMessage.textContent = caught.message || formCopy.messages.submitFailed;
+          turnstileArea.scrollIntoView({ behavior: "smooth", block: "center" });
           turnstileToken = "";
           window.turnstile?.reset(turnstileWidgetId);
         } finally {

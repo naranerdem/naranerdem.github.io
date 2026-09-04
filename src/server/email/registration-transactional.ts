@@ -6,6 +6,8 @@ import { deliverQueuedEmail } from "./service";
 import { paymentConfirmedTemplate } from "./templates/payment-confirmed";
 import { registrationReceiptTemplate, type RegistrationReceiptItem } from "./templates/registration-receipt";
 import { effectiveInstallmentsForRows } from "../services/discounts";
+import { sendParentAccessEmail } from "../auth/email-verification";
+import { enrollmentConfirmationTemplate, type EnrollmentConfirmationChild } from "./templates/enrollment-confirmation";
 
 interface ReceiptRow {
   email: string; normalizedEmail: string; transferDescription: string | null;
@@ -16,6 +18,12 @@ interface ReceiptRow {
 }
 
 interface PaymentConfirmedRow { email: string; normalizedEmail: string; isTest: number; testRunId: string | null; }
+
+interface EnrollmentEmailRow {
+  email: string; childId: string; childName: string; offeringLabel: string; classLabel: string;
+  installmentId: string; installmentNumber: number; amountMnt: number; allocatedAmountMnt: number;
+  remainingPaymentDueAt: string | null; referralCode: string | null;
+}
 
 function enabled(env: WorkerEnv): boolean { return env.EMAIL_ENABLED === "true" && Boolean(env.RESEND_API_KEY); }
 
@@ -120,4 +128,73 @@ export async function sendPaymentConfirmedEmail(env: WorkerEnv, registrationDraf
     message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text },
   });
   return true;
+}
+
+export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrationDraftId: string, options: { resend?: boolean } = {}): Promise<boolean> {
+  if (!enabled(env)) return false;
+  const existing = await env.DB.prepare(`SELECT status FROM outbound_email
+    WHERE registration_draft_id = ? AND event_type = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(registrationDraftId, options.resend ? "parent_enrollment_resend" : "enrollment_confirmed").first<{ status: string }>();
+  if (existing) return existing.status === "sent";
+  const rows = await env.DB.prepare(`SELECT registration_draft.email,
+    registration_draft_child.id AS childId,
+    trim(registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childName,
+    COALESCE(activity_offering.title, class_session.stage_code) AS offeringLabel,
+    COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) || ' ' || COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' || COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
+    payment_installment.id AS installmentId, payment_installment.installment_number AS installmentNumber,
+    payment_installment.amount_mnt AS amountMnt,
+    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
+    (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
+      INNER JOIN received_payment AS receipt ON receipt.id = confirmation.received_payment_id
+      INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = receipt.id
+      WHERE allocation.payment_installment_id = payment_installment.id
+        AND confirmation.status = 'finalized' AND confirmation.remaining_payment_due_at IS NOT NULL
+      ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1) AS remainingPaymentDueAt,
+    enrollment_referral_code.code AS referralCode
+    FROM registration_draft
+    INNER JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
+    INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id AND enrollment.status = 'confirmed'
+    INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+    LEFT JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id
+    INNER JOIN payment_installment ON payment_installment.registration_draft_child_id = registration_draft_child.id
+      AND payment_installment.status != 'released'
+    LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+    LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
+    LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
+    LEFT JOIN enrollment_referral_code ON enrollment_referral_code.enrollment_id = enrollment.id AND enrollment_referral_code.status = 'active'
+    WHERE registration_draft.id = ? AND registration_draft.status != 'cancelled'
+    GROUP BY payment_installment.id
+    ORDER BY registration_draft_child.position, payment_installment.installment_number`).bind(registrationDraftId).all<EnrollmentEmailRow>();
+  if (!rows.results.length) return false;
+  const effective = new Map((await effectiveInstallmentsForRows(env.DB, rows.results.map((row) => ({
+    id: row.installmentId, registrationDraftChildId: row.childId, installmentNumber: Number(row.installmentNumber),
+    amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt),
+  })))).map((row) => [row.id, row]));
+  const byChild = new Map<string, EnrollmentConfirmationChild>();
+  for (const row of rows.results) {
+    const amount = effective.get(row.installmentId)?.effectiveAmountMnt ?? Number(row.amountMnt);
+    const current = byChild.get(row.childId) ?? {
+      childName: row.childName, offeringLabel: row.offeringLabel, classLabel: row.classLabel,
+      paidAmountMnt: 0, remainingAmountMnt: 0, remainingPaymentDueAt: null, referralCode: row.referralCode,
+    };
+    current.paidAmountMnt += Number(row.allocatedAmountMnt);
+    current.remainingAmountMnt += Math.max(0, amount - Number(row.allocatedAmountMnt));
+    current.remainingPaymentDueAt ??= row.remainingPaymentDueAt;
+    byChild.set(row.childId, current);
+  }
+  const children = [...byChild.values()];
+  try {
+    await sendParentAccessEmail(env, rows.results[0].email, registrationDraftId, {
+      eventType: options.resend ? "parent_enrollment_resend" : "enrollment_confirmed",
+      templateKey: options.resend ? "parent_enrollment_resend_v1" : "enrollment_confirmation_v1",
+      context: { childCount: children.length, enrollmentConfirmation: true },
+      template: (accessUrl) => enrollmentConfirmationTemplate({ children, accessUrl }),
+    });
+    return true;
+  } catch {
+    // Canonical promotion is already durable. The failed outbox row is retained
+    // for staff visibility and a deliberate resend can issue a fresh link.
+    return false;
+  }
 }

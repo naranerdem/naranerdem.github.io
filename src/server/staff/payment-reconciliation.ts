@@ -162,6 +162,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     registration_draft_child.promotion_status AS promotionStatus,
     registration_draft_child.identity_resolution_status AS identityResolutionStatus,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
+    registration_draft.email, registration_draft.verified_at AS verifiedAt,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,
     class_session.start_time AS startTime, class_session.end_time AS endTime,
     (SELECT later.id FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
@@ -266,6 +267,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
   return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"),
   canManageReferrals: hasStaffCapability(actor, "registration.manage"),
+  canContactParents: hasStaffCapability(actor, "registration.manage"),
   canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
     const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
@@ -450,6 +452,14 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
       'payment_confirmation_finalized', 'payment_confirmation', ?, ?, ?, ?, ?, ?)`)
       .bind(crypto.randomUUID(), now, row.id, JSON.stringify({ allInitialPaid: state.allInitialPaid, promotion: promotion.map((entry) => entry.state) }),
         env.APP_ENV, row.isTest, row.testRunId, now).run();
+    if (promotion.some((entry) => entry.state === "promoted")) {
+      try {
+        const { sendEnrollmentConfirmationEmail } = await import("../email/registration-transactional");
+        await sendEnrollmentConfirmationEmail(env, request.registrationDraftId);
+      } catch {
+        // Enrollment confirmation is advisory and must never roll back promotion.
+      }
+    }
     if (state.allInitialPaid) {
       try {
         const { sendPaymentConfirmedEmail } = await import("../email/registration-transactional");

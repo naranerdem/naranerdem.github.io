@@ -308,6 +308,20 @@ try {
   assert.ok(catalogSessions.some((entry) => entry.id === "class-last-seat" && entry.stageCode === "stage_1"), "an active Stage 1 window exposes its concrete classes even when the legacy academic-year status is closed");
   assert.deepEqual(new Set(catalogSessions.map((entry) => entry.stageCode)), new Set(["stage_1"]), "Stage 2 and 3 Offerings outside every active window are absent from the public catalog");
   assert.equal(catalogSessions.find((entry) => entry.id === "class-closed")?.availability, "unavailable", "a closed concrete class remains unavailable despite an active window");
+  database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, created_at, updated_at)
+    VALUES ('year-provenance-mismatch', 'Холимог тест жил', 'draft', 0, 0, ?, ?);
+    INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('offering-provenance-mismatch', 'annual_course', 'Холимог тест сургалт', 'year-provenance-mismatch', 'stage_2', 1, 'paid', 'active', 1, 'catalog-test', ?, ?);
+    INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
+    VALUES ('class-provenance-mismatch', 'offering-provenance-mismatch', 'year-provenance-mismatch', 'stage_2', 'Холимог анги', 'Мягмар', '09:00', '10:20', 10, 'available', 1, 1, 'catalog-test', ?, ?);
+    INSERT INTO offering_course_pricing (activity_offering_id, one_time_amount_mnt, two_installment_enabled, first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at)
+    VALUES ('offering-provenance-mismatch', 800000, 0, NULL, NULL, NULL, ?, ?);
+    INSERT INTO registration_window_offering (registration_window_id, activity_offering_id, created_at)
+    VALUES ('window-active-test', 'offering-provenance-mismatch', ?)`, [iso(), iso(), iso(), iso(), iso(), iso(), iso(), iso(), iso()]);
+  const mixedProvenanceSubmission = submission("class-provenance-mismatch");
+  mixedProvenanceSubmission.children[0].selectedStageCode = "stage_2";
+  await assert.rejects(createRegistrationDraft(env(database), mixedProvenanceSubmission, new Date(iso(-5))),
+    (error) => error.code === "invalid_class", "staging rejects a class whose academic-year, Offering, and class test provenance disagree");
   const legacyStatusDraft = await createRegistrationDraft(env(database), submission("class-legacy-status"), new Date(iso(-5)));
   assert.ok(legacyStatusDraft.hasPaymentHold, "legacy academic-year registration status does not override a valid active window");
   await assert.rejects(createRegistrationDraft(env(database, {

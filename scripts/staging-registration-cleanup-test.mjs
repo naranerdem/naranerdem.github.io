@@ -40,6 +40,18 @@ assert.ok(
     < position('DELETE FROM received_payment WHERE ${requestScoped("received_payment")};'),
   "payment confirmations must be deleted before received payments",
 );
+assert.ok(
+  position('DELETE FROM enrollment_referral_code WHERE ${scoped("enrollment_referral_code")};')
+    < position('DELETE FROM enrollment WHERE ${scoped("enrollment")};'),
+  "canonical referral codes must be deleted before their promoted enrollment",
+);
+assert.ok(
+  position('DELETE FROM enrollment WHERE ${scoped("enrollment")};')
+    < position('DELETE FROM pre_registration WHERE ${scoped("pre_registration")};'),
+  "promoted enrollment must be removed before its application-child cascade",
+);
+assert.match(source, /DELETE FROM student\s+WHERE \$\{scoped\("student"\)\}/, "test students remain guarded by the exact test-run scope");
+assert.match(source, /DELETE FROM guardian_account\s+WHERE \$\{scoped\("guardian_account"\)\}/, "test guardians remain guarded by the exact test-run scope");
 assert.doesNotMatch(source, /DELETE FROM audit_event/);
 
 console.log("staging registration cleanup regression checks passed");

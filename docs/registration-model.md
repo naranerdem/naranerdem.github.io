@@ -105,7 +105,7 @@ A child may only be registered by their parent or actual guardian. Public regist
 
 Returning parent/student pairs should not need to fill everything again each year.
 
-Email verification is a prerequisite for future safe returning-account lookup and linking. A successful magic link currently proves only that the browser recently controlled the normalized email address; it must not by itself create or attach a `GuardianAccount`, reveal whether one exists, or expose children or prior registrations.
+Email verification is a prerequisite for safe returning-account lookup and linking. A system-delivered enrollment email may include a one-time parent-access link; successful use proves only control of that mailbox and creates a short-lived session. The session may retrieve records only through the originating registration's exact canonical guardian linkage. It does not infer kinship, verify a phone number, grant marketing consent, or use fuzzy matches. A staff-generated copied message is not a verified delivery channel and contains no access link in v1. Future system SMS can establish the analogous phone-verified access state.
 
 Do not collect Mongolian government registration/ID numbers. Do not collect unnecessary government identifiers.
 

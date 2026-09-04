@@ -3,6 +3,7 @@ import { secureEqual } from "../auth/crypto";
 import { EmailVerificationError, startEmailVerification, verifyEmailToken } from "../auth/email-verification";
 import { VERIFIED_EMAIL_COOKIE } from "../auth/email-verification";
 import { sendRegistrationReceipt } from "../email/registration-transactional";
+import { getParentDashboard, logoutParentSession, ParentAccessError } from "../services/parent-access";
 import { EmailConfigurationError, EmailDeliveryError } from "../email/service";
 import { getRegistrationCatalog } from "../services/registration-catalog";
 import { getPublicSiteModel } from "../services/public-site";
@@ -41,6 +42,7 @@ import {
   updatePaymentConfirmationGraceSetting,
 } from "../staff/payment-reconciliation";
 import { cancelRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
+import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
 import {
   acceptWaitlistOffer,
   declineOrCloseWaitlistOffer,
@@ -258,6 +260,24 @@ function registrationError(caught: unknown): Response {
     }
     if (caught.code === "invalid_referral_code") {
       return error("invalid_request", "Урилгын код олдсонгүй. Кодоо шалгаад дахин оролдоно уу.", 400);
+    }
+    if (caught.code === "invalid_guardian") {
+      return error("invalid_request", "Асран хамгаалагчийн нэр, холбоо, Facebook нэр болон хаягаа шалгана уу.", 400);
+    }
+    if (caught.code === "invalid_email") {
+      return error("invalid_request", "И-мэйл хаягаа зөв бичсэн эсэхээ шалгана уу.", 400);
+    }
+    if (["invalid_child", "invalid_previous_stage"].includes(caught.code)) {
+      return error("invalid_request", "Хүүхдийн мэдээлэл болон өмнөх сургалтын шатны мэдээллээ шалгана уу.", 400);
+    }
+    if (["class_choice_required", "invalid_class", "invalid_class_stage"].includes(caught.code)) {
+      return error("registration_unavailable", "Анги, цагаа дахин сонгоно уу. Сонгосон анги өөрчлөгдсөн байж магадгүй.", 409);
+    }
+    if (["invalid_payment_plan", "pricing_unavailable"].includes(caught.code)) {
+      return error("registration_unavailable", "Төлбөрийн сонголтоо дахин сонгоно уу.", 409);
+    }
+    if (caught.code === "rules_not_acknowledged") {
+      return error("invalid_request", "Эцэг эх, сурагчийн журмыг зөвшөөрнө үү.", 400);
     }
     if (caught.code === "resend_cooldown") {
       return error("invalid_request", "И-мэйлийг дахин илгээхийн өмнө түр хүлээнэ үү.", 429);
@@ -625,6 +645,22 @@ export async function handleApiRequest(
     }
   }
 
+  if (path === "/api/parent/status") {
+    if (request.method !== "GET") return methodNotAllowed();
+    try {
+      return json(await getParentDashboard(env, readCookie(request, VERIFIED_EMAIL_COOKIE)), 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      if (caught instanceof ParentAccessError) return error("not_found", "Хүссэн мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+      return error("internal_error", "Мэдээллийг одоогоор ачаалж чадсангүй.", 500, { "Cache-Control": "no-store" });
+    }
+  }
+
+  if (path === "/api/parent/logout") {
+    if (request.method !== "POST") return methodNotAllowed("POST");
+    await logoutParentSession(env, readCookie(request, VERIFIED_EMAIL_COOKIE));
+    return json({ ok: true }, 200, { "Cache-Control": "no-store", "Set-Cookie": `${VERIFIED_EMAIL_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax; Secure` });
+  }
+
   if (path === "/api/registration/pending") {
     if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "GET") return methodNotAllowed();
@@ -731,7 +767,10 @@ export async function handleApiRequest(
   }
 
   if (path === "/api/auth/email/verify") {
-    if (!authEmailAvailable(env)) return authNotFound();
+    // Verification of a previously sent, channel-bound parent access link is
+    // allowed with transactional email enabled. Starting optional generic auth
+    // links remains separately gated by AUTH_EMAIL_ENABLED.
+    if (env.EMAIL_ENABLED !== "true") return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
 
     let token = "";
@@ -1089,6 +1128,24 @@ export async function handleApiRequest(
       }
       if (!hasStaffCapability(principal, "payment.manage")) {
         return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "parent.enrollment.resend") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        try {
+          return json(await resendParentEnrollmentSummary(env, principal, String(payload.registrationDraftChildId ?? "")), 202, { "Cache-Control": "no-store" });
+        } catch (caught) {
+          if (caught instanceof ParentCommunicationError) return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", caught.code === "cooldown" ? "И-мэйлийг дахин илгээхийн өмнө түр хүлээнэ үү." : "Бүртгэл олдсонгүй.", caught.code === "forbidden" ? 403 : caught.code === "cooldown" ? 429 : 404, { "Cache-Control": "no-store" });
+          return error("internal_error", "И-мэйлийг одоогоор илгээж чадсангүй.", 500, { "Cache-Control": "no-store" });
+        }
+      }
+      if (payload.action === "parent.manual-message") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        try {
+          return json(await generateParentManualMessage(env, principal, String(payload.registrationDraftChildId ?? "")), 200, { "Cache-Control": "no-store" });
+        } catch (caught) {
+          if (caught instanceof ParentCommunicationError) return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", "Бүртгэл олдсонгүй.", caught.code === "forbidden" ? 403 : 404, { "Cache-Control": "no-store" });
+          return error("internal_error", "Мессежийг одоогоор үүсгэж чадсангүй.", 500, { "Cache-Control": "no-store" });
+        }
       }
       switch (payload.action) {
         case "payment.record":

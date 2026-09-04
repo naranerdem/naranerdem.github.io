@@ -1513,6 +1513,15 @@ textarea:focus {
   overflow: hidden;
 }
 
+.registration-submit-warning {
+  margin: 0;
+  border-left: 4px solid var(--accent);
+  background: #fff5f0;
+  color: var(--blue-deep);
+  font-weight: 750;
+  padding: 0.75rem 0.85rem;
+}
+
 .registration-result {
   display: grid;
   gap: 0.8rem;
@@ -2175,6 +2184,30 @@ textarea:focus {
 .staff-registration-secondary {
   border-top: 1px solid var(--line);
   padding-top: 0.8rem;
+}
+
+.staff-action-status {
+  margin: 0.65rem 0 0;
+  color: var(--blue-deep);
+  font-weight: 750;
+}
+
+.staff-manual-message {
+  margin-top: 0.8rem;
+  border-left: 3px solid var(--line);
+  padding-left: 0.75rem;
+}
+
+.staff-manual-message h4 {
+  margin-bottom: 0.45rem;
+  font-size: 0.98rem;
+}
+
+.staff-manual-message pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
 }
 
 .staff-registration-secondary summary {

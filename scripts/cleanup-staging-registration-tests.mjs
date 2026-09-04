@@ -101,6 +101,25 @@ DELETE FROM email_verification_challenge WHERE ${scoped("email_verification_chal
 DELETE FROM verified_email_session WHERE ${scoped("verified_email_session")};
 DELETE FROM outbound_email WHERE ${scoped("outbound_email")};
 DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};
+${testRunId ? `
+-- A promoted synthetic registration has a separate canonical branch. It is
+-- still strictly test-run scoped, and must be retired before its application
+-- child/pre-registration lineage can be removed.
+DELETE FROM enrollment_referral_code WHERE ${scoped("enrollment_referral_code")};
+DELETE FROM enrollment WHERE ${scoped("enrollment")};
+DELETE FROM pre_registration WHERE ${scoped("pre_registration")};
+DELETE FROM guardian_student_relationship WHERE ${scoped("guardian_student_relationship")};
+DELETE FROM family_group_member WHERE ${scoped("family_group_member")};
+DELETE FROM family_group WHERE ${scoped("family_group")};
+DELETE FROM student
+  WHERE ${scoped("student")}
+    AND NOT EXISTS (SELECT 1 FROM guardian_student_relationship WHERE guardian_student_relationship.student_id = student.id)
+    AND NOT EXISTS (SELECT 1 FROM application_child WHERE application_child.student_id = student.id);
+DELETE FROM guardian_account
+  WHERE ${scoped("guardian_account")}
+    AND NOT EXISTS (SELECT 1 FROM guardian_student_relationship WHERE guardian_student_relationship.guardian_id = guardian_account.id)
+    AND NOT EXISTS (SELECT 1 FROM pre_registration WHERE pre_registration.guardian_id = guardian_account.id);
+` : ""}
 ${nonTestRehearsalId ? `
 DELETE FROM registration_window_offering
   WHERE registration_window_id IN (SELECT id FROM registration_window WHERE name = '${rehearsalMarker}' AND is_test = 0 AND test_run_id IS NULL);

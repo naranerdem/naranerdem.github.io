@@ -1,0 +1,40 @@
+---
+import { siteIdentity } from "../content/homepage";
+import "../styles/global.css";
+---
+
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Миний бүртгэлүүд | {siteIdentity.name}</title>
+  </head>
+  <body class="register-page">
+    <main class="register-shell verification-page">
+      <section class="verification-card" aria-live="polite">
+        <h1>Миний бүртгэлүүд</h1>
+        <p id="parent-status">Мэдээллийг ачаалж байна.</p>
+        <div id="parent-children"></div>
+        <p><button id="parent-logout" class="text-button" type="button">Гарах</button></p>
+      </section>
+    </main>
+    <script is:inline>
+      const status = document.getElementById("parent-status");
+      const list = document.getElementById("parent-children");
+      const escape = (value) => String(value ?? "").replace(/[&<>\"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]);
+      const mnt = (value) => `${new Intl.NumberFormat("mn-MN").format(Number(value || 0))} ₮`;
+      async function copy(value) { try { await navigator.clipboard.writeText(value); } catch {} }
+      async function load() {
+        const response = await fetch("/api/parent/status", { credentials: "same-origin", headers: { Accept: "application/json" } });
+        if (!response.ok) { status.textContent = "Хугацаа нь дууссан эсвэл хүчинтэй холбоос олдсонгүй. Шинэ холбоос авахын тулд багштай холбогдоно уу."; return; }
+        const data = await response.json();
+        status.textContent = data.children.length ? "" : "Одоогоор харах бүртгэл алга.";
+        list.innerHTML = data.children.map((child) => `<section class="status-children"><p><strong>${escape(child.childName)}</strong><br>${escape(child.offeringLabel)}<br>${escape(child.classLabel)}</p><p>${child.status === "cancelled" ? "Бүртгэл цуцлагдсан" : child.status === "confirmed" ? "Бүртгэл баталгаажсан" : "Бүртгэл хянагдаж байна"}</p><p>Төлсөн: ${escape(mnt(child.paidAmountMnt))}<br>Үлдсэн: ${escape(mnt(child.remainingAmountMnt))}${child.remainingPaymentDueAt && child.status !== "cancelled" ? `<br>Төлөх хугацаа: ${escape(String(child.remainingPaymentDueAt).slice(0, 10))}` : ""}</p>${child.referralCode && child.status !== "cancelled" ? `<p>Найзаа урих код: <strong>${escape(child.referralCode)}</strong> <button class="text-button" type="button" data-copy="${escape(child.referralCode)}">Хуулах</button></p>` : ""}</section>`).join("");
+        list.querySelectorAll("[data-copy]").forEach((button) => button.addEventListener("click", () => copy(button.dataset.copy)));
+      }
+      document.getElementById("parent-logout").addEventListener("click", async () => { await fetch("/api/parent/logout", { method: "POST", credentials: "same-origin" }); window.location.assign("/register/"); });
+      load().catch(() => { status.textContent = "Мэдээллийг одоогоор ачаалж чадсангүй."; });
+    </script>
+  </body>
+</html>
