@@ -341,6 +341,81 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ORDER BY waitlist_seat_offer.resolved_at DESC LIMIT 20`).bind(now).all<Record<string, unknown>>()).results };
 }
 
+/**
+ * A deliberately small export projection. It is separate from the richer
+ * payment queue so the browser never needs opaque IDs, tokens, outbox content,
+ * or authentication state merely to create a spreadsheet.
+ */
+export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrincipal) {
+  if (!hasStaffCapability(actor, "registration.view") || !hasStaffCapability(actor, "payment.view")) {
+    throw new PaymentReconciliationError("forbidden");
+  }
+  const rows = await env.DB.prepare(`SELECT
+    registration_draft_child.status AS childStatus,
+    registration_draft.status AS draftStatus,
+    registration_draft_child.surname || ' ' || registration_draft_child.given_name AS child,
+    registration_draft_child.date_of_birth AS birthDate,
+    registration_draft_child.current_grade AS grade,
+    registration_draft_child.current_school AS school,
+    registration_draft.guardian_full_name AS guardian,
+    registration_draft.guardian_relationship AS relationship,
+    registration_draft.primary_phone AS phone,
+    registration_draft.email,
+    registration_draft.verified_at AS verifiedAt,
+    registration_draft.home_address AS address,
+    academic_year.public_label AS academicYear,
+    activity_offering.title AS offering,
+    class_session.display_label || class_session.weekday || '' AS className,
+    class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
+    registration_draft.payment_plan_code AS paymentPlan,
+    registration_draft.created_at AS registeredAt,
+    registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
+    (SELECT COALESCE(SUM(amount_mnt), 0) FROM payment_installment WHERE registration_draft_child_id = registration_draft_child.id) AS price,
+    (SELECT COALESCE(SUM(award_amount_mnt), 0) FROM discount_award WHERE registration_draft_child_id = registration_draft_child.id AND status = 'active') AS discount,
+    (SELECT COALESCE(SUM(allocation.allocated_amount_mnt), 0)
+      FROM payment_allocation AS allocation
+      INNER JOIN received_payment AS payment ON payment.id = allocation.received_payment_id
+      LEFT JOIN payment_confirmation AS confirmation ON confirmation.received_payment_id = payment.id
+      INNER JOIN payment_installment AS installment ON installment.id = allocation.payment_installment_id
+      WHERE installment.registration_draft_child_id = registration_draft_child.id
+        AND COALESCE(confirmation.status, '') != 'undone') AS paid,
+    (SELECT effective_due_at FROM payment_installment WHERE registration_draft_child_id = registration_draft_child.id
+      AND status IN ('pending', 'partially_paid') ORDER BY installment_number LIMIT 1) AS dueAt,
+    (SELECT code FROM enrollment_referral_code WHERE enrollment_id = registration_draft_child.canonical_enrollment_id
+      AND status = 'active' ORDER BY activated_at DESC, id DESC LIMIT 1) AS ownReferral,
+    (SELECT captured_code FROM registration_draft_referral WHERE registration_draft_child_id = registration_draft_child.id
+      AND status = 'captured' ORDER BY created_at DESC LIMIT 1) AS usedReferral
+    FROM registration_draft_child
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    INNER JOIN academic_year ON academic_year.id = registration_draft.academic_year_id
+    LEFT JOIN class_session ON class_session.id = COALESCE(registration_draft_child.selected_class_session_id, registration_draft_child.preferred_waitlist_class_session_id)
+    LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+    ORDER BY registration_draft.created_at DESC, registration_draft_child.position`).all<Record<string, unknown>>();
+  return {
+    generatedAt: new Date().toISOString(),
+    rows: rows.results.map((row) => {
+      const price = Number(row.price ?? 0);
+      const discount = Number(row.discount ?? 0);
+      const paid = Number(row.paid ?? 0);
+      const className = [row.className, row.weekday && row.startTime ? `${row.weekday} ${row.startTime}–${row.endTime}` : ""].filter(Boolean).join(" · ");
+      const status = row.childStatus === "cancelled" ? "Цуцлагдсан"
+        : row.canonicalEnrollmentId ? "Баталгаажсан"
+          : row.childStatus === "waitlisted" ? "Хүлээлгийн жагсаалт"
+            : row.childStatus === "seat_unavailable" ? "Шалгах шаардлагатай"
+              : "Төлбөр хүлээж байна";
+      return {
+        status, child: row.child, birthDate: row.birthDate, grade: row.grade, school: row.school,
+        guardian: row.guardian, relationship: row.relationship, phone: row.phone, email: row.email,
+        emailStatus: row.verifiedAt ? "Баталгаажсан" : "Баталгаажаагүй", address: row.address,
+        academicYear: row.academicYear, offering: row.offering, className,
+        paymentPlan: row.paymentPlan === "two_installment" ? "2 хувааж" : "Нэг удаа",
+        price, discount, paid, remaining: Math.max(price - discount - paid, 0), dueAt: row.dueAt,
+        ownReferral: row.ownReferral, usedReferral: row.usedReferral, registeredAt: row.registeredAt,
+      };
+    }),
+  };
+}
+
 export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal, input: {
   paymentRequestId: string; allocations: Array<{ installmentId: string; amountMnt: number }>;
   source: PaymentSource; receivedAt?: string; receivedAmountMnt?: number; idempotencyKey: string;

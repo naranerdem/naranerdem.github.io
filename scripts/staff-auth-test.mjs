@@ -715,6 +715,10 @@ try {
     method: "POST", headers: { Cookie: adminCookie, Origin: env.APP_ORIGIN }, body: cancellationBody(adminCancellationChild),
   })).status, 200, "admins can cancel an unused registration");
   assert.equal(count(database, "registration_draft_child", `id = '${adminCancellationChild}' AND status = 'cancelled'`), 1);
+  assert.equal((await api(env, "/api/staff/payments/export")).status, 401, "registration export is never public");
+  assert.equal((await api(env, "/api/staff/payments/export", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}` } })).status, 403, "accountants cannot export registrations");
+  assert.equal((await api(env, "/api/staff/payments/export", { headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}` } })).status, 200, "teachers can export the operational registration list");
+  assert.equal((await api(env, "/api/staff/payments/export", { headers: { Cookie: adminCookie } })).status, 200, "admins can export the operational registration list");
   const reinstatementBody = (registrationDraftChildId) => ({ action: "registration.reinstate", registrationDraftChildId });
   assert.equal((await api(env, "/api/staff/payments", {
     method: "POST", headers: { Origin: env.APP_ORIGIN }, body: reinstatementBody(teacherCancellationChild),

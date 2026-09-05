@@ -54,6 +54,9 @@ try {
   assert.equal((await listEmailOutbox(env, actor, { status: "failed" })).emails[0].id, "failed", "status filter is bounded and correct");
   const detail = await getEmailOutboxEntry(env, actor, "safe-old"); assert.deepEqual(detail.bccRecipients, ["archive@example.test"]);
   assert.match(outboxPage, /q\("#outbox-list"\)\.addEventListener\("click"/, "each rendered View button uses one delegated handler, so rows cannot retain a stale preview target");
+  assert.match(outboxPage, /staff-outbox-preview/, "the selected preview is rendered directly beneath its row");
+  assert.match(outboxPage, /aria-expanded="\$\{open\}"/, "Outbox preview uses an accessible disclosure toggle");
+  assert.doesNotMatch(outboxPage, /id="outbox-detail"/, "the obsolete detached bottom-of-list preview is absent");
   assert.match(outboxPage, /detail\(button\.dataset\.emailId\)\.catch/, "preview failures become an explicit inline error instead of a silent rejected promise");
   assert.match(outboxPage, /Энэ и-мэйлийн аюулгүй агуулга хадгалагдаагүй байна\./, "a missing sanitized snapshot gives an explicit preview explanation");
   assert.match(outboxPage, /email\.context\?\.guardianName/, "legacy email rows with no context still open safely");

@@ -206,6 +206,19 @@ interface SlotRow {
   reasonLabel: string | null;
 }
 
+interface HolidayLabelReconciliationRow {
+  holidayPeriodId: string;
+  holidayLabel: string;
+  classSessionId: string;
+  classLabel: string;
+  revisionId: string;
+  localDate: string;
+  oldLabel: string | null;
+  proposedLabel: string;
+  provenance: "generated" | "manual";
+  eligible: boolean;
+}
+
 export interface ProgramLessonInput { id?: string; title: string; internalNote?: string | null }
 export interface ProgramSaveInput { programId: string; expectedUpdatedAt: string; displayName: string; lessons: ProgramLessonInput[] }
 export interface ClassSaveInput {
@@ -671,6 +684,38 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
   const classById = new Map(classes.results.map((entry) => [entry.id, entry]));
   const offeringById = new Map((offeringSetup.offerings as Array<{ id: string; kind: string; endsOn?: string | null }>).map((entry) => [entry.id, entry]));
   const today = localToday();
+  // This is intentionally a dry-run only. Published calendar revisions remain
+  // immutable; the overview resolves eligible generated labels dynamically.
+  // It gives staff tooling a precise, provenance-based list of stale stored
+  // labels and protected manual exceptions without touching dates, lessons, or
+  // attendance.
+  const holidayLabelReconciliation: HolidayLabelReconciliationRow[] = revisions.results.flatMap((revision): HolidayLabelReconciliationRow[] => {
+    const classSession = classById.get(revision.classSessionId);
+    if (!classSession || classSession.offeringKind !== "annual_course") return [];
+    const periods = breaks.results.filter((period) => period.academicYearId === classSession.academicYearId
+      && period.status === "active" && Boolean(period.excludeFromGeneration));
+    const overrides = overridesByRevision.get(revision.id) ?? [];
+    return (slotsByRevision.get(revision.id) ?? []).flatMap<HolidayLabelReconciliationRow>((slot): HolidayLabelReconciliationRow[] => {
+      const period = periods.find((entry) => entry.startsOn <= slot.localDate && slot.localDate <= entry.endsOn);
+      if (!period) return [];
+      const override = overrides.find((entry) => entry.localDate === slot.localDate);
+      const generated = slot.status === "no_class" && slot.slotSource === "generated" && !override;
+      const manual = slot.status === "no_class" && slot.slotSource === "generated" && Boolean(override);
+      const common = {
+        holidayPeriodId: period.id, holidayLabel: period.label, classSessionId: classSession.id,
+        classLabel: classDisplayLabel(classSession), revisionId: revision.id, localDate: slot.localDate,
+      };
+      if (generated && slot.reasonLabel !== period.label) return [{
+        ...common, oldLabel: slot.reasonLabel, proposedLabel: period.label,
+        provenance: "generated" as const, eligible: true,
+      }];
+      if (manual) return [{
+        ...common, oldLabel: slot.reasonLabel, proposedLabel: slot.reasonLabel ?? "Хичээлгүй",
+        provenance: "manual" as const, eligible: false,
+      }];
+      return [];
+    });
+  });
   const programsWithLessons = programs.results.map((program) => ({ ...program, lessons: lessonsByProgram.get(program.id) ?? [] }));
   const programsByFamily = new Map<string, Array<(typeof programsWithLessons)[number]>>();
   for (const program of programsWithLessons) {
@@ -730,16 +775,30 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
         ...revision,
         overrides: overridesByRevision.get(revision.id) ?? [],
         warnings,
-        slots: revisionSlots.map((slot) => ({
+        slots: revisionSlots.map((slot) => {
+          const dateOverride = (overridesByRevision.get(revision.id) ?? []).find((override) => override.localDate === slot.localDate);
+          const matchingSchoolHoliday = schoolCalendarPeriods.find((period) => period.excludeFromGeneration
+            && period.startsOn <= slot.localDate && slot.localDate <= period.endsOn);
+          const generatedSchoolHolidayNoClass = slot.status === "no_class"
+            && slot.slotSource === "generated"
+            && !dateOverride
+            && Boolean(matchingSchoolHoliday);
+          return {
           ...slot,
+          // Generated school-holiday rows derive their visible label from the
+          // current guidance record. Per-class overrides retain their own text.
+          reasonLabel: generatedSchoolHolidayNoClass ? matchingSchoolHoliday?.label ?? slot.reasonLabel : slot.reasonLabel,
           lessonId: slot.status === "scheduled" ? slot.lessonId : null,
           lessonSequence: slot.status === "scheduled" ? slot.lessonSequence : null,
           lessonTitle: slot.status === "scheduled" ? slot.lessonTitle : null,
           holidayWarnings: slot.status === "scheduled"
             ? schoolCalendarPeriods.filter((period) => period.warnOnOverlap && period.startsOn <= slot.localDate && slot.localDate <= period.endsOn).map((period) => period.label)
             : [],
+          // A class override can still be restored against school guidance, but
+          // only an unoverridden generated row inherits the holiday's label.
           schoolHolidayNoClass: slot.status === "no_class"
-            && schoolCalendarPeriods.some((period) => period.excludeFromGeneration && period.startsOn <= slot.localDate && slot.localDate <= period.endsOn),
+            && slot.slotSource === "generated"
+            && Boolean(matchingSchoolHoliday),
           isHistorical: slot.localDate < today,
           canCancel: revision.status === "draft"
             && slot.status === "scheduled"
@@ -749,7 +808,8 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
             && slot.localDate >= today
             && (slot.status !== "cancelled" || (slot.cancelledLessonSequence ?? 0) > revision.lockedThroughSequence)
             && !sharedOfferingBreaks.some((period) => period.startsOn <= slot.localDate && slot.localDate <= period.endsOn),
-        })),
+        };
+        }),
       };
     }),
     stages: STAGES,
@@ -766,6 +826,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     courseRules,
     teacherDashboardPreferences,
     publicSiteFont,
+    holidayLabelReconciliation,
   };
 }
 

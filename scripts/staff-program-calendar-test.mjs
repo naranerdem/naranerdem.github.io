@@ -96,6 +96,11 @@ try {
   assert.match(programsPage, /Хичээл оруулаагүй байна[\s\S]*?>Засах</, "an empty summer Program exposes its edit action");
   assert.match(programsPage, /family\.kind === "summer_course" \? `<div class="staff-danger-zone">/, "only summer Programs expose removal controls");
   assert.match(programCalendarSource, /COALESCE\(class_meeting_rule\.start_time, class_session\.start_time\), class_session\.id/, "class ordering has a stable ID tie-breaker after weekday and start time");
+  assert.match(programCalendarSource, /generatedSchoolHolidayNoClass/, "calendar overview distinguishes generated school-holiday no-class slots from manual overrides");
+  assert.match(programCalendarSource, /reasonLabel: generatedSchoolHolidayNoClass \? matchingSchoolHoliday\?\.label/, "generated no-class labels resolve from the current authoritative holiday wording");
+  assert.match(programCalendarSource, /holidayLabelReconciliation/, "calendar overview exposes a provenance-safe holiday-label reconciliation dry run");
+  assert.match(programCalendarSource, /provenance: "generated"/, "reconciliation candidates identify generated rows without text matching");
+  assert.match(programCalendarSource, /provenance: "manual"/, "reconciliation preview identifies protected manual customizations");
   const migrations = readdirSync("migrations").filter((file) => file.endsWith(".sql")).sort();
   const offeringMigration = "0010_activity_offerings_and_meeting_rules.sql";
   const offeringMigrationIndex = migrations.indexOf(offeringMigration);
@@ -212,6 +217,7 @@ try {
 
   const offeringsPage = readFileSync("src/pages/staff/offerings.astro", "utf8");
   const holidaysPage = readFileSync("src/pages/staff/holidays.astro", "utf8");
+  assert.match(holidaysPage, /Хуваарийн шошгоны урьдчилсан харагдац/, "holiday editing exposes the read-only reconciliation preview");
   const settingsPage = readFileSync("src/pages/staff/settings/index.astro", "utf8");
   const infoPage = readFileSync("src/pages/staff/info.astro", "utf8");
   const legacyPage = readFileSync("src/pages/staff/program-calendar.astro", "utf8");

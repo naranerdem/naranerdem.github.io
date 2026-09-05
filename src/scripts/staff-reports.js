@@ -131,6 +131,58 @@ export async function copyReportToClipboard(value) {
   if (!copied) throw new Error("clipboard_unavailable");
 }
 
+/** Download the same Excel-friendly UTF-8 TSV used by the staff copy actions. */
+export function downloadReportTsv(value, filename) {
+  const blob = new Blob(["\uFEFF", reportToTsv(value)], { type: "text/tab-separated-values;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+export function buildRegistrationPaymentReport(data) {
+  const items = data?.rows || [];
+  return report(
+    "Бүртгэл, төлбөрийн жагсаалт",
+    [data?.generatedAt || ""],
+    [
+      { key: "status", label: "Төлөв" },
+      { key: "child", label: "Хүүхэд" },
+      { key: "birthDate", label: "Төрсөн огноо" },
+      { key: "grade", label: "Анги" },
+      { key: "school", label: "Сургууль" },
+      { key: "guardian", label: "Асран хамгаалагч" },
+      { key: "relationship", label: "Харилцаа" },
+      { key: "phone", label: "Утас" },
+      { key: "email", label: "И-мэйл" },
+      { key: "emailStatus", label: "И-мэйл" },
+      { key: "address", label: "Хаяг" },
+      { key: "academicYear", label: "Хичээлийн жил" },
+      { key: "offering", label: "Сургалт" },
+      { key: "className", label: "Анги, цаг" },
+      { key: "paymentPlan", label: "Төлбөрийн нөхцөл" },
+      { key: "price", label: "Төлөх дүн" },
+      { key: "discount", label: "Хөнгөлөлт" },
+      { key: "paid", label: "Төлөгдсөн" },
+      { key: "remaining", label: "Үлдсэн" },
+      { key: "dueAt", label: "Дараагийн хугацаа" },
+      { key: "ownReferral", label: "Найзаа урих код" },
+      { key: "usedReferral", label: "Ашигласан урилгын код" },
+      { key: "registeredAt", label: "Бүртгүүлсэн" },
+    ],
+    items.map((item) => ({
+      ...item,
+      // Excel otherwise removes a leading zero. The apostrophe is an Excel text marker.
+      phone: item.phone ? `'${item.phone}` : "",
+    })),
+  );
+}
+
 export function printReport(value) {
   document.querySelector(".staff-print-report")?.remove();
   const container = document.createElement("section");

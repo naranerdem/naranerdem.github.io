@@ -33,6 +33,7 @@ import {
 import {
   claimParentPayment,
   confirmSeatForSufficientPayment,
+  getRegistrationExportRows,
   getInitialPaymentQueue,
   markPaymentCreditRefunded,
   PaymentReconciliationError,
@@ -1094,6 +1095,19 @@ export async function handleApiRequest(
     return denied ?? json({ ok: true, capability: "attendance.manage", changed: false }, 200, {
       "Cache-Control": "no-store",
     });
+  }
+
+  if (path === "/api/staff/payments/export") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const denied = await requireStaffCapability(request, env, "registration.view");
+    if (denied) return denied;
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    try {
+      return json(await getRegistrationExportRows(env, principal), 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return paymentReconciliationError(caught);
+    }
   }
 
   if (path === "/api/staff/payments") {
