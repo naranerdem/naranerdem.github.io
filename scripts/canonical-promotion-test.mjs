@@ -12,6 +12,8 @@ const discountBundlePath = path.join(tempDir, "discounts.mjs");
 const capacityBundlePath = path.join(tempDir, "class-capacity.mjs");
 const cancellationBundlePath = path.join(tempDir, "registration-cancellation.mjs");
 const paymentBundlePath = path.join(tempDir, "payment-reconciliation.mjs");
+const parentCommunicationBundlePath = path.join(tempDir, "parent-communication.mjs");
+const verificationBundlePath = path.join(tempDir, "email-verification.mjs");
 
 function sqlite(input, json = false) {
   const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], {
@@ -62,7 +64,7 @@ const now = "2026-08-15T04:00:00.000Z";
 const actor = { staffAccountId: "teacher", displayName: "Тест Багш", roles: ["teacher"], capabilities: ["payment.view", "payment.manage", "registration.manage"], sessionId: "test", sessionExpiresAt: now, sessionAbsoluteExpiresAt: now };
 
 function env(DB) {
-  return { APP_ENV: "staging", REGISTRATION_WRITE_ENABLED: "true", EMAIL_ENABLED: "true", AUTH_EMAIL_ENABLED: "true", STAFF_AUTH_EMAIL_ENABLED: "true", APP_ORIGIN: "https://staging.example.test", EMAIL_FROM: "Наран Эрдэм <burtgel@mail.naranerdem.com>", DB };
+  return { APP_ENV: "staging", REGISTRATION_WRITE_ENABLED: "true", EMAIL_ENABLED: "true", AUTH_EMAIL_ENABLED: "false", STAFF_AUTH_EMAIL_ENABLED: "true", APP_ORIGIN: "https://staging.example.test", EMAIL_FROM: "Наран Эрдэм <burtgel@mail.naranerdem.com>", RESEND_API_KEY: "test-resend-key", STAGING_EMAIL_OVERRIDE_TO: "safe@example.test", DB };
 }
 
 function seedDraft(database, id, options = {}) {
@@ -140,7 +142,15 @@ function link(database, guardianId, studentId, id = `${guardianId}-${studentId}`
     VALUES (?, ?, ?, 'Ээж', 1, 'active', 1, 'promotion-test', ?, ?)`, [id, guardianId, studentId, now, now]);
 }
 
+const originalFetch = globalThis.fetch;
+const emailRequests = [];
 try {
+  globalThis.fetch = async (_url, request) => {
+    emailRequests.push(JSON.parse(request.body));
+    return new Response(JSON.stringify({ id: `email-${crypto.randomUUID()}` }), {
+    status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
   const migrations = readdirSync("migrations").filter((name) => /^\d{4}_.+\.sql$/.test(name)).sort().map((name) => readFileSync(path.join("migrations", name), "utf8")).join("\n");
   sqlite(migrations);
   const esbuild = path.resolve("node_modules/esbuild/bin/esbuild");
@@ -156,6 +166,12 @@ try {
   const paymentBundled = spawnSync(esbuild, ["src/server/staff/payment-reconciliation.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${paymentBundlePath}`], { encoding: "utf8" });
   if (paymentBundled.status !== 0) throw new Error(paymentBundled.stderr);
   const { finalizeDuePaymentConfirmations } = await import(pathToFileURL(paymentBundlePath).href);
+  const parentCommunicationBundled = spawnSync(esbuild, ["src/server/staff/parent-communication.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${parentCommunicationBundlePath}`], { encoding: "utf8" });
+  if (parentCommunicationBundled.status !== 0) throw new Error(parentCommunicationBundled.stderr);
+  const verificationBundled = spawnSync(esbuild, ["src/server/auth/email-verification.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${verificationBundlePath}`], { encoding: "utf8" });
+  if (verificationBundled.status !== 0) throw new Error(verificationBundled.stderr);
+  const { resendParentEnrollmentSummary, ParentCommunicationError } = await import(pathToFileURL(parentCommunicationBundlePath).href);
+  const { verifyEmailToken } = await import(pathToFileURL(verificationBundlePath).href);
   const discountsBundle = spawnSync(esbuild, ["src/server/services/discounts.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${discountBundlePath}`], { encoding: "utf8" });
   if (discountsBundle.status !== 0) throw new Error(discountsBundle.stderr);
   const { getDiscountPolicySetting, updateDiscountPolicySetting, effectiveInstallments, DiscountPolicyError } = await import(pathToFileURL(discountBundlePath).href);
@@ -229,6 +245,29 @@ try {
   const firstReferralCode = database.query(`SELECT id, code FROM enrollment_referral_code WHERE enrollment_id = ?`, [`${first.childId}:enrollment`])[0];
   assert.match(firstReferralCode.code, /^NE-[A-Z2-9]{7}$/, "a confirmed child receives a short opaque referral code");
   assert.doesNotMatch(firstReferralCode.code, /Тест|Хүүхэд|example/i, "a referral code contains no child or contact information");
+  const firstResend = await resendParentEnrollmentSummary(env(database), actor, first.childId);
+  assert.deepEqual(firstResend, { ok: true }, "transactional enrollment resend works while optional auth email is disabled");
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${first.id}' AND event_type = 'parent_enrollment_resend' AND status = 'sent'`), 1,
+    "a resend has one durably sent outbox item");
+  assert.equal(count(database, "email_verification_challenge", `registration_draft_id = '${first.id}' AND status = 'pending'`), 1,
+    "resend leaves one fresh pending parent-access challenge");
+  assert.equal(database.query(`SELECT email_sensitivity AS sensitivity, bcc_recipients_json AS bccRecipients FROM outbound_email
+    WHERE registration_draft_id = ? AND event_type = 'parent_enrollment_resend'`, [first.id])[0].sensitivity, "sensitive_capability",
+    "a capability email is excluded from the archive BCC path");
+  await assert.rejects(() => resendParentEnrollmentSummary(env(database), actor, first.childId),
+    (error) => error instanceof ParentCommunicationError && error.code === "cooldown", "rapid resend repeats are blocked before another challenge is created");
+  database.query(`UPDATE outbound_email SET queued_at = '2026-08-15T03:00:00.000Z' WHERE registration_draft_id = ? AND event_type = 'parent_enrollment_resend'`, [first.id]);
+  await resendParentEnrollmentSummary(env(database), actor, first.childId);
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${first.id}' AND event_type = 'parent_enrollment_resend' AND status = 'sent'`), 2,
+    "a later deliberate resend creates a fresh durable outbox item");
+  assert.equal(count(database, "email_verification_challenge", `registration_draft_id = '${first.id}' AND status = 'pending'`), 1,
+    "a fresh resend invalidates the earlier unused challenge");
+  const lastEnrollmentEmail = emailRequests.at(-1);
+  assert.match(lastEnrollmentEmail.html, /Бүртгэлээ харах/, "the delivered resend includes parent access");
+  const accessToken = new URL(lastEnrollmentEmail.html.match(/href="([^"]+)"/)[1].replaceAll("&amp;", "&")).hash.match(/token=([^&]+)/)[1];
+  const exchange = await verifyEmailToken(env(database), decodeURIComponent(accessToken));
+  assert.equal(exchange.redirectUrl, "https://staging.example.test/parent/", "the resend link establishes parent access");
+  assert.equal(count(database, "verified_email_session", `registration_draft_id = '${first.id}'`), 1, "the exchanged resend link creates one parent session");
 
   const referred = seedDraft(database, "referred-family", { email: "referred@example.test" });
   database.query(`INSERT INTO registration_draft_referral (
@@ -275,9 +314,9 @@ try {
   assert.equal(database.query(`SELECT canonical_student_id AS studentId FROM registration_draft_child WHERE id = ?`, [duplicate.childId])[0].studentId, "student-returning", "exact existing child wins even when parent selected new");
 
   const review = seedDraft(database, "returning-missing", { email: existingGuardianEmail, surname: "Өөр", givenName: "Хүүхэд", returning: "returning" });
-  assert.equal((await promotePaidDraftChild(env(database), actor, review.childId)).state, "needs_identity_review");
-  assert.equal(count(database, "enrollment", `id = '${review.childId}:enrollment'`), 0, "returning child without an exact linked match is never guessed");
-  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${review.childId}' AND status = 'active'`), 1, "paid identity-review seat remains protected");
+  assert.equal((await promotePaidDraftChild(env(database), actor, review.childId)).state, "promoted");
+  assert.equal(count(database, "enrollment", `id = '${review.childId}:enrollment' AND status = 'confirmed'`), 1, "a returning child with zero plausible matches gets a new canonical record automatically");
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${review.id}' AND event_type = 'enrollment_confirmed'`), 1, "automatic zero-match promotion queues one enrollment confirmation email");
 
   const elsewhere = seedDraft(database, "different-guardian", { email: "other@example.test", surname: "Бат", givenName: "Сараа", returning: "returning" });
   assert.equal((await promotePaidDraftChild(env(database), actor, elsewhere.childId)).state, "needs_identity_review", "global exact match is never automatic for another verified guardian");
@@ -285,11 +324,19 @@ try {
   assert.ok(reviewQueue.items.find((item) => item.childId === elsewhere.childId)?.candidates.some((candidate) => candidate.id === "student-returning"), "staff review sees only strict exact candidates");
   await resolvePromotionIdentity(env(database), actor, elsewhere.childId, { kind: "existing", studentId: "student-returning" });
   assert.equal(count(database, "guardian_student_relationship", "guardian_id = (SELECT canonical_guardian_account_id FROM registration_draft WHERE id = 'different-guardian') AND student_id = 'student-returning' AND status = 'active'"), 1, "explicit staff decision adds an authorized guardian relationship");
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${elsewhere.id}' AND event_type = 'enrollment_confirmed'`), 1, "manual existing-child resolution queues exactly one enrollment confirmation email");
+  await resolvePromotionIdentity(env(database), actor, elsewhere.childId, { kind: "existing", studentId: "student-returning" });
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${elsewhere.id}' AND event_type = 'enrollment_confirmed'`), 1, "manual existing-child replay does not duplicate the logical confirmation email");
 
-  const manualNew = seedDraft(database, "manual-new", { email: existingGuardianEmail, surname: "Шинэ", givenName: "Хүүхэд", returning: "returning" });
-  await promotePaidDraftChild(env(database), actor, manualNew.childId);
+  const newElsewhere = seedDraft(database, "new-different-guardian", { email: "new-other@example.test", surname: "Бат", givenName: "Сараа", returning: "new" });
+  assert.equal((await promotePaidDraftChild(env(database), actor, newElsewhere.childId)).state, "needs_identity_review",
+    "a strict global match never becomes an automatic new canonical child under another guardian");
+
+  const manualNew = seedDraft(database, "manual-new", { email: "manual-new@example.test", surname: "Бат", givenName: "Сараа", returning: "returning" });
+  assert.equal((await promotePaidDraftChild(env(database), actor, manualNew.childId)).state, "needs_identity_review", "a conflicting strict returning match still requires staff review");
   await resolvePromotionIdentity(env(database), actor, manualNew.childId, { kind: "new" });
   assert.equal(database.query(`SELECT identity_resolution_status AS status FROM registration_draft_child WHERE id = ?`, [manualNew.childId])[0].status, "promoted");
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${manualNew.id}' AND event_type = 'enrollment_confirmed'`), 1, "manual new-child resolution queues exactly one enrollment confirmation email");
 
   const approvedPartial = seedDraft(database, "approved-partial", { email: "approved-partial@example.test" });
   markFinalizedApprovedPartial(database, approvedPartial);
@@ -304,6 +351,10 @@ try {
   assert.equal((await promotePaidDraftChild(env(database), actor, approvedPartial.childId)).state, "promoted", "approved partial promotion retries without duplicating enrollment or capacity");
   assert.equal(count(database, "enrollment", `id = '${approvedPartial.childId}:enrollment'`), 1, "replay creates no second canonical enrollment");
 
+  seedStudent(database, "student-partial-review-a", "Шийдэх", "Хүүхэд");
+  seedStudent(database, "student-partial-review-b", "Шийдэх", "Хүүхэд");
+  link(database, "guardian-returning", "student-partial-review-a");
+  link(database, "guardian-returning", "student-partial-review-b");
   const partialNeedsReview = seedDraft(database, "partial-needs-review", { email: existingGuardianEmail, surname: "Шийдэх", givenName: "Хүүхэд", returning: "returning" });
   markFinalizedApprovedPartial(database, partialNeedsReview);
   assert.equal((await promotePaidDraftChild(env(database), actor, partialNeedsReview.childId)).state, "needs_identity_review", "ambiguous approved partial payments retain their protected seat for review");
@@ -373,14 +424,14 @@ try {
 
   const reviewCancellation = seedDraft(database, "cancel-review", { classId: "class-cancel", email: existingGuardianEmail, surname: "Хянах", givenName: "Хүүхэд", returning: "returning" });
   markFinalizedApprovedPartial(database, reviewCancellation);
-  assert.equal((await promotePaidDraftChild(env(database), actor, reviewCancellation.childId)).state, "needs_identity_review");
+  assert.equal((await promotePaidDraftChild(env(database), actor, reviewCancellation.childId)).state, "promoted");
   database.query(`INSERT INTO payment_notification_milestone (id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id, channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id)
     VALUES ('cancel-review-reminder', 'cancel-review-reminder', ?, ?, ?, 'email', 'initial_reminder', ?, 'pending', ?, ?, 1, 'promotion-test')`, [reviewCancellation.id, reviewCancellation.childId, `${reviewCancellation.id}-initial`, now, now, now]);
   await cancelRegistration(env(database), actor, { registrationDraftChildId: reviewCancellation.childId, reason: "payment_overdue" });
-  assert.equal(database.query(`SELECT status FROM registration_capacity_hold WHERE registration_draft_child_id = ?`, [reviewCancellation.childId])[0].status, "cancelled", "identity-review cancellation releases its hold");
+  assert.equal(database.query(`SELECT status FROM enrollment WHERE id = ?`, [`${reviewCancellation.childId}:enrollment`])[0].status, "cancelled", "cancellation ends a confirmed partial enrollment");
   assert.equal(database.query(`SELECT status FROM payment_notification_milestone WHERE id = 'cancel-review-reminder'`)[0].status, "cancelled", "cancellation stops future reminder work immediately");
   assert.equal((await promotePaidDraftChild(env(database), actor, reviewCancellation.childId)).state, "not_eligible", "promotion replay cannot resurrect a cancelled review");
-  assert.ok(!(await getPromotionReviewQueue(env(database), actor)).items.some((item) => item.childId === reviewCancellation.childId), "cancelled review is absent from the staff queue");
+  assert.ok(!(await getPromotionReviewQueue(env(database), actor)).items.some((item) => item.childId === reviewCancellation.childId), "cancelled enrollment is absent from the staff review queue");
 
   const tentativeCancellation = seedDraft(database, "cancel-tentative", { classId: "class-cancel", email: "cancel-tentative@example.test" });
   markApprovedPartial(database, tentativeCancellation, 20000, "tentative");
@@ -426,5 +477,6 @@ try {
   await assert.rejects(() => promotePaidDraftChild(env(database), { ...actor, roles: ["accountant"], capabilities: ["payment.view"] }, first.childId), CanonicalPromotionError, "accountant cannot promote identity or enrollment");
   console.log("ok canonical enrollment promotion identity, capacity, and waitlist tests");
 } finally {
+  globalThis.fetch = originalFetch;
   rmSync(tempDir, { recursive: true, force: true });
 }

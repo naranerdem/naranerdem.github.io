@@ -32,6 +32,7 @@ import {
 } from "../services/registration-submission";
 import {
   claimParentPayment,
+  confirmSeatForSufficientPayment,
   getInitialPaymentQueue,
   markPaymentCreditRefunded,
   PaymentReconciliationError,
@@ -1162,6 +1163,10 @@ export async function handleApiRequest(
             approveSeatConfirmation: Boolean(payload.approveSeatConfirmation),
             remainingPaymentDueAt: typeof payload.remainingPaymentDueAt === "string" ? payload.remainingPaymentDueAt : undefined,
           }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.confirm-seat":
+          return json({ ok: true, ...await confirmSeatForSufficientPayment(
+            env, principal, String(payload.paymentRequestId ?? ""),
+          ) }, 200, { "Cache-Control": "no-store" });
         case "payment.undo-tentative":
           return json({ ok: true, ...await undoTentativePaymentConfirmation(env, principal, String(payload.receivedPaymentId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "payment-credit.refund":

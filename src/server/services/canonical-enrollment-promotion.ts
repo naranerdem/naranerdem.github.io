@@ -1,6 +1,7 @@
 import { sha256 } from "../auth/crypto";
 import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
+import { sendEnrollmentConfirmationEmail } from "../email/registration-transactional";
 import { ensureEnrollmentReferralCode } from "./referral-codes";
 import { awardFamilyDiscountsForGuardian, awardReferrerDiscountForReferral, getDiscountPolicySettingFromDatabase, reverseReferralAwardForSameFamily } from "./discounts";
 
@@ -331,22 +332,29 @@ export async function promotePaidDraftChild(
     const candidates = exactStudents(await linkedStudents(env.DB, guardian.guardianId, row.childIsTest), row);
     if (candidates.length === 1) {
       studentId = candidates[0].id;
-    } else if (candidates.length > 1 || row.returningStatus === "returning") {
-      const statements = [
-        env.DB.prepare(`UPDATE registration_draft SET canonical_guardian_account_id = ?, guardian_resolution_status = 'resolved', updated_at = ?
-          WHERE id = ? AND canonical_guardian_account_id IS NULL`).bind(guardian.guardianId, now, row.draftId),
-        env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'needs_identity_review',
-          promotion_status = 'pending', updated_at = ? WHERE id = ?`).bind(now, row.childId),
-        audit(env, actor, "canonical_student_identity_review_required", "registration_draft_child", row.childId,
-          { returningStatus: row.returningStatus, candidateCount: candidates.length }, row.childIsTest, row.childTestRunId, now),
-      ];
-      if (!guardianAlreadyExists) statements.unshift(guardianInsert());
-      await env.DB.batch(statements);
-      return { state: "needs_identity_review" };
     } else {
-      studentId = `${row.childId}:student`;
-      createStudent = true;
-      createRelationship = true;
+      // A zero-match returning child is still a legitimate new canonical
+      // record. Any strict global match without an existing authorized
+      // guardian link is a conflicting identity signal and remains a staff
+      // decision.
+      const globalCandidates = await globalExactStudents(env.DB, row);
+      if (candidates.length === 0 && globalCandidates.length === 0) {
+        studentId = `${row.childId}:student`;
+        createStudent = true;
+        createRelationship = true;
+      } else {
+        const statements = [
+          env.DB.prepare(`UPDATE registration_draft SET canonical_guardian_account_id = ?, guardian_resolution_status = 'resolved', updated_at = ?
+            WHERE id = ? AND canonical_guardian_account_id IS NULL`).bind(guardian.guardianId, now, row.draftId),
+          env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'needs_identity_review',
+            promotion_status = 'pending', updated_at = ? WHERE id = ?`).bind(now, row.childId),
+          audit(env, actor, "canonical_student_identity_review_required", "registration_draft_child", row.childId,
+            { returningStatus: row.returningStatus, candidateCount: Math.max(candidates.length, globalCandidates.length) }, row.childIsTest, row.childTestRunId, now),
+        ];
+        if (!guardianAlreadyExists) statements.unshift(guardianInsert());
+        await env.DB.batch(statements);
+        return { state: "needs_identity_review" };
+      }
     }
   }
   if (!studentId) return { state: "failed" };
@@ -454,6 +462,14 @@ export async function promotePaidDraftChild(
     await reverseReferralAwardForSameFamily(env, row.childId, now);
   } else if (referral) {
     await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy: discountPolicy, now });
+  }
+  // The promotion service is the single place where a newly confirmed
+  // enrollment becomes eligible for its one idempotent parent-access email.
+  // Delivery is advisory and must never undo the durable enrollment.
+  try {
+    await sendEnrollmentConfirmationEmail(env, row.draftId);
+  } catch {
+    // The outbox retains delivery failure for a teacher's explicit resend.
   }
   return { state: "promoted", enrollmentId: promoted.enrollmentId };
 }

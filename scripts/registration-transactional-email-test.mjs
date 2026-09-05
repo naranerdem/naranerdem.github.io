@@ -74,6 +74,15 @@ try {
     UPDATE payment_collection_settings SET bank_name = 'Тест банк', account_holder_name = 'Тест эзэмшигч', account_number = '0000000000', updated_at = ? WHERE singleton = 1;`,
   [now(), now(), now(), now(), now(), now(), now()]);
   seedDraft(database, "receipt");
+  database.query(`INSERT INTO received_payment (
+    id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
+    confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id
+  ) VALUES ('receipt-payment', 'receipt-request', 1200000, ?, 'staff_manual_bank', 'confirmed', ?, 'receipt-payment-key', ?, ?, 1, 'email-test');
+  INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
+    VALUES ('receipt-allocation', 'receipt-payment', 'receipt-installment', 1200000, ?, ?, 1, 'email-test');
+  INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved, finalized_at, created_at, updated_at, is_test, test_run_id)
+    VALUES ('receipt-confirmation', 'receipt-payment', 'receipt-request', 'finalized', ?, 0, ?, ?, ?, 1, 'email-test');`,
+  [now(), now(), now(), now(), now(), now(), now(), now(), now(), now()]);
   database.query(`INSERT INTO discount_award (
     id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
     status, reason, awarded_at, is_test, test_run_id, created_at, updated_at
@@ -99,10 +108,16 @@ try {
   assert.equal(database.query("SELECT COUNT(*) AS count FROM email_verification_challenge")[0].count, 0, "receipt creates no verification challenge");
   await sendRegistrationReceipt(env(database), "receipt", provider);
   assert.equal(messages.length, 1, "receipt retries are idempotent after success");
-  assert.equal(await sendPaymentConfirmedEmail(env(database), "receipt", provider), true, "payment confirmation is also independent of auth email");
+  assert.equal(await sendPaymentConfirmedEmail(env(database), "receipt", "receipt-confirmation", provider), true, "payment confirmation is also independent of auth email");
   assert.equal(messages.length, 2);
   assert.match(messages[1].message.text, /Таны төлбөрийг хүлээн авч баталгаажууллаа\./);
+  assert.match(messages[1].message.text, /Тест Хүүхэд/);
+  assert.match(messages[1].message.text, /Анги: Тест анги · Мягмар 09:00–10:20/);
+  assert.match(messages[1].message.text, /Хүлээн авсан төлбөр: 1,200,000 ₮/);
+  assert.match(messages[1].message.text, /Үлдсэн төлбөр: 0 ₮/);
+  assert.match(messages[1].message.text, /Суудал хараахан баталгаажаагүй байна\./);
   assert.doesNotMatch(messages[1].message.text, /эхний төлбөр/i, "payment confirmation is plan-neutral");
+  assert.deepEqual(messages[1].message.bcc, ["archive@example.test"], "ordinary payment receipts remain archive-BCC safe");
   assert.equal(database.query("SELECT status FROM outbound_email WHERE event_type = 'registration_initial_payment_confirmed'")[0].status, "sent");
   seedDraft(database, "cancelled");
   database.query("UPDATE registration_draft SET status = 'cancelled' WHERE id = 'cancelled'");

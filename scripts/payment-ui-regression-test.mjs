@@ -17,9 +17,9 @@ assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'),
 assert.match(page, /item\.seatConfirmationApproved \? "Хэсэгчлэн төлсөн"/);
 assert.match(page, /const seatApprovalControl = approvedSeat/, "already-approved seats use a separate form projection");
 assert.match(page, /!item\.seatConfirmationApproved/, "the payment form does not re-offer seat approval after it is durable");
-assert.match(page, /data-has-later-installment/, "a two-installment first payment retains an explicit seat-approval control");
 assert.match(page, /data-seat-approval/, "the complete seat-confirmation label is a tappable control");
-assert.match(page, /partial \|\| hasLaterInstallment/, "a full first installment of a two-installment plan does not hide or clear seat approval");
+assert.match(page, /Дутуу төлбөртэй ч суудлыг баталгаажуулах/, "only an exceptional below-threshold payment offers manual seat approval");
+assert.match(page, /seat\.hidden = !partial/, "a routine sufficient payment does not require a seat-approval checkbox");
 assert.match(page, /Boolean\(form\.elements\.approveSeat\?\.checked\)/, "later payments submit safely after the approval control is intentionally absent");
 assert.match(page, /const alreadyApproved = !seat;/, "later payments remain usable when no seat-approval control is rendered");
 assert.match(page, /Үлдсэн төлбөрийн хугацаа: \$\{escape\(localLabel\(item\.remainingPaymentDueAt\)\)\}/, "an approved partial payment shows its existing remaining-balance deadline");
@@ -33,8 +33,8 @@ assert.match(page, /Өмнөх бүртгэл системээс олдсонг�
 const paymentService = readFileSync("src/server/staff/payment-reconciliation.ts", "utf8");
 assert.match(paymentService, /priorConfirmation/, "server reads the durable prior payment-confirmation state");
 assert.match(paymentService, /needsRemainingDeadline/, "server requires a deadline only while a confirmed partial balance remains");
-assert.match(paymentService, /hasLaterInstallment/, "server distinguishes a later installment from an incomplete first installment");
-assert.match(paymentService, /seatApprovalRequested/, "server persists teacher approval for a full first installment with a later balance");
+assert.match(paymentService, /allInitialSatisfied \|\| Boolean\(input\.approveSeatConfirmation\)/, "server automatically approves the seat at the effective initial-payment threshold");
+assert.match(paymentService, /confirmSeatForSufficientPayment/, "a separate correction action can approve an already-recorded sufficient payment without another receipt");
 assert.match(paymentService, /suppliedRemainingDueAt \?\? priorConfirmation\?\.remainingDueAt/, "later partial payments preserve an existing deadline when staff does not replace it");
 assert.match(paymentService, /ownReferralCode/, "payment queue projects an active confirmed-enrollment referral code");
 assert.match(paymentService, /usedReferralCode/, "payment queue separately projects a referral used by the current registration");
@@ -64,7 +64,9 @@ assert.match(page, /Төлбөр бүртгэгдлээ/, "ordinary payment reco
 assert.match(page, /await refresh\("", \{ anchorChildId: item\.registrationDraftChildId \}\)/, "payment refresh anchors the already-open registration detail instead of closing it");
 assert.match(page, /scrollIntoView\(\{ block: "nearest" \}\)/, "a status-changing refresh preserves sensible local scroll position");
 assert.match(page, /data-parent-resend[\s\S]*?Илгээж байна…/, "resend disables itself with a visible pending label");
+assert.match(page, /Хүүхдийн бүртгэлийг эхлээд баталгаажуулна уу\./, "resend is truthfully unavailable before canonical enrollment exists");
 assert.match(page, /И-мэйл илгээхээр дараалалд орлоо/, "resend reports queueing rather than falsely claiming delivery");
+assert.match(page, /data-payment-confirm-seat=/, "staff can correct a sufficient historic payment without recording it twice");
 assert.match(page, /state\.manualMessages\[childId\] = \{ pending: true \}/, "manual message creation immediately reveals a pending preview panel");
 assert.match(page, /Мессежийн урьдчилсан харагдац/, "manual message preview is visibly titled beneath contact actions");
 assert.match(page, /data-parent-message-copy/, "manual message preview has a separate copy action");

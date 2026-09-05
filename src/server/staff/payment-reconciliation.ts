@@ -161,6 +161,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft_child.promotion_status AS promotionStatus,
     registration_draft_child.identity_resolution_status AS identityResolutionStatus,
+    registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
     registration_draft.email, registration_draft.verified_at AS verifiedAt,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,
@@ -174,6 +175,14 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN received_payment.id END) AS tentativePaymentId,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN payment_confirmation.finalize_after END) AS finalizeAfter,
     MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.seat_confirmation_approved ELSE 0 END) AS seatConfirmationApproved,
+    EXISTS(SELECT 1 FROM payment_confirmation AS unapproved_confirmation
+      INNER JOIN payment_allocation AS unapproved_allocation ON unapproved_allocation.received_payment_id = unapproved_confirmation.received_payment_id
+      INNER JOIN payment_installment AS unapproved_installment ON unapproved_installment.id = unapproved_allocation.payment_installment_id
+      WHERE unapproved_confirmation.payment_request_id = payment_request.id
+        AND unapproved_confirmation.status IN ('tentative', 'finalized')
+        AND unapproved_confirmation.seat_confirmation_approved = 0
+        AND unapproved_installment.registration_draft_child_id = registration_draft_child.id
+        AND unapproved_installment.installment_kind = 'initial') AS hasUnapprovedInitialConfirmation,
     (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
       WHERE confirmation.payment_request_id = payment_request.id
         AND confirmation.status IN ('tentative', 'finalized')
@@ -272,9 +281,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const effective = effectiveById.get(String(item.installmentId));
     const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
     const awards = awardByChild.get(String(item.registrationDraftChildId)) ?? [];
-    return { ...item, expectedAmountMnt: effective?.effectiveAmountMnt ?? item.expectedAmountMnt,
+    const expectedAmountMnt = effective?.effectiveAmountMnt ?? item.expectedAmountMnt;
+    return { ...item, expectedAmountMnt,
       laterAmountMnt: later?.effectiveAmountMnt ?? item.laterAmountMnt,
-      discountAmountMnt: effective?.discountAmountMnt ?? 0, discounts: awards };
+      discountAmountMnt: effective?.discountAmountMnt ?? 0, discounts: awards,
+      canConfirmSeat: !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved)
+        && Boolean(item.hasUnapprovedInitialConfirmation) && item.allocatedAmountMnt >= expectedAmountMnt };
   }), credits: [
     ...credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "payment" })),
     ...discountCredits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "discount" })),
@@ -352,7 +364,6 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   const initialAllocated = [...allocatedByInstallment.entries()].some(([id]) => installments.find((item) => item.id === id)?.installmentKind === "initial");
   const allInitialSatisfied = installments.filter((item) => item.installmentKind === "initial")
     .every((item) => item.allocatedAmountMnt + (allocatedByInstallment.get(item.id) ?? 0) >= item.amountMnt);
-  const hasLaterInstallment = installments.some((item) => item.installmentKind === "later");
   const priorConfirmation = await env.DB.prepare(`SELECT
     MAX(CASE WHEN status IN ('tentative', 'finalized') THEN seat_confirmation_approved ELSE 0 END) AS seatApproved,
     (SELECT remaining_payment_due_at FROM payment_confirmation
@@ -361,11 +372,11 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     FROM payment_confirmation WHERE payment_request_id = ?`).bind(request.id, request.id)
     .first<{ seatApproved: number; remainingDueAt: string | null }>();
   const priorSeatApproved = Boolean(priorConfirmation?.seatApproved);
-  // A teacher may confirm the seat after either an explicitly approved partial
-  // first installment or a fully paid first installment that has a later plan
-  // installment. The latter keeps its normal later-installment due date.
-  const seatApprovalRequested = Boolean(input.approveSeatConfirmation) && initialAllocated
-    && (!allInitialSatisfied || hasLaterInstallment);
+  // Meeting the effective initial-installment obligation is the normal seat
+  // confirmation threshold for either payment plan. Staff can still make the
+  // exceptional, auditable choice to approve a genuinely incomplete first
+  // installment, but that path requires its own remaining-payment deadline.
+  const seatApprovalRequested = initialAllocated && (allInitialSatisfied || Boolean(input.approveSeatConfirmation));
   const approvedPartial = seatApprovalRequested && !allInitialSatisfied;
   if (input.approveSeatConfirmation && priorSeatApproved) throw new PaymentReconciliationError("invalid");
   const needsRemainingDeadline = initialAllocated && !allInitialSatisfied && (seatApprovalRequested || priorSeatApproved);
@@ -411,7 +422,57 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   await env.DB.batch(statements);
   await Promise.all([...new Set(installments.map((item) => item.registrationDraftChildId))]
     .map((childId) => recalculateDiscountAwardBalances(env.DB, childId, now)));
-  return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial };
+  return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial, seatApprovalRequested };
+}
+
+export async function confirmSeatForSufficientPayment(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  paymentRequestId: string,
+  nowDate = new Date(),
+) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const request = await requestForId(env, paymentRequestId);
+  const installments = await installmentsForRequest(env, request.id);
+  const initial = installments.filter((item) => item.installmentKind === "initial" && item.status !== "released");
+  if (!initial.length || !initial.every((item) => item.allocatedAmountMnt >= item.amountMnt)) {
+    throw new PaymentReconciliationError("invalid");
+  }
+  const confirmation = await env.DB.prepare(`SELECT payment_confirmation.id, payment_confirmation.status,
+    payment_confirmation.finalize_after AS finalizeAfter
+    FROM payment_confirmation
+    INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+    INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+    WHERE payment_confirmation.payment_request_id = ?
+      AND payment_confirmation.status IN ('tentative', 'finalized')
+      AND payment_confirmation.seat_confirmation_approved = 0
+      AND payment_installment.installment_kind = 'initial'
+    ORDER BY CASE payment_confirmation.status WHEN 'finalized' THEN 0 ELSE 1 END,
+      payment_confirmation.created_at DESC, payment_confirmation.id DESC LIMIT 1`)
+    .bind(request.id).first<{ id: string; status: "tentative" | "finalized"; finalizeAfter: string }>();
+  if (!confirmation) {
+    const alreadyConfirmed = await env.DB.prepare(`SELECT 1 AS value FROM payment_confirmation
+      WHERE payment_request_id = ? AND status IN ('tentative', 'finalized') AND seat_confirmation_approved = 1 LIMIT 1`)
+      .bind(request.id).first();
+    if (alreadyConfirmed) return { idempotent: true, pending: false };
+    throw new PaymentReconciliationError("not_found");
+  }
+  const now = nowDate.toISOString();
+  const changed = await env.DB.prepare(`UPDATE payment_confirmation
+    SET seat_confirmation_approved = 1, remaining_payment_due_at = NULL,
+      remaining_reminder_lead_minutes = NULL, remaining_reminder_at = NULL, updated_at = ?
+    WHERE id = ? AND status IN ('tentative', 'finalized') AND seat_confirmation_approved = 0`)
+    .bind(now, confirmation.id).run();
+  if (changes(changed) !== 1) throw new PaymentReconciliationError("conflict");
+  await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+    metadata_json, environment, is_test, test_run_id, created_at)
+    VALUES (?, ?, 'staff', ?, 'seat_confirmation_corrected', 'payment_confirmation', ?, '{}', ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), now, actor.staffAccountId, confirmation.id, env.APP_ENV, request.isTest, request.testRunId, now).run();
+  if (confirmation.status === "tentative") {
+    return { idempotent: false, pending: true, finalizeAfter: confirmation.finalizeAfter };
+  }
+  const promotion = await promotePaidDraftChildren(env, actor, request.registrationDraftId, nowDate);
+  return { idempotent: false, pending: false, promotion };
 }
 
 export async function undoTentativePaymentConfirmation(env: WorkerEnv, actor: StaffPrincipal, receivedPaymentId: string, nowDate = new Date()) {
@@ -458,18 +519,10 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
       'payment_confirmation_finalized', 'payment_confirmation', ?, ?, ?, ?, ?, ?)`)
       .bind(crypto.randomUUID(), now, row.id, JSON.stringify({ allInitialPaid: state.allInitialPaid, promotion: promotion.map((entry) => entry.state) }),
         env.APP_ENV, row.isTest, row.testRunId, now).run();
-    if (promotion.some((entry) => entry.state === "promoted")) {
-      try {
-        const { sendEnrollmentConfirmationEmail } = await import("../email/registration-transactional");
-        await sendEnrollmentConfirmationEmail(env, request.registrationDraftId);
-      } catch {
-        // Enrollment confirmation is advisory and must never roll back promotion.
-      }
-    }
     if (state.allInitialPaid) {
       try {
         const { sendPaymentConfirmedEmail } = await import("../email/registration-transactional");
-        await sendPaymentConfirmedEmail(env, request.registrationDraftId);
+        await sendPaymentConfirmedEmail(env, request.registrationDraftId, row.id);
       } catch {
         // The confirmation and its audit event are already durable; the queued email remains observable for retry.
       }
