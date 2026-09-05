@@ -162,7 +162,7 @@ try {
   const { getClassCapacityProjections } = await import(pathToFileURL(capacityBundlePath).href);
   const cancellationBundled = spawnSync(esbuild, ["src/server/staff/registration-cancellation.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${cancellationBundlePath}`], { encoding: "utf8" });
   if (cancellationBundled.status !== 0) throw new Error(cancellationBundled.stderr);
-  const { cancelRegistration, RegistrationCancellationError } = await import(pathToFileURL(cancellationBundlePath).href);
+  const { cancelRegistration, reinstateRegistration, getRegistrationReinstatementEligibility, RegistrationCancellationError } = await import(pathToFileURL(cancellationBundlePath).href);
   const paymentBundled = spawnSync(esbuild, ["src/server/staff/payment-reconciliation.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${paymentBundlePath}`], { encoding: "utf8" });
   if (paymentBundled.status !== 0) throw new Error(paymentBundled.stderr);
   const { finalizeDuePaymentConfirmations } = await import(pathToFileURL(paymentBundlePath).href);
@@ -452,6 +452,69 @@ try {
   assert.equal(count(database, "payment_credit", `received_payment_id = '${partialCancellation.id}-payment' AND status = 'available'`), 1, "an unshared received partial payment becomes available credit");
   const partialAfter = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
   assert.equal(partialAfter.freeSeats, partialBefore.freeSeats + 1, "confirmed partial cancellation releases one seat");
+
+  const reinstatement = seedDraft(database, "cancel-reinstate", { classId: "class-cancel", email: "cancel-reinstate@example.test" });
+  database.query(`INSERT INTO payment_installment (
+    id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt,
+    original_due_at, effective_due_at, status, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, ?, 2, 'later', 65000, '2027-01-25T04:00:00.000Z', '2027-01-25T04:00:00.000Z', 'pending', 1, 'promotion-test', ?, ?)`,
+  [`${reinstatement.id}-later`, `${reinstatement.id}-request`, reinstatement.childId, now, now]);
+  database.query(`INSERT INTO received_payment (
+    id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
+    confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id
+  ) VALUES (?, ?, 100000, ?, 'staff_manual_bank', 'confirmed', ?, ?, ?, ?, 1, 'promotion-test')`,
+  [`${reinstatement.id}-payment`, `${reinstatement.id}-request`, now, now, `${reinstatement.id}-payment-key`, now, now]);
+  database.query(`INSERT INTO payment_allocation (
+    id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at,
+    created_at, is_test, test_run_id
+  ) VALUES (?, ?, ?, 100000, ?, ?, 1, 'promotion-test')`,
+  [`${reinstatement.id}-allocation`, `${reinstatement.id}-payment`, `${reinstatement.id}-initial`, now, now]);
+  database.query(`INSERT INTO payment_confirmation (
+    id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
+    remaining_payment_due_at, finalized_at, created_at, updated_at, is_test, test_run_id
+  ) VALUES (?, ?, ?, 'finalized', ?, 1, NULL, ?, ?, ?, 1, 'promotion-test')`,
+  [`${reinstatement.id}-confirmation`, `${reinstatement.id}-payment`, `${reinstatement.id}-request`, now, now, now, now]);
+  await promotePaidDraftChild(env(database), actor, reinstatement.childId);
+  database.query(`INSERT INTO payment_notification_milestone (
+    id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id,
+    channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
+  ) VALUES (?, ?, ?, ?, ?, 'email', 'later_reminder', '2027-01-20T04:00:00.000Z', 'pending', ?, ?, 1, 'promotion-test')`,
+  [`${reinstatement.id}-later-reminder`, `${reinstatement.id}-later-reminder`, reinstatement.id, reinstatement.childId, `${reinstatement.id}-later`, now, now]);
+  const reinstatementBefore = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: reinstatement.childId, reason: "guardian_request" });
+  const reinstatementCancelled = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
+  assert.equal(reinstatementCancelled.freeSeats, reinstatementBefore.freeSeats + 1, "cancellation releases the confirmed seat before a guarded reinstatement");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE id = ?`, [`${reinstatement.id}-later`])[0].status, "released", "cancellation releases only the unpaid later installment");
+  assert.equal(database.query(`SELECT status FROM payment_credit WHERE received_payment_id = ?`, [`${reinstatement.id}-payment`])[0].status, "available", "cancellation creates an available, auditable credit for the received money");
+  assert.equal(await getRegistrationReinstatementEligibility(env(database), reinstatement.childId, new Date(now)), true, "a pre-attendance cancellation with untouched credit and capacity is eligible for reinstatement");
+  const restored = await reinstateRegistration(env(database), actor, { registrationDraftChildId: reinstatement.childId }, new Date(now));
+  assert.equal(restored.reinstated, true, "the guarded service restores an eligible cancelled registration");
+  assert.equal(count(database, "enrollment", `id = '${reinstatement.childId}:enrollment' AND status = 'confirmed'`), 1, "reinstatement reuses the same canonical enrollment");
+  assert.equal(count(database, "received_payment", `id = '${reinstatement.id}-payment'`), 1, "reinstatement never fabricates or rewrites received payment history");
+  assert.deepEqual(database.query(`SELECT status, amount_mnt AS amountMnt, original_due_at AS originalDueAt, effective_due_at AS effectiveDueAt
+    FROM payment_installment WHERE id = ?`, [`${reinstatement.id}-later`])[0], {
+    status: "pending", amountMnt: 65000, originalDueAt: "2027-01-25T04:00:00.000Z", effectiveDueAt: "2027-01-25T04:00:00.000Z",
+  }, "reinstatement restores the released later installment with its original terms");
+  assert.equal(database.query(`SELECT status FROM payment_credit WHERE received_payment_id = ?`, [`${reinstatement.id}-payment`])[0].status, "allocated", "only the cancellation-generated unsettled credit is closed on reinstatement");
+  assert.equal(database.query(`SELECT status FROM payment_notification_milestone WHERE id = ?`, [`${reinstatement.id}-later-reminder`])[0].status, "pending", "future later-payment reminder resumes without duplicating history");
+  const reinstatementAfter = (await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0];
+  assert.equal(reinstatementAfter.freeSeats, reinstatementCancelled.freeSeats - 1, "reinstatement restores exactly one occupied seat");
+  assert.equal(count(database, "audit_event", `subject_id = '${reinstatement.childId}' AND action IN ('registration_cancelled', 'registration_reinstated')`), 2, "cancellation and reinstatement preserve an explicit audit lineage");
+  assert.equal((await reinstateRegistration(env(database), actor, { registrationDraftChildId: reinstatement.childId }, new Date(now))).idempotent, true, "replay cannot consume a second seat");
+  assert.equal((await getClassCapacityProjections(database, "staging", new Date(now), ["class-cancel"]))[0].freeSeats, reinstatementAfter.freeSeats, "reinstatement replay leaves capacity unchanged");
+  await assert.rejects(() => reinstateRegistration(env(database), { ...actor, roles: ["accountant"], capabilities: ["payment.view"] }, { registrationDraftChildId: reinstatement.childId }), RegistrationCancellationError, "accountant cannot reinstate a registration");
+
+  const refundedReinstatement = seedDraft(database, "cancel-refunded", { classId: "class-cancel", email: "cancel-refunded@example.test" });
+  database.query(`INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
+    VALUES (?, ?, 100000, ?, 'staff_manual_bank', 'confirmed', ?, ?, ?, ?, 1, 'promotion-test');
+    INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
+    VALUES (?, ?, ?, 100000, ?, ?, 1, 'promotion-test');`,
+  [`${refundedReinstatement.id}-payment`, `${refundedReinstatement.id}-request`, now, now, `${refundedReinstatement.id}-payment-key`, now, now,
+    `${refundedReinstatement.id}-allocation`, `${refundedReinstatement.id}-payment`, `${refundedReinstatement.id}-initial`, now, now]);
+  await promotePaidDraftChild(env(database), actor, refundedReinstatement.childId);
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: refundedReinstatement.childId, reason: "guardian_request" });
+  database.query(`UPDATE payment_credit SET status = 'refunded', refunded_at = ? WHERE received_payment_id = ?`, [now, `${refundedReinstatement.id}-payment`]);
+  await assert.rejects(() => reinstateRegistration(env(database), actor, { registrationDraftChildId: refundedReinstatement.childId }), RegistrationCancellationError, "a completed refund blocks reinstatement");
 
   const fullCancellation = seedDraft(database, "cancel-full", { classId: "class-cancel", email: "cancel-full@example.test" });
   await promotePaidDraftChild(env(database), actor, fullCancellation.childId);

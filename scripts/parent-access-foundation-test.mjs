@@ -24,6 +24,8 @@ assert.match(parentService, /status: row\.childStatus === "cancelled"/, "cancell
 assert.match(parentPage, /\/api\/parent\/status/, "the parent page is read-only and session-backed");
 assert.match(staffCommunication, /parent_manual_message_generated/, "manual-message generation is audited");
 assert.doesNotMatch(staffCommunication, /verifyEmailToken|sendParentAccessEmail/, "manual messages cannot issue a verifying access link");
+assert.match(staffCommunication, /enrollmentManualMessage/, "manual messages use the same structured enrollment copy as email");
+assert.match(staffCommunication, /getDiscountPolicySetting/, "manual referral wording reads the authoritative discount policy");
 assert.match(payments, /И-мэйл дахин илгээх/, "contact actions stay inside opened staff detail");
 assert.match(payments, /Мессеж үүсгэх/, "manual copy helper is available in opened staff detail");
 assert.match(payments, /Мессежийн урьдчилсан харагдац/, "manual messages are previewed before a separate copy action");

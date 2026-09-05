@@ -11,6 +11,7 @@ const bundle = path.join(dir, "outbox.mjs");
 const policyBundle = path.join(dir, "archive-policy.mjs");
 const resendBundle = path.join(dir, "resend.mjs");
 const settingBundle = path.join(dir, "archive-setting.mjs");
+const outboxPage = readFileSync("src/pages/staff/outbox/index.astro", "utf8");
 function sql(source, json = false) {
   const result = spawnSync("sqlite3", json ? ["-json", dbPath] : [dbPath], { input: `PRAGMA foreign_keys=ON;\n${source}`, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr);
@@ -52,6 +53,10 @@ try {
   assert.equal(listing.emails[0].text.includes("token"), false, "sensitive display does not reveal tokens");
   assert.equal((await listEmailOutbox(env, actor, { status: "failed" })).emails[0].id, "failed", "status filter is bounded and correct");
   const detail = await getEmailOutboxEntry(env, actor, "safe-old"); assert.deepEqual(detail.bccRecipients, ["archive@example.test"]);
+  assert.match(outboxPage, /q\("#outbox-list"\)\.addEventListener\("click"/, "each rendered View button uses one delegated handler, so rows cannot retain a stale preview target");
+  assert.match(outboxPage, /detail\(button\.dataset\.emailId\)\.catch/, "preview failures become an explicit inline error instead of a silent rejected promise");
+  assert.match(outboxPage, /Энэ и-мэйлийн аюулгүй агуулга хадгалагдаагүй байна\./, "a missing sanitized snapshot gives an explicit preview explanation");
+  assert.match(outboxPage, /email\.context\?\.guardianName/, "legacy email rows with no context still open safely");
   await assert.rejects(() => listEmailOutbox(env, nonAdmin, {}), (error) => error instanceof EmailOutboxError && error.code === "forbidden");
   assert.deepEqual(parseArchiveRecipients([" Archive@Example.test ", "other@example.test"]), ["archive@example.test", "other@example.test"]);
   assert.throws(() => parseArchiveRecipients(["a@b.test", "A@b.test"]), /invalid_archive_recipients/);

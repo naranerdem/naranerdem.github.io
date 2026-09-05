@@ -8,13 +8,17 @@ import { spawnSync } from "node:child_process";
 const dir = mkdtempSync(path.join(tmpdir(), "naranerdem-payment-email-"));
 const bundle = path.join(dir, "payment-reminder.mjs");
 const confirmationBundle = path.join(dir, "payment-confirmed.mjs");
+const enrollmentBundle = path.join(dir, "enrollment-confirmation.mjs");
 try {
   const result = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/email/templates/payment-reminder.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${bundle}`], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr);
   const confirmationResult = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/email/templates/payment-confirmed.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${confirmationBundle}`], { encoding: "utf8" });
   if (confirmationResult.status !== 0) throw new Error(confirmationResult.stderr);
+  const enrollmentResult = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/email/templates/enrollment-confirmation.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${enrollmentBundle}`], { encoding: "utf8" });
+  if (enrollmentResult.status !== 0) throw new Error(enrollmentResult.stderr);
   const { paymentReminderTemplate } = await import(pathToFileURL(bundle).href);
   const { paymentConfirmedTemplate } = await import(pathToFileURL(confirmationBundle).href);
+  const { enrollmentConfirmationTemplate, enrollmentManualMessage } = await import(pathToFileURL(enrollmentBundle).href);
   const template = paymentReminderTemplate({ milestoneType: "initial_overdue", childName: "Тест", classLabel: "Тест анги", amountMnt: 100000,
     dueAt: "2026-09-01T11:12:00.000Z", parentClaimed: false, bankName: null, accountHolderName: null, accountNumber: null, iban: null, transferInstruction: null });
   assert.match(template.text, /суудал цуцлагдаж болзошгүй/);
@@ -44,6 +48,16 @@ try {
   assert.match(confirmation.text, /Суудал баталгаажсан\./);
   assert.match(confirmation.text, /Суудал хараахан баталгаажаагүй байна\./);
   assert.doesNotMatch(confirmation.text, /verify-email|token=/i, "ordinary payment confirmation contains no capability link");
+  const referralPolicy = { referrerBasisPoints: 725, referredChildBasisPoints: 175 };
+  const enrollmentChild = { childName: "Тест Гурав", academicYearLabel: "2027–2028 хичээлийн жил", offeringLabel: "3-р шат", classLabel: "Пүрэв 15:00–16:20", paidAmountMnt: 650000, remainingAmountMnt: 650000, remainingPaymentDueAt: "2027-01-25T00:00:00.000Z", referralCode: "NE-DYNAMIC" };
+  const enrollment = enrollmentConfirmationTemplate({ children: [enrollmentChild], accessUrl: "https://example.test/parent/?token=opaque", referralPolicy });
+  const manual = enrollmentManualMessage({ child: enrollmentChild, referralPolicy });
+  for (const copy of [enrollment.html, enrollment.text, manual]) {
+    assert.match(copy, /1\.75%/, "referral copy reads the current referred-child policy rather than a hard-coded percentage");
+    assert.match(copy, /7\.25%/, "referral copy reads the current referrer policy rather than a hard-coded percentage");
+    assert.match(copy, /2027–2028 хичээлийн жил · 3-р шат · Пүрэв 15:00–16:20/);
+  }
+  assert.doesNotMatch(manual, /token=|https?:\/\//i, "the manually shared message cannot verify a contact channel");
   console.log("ok payment reminder wording and Mongolia-local deadline formatting");
 } finally {
   rmSync(dir, { recursive: true, force: true });

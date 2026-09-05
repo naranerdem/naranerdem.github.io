@@ -1,6 +1,7 @@
 import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { getPaymentReminderSetting } from "./payment-reminders";
+import { getRegistrationReinstatementEligibility } from "./registration-cancellation";
 import { promotePaidDraftChildren } from "../services/canonical-enrollment-promotion";
 import { getClassCapacityProjections } from "../services/class-capacity";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
@@ -195,7 +196,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       WHERE registration_draft_child_id = registration_draft_child.id AND status = 'captured'
       ORDER BY created_at DESC LIMIT 1) AS usedReferralCode,
     EXISTS(SELECT 1 FROM payment_evidence AS claim WHERE claim.payment_request_id = payment_request.id
-      AND claim.evidence_type = 'parent_claim') AS parentClaimed,
+      AND claim.evidence_type = 'parent_claim' AND NOT EXISTS(SELECT 1 FROM payment_evidence AS resolution
+        WHERE resolution.payment_request_id = claim.payment_request_id
+          AND resolution.recorded_at >= claim.recorded_at
+          AND resolution.evidence_type IN ('staff_manual_bank', 'staff_manual_cash', 'bank_statement', 'bank_sms', 'bank_api', 'qpay', 'staff_checked_not_found')))
+      AS parentClaimed,
     (SELECT MAX(recorded_at) FROM payment_evidence AS checked WHERE checked.payment_request_id = payment_request.id
       AND checked.evidence_type = 'staff_checked_not_found') AS lastCheckedAt
     FROM payment_installment
@@ -274,6 +279,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     } : null,
   ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
   const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
+  const cancelledItems = await Promise.all(cancelled.results.map(async (item) => ({
+    ...item,
+    canReinstate: hasStaffCapability(actor, "registration.manage")
+      && await getRegistrationReinstatementEligibility(env, String(item.registrationDraftChildId), nowDate),
+  })));
   return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"),
   canManageReferrals: hasStaffCapability(actor, "registration.manage"),
   canContactParents: hasStaffCapability(actor, "registration.manage"),
@@ -291,7 +301,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ...credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "payment" })),
     ...discountCredits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "discount" })),
   ],
-  capacity, cancelledItems: cancelled.results,
+  capacity, cancelledItems,
   waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone, registration_draft.email, registration_draft.facebook_name AS guardianFacebookName,

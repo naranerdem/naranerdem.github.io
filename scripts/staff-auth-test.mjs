@@ -715,6 +715,19 @@ try {
     method: "POST", headers: { Cookie: adminCookie, Origin: env.APP_ORIGIN }, body: cancellationBody(adminCancellationChild),
   })).status, 200, "admins can cancel an unused registration");
   assert.equal(count(database, "registration_draft_child", `id = '${adminCancellationChild}' AND status = 'cancelled'`), 1);
+  const reinstatementBody = (registrationDraftChildId) => ({ action: "registration.reinstate", registrationDraftChildId });
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Origin: env.APP_ORIGIN }, body: reinstatementBody(teacherCancellationChild),
+  })).status, 401, "registration reinstatement is never public");
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Cookie: `${STAFF_SESSION_COOKIE}=${roleLogin.rawSession}`, Origin: env.APP_ORIGIN }, body: reinstatementBody(teacherCancellationChild),
+  })).status, 403, "accountants cannot reinstate registrations");
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}`, Origin: env.APP_ORIGIN }, body: reinstatementBody(teacherCancellationChild),
+  })).status, 409, "a teacher reaches the guarded reinstatement operation when the record is otherwise ineligible");
+  assert.equal((await api(env, "/api/staff/payments", {
+    method: "POST", headers: { Cookie: adminCookie, Origin: env.APP_ORIGIN }, body: reinstatementBody(adminCancellationChild),
+  })).status, 409, "an admin reaches the same guarded reinstatement operation");
   const teacherAttendance = await api(env, "/api/staff/proof/attendance", {
     headers: { Cookie: `${STAFF_SESSION_COOKIE}=${attendanceTeacher.rawSession}` },
   });

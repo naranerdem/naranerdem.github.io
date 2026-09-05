@@ -42,7 +42,7 @@ import {
   undoTentativePaymentConfirmation,
   updatePaymentConfirmationGraceSetting,
 } from "../staff/payment-reconciliation";
-import { cancelRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
+import { cancelRegistration, reinstateRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
 import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
 import {
   acceptWaitlistOffer,
@@ -334,6 +334,9 @@ function registrationCancellationError(caught: unknown): Response {
   if (caught.code === "not_found") return error("not_found", "Бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "withdrawal_required") {
     return error("invalid_request", "Энэ бүртгэлд ирцийн түүх үүссэн тул энгийн цуцлалт хийх боломжгүй.", 409, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "reinstatement_blocked") {
+    return error("invalid_request", "Энэ бүртгэлийг аюулгүй сэргээх нөхцөл хангагдахгүй байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   }
   if (caught.code === "conflict") return error("invalid_request", "Бүртгэлийн төлөв өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Цуцлах шалтгаан болон тайлбараа шалгана уу.", 400, { "Cache-Control": "no-store" });
@@ -1125,6 +1128,14 @@ export async function handleApiRequest(
           registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
           reason: payload.reason,
           note: payload.note,
+        }) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "registration.reinstate") {
+        if (!hasStaffCapability(principal, "registration.manage")) {
+          return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        }
+        return json({ ok: true, ...await reinstateRegistration(env, principal, {
+          registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
         }) }, 200, { "Cache-Control": "no-store" });
       }
       if (!hasStaffCapability(principal, "payment.manage")) {

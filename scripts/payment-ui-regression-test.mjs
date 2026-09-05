@@ -18,8 +18,12 @@ assert.match(page, /item\.seatConfirmationApproved \? "Хэсэгчлэн төл
 assert.match(page, /const seatApprovalControl = approvedSeat/, "already-approved seats use a separate form projection");
 assert.match(page, /!item\.seatConfirmationApproved/, "the payment form does not re-offer seat approval after it is durable");
 assert.match(page, /data-seat-approval/, "the complete seat-confirmation label is a tappable control");
-assert.match(page, /Дутуу төлбөртэй ч суудлыг баталгаажуулах/, "only an exceptional below-threshold payment offers manual seat approval");
+assert.match(page, /Дутуу эхний төлбөртэй ч суудлыг онцгойгоор баталгаажуулах/, "only an exceptional below-threshold payment offers manual seat approval");
 assert.match(page, /seat\.hidden = !partial/, "a routine sufficient payment does not require a seat-approval checkbox");
+assert.match(page, /Төлбөр бүртгэгдлээ\. Суудал удахгүй баталгаажна\./, "a sufficient initial payment explains the short finalization grace without calling it incomplete");
+assert.match(page, /function reconcileActionFeedback\(\)/, "the payment detail reconciles interim feedback with the authoritative finalization result");
+assert.match(page, /item\.canonicalEnrollmentId && feedback\.text === "Төлбөр бүртгэгдлээ\. Суудал удахгүй баталгаажна\."/, "a completed canonical enrollment replaces only the stale grace-period status");
+assert.match(page, /"Суудал баталгаажлаа\."/, "the teacher receives an explicit final seat-confirmation status after the grace refresh");
 assert.match(page, /Boolean\(form\.elements\.approveSeat\?\.checked\)/, "later payments submit safely after the approval control is intentionally absent");
 assert.match(page, /const alreadyApproved = !seat;/, "later payments remain usable when no seat-approval control is rendered");
 assert.match(page, /Үлдсэн төлбөрийн хугацаа: \$\{escape\(localLabel\(item\.remainingPaymentDueAt\)\)\}/, "an approved partial payment shows its existing remaining-balance deadline");
@@ -38,6 +42,7 @@ assert.match(paymentService, /confirmSeatForSufficientPayment/, "a separate corr
 assert.match(paymentService, /suppliedRemainingDueAt \?\? priorConfirmation\?\.remainingDueAt/, "later partial payments preserve an existing deadline when staff does not replace it");
 assert.match(paymentService, /ownReferralCode/, "payment queue projects an active confirmed-enrollment referral code");
 assert.match(paymentService, /usedReferralCode/, "payment queue separately projects a referral used by the current registration");
+assert.match(paymentService, /resolution\.evidence_type IN \('staff_manual_bank', 'staff_manual_cash'/, "the compact attention marker hides a parent payment claim after staff resolves it while preserving evidence history");
 assert.match(page, /item\.identityResolutionStatus === "needs_identity_review"/, "only a durable identity-review state is flagged for staff");
 assert.match(page, /const parts = \[`Сул суудал \$\{item\.freeSeats\}`\]/, "capacity presentation always begins with the free-seat count, including zero");
 assert.match(page, /if \(Number\(item\.confirmedCount \|\| 0\) > 0\) parts\.push\(`Баталгаажсан \$\{item\.confirmedCount\}`\)/, "confirmed counts are shown only when nonzero");
@@ -50,7 +55,12 @@ assert.match(page, /Эцэг эхийн хүсэлтээр/, "cancellation requi
 assert.match(page, /Төлбөрийн түүх устахгүй/, "cancellation copy does not imply received money is erased or refunded");
 assert.match(page, /Цуцлагдсан бүртгэл/, "cancelled records remain retrievable as staff history");
 assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'), router.indexOf('if (path === "/api/staff/attendance")')), /case "registration\.cancel"|payload\.action === "registration\.cancel"/, "the protected payment surface routes registration cancellation");
+assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'), router.indexOf('if (path === "/api/staff/attendance")')), /registration\.reinstate/, "the protected payment surface routes guarded registration reinstatement");
 assert.match(router, /RegistrationCancellationError/, "cancellation failures have their own typed server handling");
+assert.match(page, /Бүртгэлийг сэргээх/, "eligible cancelled registrations expose a separate restoration action");
+assert.match(page, /data-registration-reinstate=/, "restoration is bound to the authoritative cancelled registration child id");
+assert.match(page, /Буцаан төлөлт бүртгэх/, "the refund control is labelled as an action rather than an existing state");
+assert.match(page, /Энэ нь мөнгийг бодитоор буцаан олгосныг бүртгэнэ/, "refund confirmation explains its accounting meaning before mutation");
 assert.match(registerPage, /hasCancelledRegistration/, "parent status recognizes a terminal cancellation");
 assert.match(registerPage, /Суудал баталгаажаагүй байна\.<br>Төлбөр төлснөөр суудал баталгаажна\./, "an ordinary initial-payment hold explains that payment confirms the seat");
 assert.match(registerPage, /Таны мэдэгдлийг хүлээн авлаа\. Бид төлбөрийг шалгаж баталгаажуулна\./, "parent payment claims receive a positive, non-final confirmation");
@@ -63,6 +73,11 @@ assert.match(page, /Суудал баталгаажлаа/, "approved partial pa
 assert.match(page, /Төлбөр бүртгэгдлээ/, "ordinary payment recording has an explicit nearby result");
 assert.match(page, /await refresh\("", \{ anchorChildId: item\.registrationDraftChildId \}\)/, "payment refresh anchors the already-open registration detail instead of closing it");
 assert.match(page, /scrollIntoView\(\{ block: "nearest" \}\)/, "a status-changing refresh preserves sensible local scroll position");
+assert.match(page, /id="payment-refresh"/, "staff can manually refresh the permanent payment surface");
+assert.match(page, /function scheduleGraceRefresh\(\)/, "only visible tentative confirmations enable a lightweight finalization refresh loop");
+assert.match(page, /item\.tentativePaymentId/, "the grace-period status is visible while finalization is pending");
+assert.match(page, /const classSchedule = \(item\)/, "collapsed rows derive one natural class/schedule label");
+assert.match(page, /includes\(item\.weekday\).*includes\(item\.startTime\)/, "a saved display label that already includes the schedule is not duplicated");
 assert.match(page, /data-parent-resend[\s\S]*?Илгээж байна…/, "resend disables itself with a visible pending label");
 assert.match(page, /Хүүхдийн бүртгэлийг эхлээд баталгаажуулна уу\./, "resend is truthfully unavailable before canonical enrollment exists");
 assert.match(page, /И-мэйл илгээхээр дараалалд орлоо/, "resend reports queueing rather than falsely claiming delivery");

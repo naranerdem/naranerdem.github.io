@@ -5,7 +5,7 @@ import { createResendProvider } from "./resend";
 import { deliverQueuedEmail } from "./service";
 import { paymentConfirmedTemplate, type PaymentConfirmedChild } from "./templates/payment-confirmed";
 import { registrationReceiptTemplate, type RegistrationReceiptItem } from "./templates/registration-receipt";
-import { effectiveInstallmentsForRows } from "../services/discounts";
+import { effectiveInstallmentsForRows, getDiscountPolicySetting } from "../services/discounts";
 import { sendParentAccessEmail } from "../auth/email-verification";
 import { enrollmentConfirmationTemplate, type EnrollmentConfirmationChild } from "./templates/enrollment-confirmation";
 
@@ -26,7 +26,7 @@ interface PaymentReceiptInstallmentRow {
 }
 
 interface EnrollmentEmailRow {
-  email: string; childId: string; childName: string; offeringLabel: string; classLabel: string;
+  email: string; childId: string; childName: string; academicYearLabel: string; offeringLabel: string; classLabel: string;
   installmentId: string; installmentNumber: number; amountMnt: number; allocatedAmountMnt: number;
   remainingPaymentDueAt: string | null; referralCode: string | null;
 }
@@ -196,6 +196,7 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
   const rows = await env.DB.prepare(`SELECT registration_draft.email,
     registration_draft_child.id AS childId,
     trim(registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childName,
+    academic_year.public_label AS academicYearLabel,
     COALESCE(activity_offering.title, class_session.stage_code) AS offeringLabel,
     COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) || ' ' || COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' || COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
     payment_installment.id AS installmentId, payment_installment.installment_number AS installmentNumber,
@@ -211,6 +212,7 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
     FROM registration_draft
     INNER JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
     INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id AND enrollment.status = 'confirmed'
+    INNER JOIN academic_year ON academic_year.id = enrollment.academic_year_id
     INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
     LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
     LEFT JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id
@@ -232,7 +234,7 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
   for (const row of rows.results) {
     const amount = effective.get(row.installmentId)?.effectiveAmountMnt ?? Number(row.amountMnt);
     const current = byChild.get(row.childId) ?? {
-      childName: row.childName, offeringLabel: row.offeringLabel, classLabel: row.classLabel,
+      childName: row.childName, academicYearLabel: row.academicYearLabel, offeringLabel: row.offeringLabel, classLabel: row.classLabel,
       paidAmountMnt: 0, remainingAmountMnt: 0, remainingPaymentDueAt: null, referralCode: row.referralCode,
     };
     current.paidAmountMnt += Number(row.allocatedAmountMnt);
@@ -241,12 +243,13 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
     byChild.set(row.childId, current);
   }
   const children = [...byChild.values()];
+  const referralPolicy = await getDiscountPolicySetting(env);
   try {
     await sendParentAccessEmail(env, rows.results[0].email, registrationDraftId, {
       eventType: options.resend ? "parent_enrollment_resend" : "enrollment_confirmed",
       templateKey: options.resend ? "parent_enrollment_resend_v1" : "enrollment_confirmation_v1",
       context: { childCount: children.length, enrollmentConfirmation: true },
-      template: (accessUrl) => enrollmentConfirmationTemplate({ children, accessUrl }),
+      template: (accessUrl) => enrollmentConfirmationTemplate({ children, accessUrl, referralPolicy }),
     });
     return true;
   } catch {
