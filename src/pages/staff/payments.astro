@@ -22,23 +22,19 @@ import "../../styles/global.css";
       <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
       <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Бүртгэл, төлбөр</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="staff-back-link" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
-        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1 class="staff-payment-page-title">Бүртгэл, төлбөр</h1></div><div class="staff-inline-actions"><button id="payment-refresh" class="button secondary" type="button">Шинэчлэх</button><button id="payment-copy" class="button secondary" type="button" aria-label="Excel-д хуулах" title="Excel-д хуулах" disabled>Бэлтгэж байна…</button><button id="payment-export" class="button secondary" type="button" aria-label="TSV файл татах" title="TSV файл татах">Татах</button><a class="staff-back-link" href="/staff/">Буцах</a></div></div>
+        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1 class="staff-payment-page-title">Бүртгэл, төлбөр</h1></div><div class="staff-inline-actions staff-payment-toolbar"><button id="payment-refresh" class="button secondary" type="button">Шинэчлэх</button><button id="payment-export" class="button secondary" type="button" aria-label="TSV файл татах" title="TSV файл татах">Татах</button><a class="staff-back-link" href="/staff/">Буцах</a></div></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <section id="payment-copy-fallback" class="staff-settings-secondary" aria-live="polite" hidden><p>Хуулах зөвшөөрөл олгогдсонгүй. Доорх текстийг гараар хуулна уу.</p><textarea id="payment-copy-fallback-text" rows="8" readonly></textarea></section>
         <div id="payment-list" class="staff-payment-list"></div>
       </section>
     </main>
     <script>
       // @ts-nocheck
       import { escape, formatDate } from "../../scripts/staff-setup.js";
-      import { buildRegistrationPaymentReport, copyReportToClipboard, downloadReportTsv, reportToTsv } from "../../scripts/staff-reports.js";
-      const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, manualMessages: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", refreshTimer: null, refreshing: false, canRegistrationExport: false, registrationReport: null, registrationReportGeneration: 0 };
+      import { buildRegistrationPaymentReport, downloadReportTsv } from "../../scripts/staff-reports.js";
+      const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, manualMessages: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", refreshTimer: null, refreshing: false, canRegistrationExport: false };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
-      function setRegistrationCopyState(ready, failed = false) { const button = q("#payment-copy"); if (!button || !state.canRegistrationExport) return; button.disabled = !ready; button.textContent = ready ? "Хуулах" : failed ? "Хуулах" : "Бэлтгэж байна…"; button.title = failed ? "Мэдээллийг дахин шинэчилж бэлдэнэ үү." : "Excel-д хуулах"; }
-      function clearRegistrationCopyFallback() { q("#payment-copy-fallback").hidden = true; q("#payment-copy-fallback-text").value = ""; }
-      function showRegistrationCopyFallback(report) { q("#payment-copy-fallback-text").value = reportToTsv(report); q("#payment-copy-fallback").hidden = false; q("#payment-copy-fallback-text").focus(); }
       const mnt = (value) => `${new Intl.NumberFormat("en-US").format(Number(value || 0))} ₮`;
       const localParts = (value) => Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ulaanbaatar", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(value)).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
       const localDateTime = (value) => { const parts = localParts(value); return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`; };
@@ -167,10 +163,8 @@ import "../../styles/global.css";
           const response = await fetch("/api/staff/payments", { credentials: "same-origin", cache: "no-store" });
           if (!response.ok) throw new Error("Төлбөрийн жагсаалтыг авч чадсангүй.");
           state.data = await response.json();
-          clearRegistrationCopyFallback();
           reconcileActionFeedback();
           render();
-          void prepareRegistrationReport();
           scheduleGraceRefresh();
           requestAnimationFrame(() => {
             const anchor = [...document.querySelectorAll("[data-registration-child]")].find((node) => node.dataset.registrationChild === options.anchorChildId);
@@ -334,33 +328,6 @@ import "../../styles/global.css";
         if (!response.ok) throw new Error("Экспортын мэдээллийг авч чадсангүй.");
         return buildRegistrationPaymentReport(await response.json());
       }
-      async function prepareRegistrationReport() {
-        if (!state.canRegistrationExport) return;
-        const generation = ++state.registrationReportGeneration;
-        state.registrationReport = null;
-        setRegistrationCopyState(false);
-        try {
-          const report = await registrationReport();
-          if (generation !== state.registrationReportGeneration) return;
-          state.registrationReport = report;
-          setRegistrationCopyState(true);
-        } catch {
-          if (generation !== state.registrationReportGeneration) return;
-          setRegistrationCopyState(false, true);
-        }
-      }
-      q("#payment-copy").addEventListener("click", async (event) => {
-        const button = event.currentTarget; const report = state.registrationReport;
-        if (!report) return;
-        button.disabled = true;
-        try {
-          await copyReportToClipboard(report);
-          message("Хуулагдлаа.", true);
-        } catch {
-          showRegistrationCopyFallback(report);
-          message("Хуулах зөвшөөрөл олгогдсонгүй. Доорх текстийг гараар хуулна уу.");
-        } finally { button.disabled = false; }
-      });
       q("#payment-export").addEventListener("click", async (event) => {
         const button = event.currentTarget; button.disabled = true;
         try {
@@ -371,7 +338,7 @@ import "../../styles/global.css";
         } catch (error) { message(error.message || "Экспорт үүсгэж чадсангүй."); }
         finally { button.disabled = false; }
       });
-      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; q("#payment-copy").hidden = !state.canRegistrationExport; show("tool-app"); try { await refresh(); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
+      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; show("tool-app"); try { await refresh(); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
     </script>
   </body>
 </html>

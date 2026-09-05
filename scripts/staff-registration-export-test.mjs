@@ -9,8 +9,8 @@ const paymentsPage = readFileSync("src/pages/staff/payments.astro", "utf8");
 assert.match(router, /path === "\/api\/staff\/payments\/export"/, "export has a dedicated API route");
 assert.match(router, /requireStaffCapability\(request, env, "registration\.view"\)/, "export requires registration visibility server-side");
 assert.match(service, /getRegistrationExportRows/, "export uses a narrow operational projection");
-assert.match(paymentsPage, /copyReportToClipboard/, "clipboard export uses the shared TSV helper");
-assert.match(paymentsPage, /registrationReport\(\)/, "clipboard and file export share one authorized data projection");
+assert.doesNotMatch(paymentsPage, /copyReportToClipboard|payment-copy|prepareRegistrationReport/, "registration/payment offers download only and does not preload clipboard data");
+assert.match(paymentsPage, /registrationReport\(\)/, "file export uses the authorized data projection");
 const exportProjection = service.slice(service.indexOf("getRegistrationExportRows"));
 assert.doesNotMatch(exportProjection, /access_token_hash|outbox_text|session_token|challenge/, "export excludes credentials, capability data, and raw email content");
 

@@ -2066,6 +2066,34 @@ textarea:focus {
   padding: 0.45rem 0.65rem;
 }
 
+.staff-outbox-row {
+  border-top: 1px solid var(--line);
+}
+
+.staff-outbox-row .staff-list-row {
+  border-top: 0;
+}
+
+.staff-outbox-preview {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0 0 1rem;
+}
+
+.staff-outbox-preview .staff-summary-list {
+  max-width: 100%;
+}
+
+.staff-outbox-preview > p {
+  max-width: 68ch;
+  overflow-wrap: anywhere;
+}
+
+.staff-payment-toolbar .button {
+  flex: 0 0 auto;
+  width: auto;
+}
+
 .staff-schedule-overview-group + .staff-schedule-overview-group {
   border-top: 1px solid var(--line);
   margin-top: 0.5rem;

@@ -12,6 +12,7 @@ const policyBundle = path.join(dir, "archive-policy.mjs");
 const resendBundle = path.join(dir, "resend.mjs");
 const settingBundle = path.join(dir, "archive-setting.mjs");
 const outboxPage = readFileSync("src/pages/staff/outbox/index.astro", "utf8");
+const staffStyles = readFileSync("src/styles/global.css", "utf8");
 function sql(source, json = false) {
   const result = spawnSync("sqlite3", json ? ["-json", dbPath] : [dbPath], { input: `PRAGMA foreign_keys=ON;\n${source}`, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr);
@@ -55,6 +56,9 @@ try {
   const detail = await getEmailOutboxEntry(env, actor, "safe-old"); assert.deepEqual(detail.bccRecipients, ["archive@example.test"]);
   assert.match(outboxPage, /q\("#outbox-list"\)\.addEventListener\("click"/, "each rendered View button uses one delegated handler, so rows cannot retain a stale preview target");
   assert.match(outboxPage, /staff-outbox-preview/, "the selected preview is rendered directly beneath its row");
+  assert.match(outboxPage, /staff-outbox-row[\s\S]*staff-list-row[\s\S]*<\/div>\$\{open && state\.detail\?\.id === email\.id \? preview\(state\.detail\)/, "each Outbox summary and its preview share one full-width row container");
+  assert.match(staffStyles, /\.staff-outbox-preview \{[\s\S]*width: 100%/, "the Outbox preview spans its full row width");
+  assert.match(staffStyles, /\.staff-outbox-preview > p \{[\s\S]*max-width: 68ch/, "the Outbox body keeps a readable line length without narrowing the preview container");
   assert.match(outboxPage, /aria-expanded="\$\{open\}"/, "Outbox preview uses an accessible disclosure toggle");
   assert.doesNotMatch(outboxPage, /id="outbox-detail"/, "the obsolete detached bottom-of-list preview is absent");
   assert.match(outboxPage, /detail\(button\.dataset\.emailId\)\.catch/, "preview failures become an explicit inline error instead of a silent rejected promise");
