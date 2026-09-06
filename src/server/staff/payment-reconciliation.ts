@@ -287,6 +287,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"),
   canManageReferrals: hasStaffCapability(actor, "registration.manage"),
   canContactParents: hasStaffCapability(actor, "registration.manage"),
+  canCorrectRegistrations: hasStaffCapability(actor, "registration.manage"),
   canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
     const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;

@@ -303,6 +303,8 @@ function registrationWindowError(caught: unknown): Response {
     if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
     if (caught.code === "not_found") return error("not_found", "Бүртгэлийн мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
     if (caught.code === "needs_review") return error("invalid_request", "Энэ мэдээлэл өмнөх бүртгэлтэй холбогдсон тул админ шалгаж засна.", 409, { "Cache-Control": "no-store" });
+    if (caught.code === "protected") return error("invalid_request", "Баталгаажсан эсвэл бусад бүртгэлтэй холбогдсон холбоо барих мэдээллийг энэ хэсгээс өөрчилж болохгүй.", 409, { "Cache-Control": "no-store" });
+    if (caught.code === "conflict") return error("invalid_request", "Мэдээлэл өөрчлөгдсөн байна. Хуудсыг шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
     return error("invalid_request", "Мэдээллээ шалгаад дахин оролдоно уу.", 400, { "Cache-Control": "no-store" });
   }
   if (!(caught instanceof RegistrationWindowError)) {

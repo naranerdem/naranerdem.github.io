@@ -366,14 +366,24 @@ try {
   const correctionDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date(iso(-2)));
   const correctionChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [correctionDraft.draftId])[0].id;
   const correctionBefore = await registrationCorrectionDetail(env(database), registrationStaff, correctionChild);
-  database.query("UPDATE registration_draft SET verified_at = ? WHERE id = ?", [iso(-2), correctionDraft.draftId]);
-  const correctionAfter = await saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...correctionBefore,
-    guardianName: "Зассан Асран", primaryPhone: "99112233", email: "corrected@example.test", surname: "Зассан", givenName: "Хүүхэд", gender: "female", dateOfBirth: "2015-01-01", currentGrade: "5", homeAddress: "Тест хаяг" });
+  const correctionAfter = await saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...correctionBefore, expectedDraftUpdatedAt: correctionBefore.draftUpdatedAt, expectedChildUpdatedAt: correctionBefore.childUpdatedAt,
+    reason: "Бичгийн алдааг засав", guardianName: "Зассан Асран", primaryPhone: "99112233", email: "corrected@example.test", surname: "Зассан", givenName: "Хүүхэд", gender: "female", dateOfBirth: "2015-01-01", currentGrade: "5", homeAddress: "Тест хаяг" });
   assert.equal(correctionAfter.guardianName, "Зассан Асран", "teacher can correct ordinary guardian details");
   assert.equal(database.query("SELECT verified_at AS verifiedAt FROM registration_draft WHERE id = ?", [correctionDraft.draftId])[0].verifiedAt, null, "a changed email never inherits prior verification");
   assert.equal(count(database, "registration_data_correction", `registration_draft_child_id = '${correctionChild}'`), 1, "correction retains before/after history");
   assert.equal(count(database, "audit_event", `action = 'registration_data_corrected' AND subject_id = '${correctionChild}'`), 1, "correction is audited");
-  await assert.rejects(saveRegistrationCorrection(env(database), paymentStaff, correctionChild, { ...correctionBefore }), "accountant cannot correct registration identity/contact data");
+  const correctionAudit = JSON.parse(database.query("SELECT metadata_json AS metadata FROM audit_event WHERE action = 'registration_data_corrected' AND subject_id = ?", [correctionChild])[0].metadata);
+  assert.equal(correctionAudit.reason, "Бичгийн алдааг засав", "correction audit retains the staff reason");
+  assert.equal(correctionAudit.changes.find((change) => change.field === "guardianName").after, "Зассан Асран", "correction audit retains field-level before/after values");
+  await assert.rejects(saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...correctionBefore, expectedDraftUpdatedAt: correctionBefore.draftUpdatedAt, expectedChildUpdatedAt: correctionBefore.childUpdatedAt, reason: "Хуучин маягт", currentSchool: "Өөр сургууль" }), (error) => error.code === "conflict", "a stale correction cannot overwrite a newer change");
+  const noOpBefore = await registrationCorrectionDetail(env(database), registrationStaff, correctionChild);
+  const noOp = await saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...noOpBefore, expectedDraftUpdatedAt: noOpBefore.draftUpdatedAt, expectedChildUpdatedAt: noOpBefore.childUpdatedAt, reason: "Давтан хадгалах" });
+  assert.equal(noOp.unchanged, true, "a no-op correction creates no write");
+  assert.equal(count(database, "registration_data_correction", `registration_draft_child_id = '${correctionChild}'`), 1, "a no-op correction creates no history row");
+  database.query("UPDATE registration_draft SET verified_at = ? WHERE id = ?", [iso(-2), correctionDraft.draftId]);
+  const protectedDetail = await registrationCorrectionDetail(env(database), registrationStaff, correctionChild);
+  await assert.rejects(saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...protectedDetail, expectedDraftUpdatedAt: protectedDetail.draftUpdatedAt, expectedChildUpdatedAt: protectedDetail.childUpdatedAt, reason: "Хориглосон", email: "other@example.test" }), (error) => error.code === "protected", "verified guardian contact remains protected");
+  await assert.rejects(saveRegistrationCorrection(env(database), paymentStaff, correctionChild, { ...protectedDetail, expectedDraftUpdatedAt: protectedDetail.draftUpdatedAt, expectedChildUpdatedAt: protectedDetail.childUpdatedAt, reason: "Эрхгүй" }), "accountant cannot correct registration identity/contact data");
   assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-last-seat' AND status = 'active'"), 1);
   const fullCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
   assert.equal(fullCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-last-seat")?.availability, "full", "a full active-window class remains in the catalog as a waitlist target");

@@ -81,6 +81,12 @@ assert.doesNotMatch(page, /payment-copy|prepareRegistrationReport|copyReportToCl
 assert.match(page, /staff-payment-toolbar/, "payment toolbar has a dedicated compact utility layout");
 assert.match(page, /class="staff-back-link" href="\/staff\/">Буцах<\//, "back remains an arrow-free text navigation link");
 assert.match(page, /data-payment-detail=.*aria-expanded=.*aria-controls=.*\$\{open \? "Хаах" : "Нээх"\}/, "payment detail uses one accessible in-place disclosure toggle");
+assert.match(page, /data-registration-correction=.*Мэдээлэл засах/, "registration detail exposes a compact correction entry point only when opened");
+assert.match(page, /data-registration-correction-form=.*Засварын шалтгаан/, "correction form requires an operational reason");
+assert.match(page, /Хадгалж байна…/, "correction save remains in place with explicit pending feedback");
+assert.match(page, /Мэдээлэл шинэчлэгдлээ\./, "successful correction reports an inline live result");
+assert.match(page, /registration-detail\.get/, "correction editor reads the authoritative current detail before editing");
+assert.match(page, /registration-detail\.save/, "correction editor uses the protected registration detail mutation");
 assert.doesNotMatch(page, /data-cancelled-close|data-waitlist-close|data-recent-offer-close/, "payment cards do not add detached bottom close controls");
 assert.match(page, /fetch\("\/api\/staff\/payments\/export"/, "export uses a dedicated server-authorized projection");
 assert.match(reports, /function buildRegistrationPaymentReport/, "registration export reuses the shared report format");
