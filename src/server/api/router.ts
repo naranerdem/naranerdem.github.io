@@ -106,7 +106,7 @@ import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from ".
 import { EmailArchiveBccError, getEmailArchiveBccSetting, updateEmailArchiveBccSetting } from "../staff/email-archive-bcc";
 import { DiscountPolicyError, reverseDiscountAward, updateDiscountPolicySetting } from "../services/discounts";
 import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
-import { RegistrationCorrectionError, registrationCorrectionDetail, saveRegistrationCorrection } from "../staff/registration-corrections";
+import { RegistrationCorrectionError, registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } from "../staff/registration-corrections";
 import {
   CourseAttendanceError,
   cancelCourseAbsenceNotice,
@@ -1439,6 +1439,8 @@ export async function handleApiRequest(
         return json(await registrationCorrectionDetail(env, principal, String(payload.childId ?? "")), 200, { "Cache-Control": "no-store" });
       } else if (payload.action === "registration-detail.save") {
         return json({ ok: true, detail: await saveRegistrationCorrection(env, principal, String(payload.childId ?? ""), payload) }, 200, { "Cache-Control": "no-store" });
+      } else if (payload.action === "registration-detail.replace-email") {
+        return json({ ok: true, detail: await replaceRegistrationEmail(env, principal, String(payload.childId ?? ""), payload) }, 200, { "Cache-Control": "no-store" });
       } else if (payload.action === "registration-window.save") {
         await saveRegistrationWindow(env, principal, {
           id: typeof payload.id === "string" ? payload.id : undefined,

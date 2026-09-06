@@ -20,6 +20,7 @@ const catalogBundle = path.join(tempDir, "registration-catalog.mjs");
 const publicSiteBundle = path.join(tempDir, "public-site.mjs");
 const turnstileBundle = path.join(tempDir, "turnstile.mjs");
 const emailVerificationBundle = path.join(tempDir, "email-verification.mjs");
+const parentAccessBundle = path.join(tempDir, "parent-access.mjs");
 const paymentReconciliationBundle = path.join(tempDir, "payment-reconciliation.mjs");
 const registrationCorrectionBundle = path.join(tempDir, "registration-corrections.mjs");
 const initialPaymentDeadlineBundle = path.join(tempDir, "initial-payment-deadline.mjs");
@@ -28,6 +29,7 @@ bundle("src/server/services/registration-catalog.ts", catalogBundle);
 bundle("src/server/services/public-site.ts", publicSiteBundle);
 bundle("src/server/security/turnstile.ts", turnstileBundle);
 bundle("src/server/auth/email-verification.ts", emailVerificationBundle);
+bundle("src/server/services/parent-access.ts", parentAccessBundle);
 bundle("src/server/staff/payment-reconciliation.ts", paymentReconciliationBundle);
 bundle("src/server/staff/registration-corrections.ts", registrationCorrectionBundle);
 bundle("src/server/staff/initial-payment-deadline.ts", initialPaymentDeadlineBundle);
@@ -48,7 +50,8 @@ const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstile
 const gatesBundle = path.join(tempDir, "operational-gates.mjs");
 bundle("src/server/security/operational-gates.ts", gatesBundle);
 const { registrationWriteEnabled } = await import(pathToFileURL(gatesBundle).href);
-const { verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
+const { sendParentAccessEmail, verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
+const { getParentDashboard } = await import(pathToFileURL(parentAccessBundle).href);
 const {
   claimParentPayment,
   confirmSeatForSufficientPayment,
@@ -58,7 +61,7 @@ const {
   recordManualPayment,
   releaseUnpaidSeat,
 } = await import(pathToFileURL(paymentReconciliationBundle).href);
-const { registrationCorrectionDetail, saveRegistrationCorrection } = await import(pathToFileURL(registrationCorrectionBundle).href);
+const { registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } = await import(pathToFileURL(registrationCorrectionBundle).href);
 const { getInitialPaymentDeadlineSetting, updateInitialPaymentDeadlineSetting } = await import(pathToFileURL(initialPaymentDeadlineBundle).href);
 
 function sqlValue(value) {
@@ -364,6 +367,7 @@ try {
   assert.equal(oneStatus.children[0].holdType, "initial_payment", "draft access immediately exposes the payment reservation");
   assert.equal(oneStatus.paymentCollection.iban, "MN00TEST0000000000", "configured IBAN appears in immediate parent payment instructions");
   const correctionDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date(iso(-2)));
+  const correctionAccessToken = decodeURIComponent(correctionDraft.accessCookie.match(/naran_registration_draft=([^;]+)/)[1]);
   const correctionChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [correctionDraft.draftId])[0].id;
   const correctionBefore = await registrationCorrectionDetail(env(database), registrationStaff, correctionChild);
   const correctionAfter = await saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...correctionBefore, expectedDraftUpdatedAt: correctionBefore.draftUpdatedAt, expectedChildUpdatedAt: correctionBefore.childUpdatedAt,
@@ -380,9 +384,56 @@ try {
   const noOp = await saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...noOpBefore, expectedDraftUpdatedAt: noOpBefore.draftUpdatedAt, expectedChildUpdatedAt: noOpBefore.childUpdatedAt, reason: "Давтан хадгалах" });
   assert.equal(noOp.unchanged, true, "a no-op correction creates no write");
   assert.equal(count(database, "registration_data_correction", `registration_draft_child_id = '${correctionChild}'`), 1, "a no-op correction creates no history row");
-  database.query("UPDATE registration_draft SET verified_at = ? WHERE id = ?", [iso(-2), correctionDraft.draftId]);
+  const sharedDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date(iso(-2)));
+  const sharedAccessToken = decodeURIComponent(sharedDraft.accessCookie.match(/naran_registration_draft=([^;]+)/)[1]);
+  const guardianId = "guardian-correction";
+  const canonicalNow = iso(-1);
+  database.query(`INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, secondary_phone, secondary_phone_normalized, email, email_normalized, facebook_name, home_address, status, is_test, test_run_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)`, [guardianId, "Зассан Асран", "99112233", "99112233", null, null, "corrected@example.test", "corrected@example.test", null, "Тест хаяг", `test:${correctionDraft.draftId}`, canonicalNow, canonicalNow]);
+  database.query("UPDATE registration_draft SET canonical_guardian_account_id = ? WHERE id IN (?, ?)", [guardianId, correctionDraft.draftId, sharedDraft.draftId]);
+  const canonicalBefore = await registrationCorrectionDetail(env(database), registrationStaff, correctionChild);
+  assert.equal(canonicalBefore.guardianAffectedRegistrationCount, 2, "shared canonical guardian reports linked registrations");
+  const canonicalAfter = await saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...canonicalBefore, expectedDraftUpdatedAt: canonicalBefore.draftUpdatedAt, expectedChildUpdatedAt: canonicalBefore.childUpdatedAt, expectedGuardianUpdatedAt: canonicalBefore.canonicalGuardianUpdatedAt,
+    reason: "Асран хамгаалагчийн хаягийг засав", guardianName: "Шинэ Асран", primaryPhone: "99119911", secondaryPhone: "88112233", email: "corrected@example.test", facebookName: "Шинэ Facebook", homeAddress: "Шинэ хаяг" });
+  assert.equal(canonicalAfter.guardianName, "Шинэ Асран", "canonical guardian profile correction is authoritative");
+  const sharedGuardian = database.query("SELECT full_name AS fullName, home_address AS homeAddress, facebook_name AS facebookName, primary_phone AS primaryPhone, secondary_phone AS secondaryPhone FROM guardian_account WHERE id = ?", [guardianId])[0];
+  assert.deepEqual(sharedGuardian, { fullName: "Шинэ Асран", homeAddress: "Шинэ хаяг", facebookName: "Шинэ Facebook", primaryPhone: "99119911", secondaryPhone: "88112233" }, "canonical guardian receives audited profile and phone corrections");
+  assert.equal(database.query("SELECT guardian_full_name AS guardianName, home_address AS homeAddress FROM registration_draft WHERE id = ?", [sharedDraft.draftId])[0].guardianName, "Шинэ Асран", "linked drafts follow the canonical guardian correction");
+  assert.equal(database.query("SELECT guardian_full_name AS guardianName, home_address AS homeAddress FROM registration_draft WHERE id = ?", [sharedDraft.draftId])[0].homeAddress, "Шинэ хаяг", "linked draft address follows the canonical guardian correction");
+  const accessNow = new Date().toISOString();
+  const accessExpiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const pendingChallenge = addChallenge(database, correctionDraft.draftId, "corrected@example.test", accessNow, accessExpiresAt);
+  database.query(`INSERT INTO verified_email_session (id, normalized_email, session_token_hash, created_at, expires_at, revoked_at, is_test, test_run_id, registration_draft_id)
+    VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?)`, ["correction-access-session", "corrected@example.test", createHash("sha256").update("correction-session").digest("hex"), accessNow, accessExpiresAt, `test:${correctionDraft.draftId}`, correctionDraft.draftId]);
   const protectedDetail = await registrationCorrectionDetail(env(database), registrationStaff, correctionChild);
-  await assert.rejects(saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...protectedDetail, expectedDraftUpdatedAt: protectedDetail.draftUpdatedAt, expectedChildUpdatedAt: protectedDetail.childUpdatedAt, reason: "Хориглосон", email: "other@example.test" }), (error) => error.code === "protected", "verified guardian contact remains protected");
+  assert.equal(protectedDetail.emailProtected, true, "a linked verified or access-bound email is protected for the canonical guardian");
+  assert.ok((await registrationStatusForAccess(database, correctionAccessToken, new Date(iso()))).children.length, "old draft access is valid before protected replacement");
+  assert.ok((await registrationStatusForAccess(database, sharedAccessToken, new Date(iso()))).children.length, "shared linked draft access is valid before protected replacement");
+  assert.ok((await getParentDashboard(env(database), "correction-session")).children.length >= 0, "old verified session reaches the canonical guardian dashboard before replacement");
+  await assert.rejects(saveRegistrationCorrection(env(database), registrationStaff, correctionChild, { ...protectedDetail, expectedDraftUpdatedAt: protectedDetail.draftUpdatedAt, expectedChildUpdatedAt: protectedDetail.childUpdatedAt, expectedGuardianUpdatedAt: protectedDetail.canonicalGuardianUpdatedAt, reason: "Хориглосон", email: "other@example.test" }), (error) => error.code === "protected", "verified guardian contact remains protected");
+  const outboxBeforeProtectedReplacement = count(database, "outbound_email");
+  const contactReplacement = await replaceRegistrationEmail(env(database), registrationStaff, correctionChild, { email: "replacement@example.test", reason: "Хаяг солигдсон", confirmed: true, expectedDraftUpdatedAt: protectedDetail.draftUpdatedAt, expectedChildUpdatedAt: protectedDetail.childUpdatedAt, expectedGuardianUpdatedAt: protectedDetail.canonicalGuardianUpdatedAt });
+  assert.equal(contactReplacement.email, "replacement@example.test", "protected email replacement updates the contact without automatic delivery");
+  assert.equal(database.query("SELECT verified_at AS verifiedAt FROM registration_draft WHERE id = ?", [correctionDraft.draftId])[0].verifiedAt, null, "replacement email is unverified");
+  assert.equal(database.query("SELECT email FROM registration_draft WHERE id = ?", [sharedDraft.draftId])[0].email, "replacement@example.test", "protected canonical replacement synchronizes linked draft email");
+  assert.equal(database.query("SELECT status FROM email_verification_challenge WHERE id = ?", [pendingChallenge.id])[0].status, "invalidated", "protected replacement invalidates obsolete pending challenges");
+  assert.ok(database.query("SELECT revoked_at AS revokedAt FROM verified_email_session WHERE id = ?", ["correction-access-session"])[0].revokedAt, "protected replacement revokes the old parent access session");
+  await assert.rejects(registrationStatusForAccess(database, correctionAccessToken, new Date(iso())), (error) => error.code === "draft_access_denied", "old draft access cannot read the corrected registration");
+  await assert.rejects(registrationStatusForAccess(database, sharedAccessToken, new Date(iso())), (error) => error.code === "draft_access_denied", "old draft access cannot read another registration linked to the shared guardian");
+  await assert.rejects(registrationStatusForSession(database, "correction-session"), (error) => error.code === "session_required", "revoked old verified session cannot read the registration status");
+  await assert.rejects(getParentDashboard(env(database), "correction-session"), (error) => error.code === "session_required", "revoked old verified session cannot read any linked canonical child");
+  await assert.rejects(verifyEmailToken(env(database), pendingChallenge.rawToken, "correction-session"), (error) => error.code === "invalid_or_expired_token", "old pending challenge cannot be redeemed after replacement");
+  assert.equal(count(database, "outbound_email"), outboxBeforeProtectedReplacement, "protected replacement queues no automatic email");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ id: "replacement-resend" }, { status: 200 });
+  await sendParentAccessEmail(env(database, { RESEND_API_KEY: "test-resend-key", STAGING_EMAIL_OVERRIDE_TO: "safe@example.test" }), "replacement@example.test", correctionDraft.draftId, {
+    eventType: "parent_enrollment_resend", templateKey: "parent_enrollment_resend_v1", context: {},
+    template: () => ({ subject: "Тест", html: "Тест", text: "Тест" }),
+  });
+  globalThis.fetch = originalFetch;
+  const resendChallenge = database.query("SELECT normalized_email AS email, status FROM email_verification_challenge WHERE registration_draft_id = ? ORDER BY created_at DESC, id DESC LIMIT 1", [correctionDraft.draftId])[0];
+  assert.deepEqual(resendChallenge, { email: "replacement@example.test", status: "pending" }, "the later explicit resend creates a fresh challenge only for the replacement email");
+  assert.equal(count(database, "audit_event", `action = 'registration_protected_email_replaced' AND subject_id = '${correctionChild}'`), 1, "protected replacement is separately audited");
   await assert.rejects(saveRegistrationCorrection(env(database), paymentStaff, correctionChild, { ...protectedDetail, expectedDraftUpdatedAt: protectedDetail.draftUpdatedAt, expectedChildUpdatedAt: protectedDetail.childUpdatedAt, reason: "Эрхгүй" }), "accountant cannot correct registration identity/contact data");
   assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-last-seat' AND status = 'active'"), 1);
   const fullCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));

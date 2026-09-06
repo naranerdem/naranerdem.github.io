@@ -87,6 +87,9 @@ assert.match(page, /Хадгалж байна…/, "correction save remains in p
 assert.match(page, /Мэдээлэл шинэчлэгдлээ\./, "successful correction reports an inline live result");
 assert.match(page, /registration-detail\.get/, "correction editor reads the authoritative current detail before editing");
 assert.match(page, /registration-detail\.save/, "correction editor uses the protected registration detail mutation");
+assert.match(page, /registration-detail\.replace-email/, "protected email replacement uses its own revoking mutation");
+assert.match(page, /Энэ асран хамгаалагчийн мэдээлэл холбогдсон/, "shared canonical guardian corrections warn about their wider impact");
+assert.match(page, /Холбоо барих мэдээлэл солих/, "protected email replacement is explicit in the correction editor");
 assert.doesNotMatch(page, /data-cancelled-close|data-waitlist-close|data-recent-offer-close/, "payment cards do not add detached bottom close controls");
 assert.match(page, /fetch\("\/api\/staff\/payments\/export"/, "export uses a dedicated server-authorized projection");
 assert.match(reports, /function buildRegistrationPaymentReport/, "registration export reuses the shared report format");
