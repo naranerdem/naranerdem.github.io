@@ -485,6 +485,8 @@ try {
   const twoQueueItem = queueBeforePayment.items.find((item) => item.paymentRequestId === twoRequest.id);
   assert.equal(twoQueueItem.parentClaimed, true, "parent claim is visible to staff without changing capacity");
   await recordCheckedNotFound(env(database), paymentStaff, twoRequest.id, new Date(iso()));
+  assert.equal(count(database, "payment_evidence", `payment_request_id = '${twoRequest.id}' AND evidence_type = 'staff_checked_not_found'`), 1, "checking for a missing payment records auditable search evidence");
+  assert.equal(count(database, "audit_event", `subject_id = '${twoRequest.id}' AND action = 'payment_checked_not_found'`), 1, "checking for a missing payment retains a staff audit event");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${twoInstallment.draftId}') AND status = 'active'`), 1, "checked-not-found never releases a seat");
   await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: twoRequest.id,

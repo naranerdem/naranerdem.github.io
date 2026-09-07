@@ -26,6 +26,15 @@ import "../../styles/global.css";
         <nav class="staff-registration-intake-nav" aria-label="Бүртгэлийн үйлдэл"><a class="text-button" href="/staff/registration-intake/">Шинэ бүртгэл оруулах</a></nav>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <div id="payment-list" class="staff-payment-list"></div>
+        <dialog id="registration-cancel-dialog" class="rules-dialog staff-cancellation-dialog" aria-labelledby="registration-cancel-dialog-title">
+          <div class="dialog-content">
+            <div class="dialog-header"><h2 id="registration-cancel-dialog-title">Бүртгэлийг цуцлах</h2></div>
+            <p id="registration-cancel-dialog-identity"></p>
+            <p id="registration-cancel-dialog-reason" class="staff-muted"></p>
+            <p id="registration-cancel-dialog-consequence"></p>
+            <div class="dialog-actions"><button class="button secondary" type="button" data-registration-cancel-dismiss>Болих</button><button class="button danger" type="button" data-registration-cancel-confirm>Бүртгэлийг цуцлах</button></div>
+          </div>
+        </dialog>
       </section>
     </main>
     <script>
@@ -35,7 +44,7 @@ import "../../styles/global.css";
       const launchParams = new URLSearchParams(window.location.search);
       const launchRegistrationId = launchParams.get("registration");
       const launchCreated = launchParams.get("created") === "1";
-      const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, manualMessages: {}, corrections: {}, registrationViews: {}, transfers: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", openGroups: {}, refreshTimer: null, refreshing: false, canRegistrationExport: false };
+      const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, manualMessages: {}, corrections: {}, registrationViews: {}, transfers: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", openGroups: {}, refreshTimer: null, refreshing: false, queuedRefresh: null, canRegistrationExport: false, cancellationConfirmation: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -61,6 +70,18 @@ import "../../styles/global.css";
       const setActionPending = (childId, action, pending) => { const key = actionKey(childId, action); if (pending) state.pendingActions[key] = true; else delete state.pendingActions[key]; };
       const actionFeedback = (childId, actions) => { const feedback = state.actionFeedback[childId]; if (!feedback || (actions && !actions.includes(feedback.action))) return ""; return `<p class="staff-action-status" data-action-feedback tabindex="-1" role="status" aria-live="polite">${escape(feedback.text)}</p>`; };
       const setActionFeedback = (childId, action, text) => { state.actionFeedback[childId] = { action, text }; };
+      const cancellationReasonLabel = (reason) => ({ guardian_request: "Эцэг эхийн хүсэлтээр", payment_overdue: "Төлбөр хугацаандаа хийгдээгүй", other: "Бусад" })[reason] || "";
+      const cancellationDialog = q("#registration-cancel-dialog");
+      function openCancellationConfirmation(confirmation) {
+        state.cancellationConfirmation = confirmation;
+        q("#registration-cancel-dialog-identity").innerHTML = `<strong>${escape(confirmation.childName)}</strong><br><span>${escape(confirmation.classLabel)}</span>`;
+        q("#registration-cancel-dialog-reason").textContent = `Шалтгаан: ${cancellationReasonLabel(confirmation.reason)}`;
+        q("#registration-cancel-dialog-consequence").textContent = confirmation.hasActiveSeat
+          ? "Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана. Төлбөрийн түүх хадгалагдана."
+          : "Энэ бүртгэл цуцлагдана. Төлбөрийн түүх хадгалагдана.";
+        cancellationDialog.showModal();
+        q("[data-registration-cancel-dismiss]").focus();
+      }
       async function secureStaffUuidV4() {
         const { secureUuidV4 } = await import(/* @vite-ignore */ "/scripts/secure-id.js");
         return secureUuidV4();
@@ -134,10 +155,11 @@ import "../../styles/global.css";
         const tentative = item.tentativePaymentId ? `<p class="staff-muted"><button class="text-button" type="button" data-payment-undo="${escape(item.tentativePaymentId)}">Буцаах</button></p>` : "";
         const approvedSeat = Boolean(item.seatConfirmationApproved);
         const cancellationPending = actionPending(item.registrationDraftChildId, "cancel");
+        const checkedNotFoundPending = actionPending(item.registrationDraftChildId, "payment-checked");
         const cancellationNotice = Number(item.allocatedAmountMnt) > 0
           ? `<p class="staff-muted"><strong>${escape(mnt(item.allocatedAmountMnt))}</strong> төлөгдсөн. Бүртгэл цуцлагдсан ч төлбөрийн түүх устахгүй; буцаалт эсвэл кредитийг тусад нь шийднэ.</p>`
-          : `<p class="staff-muted">Суудал шууд чөлөөлөгдөнө. Төлбөрийн түүх устахгүй.</p>`;
-        const cancellation = state.data?.canCancelRegistrations ? `<details class="staff-payment-release" ${cancellationPending ? "open" : ""}><summary>Бүртгэлийг цуцлах</summary><div class="staff-cancellation-confirmation" aria-live="polite"><p><strong>${escape(item.childName)}</strong><br><span>${escape(classSchedule(item))}</span></p><p>Энэ яг бүртгэлийг цуцалж, энэ ангид нэг суудал чөлөөлнө.</p>${cancellationNotice}<form data-registration-cancel-form="${escape(item.registrationDraftChildId)}" ${cancellationPending ? 'aria-busy="true"' : ""}><label>Шалтгаан<select name="reason" required ${cancellationPending ? "disabled" : ""}><option value="guardian_request">Эцэг эхийн хүсэлтээр</option><option value="payment_overdue">Төлбөр хугацаандаа хийгдээгүй</option><option value="other">Бусад</option></select></label><label data-cancellation-note hidden>Тайлбар<textarea name="note" rows="2" maxlength="500" ${cancellationPending ? "disabled" : ""}></textarea></label><div class="staff-inline-actions"><button class="button danger" type="submit" ${cancellationPending ? 'disabled aria-busy="true"' : ""}>${cancellationPending ? "Цуцалж байна…" : "Энэ бүртгэлийг цуцлах"}</button></div>${actionFeedback(item.registrationDraftChildId, ["cancel"])}</form></div></details>` : "";
+          : `<p class="staff-muted">Идэвхтэй суудал байвал суллана. Төлбөрийн түүх устахгүй.</p>`;
+        const cancellation = state.data?.canCancelRegistrations ? `<details class="staff-payment-release" ${cancellationPending ? "open" : ""}><summary>Бүртгэлийг цуцлах</summary><div class="staff-cancellation-confirmation" aria-live="polite"><p><strong>${escape(item.childName)}</strong><br><span>${escape(classSchedule(item))}</span></p>${cancellationNotice}<form data-registration-cancel-form="${escape(item.registrationDraftChildId)}" ${cancellationPending ? 'aria-busy="true"' : ""}><label>Шалтгаан<select name="reason" required ${cancellationPending ? "disabled" : ""}><option value="guardian_request">Эцэг эхийн хүсэлтээр</option><option value="payment_overdue">Төлбөр хугацаандаа хийгдээгүй</option><option value="other">Бусад</option></select></label><label data-cancellation-note hidden>Тайлбар<textarea name="note" rows="2" maxlength="500" ${cancellationPending ? "disabled" : ""}></textarea></label><div class="staff-inline-actions"><button class="button danger" type="submit" ${cancellationPending ? 'disabled aria-busy="true"' : ""}>${cancellationPending ? "Цуцалж байна…" : "Энэ бүртгэлийг цуцлах"}</button></div>${actionFeedback(item.registrationDraftChildId, ["cancel"])}</form></div></details>` : "";
         const ownReferral = state.data?.canManageReferrals && item.ownReferralCode
           ? `<p><strong>Найзаа урих код</strong><br><code>${escape(item.ownReferralCode)}</code> <button class="text-button" type="button" data-referral-copy="${escape(item.ownReferralCode)}">Хуулах</button></p>` : "";
         const usedReferral = state.data?.canManageReferrals && item.usedReferralCode
@@ -175,7 +197,7 @@ import "../../styles/global.css";
         return `<article class="staff-payment-item ${overdue ? "is-overdue" : ""} ${open ? "is-open" : ""}" data-registration-child="${escape(item.registrationDraftChildId)}" data-payment-item="${escape(item.installmentId)}">
           ${open ? "" : summary}
           ${open ? "" : `<div class="staff-payment-actions"><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="false" aria-controls="payment-detail-${escape(item.installmentId)}">Нээх</button></div>`}
-          ${open ? `<div id="payment-detail-${escape(item.installmentId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="true" aria-controls="payment-detail-${escape(item.installmentId)}">Хаах</button></div>${remaining > 0 ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}" ${pending ? 'aria-busy="true"' : ""}><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p>${discounts}<p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p><p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p>${ownReferral}${usedReferral}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(remaining)}" step="1" value="${escape(remaining)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${localDateTime(new Date())}" required ${pending ? "disabled" : ""} /></label>${seatApprovalControl}${remainingDeadlineControls}<div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}" ${pending ? "disabled" : ""}>Одоогоор олдсонгүй</button></div>${actionFeedback(item.registrationDraftChildId, ["payment"])}</form>` : `<div class="staff-payment-form"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p>${discounts}${ownReferral}${usedReferral}<p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p><p>Эхний төлбөр: <strong>${escape(mnt(item.allocatedAmountMnt))}</strong></p><p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p>${seatCorrection}${actionFeedback(item.registrationDraftChildId, ["payment", "seat-confirm"])}</div>`}${contact}${transferMarkup(item)}${state.corrections[item.registrationDraftChildId] ? correctionForm(item) : registrationView(item)}${tentative}${overdue && !item.seatConfirmationApproved && remaining > 0 ? `<details class="staff-payment-release"><summary>Суудал чөлөөлөх</summary><p>${item.parentClaimed ? "Асран хамгаалагч төлбөр хийсэн гэж мэдэгдсэн. Банкны орлогыг дахин шалгана уу." : "Энэ үйлдлээр суудал шууд сулрана."}</p><button class="button danger" type="button" data-payment-release="${escape(item.paymentRequestId)}">Суудлыг чөлөөлөх</button></details>` : ""}${cancellation}</div>` : ""}
+          ${open ? `<div id="payment-detail-${escape(item.installmentId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="true" aria-controls="payment-detail-${escape(item.installmentId)}">Хаах</button></div>${remaining > 0 ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}" ${pending ? 'aria-busy="true"' : ""}><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p>${discounts}<p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p><p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p>${ownReferral}${usedReferral}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(remaining)}" step="1" value="${escape(remaining)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${localDateTime(new Date())}" required ${pending ? "disabled" : ""} /></label>${seatApprovalControl}${remainingDeadlineControls}<div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}" ${checkedNotFoundPending ? 'disabled aria-busy="true"' : ""}>${checkedNotFoundPending ? "Тэмдэглэж байна…" : "Төлбөр олдоогүйг тэмдэглэх"}</button></div><p class="staff-muted staff-wide">Энэ нь төлбөр олдоогүйг шалгаснаар тэмдэглэнэ. Суудал, төлбөрийн нөхцөл болон сануулга өөрчлөгдөхгүй.</p>${actionFeedback(item.registrationDraftChildId, ["payment", "payment-checked"])}</form>` : `<div class="staff-payment-form"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p>${discounts}${ownReferral}${usedReferral}<p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p><p>Эхний төлбөр: <strong>${escape(mnt(item.allocatedAmountMnt))}</strong></p><p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p>${seatCorrection}${actionFeedback(item.registrationDraftChildId, ["payment", "seat-confirm"])}</div>`}${contact}${transferMarkup(item)}${state.corrections[item.registrationDraftChildId] ? correctionForm(item) : registrationView(item)}${tentative}${overdue && !item.seatConfirmationApproved && remaining > 0 ? `<details class="staff-payment-release"><summary>Суудал чөлөөлөх</summary><p>${item.parentClaimed ? "Асран хамгаалагч төлбөр хийсэн гэж мэдэгдсэн. Банкны орлогыг дахин шалгана уу." : "Энэ үйлдлээр суудал шууд сулрана."}</p><button class="button danger" type="button" data-payment-release="${escape(item.paymentRequestId)}">Суудлыг чөлөөлөх</button></details>` : ""}${cancellation}</div>` : ""}
         </article>`;
       }
       function cancelledMarkup(item) { let reason = ""; try { reason = JSON.parse(item.cancellationMetadata || "{}").reason || ""; } catch {} const labels = { guardian_request: "Эцэг эхийн хүсэлтээр", payment_overdue: "Төлбөр хугацаандаа хийгдээгүй", other: "Бусад" }; const open = state.openCancelledId === item.registrationDraftChildId; const detailId = `cancelled-detail-${item.registrationDraftChildId}`; const toggle = item.canReinstate ? `<div class="staff-payment-actions"><button class="text-button" type="button" data-cancelled-detail="${escape(item.registrationDraftChildId)}" aria-expanded="${open}" aria-controls="${escape(detailId)}">${open ? "Хаах" : "Нээх"}</button></div>` : ""; const summary = `<div class="staff-payment-summary"><strong>${escape(item.childName)}</strong><p>${escape(classSchedule(item))}</p><p><strong>Бүртгэл цуцлагдсан</strong>${reason ? ` · ${escape(labels[reason] || reason)}` : ""}</p>${item.cancelledAt ? `<p class="staff-muted">${escape(localLabel(item.cancelledAt))}</p>` : ""}</div>`; const detail = open ? `<div id="${escape(detailId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p>${toggle}</div><div class="staff-payment-form"><p>Энэ үйлдэл нь өмнөх төлсөн мөнгө, сонгосон анги, төлбөрийн нөхцөлийг сэргээнэ.</p><button class="button primary" type="button" data-registration-reinstate="${escape(item.registrationDraftChildId)}" data-registration-child-name="${escape(item.childName)}" data-registration-class-label="${escape(classSchedule(item))}">Бүртгэлийг сэргээх</button></div></div>` : ""; return `<article class="staff-payment-item ${open ? "is-open" : ""}" data-registration-child="${escape(item.registrationDraftChildId)}">${open ? "" : summary}${open ? detail : toggle}</article>`; }
@@ -234,7 +256,10 @@ import "../../styles/global.css";
         }
       }
       async function refresh(success = "", options = {}) {
-        if (state.refreshing) return;
+        if (state.refreshing) {
+          state.queuedRefresh = { success, options };
+          return;
+        }
         state.refreshing = true;
         const scrollY = window.scrollY;
         try {
@@ -267,9 +292,35 @@ import "../../styles/global.css";
             }
           });
           if (success) message(success, true);
-        } finally { state.refreshing = false; }
+        } finally {
+          state.refreshing = false;
+          const queued = state.queuedRefresh;
+          state.queuedRefresh = null;
+          if (queued) await refresh(queued.success, queued.options);
+        }
       }
       async function post(payload) { const response = await fetch("/api/staff/payments", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, credentials: "same-origin", body: JSON.stringify(payload) }); const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || "Төлбөрийн мэдээллийг хадгалж чадсангүй."); return body; }
+      async function submitCancellation(confirmation) {
+        const { childId, reason, note } = confirmation;
+        if (actionPending(childId, "cancel")) return;
+        confirmation.submitting = true;
+        setActionPending(childId, "cancel", true); setActionFeedback(childId, "cancel", "Цуцалж байна…"); render();
+        try {
+          const result = await post({ action: "registration.cancel", registrationDraftChildId: childId, reason, note });
+          setActionFeedback(childId, "cancel", result.idempotent ? "Энэ бүртгэл өмнө нь цуцлагдсан байна." : "Бүртгэл цуцлагдлаа.");
+          render();
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          state.openId = "";
+          state.openCancelledId = childId;
+          await refresh(result.idempotent ? "Энэ бүртгэл өмнө нь цуцлагдсан байна." : "Бүртгэл цуцлагдлаа.", { anchorChildId: childId });
+        } catch (error) {
+          setActionFeedback(childId, "cancel", error.message || "Бүртгэлийг цуцалж чадсангүй.");
+        } finally {
+          setActionPending(childId, "cancel", false);
+          state.cancellationConfirmation = null;
+          render();
+        }
+      }
       async function copyMessengerText(text) {
         try {
           if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
@@ -405,7 +456,21 @@ import "../../styles/global.css";
           }
           return;
         }
-        if (target.dataset.paymentChecked) { try { await post({ action: "payment.checked-not-found", paymentRequestId: target.dataset.paymentChecked }); await refresh("Шалгаснаа тэмдэглэлээ."); } catch (error) { message(error.message); } return; }
+        if (target.dataset.paymentChecked) {
+          const item = state.data.items.find((entry) => entry.paymentRequestId === target.dataset.paymentChecked);
+          if (!item || actionPending(item.registrationDraftChildId, "payment-checked")) return;
+          setActionPending(item.registrationDraftChildId, "payment-checked", true); setActionFeedback(item.registrationDraftChildId, "payment-checked", "Тэмдэглэж байна…"); render();
+          try {
+            await post({ action: "payment.checked-not-found", paymentRequestId: target.dataset.paymentChecked });
+            setActionFeedback(item.registrationDraftChildId, "payment-checked", "Төлбөр олдоогүйг тэмдэглэлээ.");
+            await refresh("Төлбөр олдоогүйг тэмдэглэлээ.", { anchorChildId: item.registrationDraftChildId });
+          } catch (error) {
+            setActionFeedback(item.registrationDraftChildId, "payment-checked", error.message || "Төлбөр олдоогүйг тэмдэглэж чадсангүй.");
+          } finally {
+            setActionPending(item.registrationDraftChildId, "payment-checked", false); render();
+          }
+          return;
+        }
         if (target.dataset.paymentUndo) { try { await post({ action: "payment.undo-tentative", receivedPaymentId: target.dataset.paymentUndo }); await refresh("Тэмдэглэлийг буцаалаа."); } catch (error) { message(error.message); } return; }
         if (target.dataset.creditRefund) {
           const credit = (state.data?.credits || []).find((item) => item.id === target.dataset.creditRefund);
@@ -461,21 +526,9 @@ import "../../styles/global.css";
           const childId = form.dataset.registrationCancelForm;
           if (actionPending(childId, "cancel")) return;
           if (reason === "other" && !note.trim()) { setActionFeedback(childId, "cancel", "Бусад шалтгааны тайлбарыг оруулна уу."); render(); return; }
-          setActionPending(childId, "cancel", true); setActionFeedback(childId, "cancel", "Цуцалж байна…"); render();
-          try {
-            const result = await post({ action: "registration.cancel", registrationDraftChildId: childId, reason, note });
-            setActionFeedback(childId, "cancel", result.idempotent ? "Энэ бүртгэл өмнө нь цуцлагдсан байна." : "Бүртгэл цуцлагдлаа. Суудал чөлөөлөгдлөө.");
-            render();
-            await new Promise((resolve) => requestAnimationFrame(resolve));
-            state.openId = "";
-            state.openCancelledId = childId;
-            await refresh(result.idempotent ? "Энэ бүртгэл өмнө нь цуцлагдсан байна." : "Бүртгэл цуцлагдлаа. Суудал чөлөөлөгдлөө.", { anchorChildId: childId });
-          } catch (error) {
-            setActionFeedback(childId, "cancel", error.message || "Бүртгэлийг цуцалж чадсангүй.");
-          } finally {
-            setActionPending(childId, "cancel", false);
-            render();
-          }
+          const item = state.data.items.find((entry) => entry.registrationDraftChildId === childId);
+          if (!item) { setActionFeedback(childId, "cancel", "Бүртгэлийн мэдээллийг дахин ачаална уу."); render(); return; }
+          openCancellationConfirmation({ childId, reason, note, childName: item.childName, classLabel: classSchedule(item), hasActiveSeat: Boolean(item.canonicalEnrollmentId || item.hasActiveInitialPaymentHold), initiator: form.querySelector('button[type="submit"]') });
           return;
         }
         if (!form.matches("[data-payment-form]")) return; event.preventDefault();
@@ -515,6 +568,29 @@ import "../../styles/global.css";
           message("Экспорт бэлэн боллоо.", true);
         } catch (error) { message(error.message || "Экспорт үүсгэж чадсангүй."); }
         finally { button.disabled = false; }
+      });
+      q("[data-registration-cancel-dismiss]").addEventListener("click", () => cancellationDialog.close());
+      q("[data-registration-cancel-confirm]").addEventListener("click", () => {
+        const confirmation = state.cancellationConfirmation;
+        if (!confirmation || confirmation.submitting) return;
+        confirmation.submitting = true;
+        const button = q("[data-registration-cancel-confirm]");
+        button.disabled = true; button.setAttribute("aria-busy", "true"); button.textContent = "Цуцалж байна…";
+        cancellationDialog.setAttribute("aria-busy", "true");
+        cancellationDialog.close();
+        void submitCancellation(confirmation);
+      });
+      cancellationDialog.addEventListener("cancel", (event) => {
+        if (state.cancellationConfirmation?.submitting) event.preventDefault();
+      });
+      cancellationDialog.addEventListener("close", () => {
+        const confirmation = state.cancellationConfirmation;
+        cancellationDialog.removeAttribute("aria-busy");
+        const button = q("[data-registration-cancel-confirm]");
+        button.disabled = false; button.removeAttribute("aria-busy"); button.textContent = "Бүртгэлийг цуцлах";
+        if (!confirmation || confirmation.submitting) return;
+        state.cancellationConfirmation = null;
+        confirmation.initiator?.focus({ preventScroll: true });
       });
       (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; show("tool-app"); try { await refresh(launchCreated ? "Бүртгэл үүсгэгдлээ." : "", launchRegistrationId ? { anchorChildId: launchRegistrationId } : {}); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
     </script>

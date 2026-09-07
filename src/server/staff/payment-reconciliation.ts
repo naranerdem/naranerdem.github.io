@@ -164,6 +164,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     registration_draft_child.identity_resolution_status AS identityResolutionStatus,
     registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
     enrollment.updated_at AS canonicalEnrollmentUpdatedAt,
+    MAX(CASE WHEN registration_capacity_hold.id IS NOT NULL THEN 1 ELSE 0 END) AS hasActiveInitialPaymentHold,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
     registration_draft.email, registration_draft.verified_at AS verifiedAt,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,

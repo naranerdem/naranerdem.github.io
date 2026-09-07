@@ -750,6 +750,12 @@ If incoming payment evidence strongly matches one or more expected installments,
 
 Ambiguous or complicated allocation should be deferred naturally to a desktop reconciliation view rather than forcing dense financial tables onto the teacher's phone.
 
+### Deferred Pre-Confirmation Class Changes
+
+Changing a requested class before confirmation is deliberately deferred. When it is implemented, the original absolute payment deadline must remain authoritative: retries or a class change must not restart the clock, extend a hold, or improve waitlist priority. Staff must not have to confirm an unpaid enrollment merely to change its requested class. The future operation must atomically secure an eligible target before releasing the original reservation.
+
+The next substantial enrollment work is same-child additional-class enrollment, combined payments, agreed discounts, optional parent time selection, and class-oriented export. It does not belong to the cancellation or transfer lifecycle.
+
 ### Experimental iPhone SMS Evidence Adapter
 
 The teacher uses an iPhone. A future experimental adapter may be investigated:
