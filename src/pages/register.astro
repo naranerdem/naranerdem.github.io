@@ -776,11 +776,21 @@ const formCopy = registrationFormCopy;
         return parts.join("<br>");
       }
 
-      async function showVerifiedStatus(alreadyVerified = false) {
+      function showAcceptedRecovery(submission = {}) {
+        const emailNotice = submission.emailSent
+          ? "Төлбөрийн мэдээллийг таны и-мэйлээр илгээсэн."
+          : "Төлбөрийн мэдээллийг и-мэйлээр хүргэх явц тусдаа үргэлжилж болно.";
+        showResult("Бүртгэлийн мэдээллийг хүлээн авлаа.", `<p class="status-emphasis">Таны бүртгэлийг хүлээн авлаа. Дахин бүртгүүлэх шаардлагагүй.</p><p>${escapeText(emailNotice)}</p><p>Төлбөрийн дэлгэрэнгүйг и-мэйлээсээ нээж харна уу.</p>`);
+      }
+
+      async function showVerifiedStatus(alreadyVerified = false, suppliedStatus = null, submission = null) {
         try {
-          const response = await fetch("/api/registration/status", { headers: { Accept: "application/json" }, credentials: "same-origin" });
-          if (!response.ok) throw new Error("status unavailable");
-          const status = await response.json();
+          let status = suppliedStatus;
+          if (!status) {
+            const response = await fetch("/api/registration/status", { headers: { Accept: "application/json" }, credentials: "same-origin" });
+            if (!response.ok) throw new Error("status unavailable");
+            status = await response.json();
+          }
           guardianPrefill = status;
           if (!catalog) await loadCatalog();
           const hasPaymentHold = status.children.some((child) => child.holdType === "initial_payment" && child.holdStatus === "active");
@@ -806,8 +816,14 @@ const formCopy = registrationFormCopy;
               ? `<span>${child.offeringFacebookGroupUrl ? `<a class="text-button" href="${escapeText(child.offeringFacebookGroupUrl)}" rel="noopener noreferrer" target="_blank">Facebook бүлэгт нэгдэх</a><br>` : ""}Хүүхэд Facebook хаягтай бол мөн бүлэгт нэгдэж болно.</span>` : "";
             return `<li><strong>${escapeText(`${child.surname} ${child.givenName}`)}</strong><span>${cancelled ? "Бүртгэл цуцлагдсан" : classStatusText(child)}</span>${referralAccepted ? `<span>Урилгын код хүчинтэй.</span>` : ""}${!cancelled && child.referralCode ? `<span>Найзаа урих код: <strong>${escapeText(child.referralCode)}</strong></span>` : ""}${discountSummary}${!cancelled && child.holdDeadlineAt && child.canonicalEnrollmentStatus !== "confirmed" ? `<span>Төлбөрийн хугацаа: ${escapeText(formatDeadline(child.holdDeadlineAt))}</span>` : ""}${payment}${facebook}${alternatives.length ? `<span>Одоогоор сул суудалтай: ${alternatives.map((session) => escapeText(classText(session))).join(", ")}</span>` : ""}${child.status === "seat_unavailable" && !child.waitlistStatus ? `<button class="button secondary join-original-waitlist" type="button" data-child-id="${escapeText(child.id)}">${escapeText(formCopy.buttons.joinWaitlist)}</button>` : ""}</li>`;
           }).join("");
+          const receiptNotice = submission?.emailSent === true
+            ? `<p role="status">Төлбөрийн мэдээллийг таны и-мэйлээр илгээсэн.</p>`
+            : submission?.emailSent === false
+              ? `<p role="status">Бүртгэл хүлээн авсан. И-мэйл хүргэлтийн явц тусдаа үргэлжилж болно.</p>`
+              : "";
           showResult(hasCancelledRegistration ? "Бүртгэл цуцлагдсан" : hasConfirmedEnrollment ? "Бүртгэл баталгаажлаа" : hasPaymentHold ? "Бүртгэлийн мэдээллийг хүлээн авлаа." : status.verifiedAt ? (alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle) : "Бүртгэлийн мэдээллийг хүлээн авлаа.", `
             ${hasPaymentHold ? `<p class="status-emphasis">Суудал баталгаажаагүй байна.<br>Төлбөр төлснөөр суудал баталгаажна.</p>` : ""}
+            ${receiptNotice}
             ${seatUnavailable ? `<p class="form-error">${escapeText(formCopy.messages.seatLost)}</p>` : ""}
             ${hasCancelledRegistration ? `<p class="status-emphasis">Энэ бүртгэл идэвхгүй болсон. Төлбөрийн түүх тусад нь хадгалагдсан.</p>` : ""}
             <ul class="status-children">${children}</ul>
@@ -857,6 +873,10 @@ const formCopy = registrationFormCopy;
           document.getElementById("start-new-registration")?.addEventListener("click", startNewRegistration);
           discardStoredDraft();
         } catch {
+          if (submission) {
+            showAcceptedRecovery(submission);
+            return;
+          }
           showResult(alreadyVerified ? formCopy.messages.alreadyVerifiedTitle : formCopy.messages.verifiedTitle, `<p>${escapeText(formCopy.messages.submitFailed)}</p>`);
         }
       }
@@ -932,6 +952,7 @@ const formCopy = registrationFormCopy;
         finishButton.textContent = formCopy.messages.submitting;
         turnstileMessage.textContent = "";
         let requestStarted = false;
+        let acceptedSubmission = null;
         try {
           if (!submissionIdempotencyKey) submissionIdempotencyKey = secureUuidV4();
           requestStarted = true;
@@ -947,10 +968,17 @@ const formCopy = registrationFormCopy;
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
+          acceptedSubmission = result;
           discardStoredDraft();
-          await showVerifiedStatus(false);
+          await showVerifiedStatus(false, result.registrationStatus, result);
         } catch (caught) {
-          turnstileMessage.textContent = "Бүртгэлийг илгээж чадсангүй. Хуудсыг шинэчлэхгүйгээр дахин оролдоно уу. Асуудал үргэлжилбэл Chrome эсвэл Safari хөтчөөр нээнэ үү.";
+          if (acceptedSubmission) {
+            showAcceptedRecovery(acceptedSubmission);
+            return;
+          }
+          turnstileMessage.textContent = requestStarted
+            ? "Хүсэлтийн хариуг авч чадсангүй. Бүртгэл үүссэн байж болзошгүй тул и-мэйлээ шалгана уу. Үр дүн харагдахгүй бол энэ товчийг дахин дарж аюулгүйгээр шалгаж болно."
+            : "Бүртгэлийг илгээж чадсангүй. Мэдээллээ шалгаад дахин оролдоно уу.";
           turnstileArea.scrollIntoView({ behavior: "smooth", block: "center" });
           // A retry keeps the same idempotency key, but a consumed or uncertain
           // Turnstile token is replaced before the next explicit submission.

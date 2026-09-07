@@ -22,5 +22,5 @@ assert.doesNotMatch(intake, /crypto\.randomUUID\(/, "staff intake has no direct 
 assert.match(page, /if \(!submissionIdempotencyKey\) submissionIdempotencyKey = secureUuidV4\(\)/, "one logical submission keeps its idempotency key");
 assert.match(page, /finishButton\.disabled = true;[\s\S]*?finishButton\.setAttribute\("aria-busy", "true"\)/, "submit synchronously enters its busy state");
 assert.match(page, /if \(requestStarted\)[\s\S]*?window\.turnstile\?\.reset/, "an attempted request gets a fresh challenge while retaining the idempotency key");
-assert.match(page, /Бүртгэлийг илгээж чадсангүй\. Хуудсыг шинэчлэхгүйгээр дахин оролдоно уу/, "browser exceptions are replaced with actionable Mongolian feedback");
+assert.match(page, /Хүсэлтийн хариуг авч чадсангүй\. Бүртгэл үүссэн байж болзошгүй тул и-мэйлээ шалгана уу/, "an uncertain browser response uses noncommittal Mongolian recovery copy");
 console.log("ok browser UUID compatibility and submission recovery");

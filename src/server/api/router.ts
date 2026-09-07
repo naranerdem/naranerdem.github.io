@@ -27,6 +27,7 @@ import {
   REGISTRATION_DRAFT_COOKIE,
   RegistrationSubmissionError,
   registrationStatusForAccess,
+  registrationStatusForDraftId,
   registrationStatusForSession,
   type RegistrationSubmissionInput,
 } from "../services/registration-submission";
@@ -561,6 +562,17 @@ export async function handleApiRequest(
       const draft = await createRegistrationDraft(env, payload, new Date(), {
         idempotencyKey: request.headers.get("Idempotency-Key"),
       });
+      // A successful submit must be renderable even if an embedded browser drops
+      // the draft-access cookie before the next navigation. This projection is
+      // returned only after Turnstile and the idempotency-bound submission have
+      // both been accepted.
+      let registrationStatus = null;
+      try {
+        registrationStatus = await registrationStatusForDraftId(env.DB, draft.draftId);
+      } catch {
+        // A committed registration remains successful if its optional display
+        // projection cannot be assembled; the browser has a success-safe fallback.
+      }
       if (!draft.created) {
         let emailSent = false;
         try { emailSent = await sendRegistrationReceipt(env, draft.draftId); } catch { /* delivery never changes accepted registration state */ }
@@ -570,6 +582,7 @@ export async function handleApiRequest(
           email: draft.email,
           hasPaymentHold: draft.hasPaymentHold,
           paymentDeadlineAt: draft.paymentDeadlineAt,
+          registrationStatus,
           replayed: true,
         }, 202, { "Cache-Control": "no-store" });
       }
@@ -581,6 +594,7 @@ export async function handleApiRequest(
         email: draft.email,
         hasPaymentHold: draft.hasPaymentHold,
         paymentDeadlineAt: draft.paymentDeadlineAt,
+        registrationStatus,
       }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie! });
     } catch (caught) {
       return registrationError(caught);

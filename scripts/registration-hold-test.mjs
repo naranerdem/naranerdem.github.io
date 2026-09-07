@@ -41,6 +41,7 @@ const {
   enforceResendCooldown,
   markRegistrationEmailSent,
   registrationStatusForAccess,
+  registrationStatusForDraftId,
   registrationStatusForSession,
   RegistrationSubmissionError,
 } = await import(pathToFileURL(registrationBundle).href);
@@ -925,6 +926,9 @@ try {
   });
   assert.equal(retriedProductionDraft.created, false, "a repeated submission key returns the existing registration");
   assert.equal(retriedProductionDraft.draftId, acceptedProductionDraft.draftId);
+  const replayedStatus = await registrationStatusForDraftId(database, retriedProductionDraft.draftId, new Date(iso(-2)));
+  assert.equal(replayedStatus.children.length, 1, "an idempotent replay can reconstruct the original registration status without a browser access cookie");
+  assert.equal(replayedStatus.children[0].holdType, "initial_payment", "the recovered status retains the committed payment hold");
   assert.equal(count(database, "registration_capacity_hold", "class_session_id = 'class-production' AND status = 'active'"), 1,
     "an idempotent retry does not reserve a second seat");
   assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${acceptedProductionDraft.draftId}') AND award_type = 'referral_referred'`), 1,
