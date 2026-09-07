@@ -336,6 +336,21 @@ try {
   }), submission("class-closed"), new Date(iso(-4))), (error) => error.code === "invalid_class", "a reviewed production gate and real Turnstile configuration reach the normal registration service path");
   const fabricatedRules = submission("class-priced"); fabricatedRules.parentRulesVersion = "fabricated-rule-version";
   await assert.rejects(createRegistrationDraft(env(database), fabricatedRules, new Date(iso(-4))), (error) => error.code === "invalid_rules_version", "fabricated rule versions are rejected");
+  const staffIntakeInput = submission("class-second-offering");
+  const staffIntake = await createRegistrationDraft(env(database), staffIntakeInput, new Date(iso(-4)), {
+    idempotencyKey: `staff-intake:${randomUUID()}`,
+    staffAssisted: { staffAccountId: "staff-teacher", intakeChannel: "paper_form", parentAcknowledged: true, studentAcknowledged: true, receiptRequested: false },
+  });
+  assert.ok(staffIntake.hasPaymentHold, "staff-assisted intake uses the normal atomic initial-payment hold");
+  assert.equal(database.query("SELECT gender FROM registration_draft_child WHERE registration_draft_id = ?", [staffIntake.draftId])[0].gender, "not_specified", "the established unspecified gender response persists as a valid child value");
+  assert.equal(count(database, "enrollment", `id IN (SELECT canonical_enrollment_id FROM registration_draft_child WHERE registration_draft_id = '${staffIntake.draftId}')`), 0, "staff-assisted intake does not create a canonical enrollment directly");
+  const staffAudit = database.query(`SELECT actor_type AS actorType, actor_ref AS actorRef, metadata_json AS metadata FROM audit_event WHERE subject_id = ? AND action = 'registration.created_by_staff'`, [staffIntake.draftId])[0];
+  assert.equal(staffAudit.actorType, "staff", "staff-assisted provenance records the staff actor type");
+  assert.equal(staffAudit.actorRef, "staff-teacher", "staff-assisted provenance records the staff actor");
+  assert.deepEqual(JSON.parse(staffAudit.metadata), { source: "staff_assisted", intakeChannel: "paper_form", guardianAcknowledged: true, childAcknowledged: true, receiptRequested: false, parentRulesVersion: "parent-rules-v1", studentRulesVersion: "student-rules-v1" }, "staff-assisted provenance stores the channel, acknowledgements, email choice, and exact active rule revisions");
+  await assert.rejects(createRegistrationDraft(env(database), submission("class-second-offering"), new Date(iso(-4)), {
+    staffAssisted: { staffAccountId: "staff-teacher", intakeChannel: "paper_form", parentAcknowledged: false, studentAcknowledged: true, receiptRequested: false },
+  }), (error) => error.code === "staff_intake_not_acknowledged", "staff-assisted intake requires both recorded acknowledgements");
   database.query("UPDATE public_center_information SET homepage_intro = 'Нийтийн товч танилцуулга', teacher_bio = 'Тест багш' WHERE singleton = 1");
   database.query("INSERT INTO curriculum_program_family (id, kind, display_name, annual_stage_code, status, is_test, test_run_id, created_at, updated_at) VALUES ('annual-program-stage_1', 'annual_course', '1-р шат', 'stage_1', 'active', 1, 'registration-test', ?, ?)", [iso(), iso()]);
   database.query("UPDATE curriculum_program_family SET recommended_grade_min = '4', recommended_grade_max = '6', public_short_description = 'Нийтийн тайлбар', public_long_description = 'Нууц биш дэлгэрэнгүй' WHERE id = 'annual-program-stage_1'");

@@ -16,6 +16,21 @@ export const emailVerificationCopy = {
   returnToRegistration: "Бүртгэл рүү буцах",
 };
 
+// These values are stored as-is on a registration. Keep public and staff intake
+// on the same contract so a staff transcription cannot introduce a parallel value.
+export const guardianRelationshipOptions = ["Ээж", "Аав", "Асран хамгаалагч", "Өвөө / эмээ", "Бусад"] as const;
+
+export const currentGradeOptions = [
+  { value: "4", label: "4-р анги" },
+  { value: "5", label: "5-р анги" },
+  { value: "6", label: "6-р анги" },
+  { value: "7", label: "7-р анги" },
+  { value: "8", label: "8-р анги" },
+  { value: "9", label: "9-р анги" },
+  { value: "10", label: "10-р анги" },
+  { value: "other", label: "Бусад" },
+] as const;
+
 export const registrationFormCopy = {
   selectPlaceholder: "Сонгоно уу",
   progress: {
@@ -51,7 +66,7 @@ export const registrationFormCopy = {
     facebookHelp: "Ангийн Facebook группт нэгдэхэд танихад хэрэгтэй.",
     homeAddress: "Гэрийн хаягийн товч мэдээлэл",
     homeAddressHelp: "Дүүрэг хороогоо бичнэ үү. Хүсвэл бусад мэдээллээ нэмж болно.",
-    relationshipOptions: ["Ээж", "Аав", "Асран хамгаалагч"],
+    relationshipOptions: guardianRelationshipOptions,
   },
   child: {
     title: "Хүүхэд",
@@ -73,16 +88,7 @@ export const registrationFormCopy = {
       stage_3: "3-р шат — Ахисан түвшин",
     },
     genderOptions: ["Эмэгтэй", "Эрэгтэй"],
-    gradeOptions: [
-      { value: "4", label: "4-р анги" },
-      { value: "5", label: "5-р анги" },
-      { value: "6", label: "6-р анги" },
-      { value: "7", label: "7-р анги" },
-      { value: "8", label: "8-р анги" },
-      { value: "9", label: "9-р анги" },
-      { value: "10", label: "10-р анги" },
-      { value: "other", label: "Бусад" },
-    ],
+    gradeOptions: currentGradeOptions,
     returningOptions: [
       { value: "no", label: "Үгүй" },
       { value: "yes", label: "Тийм" },

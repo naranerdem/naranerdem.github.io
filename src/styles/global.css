@@ -700,6 +700,11 @@ h3 {
 .required-marker {
   color: var(--accent);
   font-weight: 900;
+  white-space: nowrap;
+}
+
+.staff-intake-label {
+  display: inline;
 }
 
 .wizard-step {
@@ -2094,6 +2099,47 @@ textarea:focus {
   width: auto;
 }
 
+.staff-registration-intake-nav {
+  margin: 0.85rem 0 1.1rem;
+}
+
+.staff-registration-intake h2 {
+  font-size: 1.05rem;
+  margin: 0.45rem 0 0;
+}
+
+.staff-intake-required-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.staff-intake-rules {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.staff-intake-rule {
+  padding-top: 0;
+}
+
+.staff-intake-rule summary {
+  color: var(--blue-deep);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.staff-intake-rule .public-prose {
+  margin-top: 0.75rem;
+}
+
+.staff-intake-consent-separator {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0.1rem 0 0;
+}
+
 .staff-schedule-overview-group + .staff-schedule-overview-group {
   border-top: 1px solid var(--line);
   margin-top: 0.5rem;
@@ -2231,9 +2277,11 @@ textarea:focus {
   font-size: 0.98rem;
 }
 
-.staff-manual-message pre {
+.staff-manual-message textarea {
+  display: block;
+  width: 100%;
   margin: 0;
-  white-space: pre-wrap;
+  resize: vertical;
   overflow-wrap: anywhere;
   font: inherit;
 }
@@ -3353,6 +3401,10 @@ textarea:focus {
 }
 
 @media (max-width: 38rem) {
+  .staff-registration-intake {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .staff-page-heading,
   .staff-section-heading {
     align-items: start;

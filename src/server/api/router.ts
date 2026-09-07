@@ -1112,6 +1112,64 @@ export async function handleApiRequest(
     }
   }
 
+  if (path === "/api/staff/registration-intake") {
+    if (request.method === "GET") {
+      const denied = await requireStaffCapability(request, env, "registration.manage");
+      if (denied) return denied;
+      try {
+        return json({
+          catalog: await getRegistrationCatalog(env.DB, env.APP_ENV),
+          courseRules: await getCourseRules(env),
+        }, 200, { "Cache-Control": "no-store" });
+      } catch {
+        return error("internal_error", "Бүртгэлийн мэдээллийг одоогоор авч чадсангүй.", 500, { "Cache-Control": "no-store" });
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийн эх сурвалжийг шалгаж чадсангүй.", 403, { "Cache-Control": "no-store" });
+    }
+    const denied = await requireStaffCapability(request, env, "registration.manage");
+    if (denied) return denied;
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    try {
+      const payload = await request.json() as RegistrationSubmissionInput & {
+        intakeChannel?: unknown;
+        sendReceipt?: unknown;
+      };
+      const intakeChannel = payload.intakeChannel;
+      if (intakeChannel !== "paper_form" && intakeChannel !== "phone" && intakeChannel !== "in_person") {
+        return error("invalid_request", "Бүртгэл авсан хэлбэрээ сонгоно уу.", 400, { "Cache-Control": "no-store" });
+      }
+      const draft = await createRegistrationDraft(env, payload, new Date(), {
+        idempotencyKey: request.headers.get("Idempotency-Key"),
+        staffAssisted: {
+          staffAccountId: principal.staffAccountId,
+          intakeChannel,
+          parentAcknowledged: payload.parentRulesAcknowledged,
+          studentAcknowledged: payload.studentRulesAcknowledged,
+          receiptRequested: payload.sendReceipt === true,
+        },
+      });
+      let receiptQueued = false;
+      if (payload.sendReceipt === true && draft.created) {
+        try { receiptQueued = await sendRegistrationReceipt(env, draft.draftId); } catch { /* intake remains valid if delivery is unavailable */ }
+      }
+      return json({
+        ok: true,
+        registrationDraftId: draft.draftId,
+        registrationDraftChildId: draft.registrationDraftChildId,
+        receiptQueued,
+        replayed: !draft.created,
+      }, draft.created ? 201 : 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      return registrationError(caught);
+    }
+  }
+
   if (path === "/api/staff/payments") {
     if (request.method === "GET") {
       const denied = await requireStaffCapability(request, env, "payment.view");

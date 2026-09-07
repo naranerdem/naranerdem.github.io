@@ -170,7 +170,7 @@ try {
   if (parentCommunicationBundled.status !== 0) throw new Error(parentCommunicationBundled.stderr);
   const verificationBundled = spawnSync(esbuild, ["src/server/auth/email-verification.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${verificationBundlePath}`], { encoding: "utf8" });
   if (verificationBundled.status !== 0) throw new Error(verificationBundled.stderr);
-  const { resendParentEnrollmentSummary, ParentCommunicationError } = await import(pathToFileURL(parentCommunicationBundlePath).href);
+  const { generateParentManualMessage, resendParentEnrollmentSummary, ParentCommunicationError } = await import(pathToFileURL(parentCommunicationBundlePath).href);
   const { verifyEmailToken } = await import(pathToFileURL(verificationBundlePath).href);
   const discountsBundle = spawnSync(esbuild, ["src/server/services/discounts.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${discountBundlePath}`], { encoding: "utf8" });
   if (discountsBundle.status !== 0) throw new Error(discountsBundle.stderr);
@@ -232,6 +232,21 @@ try {
   );
 
   const first = seedDraft(database, "new-family");
+  const pendingManual = seedDraft(database, "pending-manual", { email: "pending-manual@example.test", surname: "Төлбөр", givenName: "Хүлээж" });
+  database.query(`UPDATE payment_installment SET status = 'pending', paid_at = NULL WHERE id = ?`, [`${pendingManual.id}-initial`]);
+  const outboxBeforePendingMessage = count(database, "outbound_email");
+  const pendingMessage = await generateParentManualMessage(env(database), actor, pendingManual.childId);
+  assert.match(pendingMessage.text, /Төлбөр Хүлээж/, "a pending manual message uses the authoritative child identity");
+  assert.match(pendingMessage.text, /stage_1 · Бямба 10:00–11:20/, "a pending manual message includes the current selected class context");
+  assert.match(pendingMessage.text, /100,000 ₮/, "a pending manual message includes the current outstanding amount");
+  assert.match(pendingMessage.text, /2026 оны 8-р сарын 16-ны 12:00 цаг/, "a pending manual message includes the initial-payment deadline");
+  assert.equal(count(database, "outbound_email"), outboxBeforePendingMessage, "manual pending-payment preparation queues no delivery");
+  assert.deepEqual(JSON.parse(database.query(`SELECT metadata_json AS metadata FROM audit_event WHERE action = 'parent_manual_message_generated' AND subject_id = ?`, [pendingManual.childId])[0].metadata), {
+    registrationDraftId: pendingManual.id, lifecycle: "pending_payment",
+  }, "manual pending-payment preparation records only lifecycle-safe audit context");
+  await assert.rejects(() => generateParentManualMessage(env(database), { ...actor, roles: ["accountant"], capabilities: ["payment.view"] }, pendingManual.childId), ParentCommunicationError, "accountant cannot prepare a pending-payment message");
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: pendingManual.childId, reason: "guardian_request" });
+  await assert.rejects(() => generateParentManualMessage(env(database), actor, pendingManual.childId), ParentCommunicationError, "a cancelled registration cannot prepare a payment message");
   assert.deepEqual(await promotePaidDraftChild(env(database), actor, first.childId), { state: "promoted", enrollmentId: `${first.childId}:enrollment` });
   assert.equal(count(database, "guardian_account"), 1, "new verified family creates one guardian");
   assert.equal(count(database, "student"), 1, "new child creates one student");

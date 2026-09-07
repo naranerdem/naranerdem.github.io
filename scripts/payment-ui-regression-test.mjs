@@ -100,12 +100,17 @@ assert.match(page, /const classSchedule = \(item\)/, "collapsed rows derive one 
 assert.match(page, /includes\(item\.weekday\).*includes\(item\.startTime\)/, "a saved display label that already includes the schedule is not duplicated");
 assert.match(page, /data-parent-resend[\s\S]*?Илгээж байна…/, "resend disables itself with a visible pending label");
 assert.match(page, /Хүүхдийн бүртгэлийг эхлээд баталгаажуулна уу\./, "resend is truthfully unavailable before canonical enrollment exists");
+assert.match(page, /const canContactPendingPayment = !canContactConfirmedEnrollment && !overdue && remaining > 0/, "only active, non-overdue payment-pending rows gain manual message preparation");
+assert.match(page, /canContactPendingPayment[\s\S]*?data-parent-message=/, "payment-pending rows expose the same message action inside opened contact detail");
 assert.match(page, /И-мэйл илгээхээр дараалалд орлоо/, "resend reports queueing rather than falsely claiming delivery");
 assert.match(page, /data-payment-confirm-seat=/, "staff can correct a sufficient historic payment without recording it twice");
 assert.match(page, /state\.manualMessages\[childId\] = \{ pending: true \}/, "manual message creation immediately reveals a pending preview panel");
+assert.match(page, /Мессеж бэлтгэх/, "manual message preparation is an explicit action beneath contact controls");
 assert.match(page, /Мессежийн урьдчилсан харагдац/, "manual message preview is visibly titled beneath contact actions");
+assert.match(page, /data-parent-message-text/, "manual message preview is an editable local textarea");
 assert.match(page, /data-parent-message-copy/, "manual message preview has a separate copy action");
-assert.match(page, /Хуулагдлаа\./, "manual message copy reports success inline");
+assert.match(page, /data-parent-message-close/, "manual message preview can be closed without a service call");
+assert.match(page, /Мессеж хуулагдлаа\./, "manual message copy reports success inline");
 assert.match(page, /Доорх текстийг гараар хуулна уу\./, "manual message copy failure leaves actionable manual-copy guidance");
 assert.match(page, /\$\{tentative\}/);
 assert.match(page, /data-offer-decline=\"\$\{escape\(item\.id\)\}\">Татгалзсаныг тэмдэглэх/);

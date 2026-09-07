@@ -1,4 +1,5 @@
 import { rulesContent } from "../../content/rules";
+import { currentGradeOptions, guardianRelationshipOptions } from "../../content/registration";
 import { normalizeEmail, validEmail } from "../auth/email-address";
 import { randomToken, sha256 } from "../auth/crypto";
 import type { D1Database, D1Result, WorkerEnv } from "../env";
@@ -52,6 +53,13 @@ export interface RegistrationSubmissionInput {
 
 export interface RegistrationSubmissionOptions {
   idempotencyKey?: string | null;
+  staffAssisted?: {
+    staffAccountId: string;
+    intakeChannel: "paper_form" | "phone" | "in_person";
+    parentAcknowledged: boolean;
+    studentAcknowledged: boolean;
+    receiptRequested: boolean;
+  };
 }
 
 interface ClassRow {
@@ -98,6 +106,18 @@ export class RegistrationSubmissionError extends Error {
     super("Registration submission failed.");
     this.name = "RegistrationSubmissionError";
   }
+}
+
+function staffAssistedIntake(options: RegistrationSubmissionOptions) {
+  const intake = options.staffAssisted;
+  if (!intake) return null;
+  if (!/^[A-Za-z0-9-]{8,120}$/.test(intake.staffAccountId)
+    || !["paper_form", "phone", "in_person"].includes(intake.intakeChannel)
+    || !intake.parentAcknowledged || !intake.studentAcknowledged
+    || typeof intake.receiptRequested !== "boolean") {
+    throw new RegistrationSubmissionError("staff_intake_not_acknowledged");
+  }
+  return intake;
 }
 
 function addSeconds(date: Date, seconds: number): string {
@@ -193,7 +213,8 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
     facebookName: clean(input?.guardian?.facebookName, 160),
     homeAddress: clean(input?.guardian?.homeAddress, 500),
   };
-  if (!guardian.fullName || !guardian.relationship || !guardian.primaryPhone || !guardian.facebookName || !guardian.homeAddress) {
+  if (!guardian.fullName || !guardianRelationshipOptions.includes(guardian.relationship as typeof guardianRelationshipOptions[number])
+    || !guardian.primaryPhone || !guardian.facebookName || !guardian.homeAddress) {
     throw new RegistrationSubmissionError("invalid_guardian");
   }
   if (!validEmail(normalizeEmail(guardian.email))) throw new RegistrationSubmissionError("invalid_email");
@@ -223,7 +244,7 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
     if (!child.surname || !child.givenName || !genders.has(child.gender) || !validDate(child.dateOfBirth)) {
       throw new RegistrationSubmissionError("invalid_child");
     }
-    if (!child.currentGrade || !stages.has(child.selectedStageCode)) {
+    if (!currentGradeOptions.some((option) => option.value === child.currentGrade) || !stages.has(child.selectedStageCode)) {
       throw new RegistrationSubmissionError("invalid_child");
     }
     if (!new Set(["new", "returning"]).has(child.returningStatus)) {
@@ -378,6 +399,7 @@ export async function createRegistrationDraft(
 ) {
   if (!registrationWriteEnabled(env)) throw new RegistrationSubmissionError("disabled");
   const input = validateSubmission(rawInput);
+  const staffIntake = staffAssistedIntake(options);
   const idempotencyKey = normalizedIdempotencyKey(options.idempotencyKey);
   const parentRulesVersion = clean(input.parentRulesVersion, 120) || rulesContent.parent.version;
   const studentRulesVersion = clean(input.studentRulesVersion, 120) || rulesContent.student.version;
@@ -469,6 +491,7 @@ export async function createRegistrationDraft(
     if (!idempotencyKey) return null;
     return env.DB.prepare(`SELECT registration_draft.id AS draftId,
       registration_draft.email AS email,
+      MIN(registration_draft_child.id) AS draftChildId,
       MAX(CASE WHEN registration_capacity_hold.status = 'active'
         AND registration_capacity_hold.hold_type = 'initial_payment'
         THEN registration_capacity_hold.deadline_at ELSE NULL END) AS paymentDeadlineAt
@@ -478,6 +501,7 @@ export async function createRegistrationDraft(
       WHERE registration_draft.submission_idempotency_key = ?
       GROUP BY registration_draft.id`).bind(idempotencyKey).first<{
       draftId: string;
+      draftChildId: string | null;
       email: string;
       paymentDeadlineAt: string | null;
     }>();
@@ -487,6 +511,7 @@ export async function createRegistrationDraft(
   if (existing) {
     return {
       draftId: existing.draftId,
+      registrationDraftChildId: existing.draftChildId,
       email: existing.email,
       normalizedEmail: normalizeEmail(existing.email),
       hasPaymentHold: Boolean(existing.paymentDeadlineAt),
@@ -599,6 +624,25 @@ export async function createRegistrationDraft(
       AND registration_draft_child.second_payment_amount_mnt IS NOT NULL AND registration_draft_child.second_payment_due_on IS NOT NULL
       AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
   `).bind(paymentRequestId, paymentReminder.laterReminderLeadMinutes, paymentReminder.laterReminderLeadMinutes, now, now, draftId, paymentRequestId));
+  if (staffIntake) {
+    statements.push(env.DB.prepare(`INSERT INTO audit_event (
+      id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at
+    ) VALUES (?, ?, 'staff', ?, 'registration.created_by_staff', 'registration_draft', ?, ?, ?, ?, ?, ?)`)
+      .bind(
+        crypto.randomUUID(), now, staffIntake.staffAccountId, draftId,
+        JSON.stringify({
+          source: "staff_assisted",
+          intakeChannel: staffIntake.intakeChannel,
+          guardianAcknowledged: true,
+          childAcknowledged: true,
+          receiptRequested: staffIntake.receiptRequested,
+          parentRulesVersion,
+          studentRulesVersion,
+        }),
+        env.APP_ENV, provenance.isTest, testRunId, now,
+      ));
+  }
 
   let results: D1Result<unknown>[];
   try {
@@ -608,6 +652,7 @@ export async function createRegistrationDraft(
     if (duplicate) {
       return {
         draftId: duplicate.draftId,
+        registrationDraftChildId: duplicate.draftChildId,
         email: duplicate.email,
         normalizedEmail: normalizeEmail(duplicate.email),
         hasPaymentHold: Boolean(duplicate.paymentDeadlineAt),
@@ -653,6 +698,7 @@ export async function createRegistrationDraft(
 
   return {
     draftId,
+    registrationDraftChildId: childIds[0] ?? null,
     email: input.guardian.email,
     normalizedEmail,
     hasPaymentHold: heldSeatCount > 0,

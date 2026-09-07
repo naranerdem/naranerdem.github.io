@@ -23,6 +23,7 @@ import "../../styles/global.css";
       <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Бүртгэл, төлбөр</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="staff-back-link" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
         <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1 class="staff-payment-page-title">Бүртгэл, төлбөр</h1></div><div class="staff-inline-actions staff-payment-toolbar"><button id="payment-refresh" class="button secondary" type="button">Шинэчлэх</button><button id="payment-export" class="button secondary" type="button" aria-label="TSV файл татах" title="TSV файл татах">Татах</button><a class="staff-back-link" href="/staff/">Буцах</a></div></div>
+        <nav class="staff-registration-intake-nav" aria-label="Бүртгэлийн үйлдэл"><a class="text-button" href="/staff/registration-intake/">Шинэ бүртгэл оруулах</a></nav>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <div id="payment-list" class="staff-payment-list"></div>
       </section>
@@ -31,6 +32,9 @@ import "../../styles/global.css";
       // @ts-nocheck
       import { escape, formatDate } from "../../scripts/staff-setup.js";
       import { buildRegistrationPaymentReport, downloadReportTsv } from "../../scripts/staff-reports.js";
+      const launchParams = new URLSearchParams(window.location.search);
+      const launchRegistrationId = launchParams.get("registration");
+      const launchCreated = launchParams.get("created") === "1";
       const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, manualMessages: {}, corrections: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", refreshTimer: null, refreshing: false, canRegistrationExport: false };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
@@ -95,13 +99,17 @@ import "../../styles/global.css";
         const resendPending = actionPending(item.registrationDraftChildId, "resend");
         const messagePending = actionPending(item.registrationDraftChildId, "message");
         const canContactConfirmedEnrollment = Boolean(item.canonicalEnrollmentId);
+        const canContactPendingPayment = !canContactConfirmedEnrollment && !overdue && remaining > 0
+          && !item.seatConfirmationApproved && ["pending", "partially_paid"].includes(item.installmentStatus);
         const manualMessage = state.manualMessages[item.registrationDraftChildId];
         const messagePreview = manualMessage
-          ? `<section class="staff-manual-message" aria-live="polite"><h4>Мессежийн урьдчилсан харагдац</h4>${manualMessage.pending ? "<p>Мессежийг үүсгэж байна…</p>" : `<pre>${escape(manualMessage.text)}</pre><div class="staff-inline-actions"><button class="button secondary" type="button" data-parent-message-copy="${escape(item.registrationDraftChildId)}">Хуулах</button></div>`}</section>`
+          ? `<section class="staff-manual-message" aria-live="polite"><h4>Мессежийн урьдчилсан харагдац</h4>${manualMessage.pending ? "<p>Мессежийг бэлтгэж байна…</p>" : `<textarea data-parent-message-text="${escape(item.registrationDraftChildId)}" rows="8" aria-label="Бэлтгэсэн мессеж">${escape(manualMessage.text)}</textarea><div class="staff-inline-actions"><button class="button secondary" type="button" data-parent-message-copy="${escape(item.registrationDraftChildId)}">Хуулах</button><button class="text-button" type="button" data-parent-message-close="${escape(item.registrationDraftChildId)}">Хаах</button></div>`}</section>`
           : "";
         const contactActions = canContactConfirmedEnrollment
-          ? `<div class="staff-inline-actions"><button class="button secondary" type="button" data-parent-resend="${escape(item.registrationDraftChildId)}" ${resendPending ? "disabled" : ""}>${resendPending ? "Илгээж байна…" : "И-мэйл дахин илгээх"}</button><button class="button secondary" type="button" data-parent-message="${escape(item.registrationDraftChildId)}" ${messagePending ? "disabled" : ""}>${messagePending ? "Үүсгэж байна…" : "Мессеж үүсгэх"}</button></div>`
-          : `<p class="staff-muted">Хүүхдийн бүртгэлийг эхлээд баталгаажуулна уу.</p>`;
+          ? `<div class="staff-inline-actions"><button class="button secondary" type="button" data-parent-resend="${escape(item.registrationDraftChildId)}" ${resendPending ? "disabled" : ""}>${resendPending ? "Илгээж байна…" : "И-мэйл дахин илгээх"}</button><button class="button secondary" type="button" data-parent-message="${escape(item.registrationDraftChildId)}" ${messagePending ? "disabled" : ""}>${messagePending ? "Бэлтгэж байна…" : "Мессеж бэлтгэх"}</button></div>`
+          : canContactPendingPayment
+            ? `<div class="staff-inline-actions"><button class="button secondary" type="button" data-parent-message="${escape(item.registrationDraftChildId)}" ${messagePending ? "disabled" : ""}>${messagePending ? "Бэлтгэж байна…" : "Мессеж бэлтгэх"}</button></div>`
+            : `<p class="staff-muted">Хүүхдийн бүртгэлийг эхлээд баталгаажуулна уу.</p>`;
         const contact = state.data?.canContactParents ? `<section class="staff-registration-secondary"><h3>Холбоо барих</h3><p>И-мэйл: ${escape(item.email || "")} ${item.verifiedAt ? "· Баталгаажсан" : "· Баталгаажаагүй"}</p>${contactActions}${messagePreview}${actionFeedback(item.registrationDraftChildId, ["resend", "message", "message-copy"])}</section>` : "";
         const remainingDeadlineControls = item.remainingPaymentDueAt
           ? `<p class="staff-muted" data-existing-remaining-deadline>Үлдсэн төлбөрийн хугацаа: ${escape(localLabel(item.remainingPaymentDueAt))}</p><label class="staff-check staff-wide" data-remaining-deadline-change hidden><input name="changeRemainingDueAt" type="checkbox" /><span>Үлдсэн төлбөрийн хугацааг өөрчлөх</span></label><label class="staff-wide" data-remaining-deadline hidden>Үлдсэн төлбөрийн хугацаа<input name="remainingDueAt" type="datetime-local" /></label>`
@@ -181,6 +189,10 @@ import "../../styles/global.css";
           const response = await fetch("/api/staff/payments", { credentials: "same-origin", cache: "no-store" });
           if (!response.ok) throw new Error("Төлбөрийн жагсаалтыг авч чадсангүй.");
           state.data = await response.json();
+          if (launchRegistrationId) {
+            const created = state.data.items?.find((item) => item.registrationDraftChildId === launchRegistrationId);
+            if (created?.installmentId) state.openId = created.installmentId;
+          }
           reconcileActionFeedback();
           render();
           scheduleGraceRefresh();
@@ -261,17 +273,23 @@ import "../../styles/global.css";
         if (target.dataset.parentMessage) {
           const childId = target.dataset.parentMessage;
           if (actionPending(childId, "message")) return;
-          state.manualMessages[childId] = { pending: true }; setActionPending(childId, "message", true); setActionFeedback(childId, "message", "Мессежийг үүсгэж байна…"); render();
+          state.manualMessages[childId] = { pending: true }; setActionPending(childId, "message", true); setActionFeedback(childId, "message", "Мессежийг бэлтгэж байна…"); render();
           try { const result = await post({ action: "parent.manual-message", registrationDraftChildId: childId }); state.manualMessages[childId] = { text: result.text }; setActionFeedback(childId, "message", "Мессеж бэлэн боллоо."); }
-          catch (error) { delete state.manualMessages[childId]; setActionFeedback(childId, "message", error.message || "Мессежийг үүсгэж чадсангүй."); }
+          catch (error) { delete state.manualMessages[childId]; setActionFeedback(childId, "message", error.message || "Мессежийг бэлтгэж чадсангүй."); }
           finally { setActionPending(childId, "message", false); render(); }
           return;
         }
         if (target.dataset.parentMessageCopy) {
-          const childId = target.dataset.parentMessageCopy; const text = state.manualMessages[childId]?.text;
+          const childId = target.dataset.parentMessageCopy; const text = q(`[data-parent-message-text="${childId}"]`)?.value || state.manualMessages[childId]?.text;
           if (!text) return;
           const copied = await copyMessengerText(text);
-          setActionFeedback(childId, "message-copy", copied ? "Хуулагдлаа." : "Автоматаар хуулж чадсангүй. Доорх текстийг гараар хуулна уу."); render();
+          setActionFeedback(childId, "message-copy", copied ? "Мессеж хуулагдлаа." : "Автоматаар хуулж чадсангүй. Доорх текстийг гараар хуулна уу."); render();
+          return;
+        }
+        if (target.dataset.parentMessageClose) {
+          delete state.manualMessages[target.dataset.parentMessageClose];
+          delete state.actionFeedback[target.dataset.parentMessageClose];
+          render();
           return;
         }
         if (target.dataset.paymentConfirmSeat) {
@@ -375,7 +393,7 @@ import "../../styles/global.css";
         } catch (error) { message(error.message || "Экспорт үүсгэж чадсангүй."); }
         finally { button.disabled = false; }
       });
-      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; show("tool-app"); try { await refresh(); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
+      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; show("tool-app"); try { await refresh(launchCreated ? "Бүртгэл үүсгэгдлээ." : "", launchRegistrationId ? { anchorChildId: launchRegistrationId } : {}); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
     </script>
   </body>
 </html>

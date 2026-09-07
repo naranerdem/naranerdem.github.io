@@ -25,10 +25,20 @@ assert.match(parentPage, /\/api\/parent\/status/, "the parent page is read-only 
 assert.match(staffCommunication, /parent_manual_message_generated/, "manual-message generation is audited");
 assert.doesNotMatch(staffCommunication, /verifyEmailToken|sendParentAccessEmail/, "manual messages cannot issue a verifying access link");
 assert.match(staffCommunication, /enrollmentManualMessage/, "manual messages use the same structured enrollment copy as email");
+assert.match(staffCommunication, /paymentReminderTemplate/, "pending-payment messages reuse the established reminder composition");
+assert.match(staffCommunication, /lifecycle: "pending_payment"/, "manual-message audit metadata distinguishes pending payment from confirmed enrollment");
+assert.match(staffCommunication, /registration_capacity_hold[\s\S]*?status = 'active'/, "pending messages require a live initial-payment reservation");
+assert.match(staffCommunication, /canonical_enrollment_id IS NULL/, "pending messages cannot be generated from an ineligible lifecycle state");
 assert.match(staffCommunication, /getDiscountPolicySetting/, "manual referral wording reads the authoritative discount policy");
 assert.match(payments, /И-мэйл дахин илгээх/, "contact actions stay inside opened staff detail");
-assert.match(payments, /Мессеж үүсгэх/, "manual copy helper is available in opened staff detail");
+assert.match(payments, /Мессеж бэлтгэх/, "manual copy helper is available in opened staff detail");
 assert.match(payments, /Мессежийн урьдчилсан харагдац/, "manual messages are previewed before a separate copy action");
+assert.match(payments, /data-parent-message-text/, "manual messages remain editable only in the local preview");
+assert.match(payments, /data-parent-message-close/, "the temporary message preview can be closed without a write");
+assert.match(payments, /Мессеж хуулагдлаа\./, "copy reports an explicit accessible result");
+assert.match(staffCommunication, /hasStaffCapability\(actor, "registration\.manage"\)/, "manual message generation remains teacher/admin-only through staff capabilities");
+const manualMessageSource = staffCommunication.slice(staffCommunication.indexOf("export async function generateParentManualMessage"));
+assert.doesNotMatch(manualMessageSource, /sendEnrollmentConfirmationEmail|sendParentAccessEmail|outbound_email/, "manual preparation creates neither delivery nor a parent-access challenge");
 assert.match(payments, /И-мэйл илгээхээр дараалалд орлоо/, "staff resend feedback reflects queueing rather than claiming delivery");
 
 console.log("ok parent access foundation boundaries");
