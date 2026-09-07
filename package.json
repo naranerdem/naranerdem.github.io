@@ -41,6 +41,7 @@
     "test:staff-reports": "node scripts/staff-reports-test.mjs",
     "test:reports": "npm run test:staff-reports",
     "test:registration": "node scripts/registration-hold-test.mjs",
+    "test:browser-uuid-compatibility": "node scripts/browser-uuid-compatibility-test.mjs",
     "test:staff-registration-intake": "node scripts/staff-registration-intake-test.mjs",
     "test:staff-intake-email": "node scripts/staff-intake-email-semantics-test.mjs",
     "test:waitlist-offers": "node scripts/waitlist-offer-test.mjs",

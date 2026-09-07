@@ -182,6 +182,7 @@ const formCopy = registrationFormCopy;
         readRegistrationDraft,
       } from "/scripts/registration-draft.js";
       import { registrationEnvironmentPresentation } from "/scripts/registration-environment.js";
+      import { secureUuidV4 } from "/scripts/secure-id.js";
       loadPublicFont();
 
       const registrationData = JSON.parse(document.getElementById("registration-data").textContent);
@@ -927,10 +928,13 @@ const formCopy = registrationFormCopy;
           return;
         }
         finishButton.disabled = true;
+        finishButton.setAttribute("aria-busy", "true");
         finishButton.textContent = formCopy.messages.submitting;
         turnstileMessage.textContent = "";
+        let requestStarted = false;
         try {
-          if (!submissionIdempotencyKey) submissionIdempotencyKey = crypto.randomUUID();
+          if (!submissionIdempotencyKey) submissionIdempotencyKey = secureUuidV4();
+          requestStarted = true;
           const response = await fetch("/api/registration/submit", {
             method: "POST",
             headers: {
@@ -946,12 +950,17 @@ const formCopy = registrationFormCopy;
           discardStoredDraft();
           await showVerifiedStatus(false);
         } catch (caught) {
-          turnstileMessage.textContent = caught.message || formCopy.messages.submitFailed;
+          turnstileMessage.textContent = "Бүртгэлийг илгээж чадсангүй. Хуудсыг шинэчлэхгүйгээр дахин оролдоно уу. Асуудал үргэлжилбэл Chrome эсвэл Safari хөтчөөр нээнэ үү.";
           turnstileArea.scrollIntoView({ behavior: "smooth", block: "center" });
-          turnstileToken = "";
-          window.turnstile?.reset(turnstileWidgetId);
+          // A retry keeps the same idempotency key, but a consumed or uncertain
+          // Turnstile token is replaced before the next explicit submission.
+          if (requestStarted) {
+            turnstileToken = "";
+            window.turnstile?.reset(turnstileWidgetId);
+          }
         } finally {
           finishButton.disabled = false;
+          finishButton.removeAttribute("aria-busy");
           finishButton.textContent = formCopy.buttons.submitRegistration;
         }
       });
