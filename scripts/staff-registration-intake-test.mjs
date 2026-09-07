@@ -77,17 +77,23 @@ assertOrder(
   'id="previous-stage-field"',
 );
 assertOrder(
+  'id="intake-rules-label"',
+  'class="staff-intake-consent-separator"',
   'id="guardian-rule-link"',
   'name="parentRulesAcknowledged"',
   'id="student-rule-link"',
   'name="studentRulesAcknowledged"',
-  'class="staff-intake-consent-separator"',
   'name="sendReceipt"',
   'class="staff-intake-email-help staff-wide"',
   'id="intake-submit"',
 );
 assert.match(page, /\["guardian", "#guardian-rule-link"\], \["student", "#student-rule-link"\]/, "the active guardian and student rules render into their matching DOM positions");
-assert.equal((page.match(/staff-intake-consent-separator/g) || []).length, 1, "one structural separator follows both required acknowledgements");
+assert.equal((page.match(/staff-intake-consent-separator/g) || []).length, 2, "full-width separators frame the consent group without changing its DOM order");
+const firstConsentSeparator = page.indexOf('class="staff-intake-consent-separator"');
+const secondConsentSeparator = page.indexOf('class="staff-intake-consent-separator"', firstConsentSeparator + 1);
+assert(firstConsentSeparator < page.indexOf('id="guardian-rule-link"'), "the first separator precedes the parent rule");
+assert(secondConsentSeparator > page.indexOf('name="studentRulesAcknowledged"') && secondConsentSeparator < page.indexOf('name="sendReceipt"'), "the second separator follows the child acknowledgement");
+assert.doesNotMatch(page, /<h2>Журам, зөвшөөрөл<\/h2>/, "the consent grouping heading is screen-reader-only rather than visible");
 assert.match(styles, /\.staff-intake-consent-separator \{[\s\S]*?border-top: 1px solid var\(--line\)/, "the consent separator is a single full-width horizontal line");
 assert.match(page, /event\.target\.name === "returningStatus"\) q\("#previous-stage-field"\)\.hidden = selected\("returningStatus"\) !== "returning"/, "previous-study selection only reveals the final reserved field");
 assert.match(styles, /@media \(max-width: 38rem\) \{[\s\S]*?\.staff-registration-intake \{\s*grid-template-columns: minmax\(0, 1fr\);/, "the staff intake form uses its DOM order as a one-column phone layout");

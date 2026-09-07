@@ -332,7 +332,7 @@ export const acquireAllRequestedSeatsSql = `
     FROM enrollment
     INNER JOIN application_child ON application_child.id = enrollment.application_child_id
     INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-    WHERE enrollment.status = 'confirmed'
+    WHERE enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL
       AND application_child.status = 'enrolled'
       AND pre_registration.deleted_at IS NULL
     GROUP BY enrollment.class_session_id
@@ -362,6 +362,10 @@ export const acquireAllRequestedSeatsSql = `
     SELECT class_session_id, COUNT(*) AS count FROM waitlist_seat_offer
     WHERE status IN ('active', 'awaiting_transfer') GROUP BY class_session_id
   ),
+  transfer_reservations AS MATERIALIZED (
+    SELECT class_session_id, COUNT(*) AS count FROM class_transfer_target_reservation
+    WHERE status = 'active' GROUP BY class_session_id
+  ),
   capacity_ok AS MATERIALIZED (
     SELECT CASE WHEN EXISTS (
       SELECT 1
@@ -371,9 +375,11 @@ export const acquireAllRequestedSeatsSql = `
       LEFT JOIN legacy_holds ON legacy_holds.class_session_id = requested.class_session_id
       LEFT JOIN draft_holds ON draft_holds.class_session_id = requested.class_session_id
       LEFT JOIN waitlist_offers ON waitlist_offers.class_session_id = requested.class_session_id
+      LEFT JOIN transfer_reservations ON transfer_reservations.class_session_id = requested.class_session_id
       WHERE class_session.status NOT IN ('available', 'full')
         OR class_session.capacity - COALESCE(confirmed.count, 0)
           - COALESCE(legacy_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0)
+          - COALESCE(transfer_reservations.count, 0)
           < requested.requested_count
     ) THEN 0 ELSE 1 END AS ok
   )
@@ -840,7 +846,7 @@ export const reacquireAllRequestedSeatsSql = `
     FROM enrollment
     INNER JOIN application_child ON application_child.id = enrollment.application_child_id
     INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-    WHERE enrollment.status = 'confirmed' AND application_child.status = 'enrolled'
+    WHERE enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL AND application_child.status = 'enrolled'
       AND pre_registration.deleted_at IS NULL
     GROUP BY enrollment.class_session_id
   ),
@@ -870,6 +876,10 @@ export const reacquireAllRequestedSeatsSql = `
     SELECT class_session_id, COUNT(*) AS count FROM waitlist_seat_offer
     WHERE status IN ('active', 'awaiting_transfer') GROUP BY class_session_id
   ),
+  transfer_reservations AS MATERIALIZED (
+    SELECT class_session_id, COUNT(*) AS count FROM class_transfer_target_reservation
+    WHERE status = 'active' GROUP BY class_session_id
+  ),
   capacity_ok AS MATERIALIZED (
     SELECT CASE WHEN EXISTS (
       SELECT 1 FROM requested
@@ -878,9 +888,11 @@ export const reacquireAllRequestedSeatsSql = `
       LEFT JOIN legacy_holds ON legacy_holds.class_session_id = requested.class_session_id
       LEFT JOIN other_draft_holds ON other_draft_holds.class_session_id = requested.class_session_id
       LEFT JOIN waitlist_offers ON waitlist_offers.class_session_id = requested.class_session_id
+      LEFT JOIN transfer_reservations ON transfer_reservations.class_session_id = requested.class_session_id
       WHERE class_session.status NOT IN ('available', 'full')
         OR class_session.capacity - COALESCE(confirmed.count, 0)
           - COALESCE(legacy_holds.count, 0) - COALESCE(other_draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0)
+          - COALESCE(transfer_reservations.count, 0)
           < requested.requested_count
     ) THEN 0 ELSE 1 END AS ok
   )

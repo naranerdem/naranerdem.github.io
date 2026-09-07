@@ -82,7 +82,7 @@ function createDatabase(rows, options = {}) {
             assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
             return { success: true, results: filtered.map((row) => ({
               classSessionId: row.classSessionId, capacity: row.capacity, confirmedCount: row.confirmedCount,
-              reservedInitialPaymentCount: row.activeHoldCount, legacyReservationCount: 0, offeredWaitlistCount: 0, waitlistCount: 0,
+              reservedInitialPaymentCount: row.activeHoldCount, legacyReservationCount: 0, offeredWaitlistCount: 0, transferReservationCount: 0, waitlistCount: 0,
             })) };
           }
           if (sql.includes("FROM class_calendar")) {

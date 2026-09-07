@@ -69,6 +69,8 @@ SELECT
   (SELECT COUNT(*) FROM registration_draft WHERE ${scoped("registration_draft", "id")}) AS drafts,
   (SELECT COUNT(*) FROM registration_draft_referral WHERE ${childScoped("registration_draft_referral")}) AS referrals,
   (SELECT COUNT(*) FROM payment_notification_milestone WHERE ${scoped("payment_notification_milestone")}) AS notification_milestones,
+  (SELECT COUNT(*) FROM class_transfer WHERE ${scoped("class_transfer")}) AS transfers,
+  (SELECT COUNT(*) FROM class_transfer_target_reservation WHERE ${scoped("class_transfer_target_reservation")}) AS transfer_reservations,
   (SELECT COUNT(*) FROM outbound_email WHERE ${scoped("outbound_email")}) AS emails;
 `;
 const count = spawnSync(process.execPath, [
@@ -88,6 +90,11 @@ const deleteSql = `
 DELETE FROM payment_notification_milestone WHERE ${scoped("payment_notification_milestone")};
 DELETE FROM waitlist_seat_offer WHERE ${childScoped("waitlist_seat_offer")};
 DELETE FROM registration_draft_referral WHERE ${childScoped("registration_draft_referral")};
+DELETE FROM class_transfer_payment WHERE ${scoped("class_transfer_payment")};
+DELETE FROM class_transfer_payment_obligation WHERE ${scoped("class_transfer_payment_obligation")};
+DELETE FROM class_transfer_credit WHERE ${scoped("class_transfer_credit")};
+DELETE FROM class_transfer_target_reservation WHERE ${scoped("class_transfer_target_reservation")};
+DELETE FROM class_transfer WHERE ${scoped("class_transfer")};
 DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};
 DELETE FROM registration_data_correction WHERE ${childScoped("registration_data_correction")};
 DELETE FROM payment_evidence WHERE ${scoped("payment_evidence")};

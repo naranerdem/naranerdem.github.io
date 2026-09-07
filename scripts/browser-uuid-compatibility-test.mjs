@@ -14,11 +14,15 @@ assert.throws(() => secureUuidV4({}), SecureIdError, "missing secure randomness 
 const helper = readFileSync("public/scripts/secure-id.js", "utf8");
 const page = readFileSync("src/pages/register.astro", "utf8");
 const intake = readFileSync("src/pages/staff/registration-intake.astro", "utf8");
+const payments = readFileSync("src/pages/staff/payments.astro", "utf8");
 assert.doesNotMatch(helper, /Math\.random|Date\.now|performance\.now/, "no predictable UUID fallback exists");
 assert.match(page, /import \{ secureUuidV4 \} from "\/scripts\/secure-id\.js"/, "public registration uses the shared helper");
 assert.match(intake, /import \{ secureUuidV4 \} from "\/scripts\/secure-id\.js"/, "the only other browser UUID call shares the helper");
+assert.match(payments, /import\(\/\* @vite-ignore \*\/ "\/scripts\/secure-id\.js"\)/, "staff transfer idempotency loads the browser-safe helper");
 assert.doesNotMatch(page, /crypto\.randomUUID\(/, "public registration has no direct randomUUID assumption");
 assert.doesNotMatch(intake, /crypto\.randomUUID\(/, "staff intake has no direct randomUUID assumption");
+assert.doesNotMatch(payments, /crypto\.randomUUID\(/, "staff transfers have no direct randomUUID assumption");
+assert.match(payments, /async function secureStaffUuidV4\(\)/, "staff transfer UUID generation is isolated behind the shared helper loader");
 assert.match(page, /if \(!submissionIdempotencyKey\) submissionIdempotencyKey = secureUuidV4\(\)/, "one logical submission keeps its idempotency key");
 assert.match(page, /finishButton\.disabled = true;[\s\S]*?finishButton\.setAttribute\("aria-busy", "true"\)/, "submit synchronously enters its busy state");
 assert.match(page, /if \(requestStarted\)[\s\S]*?window\.turnstile\?\.reset/, "an attempted request gets a fresh challenge while retaining the idempotency key");

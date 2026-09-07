@@ -45,6 +45,7 @@ import {
   updatePaymentConfirmationGraceSetting,
 } from "../staff/payment-reconciliation";
 import { cancelRegistration, reinstateRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
+import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets, recordClassTransferDifference } from "../staff/class-transfer";
 import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
 import {
   acceptWaitlistOffer,
@@ -1226,6 +1227,37 @@ export async function handleApiRequest(
           registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
         }) }, 200, { "Cache-Control": "no-store" });
       }
+      if (payload.action === "class-transfer.targets") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        return json({ ok: true, ...await listClassTransferTargets(env, principal, String(payload.registrationDraftChildId ?? "")) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "class-transfer.initiate") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        return json({ ok: true, ...await initiateClassTransfer(env, principal, {
+          registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), targetClassSessionId: String(payload.targetClassSessionId ?? ""),
+          reason: String(payload.reason ?? ""), idempotencyKey: String(payload.idempotencyKey ?? ""), expectedSourceVersion: String(payload.expectedSourceVersion ?? ""), expectedTargetVersion: String(payload.expectedTargetVersion ?? ""),
+        }) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "class-transfer.close") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        return json({ ok: true, ...await closeClassTransfer(env, principal, {
+          transferId: String(payload.transferId ?? ""), reason: String(payload.reason ?? ""), expectedVersion: Number(payload.expectedVersion),
+        }) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "class-transfer.record-difference") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        return json({ ok: true, ...await recordClassTransferDifference(env, principal, {
+          transferId: String(payload.transferId ?? ""), amountMnt: Number(payload.amountMnt),
+          source: payload.source === "staff_manual_cash" ? "staff_manual_cash" : "staff_manual_bank",
+          idempotencyKey: String(payload.idempotencyKey ?? ""), expectedVersion: Number(payload.expectedVersion),
+        }) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "class-transfer.complete") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        return json({ ok: true, ...await completeClassTransfer(env, principal, {
+          transferId: String(payload.transferId ?? ""), expectedVersion: Number(payload.expectedVersion),
+        }) }, 200, { "Cache-Control": "no-store" });
+      }
       if (!hasStaffCapability(principal, "payment.manage")) {
         return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
       }
@@ -1307,7 +1339,8 @@ export async function handleApiRequest(
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
     } catch (caught) {
-      return caught instanceof RegistrationCancellationError ? registrationCancellationError(caught)
+      return caught instanceof ClassTransferError ? error(caught.code === "forbidden" ? "forbidden" : caught.code === "not_found" ? "not_found" : "invalid_request", caught.code === "forbidden" ? "Энэ үйлдлийг хийх эрх алга." : caught.code === "not_found" ? "Бүртгэлийн шилжүүлэх эх сурвалж олдсонгүй." : caught.code === "ineligible" ? "Энэ бүртгэлд одоогоор шилжүүлэх боломжтой идэвхтэй баталгаажсан суудал алга." : caught.code === "source_year_archived" ? "Эх бүртгэлийн хичээлийн жил архивлагдсан тул шилжүүлэх боломжгүй." : caught.code === "target_pricing" ? "Сонгосон ангийн төлбөрийн тохиргоо бүрэн биш байна." : caught.code === "target_ineligible" ? "Сонгосон анги шилжүүлэхэд идэвхгүй байна." : caught.code === "cross_year" ? "Зөвхөн ижил хичээлийн жилийн ангид шилжүүлнэ." : caught.code === "stale" ? "Анги эсвэл төлбөрийн тохиргоо өөрчлөгдсөн байна. Сонголтыг дахин нээнэ үү." : caught.code === "capacity" ? "Сонгосон ангид сул суудал алга." : caught.code === "conflict" ? "Мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу." : "Шилжүүлгийн талбаруудыг шалгана уу.", caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : caught.code === "capacity" || caught.code === "conflict" || caught.code === "stale" ? 409 : 400, { "Cache-Control": "no-store" })
+        : caught instanceof RegistrationCancellationError ? registrationCancellationError(caught)
         : caught instanceof DiscountPolicyError ? discountPolicyError(caught)
         : caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)
         : caught instanceof WaitlistOfferError ? waitlistOfferError(caught) : paymentReconciliationError(caught);

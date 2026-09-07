@@ -139,7 +139,7 @@ function offerInsertStatement(env: WorkerEnv, offer: PreparedOffer, now: string,
     AND (SELECT ${capacity}
       - (SELECT COUNT(*) FROM enrollment INNER JOIN application_child ON application_child.id = enrollment.application_child_id
          INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-         WHERE enrollment.class_session_id = entry.class_session_id AND enrollment.status = 'confirmed'
+         WHERE enrollment.class_session_id = entry.class_session_id AND enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL
            AND application_child.status = 'enrolled' AND pre_registration.deleted_at IS NULL)
       - (SELECT COUNT(*) FROM enrollment INNER JOIN application_child ON application_child.id = enrollment.application_child_id
          INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id

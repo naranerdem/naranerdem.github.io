@@ -43,7 +43,7 @@ export async function activeReferralCodes(
     INNER JOIN enrollment ON enrollment.id = enrollment_referral_code.enrollment_id
     WHERE enrollment_referral_code.code IN (${placeholders})
       AND enrollment_referral_code.status = 'active'
-      AND enrollment.status = 'confirmed'
+      AND enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL
       AND enrollment_referral_code.is_test = ?
       AND enrollment.is_test = ?`).bind(...codes, provenance.isTest, provenance.isTest)
     .all<ActiveReferralCode>();

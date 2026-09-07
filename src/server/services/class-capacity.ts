@@ -8,6 +8,7 @@ export interface ClassCapacityProjection {
   identityReviewCount: number;
   legacyReservationCount: number;
   offeredWaitlistCount: number;
+  transferReservationCount: number;
   waitlistCount: number;
   freeSeats: number;
 }
@@ -20,6 +21,7 @@ export interface ClassCapacityDiagnostic {
   reservedInitialPayment: Array<{ holdId: string; registrationDraftChildId: string; childName: string; deadlineAt: string; isTest: number; testRunId: string | null }>;
   legacyReservations: Array<{ enrollmentId: string; applicationChildId: string; status: string; isTest: number; testRunId: string | null }>;
   offeredWaitlist: Array<{ offerId: string; waitlistEntryId: string; childName: string; status: string; isTest: number; testRunId: string | null }>;
+  transferReservations: Array<{ transferId: string; reservationId: string; isTest: number; testRunId: string | null }>;
   waiting: Array<{ waitlistEntryId: string; childName: string; isTest: number; testRunId: string | null }>;
   projection: ClassCapacityProjection;
 }
@@ -32,6 +34,7 @@ interface CapacityRow {
   identityReviewCount: number;
   legacyReservationCount: number;
   offeredWaitlistCount: number;
+  transferReservationCount: number;
   waitlistCount: number;
 }
 
@@ -43,11 +46,12 @@ export function classCapacityConsumedSql(environment: AppEnvironment, classIdExp
   const enrollmentTestFilter = production ? "AND enrollment.is_test = 0" : "";
   const holdTestFilter = production ? "AND registration_capacity_hold.is_test = 0" : "";
   const offerTestFilter = production ? "AND waitlist_seat_offer.is_test = 0" : "";
+  const transferTestFilter = production ? "AND class_transfer_target_reservation.is_test = 0" : "";
   return `(
     (SELECT COUNT(*) FROM enrollment
       INNER JOIN application_child ON application_child.id = enrollment.application_child_id
       INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-      WHERE enrollment.class_session_id = ${classIdExpression} AND enrollment.status = 'confirmed'
+      WHERE enrollment.class_session_id = ${classIdExpression} AND enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL
         AND application_child.status = 'enrolled' AND pre_registration.deleted_at IS NULL ${enrollmentTestFilter})
     + (SELECT COUNT(*) FROM enrollment
       INNER JOIN application_child ON application_child.id = enrollment.application_child_id
@@ -62,6 +66,9 @@ export function classCapacityConsumedSql(environment: AppEnvironment, classIdExp
     + (SELECT COUNT(*) FROM waitlist_seat_offer
       WHERE waitlist_seat_offer.class_session_id = ${classIdExpression}
         AND waitlist_seat_offer.status IN ('active', 'awaiting_transfer') ${offerTestFilter})
+    + (SELECT COUNT(*) FROM class_transfer_target_reservation
+      WHERE class_transfer_target_reservation.class_session_id = ${classIdExpression}
+        AND class_transfer_target_reservation.status = 'active' ${transferTestFilter})
   )`;
 }
 
@@ -79,6 +86,7 @@ export async function getClassCapacityProjections(
   const testFilter = production ? `AND enrollment.is_test = 0` : "";
   const draftTestFilter = production ? `AND registration_capacity_hold.is_test = 0` : "";
   const offerTestFilter = production ? `AND waitlist_seat_offer.is_test = 0` : "";
+  const transferTestFilter = production ? `AND class_transfer_target_reservation.is_test = 0` : "";
   const waitlistTestFilter = production ? `AND registration_draft_waitlist_entry.is_test = 0` : "";
   const classTestFilter = production ? `AND class_session.is_test = 0 AND class_session.is_test_only = 0` : "";
   const result = await database.prepare(`
@@ -88,6 +96,7 @@ export async function getClassCapacityProjections(
       COALESCE(review.count, 0) AS identityReviewCount,
       COALESCE(legacy.count, 0) AS legacyReservationCount,
       COALESCE(offers.count, 0) AS offeredWaitlistCount,
+      COALESCE(transfers.count, 0) AS transferReservationCount,
       COALESCE(waiting.count, 0) AS waitlistCount
     FROM class_session
     LEFT JOIN (
@@ -95,7 +104,7 @@ export async function getClassCapacityProjections(
       FROM enrollment
       INNER JOIN application_child ON application_child.id = enrollment.application_child_id
       INNER JOIN pre_registration ON pre_registration.id = application_child.pre_registration_id
-      WHERE enrollment.status = 'confirmed' AND application_child.status = 'enrolled'
+      WHERE enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL AND application_child.status = 'enrolled'
         AND pre_registration.deleted_at IS NULL ${testFilter}
       GROUP BY enrollment.class_session_id
     ) confirmed ON confirmed.class_session_id = class_session.id
@@ -132,6 +141,11 @@ export async function getClassCapacityProjections(
       GROUP BY class_session_id
     ) offers ON offers.class_session_id = class_session.id
     LEFT JOIN (
+      SELECT class_session_id, COUNT(*) AS count FROM class_transfer_target_reservation
+      WHERE status = 'active' ${transferTestFilter}
+      GROUP BY class_session_id
+    ) transfers ON transfers.class_session_id = class_session.id
+    LEFT JOIN (
       SELECT class_session_id, COUNT(*) AS count FROM registration_draft_waitlist_entry
       WHERE status = 'active' ${waitlistTestFilter}
       GROUP BY class_session_id
@@ -146,10 +160,10 @@ export async function getClassCapacityProjections(
   `).bind(nowDate.toISOString(), ...ids).all<CapacityRow>();
   return result.results.map((row) => {
     const consumed = Number(row.confirmedCount) + Number(row.reservedInitialPaymentCount)
-      + Number(row.legacyReservationCount) + Number(row.offeredWaitlistCount);
+      + Number(row.legacyReservationCount) + Number(row.offeredWaitlistCount) + Number(row.transferReservationCount);
     return { ...row, capacity: Number(row.capacity), confirmedCount: Number(row.confirmedCount),
       reservedInitialPaymentCount: Number(row.reservedInitialPaymentCount), identityReviewCount: Number(row.identityReviewCount), legacyReservationCount: Number(row.legacyReservationCount), offeredWaitlistCount: Number(row.offeredWaitlistCount),
-      waitlistCount: Number(row.waitlistCount), freeSeats: Math.max(Number(row.capacity) - consumed, 0) };
+      transferReservationCount: Number(row.transferReservationCount), waitlistCount: Number(row.waitlistCount), freeSeats: Math.max(Number(row.capacity) - consumed, 0) };
   });
 }
 
@@ -170,8 +184,9 @@ export async function getClassCapacityDiagnostic(
   const testFilter = production ? "AND enrollment.is_test = 0" : "";
   const holdTestFilter = production ? "AND registration_capacity_hold.is_test = 0" : "";
   const offerTestFilter = production ? "AND waitlist_seat_offer.is_test = 0" : "";
+  const transferTestFilter = production ? "AND class_transfer_target_reservation.is_test = 0" : "";
   const waitlistTestFilter = production ? "AND registration_draft_waitlist_entry.is_test = 0" : "";
-  const [confirmed, reservedInitialPayment, legacyReservations, offeredWaitlist, waiting] = await Promise.all([
+  const [confirmed, reservedInitialPayment, legacyReservations, offeredWaitlist, transferReservations, waiting] = await Promise.all([
     database.prepare(`SELECT enrollment.id AS enrollmentId,
       COALESCE(student.surname || ' ' || student.given_name, registration_draft_child.surname || ' ' || registration_draft_child.given_name, '') AS childName,
       application_child.id AS applicationChildId, registration_draft_child.id AS registrationDraftChildId,
@@ -179,7 +194,7 @@ export async function getClassCapacityDiagnostic(
       FROM enrollment INNER JOIN application_child ON application_child.id = enrollment.application_child_id
       LEFT JOIN student ON student.id = application_child.student_id
       LEFT JOIN registration_draft_child ON registration_draft_child.canonical_enrollment_id = enrollment.id
-      WHERE enrollment.class_session_id = ? AND enrollment.status = 'confirmed' AND application_child.status = 'enrolled' ${testFilter}
+      WHERE enrollment.class_session_id = ? AND enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL AND application_child.status = 'enrolled' ${testFilter}
       ORDER BY enrollment.created_at, enrollment.id`).bind(classSessionId).all<ClassCapacityDiagnostic["confirmed"][number]>(),
     database.prepare(`SELECT registration_capacity_hold.id AS holdId, registration_capacity_hold.registration_draft_child_id AS registrationDraftChildId,
       registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
@@ -202,6 +217,11 @@ export async function getClassCapacityDiagnostic(
       FROM waitlist_seat_offer INNER JOIN registration_draft_child ON registration_draft_child.id = waitlist_seat_offer.registration_draft_child_id
       WHERE waitlist_seat_offer.class_session_id = ? AND waitlist_seat_offer.status IN ('active', 'awaiting_transfer') ${offerTestFilter}
       ORDER BY waitlist_seat_offer.created_at, waitlist_seat_offer.id`).bind(classSessionId).all<ClassCapacityDiagnostic["offeredWaitlist"][number]>(),
+    database.prepare(`SELECT class_transfer.id AS transferId, class_transfer_target_reservation.id AS reservationId,
+      class_transfer_target_reservation.is_test AS isTest, class_transfer_target_reservation.test_run_id AS testRunId
+      FROM class_transfer_target_reservation INNER JOIN class_transfer ON class_transfer.id = class_transfer_target_reservation.class_transfer_id
+      WHERE class_transfer_target_reservation.class_session_id = ? AND class_transfer_target_reservation.status = 'active' ${transferTestFilter}
+      ORDER BY class_transfer_target_reservation.created_at, class_transfer_target_reservation.id`).bind(classSessionId).all<ClassCapacityDiagnostic["transferReservations"][number]>(),
     database.prepare(`SELECT registration_draft_waitlist_entry.id AS waitlistEntryId,
       registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
       registration_draft_waitlist_entry.is_test AS isTest, registration_draft_waitlist_entry.test_run_id AS testRunId
@@ -211,5 +231,5 @@ export async function getClassCapacityDiagnostic(
   ]);
   return { classSessionId, classLabel: classRow.classLabel, capacity: projection.capacity,
     confirmed: confirmed.results, reservedInitialPayment: reservedInitialPayment.results, legacyReservations: legacyReservations.results,
-    offeredWaitlist: offeredWaitlist.results, waiting: waiting.results, projection };
+    offeredWaitlist: offeredWaitlist.results, transferReservations: transferReservations.results, waiting: waiting.results, projection };
 }

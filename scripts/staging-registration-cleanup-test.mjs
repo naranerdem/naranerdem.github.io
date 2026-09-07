@@ -26,6 +26,16 @@ assert.ok(
   "draft referral captures must be deleted before drafts",
 );
 assert.ok(
+  position('DELETE FROM class_transfer_target_reservation WHERE ${scoped("class_transfer_target_reservation")};')
+    < position('DELETE FROM class_transfer WHERE ${scoped("class_transfer")};'),
+  "transfer target reservations must be deleted before their transfer aggregate",
+);
+assert.ok(
+  position('DELETE FROM class_transfer WHERE ${scoped("class_transfer")};')
+    < position('DELETE FROM enrollment WHERE ${scoped("enrollment")};'),
+  "transfer aggregates must be deleted before their scoped enrollment lineage",
+);
+assert.ok(
   position('DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};')
     < position('DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};'),
   "discount awards must be deleted before their draft children and draft parents",

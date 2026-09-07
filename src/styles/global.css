@@ -1770,13 +1770,75 @@ textarea:focus {
 
 .staff-payment-item {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.55rem;
   border-top: 1px solid var(--line);
-  padding: 0.8rem 0 0;
+  padding: 0.85rem 0 0;
+}
+
+.staff-payment-item + .staff-payment-item {
+  margin-top: 0.35rem;
+}
+
+.staff-payment-summary {
+  min-width: 0;
+}
+
+.staff-payment-item.is-open {
+  position: relative;
+  border-left: 3px solid rgba(7, 58, 175, 0.6);
+  background: rgba(7, 58, 175, 0.04);
+  margin: 0.85rem 0;
+  padding: 0.7rem;
+}
+
+.staff-payment-item.is-open::before,
+.staff-payment-item.is-open::after {
+  position: absolute;
+  right: 0;
+  left: -3px;
+  height: 1px;
+  background: var(--line);
+  content: "";
+}
+
+.staff-payment-item.is-open::before { top: -0.45rem; }
+.staff-payment-item.is-open::after { bottom: -0.45rem; }
+
+.staff-payment-item.is-open + .staff-payment-item {
+  margin-top: 0;
+  border-top-color: transparent;
+}
+
+.staff-payment-detail {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 0.45rem;
+  padding-top: 0.2rem;
+}
+
+.staff-payment-open-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.staff-payment-detail-identity {
+  display: grid;
+  gap: 0.1rem;
+  margin: 0;
+  color: var(--ink);
+}
+
+.staff-payment-detail-identity span {
+  color: var(--muted);
+  font-size: 0.88rem;
 }
 
 .staff-payment-item.is-overdue {
-  border-top-color: rgba(180, 61, 28, 0.55);
+  border-top-color: rgba(7, 58, 175, 0.42);
 }
 
 .staff-payment-item p {
@@ -1830,6 +1892,12 @@ textarea:focus {
   padding-top: 0.7rem;
 }
 
+.staff-payment-detail > .staff-payment-form {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
 .staff-payment-form label {
   display: grid;
   gap: 0.25rem;
@@ -1860,6 +1928,21 @@ textarea:focus {
 
 .staff-payment-release p {
   margin: 0.45rem 0;
+}
+
+.staff-cancellation-confirmation {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(180, 61, 28, 0.32);
+  border-left: 3px solid #b43d1c;
+  border-radius: 4px;
+  background: rgba(180, 61, 28, 0.055);
+}
+
+.staff-cancellation-confirmation > p {
+  margin: 0;
 }
 
 .staff-settings-shell {
@@ -1971,6 +2054,27 @@ textarea:focus {
   gap: 1rem;
   border-top: 2px solid var(--line);
   padding: 1.5rem 0;
+}
+
+.staff-payment-group + .staff-payment-group {
+  border-top-color: rgba(7, 58, 175, 0.32);
+}
+
+.staff-group-toggle {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
+  text-align: left;
+}
+
+.staff-group-toggle span {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .staff-section-heading .eyebrow,
@@ -3401,6 +3505,18 @@ textarea:focus {
 }
 
 @media (max-width: 38rem) {
+  .staff-payment-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .staff-payment-actions {
+    justify-self: start;
+  }
+
+  .staff-payment-open-header {
+    align-items: center;
+  }
+
   .staff-registration-intake {
     grid-template-columns: minmax(0, 1fr);
   }

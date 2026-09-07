@@ -508,6 +508,31 @@ try {
     "the ordinary later-installment due date is not duplicated as a custom remaining-payment deadline");
   assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'later'`, [twoRequest.id])[0].status, 'pending', "later installment remains independent of initial seat confirmation");
 
+  const strandedInput = submission("class-priced", undefined, 1, "two_installment");
+  strandedInput.children[0].givenName = "Finalizer retry";
+  const strandedPromotion = await createRegistrationDraft(env(database), strandedInput, new Date(iso(-3)));
+  const strandedRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [strandedPromotion.draftId])[0];
+  const strandedQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()));
+  const strandedItem = strandedQueue.items.find((item) => item.paymentRequestId === strandedRequest.id);
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: strandedRequest.id,
+    allocations: [{ installmentId: strandedItem.installmentId, amountMnt: Number(strandedItem.expectedAmountMnt) }],
+    source: 'staff_manual_bank', idempotencyKey: 'stranded-finalizer-retry',
+  }, new Date('2026-08-13T09:15:00.000Z'));
+  await finalizeDuePaymentConfirmations(env(database), new Date('2026-08-13T09:21:00.000Z'));
+  const strandedChildId = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [strandedPromotion.draftId])[0].id;
+  database.query(`UPDATE registration_draft_child SET canonical_enrollment_id = NULL, canonical_student_id = NULL,
+    canonical_application_child_id = NULL, identity_resolution_status = 'not_eligible', promotion_status = 'not_eligible'
+    WHERE registration_draft_id = ?`, [strandedPromotion.draftId]);
+  database.query(`DELETE FROM enrollment WHERE test_run_id = 'registration-test' AND id LIKE ?`, [`${strandedChildId}:enrollment`]);
+  database.query(`UPDATE registration_capacity_hold SET status = 'active', converted_at = NULL, release_reason = NULL
+    WHERE registration_draft_child_id = ?`, [strandedChildId]);
+  await finalizeDuePaymentConfirmations(env(database), new Date('2026-08-13T09:22:00.000Z'));
+  assert.ok(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [strandedPromotion.draftId])[0].enrollmentId,
+    "the finalizer retries only a finalized approved child stranded by a stale not_eligible promotion state");
+  assert.equal(count(database, "audit_event", `action = 'payment_confirmation_promotion_retried' AND subject_id = '${strandedPromotion.draftId}'`), 1,
+    "the narrowly scoped finalizer recovery remains auditable");
+
   const approvedTwoInput = submission("class-priced", undefined, 1, "two_installment");
   approvedTwoInput.children[0].givenName = "Авто баталгаа";
   const approvedTwoInstallment = await createRegistrationDraft(env(database), approvedTwoInput, new Date(iso(-3)));

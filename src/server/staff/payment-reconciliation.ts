@@ -163,6 +163,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     registration_draft_child.promotion_status AS promotionStatus,
     registration_draft_child.identity_resolution_status AS identityResolutionStatus,
     registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
+    enrollment.updated_at AS canonicalEnrollmentUpdatedAt,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
     registration_draft.email, registration_draft.verified_at AS verifiedAt,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,
@@ -207,6 +208,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
     INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
+    LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
     LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active'
     INNER JOIN class_session ON class_session.id = COALESCE(registration_capacity_hold.class_session_id, registration_draft_child.selected_class_session_id)
@@ -288,6 +290,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   canManageReferrals: hasStaffCapability(actor, "registration.manage"),
   canContactParents: hasStaffCapability(actor, "registration.manage"),
   canCorrectRegistrations: hasStaffCapability(actor, "registration.manage"),
+  canManageTransfers: hasStaffCapability(actor, "registration.manage"),
   canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
     const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
@@ -614,6 +617,35 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
       }
     }
     finalized += 1;
+  }
+
+  // A previously deployed worker can have finalized a payment after an earlier
+  // eligibility check, leaving the child marked not_eligible even though its
+  // finalized seat approval now makes promotion valid. Retry only that narrow,
+  // explicitly stranded state; normal confirmed and review-required children
+  // are intentionally left alone.
+  const stranded = await env.DB.prepare(`SELECT DISTINCT payment_request.registration_draft_id AS registrationDraftId,
+    payment_request.is_test AS isTest, payment_request.test_run_id AS testRunId
+    FROM payment_confirmation
+    INNER JOIN payment_request ON payment_request.id = payment_confirmation.payment_request_id
+    INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+    INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
+      AND payment_installment.installment_kind = 'initial'
+      AND registration_draft_child.canonical_enrollment_id IS NULL
+      AND registration_draft_child.promotion_status = 'not_eligible'
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`)
+    .all<{ registrationDraftId: string; isTest: number; testRunId: string | null }>();
+  for (const row of stranded.results) {
+    const promotion = await promotePaidDraftChildren(env, systemActor, row.registrationDraftId, nowDate);
+    if (!promotion.length) continue;
+    await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at) VALUES (?, ?, 'system', 'payment-finalizer',
+      'payment_confirmation_promotion_retried', 'registration_draft', ?, ?, ?, ?, ?, ?)`)
+      .bind(crypto.randomUUID(), now, row.registrationDraftId, JSON.stringify({ promotion: promotion.map((entry) => entry.state) }),
+        env.APP_ENV, row.isTest, row.testRunId, now).run();
   }
   return finalized;
 }
