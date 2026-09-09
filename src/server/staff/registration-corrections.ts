@@ -45,18 +45,49 @@ export async function registrationCorrectionDetail(env: WorkerEnv, actor: StaffP
     COALESCE(guardian_account.email, registration_draft.email) AS email,
     COALESCE(guardian_account.facebook_name, registration_draft.facebook_name) AS facebookName,
     COALESCE(guardian_account.home_address, registration_draft.home_address) AS homeAddress,
+    registration_draft.guardian_relationship AS guardianRelationship,
+    registration_draft.status AS draftStatus, registration_draft.parent_rules_version AS parentRulesVersion,
+    registration_draft.student_rules_version AS studentRulesVersion,
     registration_draft.verified_at AS verifiedAt, registration_draft.canonical_guardian_account_id AS canonicalGuardianId,
     guardian_account.updated_at AS canonicalGuardianUpdatedAt,
     registration_draft.updated_at AS draftUpdatedAt, registration_draft.is_test AS isTest, registration_draft.test_run_id AS testRunId,
     registration_draft_child.id AS childId, registration_draft_child.surname, registration_draft_child.given_name AS givenName,
     registration_draft_child.gender, registration_draft_child.date_of_birth AS dateOfBirth,
     registration_draft_child.current_grade AS currentGrade, registration_draft_child.current_school AS currentSchool,
-    registration_draft_child.facebook_name AS childFacebookName, registration_draft_child.previous_stage_code AS previousStageCode,
+    registration_draft_child.facebook_name AS childFacebookName, registration_draft_child.returning_status AS returningStatus,
+    registration_draft_child.previous_stage_code AS previousStageCode, registration_draft_child.selected_stage_code AS selectedStageCode,
+    registration_draft_child.status AS childStatus, registration_draft_child.payment_plan_code AS paymentPlanCode,
+    registration_draft_child.initial_payment_amount_mnt AS initialPaymentAmountMnt,
+    registration_draft_child.second_payment_amount_mnt AS secondPaymentAmountMnt,
+    registration_draft_child.second_payment_due_on AS secondPaymentDueOn,
     registration_draft_child.updated_at AS childUpdatedAt, registration_draft_child.canonical_student_id AS canonicalStudentId,
     registration_draft_child.canonical_application_child_id AS canonicalApplicationChildId,
-    registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId
+    registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
+    EXISTS(SELECT 1 FROM additional_class_admission
+      WHERE additional_class_admission.target_registration_draft_child_id = registration_draft_child.id) AS isAdditionalClass,
+    academic_year.public_label AS academicYearLabel, activity_offering.title AS offeringTitle,
+    class_session.display_label AS classLabel, class_session.weekday AS classWeekday,
+    class_session.start_time AS classStartTime, class_session.end_time AS classEndTime,
+    (SELECT document.title FROM course_rule_version AS version
+      INNER JOIN course_rule_document AS document ON document.id = version.course_rule_document_id
+      WHERE version.id = registration_draft.parent_rules_version) AS parentRulesTitle,
+    (SELECT document.title FROM course_rule_version AS version
+      INNER JOIN course_rule_document AS document ON document.id = version.course_rule_document_id
+      WHERE version.id = registration_draft.student_rules_version) AS studentRulesTitle,
+    (SELECT json_extract(event.metadata_json, '$.source') FROM audit_event AS event
+      WHERE event.action = 'registration.created_by_staff' AND event.subject_id = registration_draft.id
+      ORDER BY event.occurred_at ASC, event.id ASC LIMIT 1) AS staffIntakeSource,
+    (SELECT json_extract(event.metadata_json, '$.intakeChannel') FROM audit_event AS event
+      WHERE event.action = 'registration.created_by_staff' AND event.subject_id = registration_draft.id
+      ORDER BY event.occurred_at ASC, event.id ASC LIMIT 1) AS staffIntakeChannel,
+    (SELECT json_extract(event.metadata_json, '$.receiptRequested') FROM audit_event AS event
+      WHERE event.action = 'registration.created_by_staff' AND event.subject_id = registration_draft.id
+      ORDER BY event.occurred_at ASC, event.id ASC LIMIT 1) AS staffReceiptRequested
     FROM registration_draft_child INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     LEFT JOIN guardian_account ON guardian_account.id = registration_draft.canonical_guardian_account_id
+    LEFT JOIN academic_year ON academic_year.id = registration_draft.academic_year_id
+    LEFT JOIN class_session ON class_session.id = COALESCE(registration_draft_child.selected_class_session_id, registration_draft_child.preferred_waitlist_class_session_id)
+    LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
     WHERE registration_draft_child.id = ?`).bind(childId).first<Detail>();
   if (!row) throw new RegistrationCorrectionError("not_found");
   const sharedStudent = row.canonicalStudentId ? await env.DB.prepare(`SELECT COUNT(*) AS count FROM application_child WHERE student_id = ? AND id != COALESCE(?, '')`).bind(row.canonicalStudentId, row.canonicalApplicationChildId).first<{ count: number }>() : null;

@@ -46,6 +46,8 @@ import {
 } from "../staff/payment-reconciliation";
 import { cancelRegistration, reinstateRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
 import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets, recordClassTransferDifference } from "../staff/class-transfer";
+import { AdditionalClassPreviewError, getAdditionalClassPreview } from "../staff/additional-class-preview";
+import { AdditionalClassAdmissionError, createAdditionalClassAdmission } from "../staff/additional-class-admission";
 import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
 import {
   acceptWaitlistOffer,
@@ -60,6 +62,7 @@ import {
 import {
   CanonicalPromotionError,
   getPromotionReviewQueue,
+  promotePaidDraftChild,
   resolvePromotionIdentity,
 } from "../services/canonical-enrollment-promotion";
 import { TurnstileError, verifyStaffLoginTurnstile, verifyTurnstile } from "../security/turnstile";
@@ -331,6 +334,16 @@ function paymentReconciliationError(caught: unknown): Response {
   return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
+function additionalClassAdmissionError(caught: unknown): Response {
+  if (!(caught instanceof AdditionalClassAdmissionError)) return error("internal_error", "Нэмэлт ангийн бүртгэлийг одоогоор үүсгэж чадсангүй.", 500, { "Cache-Control": "no-store" });
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Эх бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", "Сонгосон ангид аль хэдийн хүсэлт үүссэн эсвэл суудал дүүрсэн байна.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "source_fully_paid") return error("invalid_request", "Эх бүртгэлийн төлбөр бүрэн дууссан тул хөнгөлөлтийг үлдсэн хоёр дахь төлбөрөөс тооцох боломжгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "unsupported") return error("invalid_request", "Анги нэмэхдээ эх бүртгэл болон шинэ анги хоёулаа хоёр хувааж төлөх тохиролцоотой байх шаардлагатай.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Анги, төлбөрийн сонголт болон зөвшөөрлөө шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
 function registrationCancellationError(caught: unknown): Response {
   if (!(caught instanceof RegistrationCancellationError)) {
     return error("internal_error", "Бүртгэлийг одоогоор цуцалж чадсангүй.", 500, { "Cache-Control": "no-store" });
@@ -342,6 +355,12 @@ function registrationCancellationError(caught: unknown): Response {
   }
   if (caught.code === "reinstatement_blocked") {
     return error("invalid_request", "Энэ бүртгэлийг аюулгүй сэргээх нөхцөл хангагдахгүй байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "confirmation_in_progress") {
+    return error("invalid_request", "Нэмэлт ангийн баталгаажуулалт явагдаж байна. Түр хүлээгээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "additional_admission_pending") {
+    return error("invalid_request", "Нэмэлт ангийн хүлээгдэж буй бүртгэл байна. Эхлээд тухайн бүртгэлийг шийдвэрлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
   }
   if (caught.code === "conflict") return error("invalid_request", "Бүртгэлийн төлөв өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Цуцлах шалтгаан болон тайлбараа шалгана уу.", 400, { "Cache-Control": "no-store" });
@@ -1258,6 +1277,30 @@ export async function handleApiRequest(
           transferId: String(payload.transferId ?? ""), expectedVersion: Number(payload.expectedVersion),
         }) }, 200, { "Cache-Control": "no-store" });
       }
+      if (payload.action === "additional-class.preview") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        return json({ ok: true, ...await getAdditionalClassPreview(env, principal, {
+          registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+          targetClassSessionId: typeof payload.targetClassSessionId === "string" ? payload.targetClassSessionId : undefined,
+          paymentPlanCode: typeof payload.paymentPlanCode === "string" ? payload.paymentPlanCode : undefined,
+          proposeBaseDiscount: payload.proposeBaseDiscount === true,
+        }) }, 200, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "additional-class.create") {
+        if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+        try {
+          return json({ ok: true, ...await createAdditionalClassAdmission(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            targetClassSessionId: String(payload.targetClassSessionId ?? ""),
+            paymentPlanCode: String(payload.paymentPlanCode ?? ""),
+            parentAcknowledged: payload.parentAcknowledged === true,
+            childAcknowledged: payload.childAcknowledged === true,
+            idempotencyKey: String(payload.idempotencyKey ?? ""),
+          }) }, 201, { "Cache-Control": "no-store" });
+        } catch (caught) {
+          return additionalClassAdmissionError(caught);
+        }
+      }
       if (!hasStaffCapability(principal, "payment.manage")) {
         return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
       }
@@ -1280,6 +1323,9 @@ export async function handleApiRequest(
         }
       }
       switch (payload.action) {
+        case "additional-class.retry-confirmation":
+          if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+          return json({ ok: true, ...await promotePaidDraftChild(env, principal, String(payload.registrationDraftChildId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "payment.record":
           return json({ ok: true, ...await recordManualPayment(env, principal, {
             paymentRequestId: String(payload.paymentRequestId ?? ""),
@@ -1303,8 +1349,9 @@ export async function handleApiRequest(
         case "payment-credit.refund":
           return json({ ok: true, ...await markPaymentCreditRefunded(env, principal, String(payload.creditId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "payment.checked-not-found":
-          await recordCheckedNotFound(env, principal, String(payload.paymentRequestId ?? ""));
-          return json({ ok: true }, 200, { "Cache-Control": "no-store" });
+          return json({ ok: true, ...await recordCheckedNotFound(
+            env, principal, String(payload.paymentRequestId ?? ""), String(payload.operationId ?? ""),
+          ) }, 200, { "Cache-Control": "no-store" });
         case "payment.release-seat":
           return json({ ok: true, ...await releaseUnpaidSeat(env, principal, String(payload.paymentRequestId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "discount-award.reverse":
@@ -1339,7 +1386,8 @@ export async function handleApiRequest(
           return error("not_found", "Хүссэн үйлдэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
       }
     } catch (caught) {
-      return caught instanceof ClassTransferError ? error(caught.code === "forbidden" ? "forbidden" : caught.code === "not_found" ? "not_found" : "invalid_request", caught.code === "forbidden" ? "Энэ үйлдлийг хийх эрх алга." : caught.code === "not_found" ? "Бүртгэлийн шилжүүлэх эх сурвалж олдсонгүй." : caught.code === "ineligible" ? "Энэ бүртгэлд одоогоор шилжүүлэх боломжтой идэвхтэй баталгаажсан суудал алга." : caught.code === "source_year_archived" ? "Эх бүртгэлийн хичээлийн жил архивлагдсан тул шилжүүлэх боломжгүй." : caught.code === "target_pricing" ? "Сонгосон ангийн төлбөрийн тохиргоо бүрэн биш байна." : caught.code === "target_ineligible" ? "Сонгосон анги шилжүүлэхэд идэвхгүй байна." : caught.code === "cross_year" ? "Зөвхөн ижил хичээлийн жилийн ангид шилжүүлнэ." : caught.code === "stale" ? "Анги эсвэл төлбөрийн тохиргоо өөрчлөгдсөн байна. Сонголтыг дахин нээнэ үү." : caught.code === "capacity" ? "Сонгосон ангид сул суудал алга." : caught.code === "conflict" ? "Мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу." : "Шилжүүлгийн талбаруудыг шалгана уу.", caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : caught.code === "capacity" || caught.code === "conflict" || caught.code === "stale" ? 409 : 400, { "Cache-Control": "no-store" })
+      return caught instanceof AdditionalClassPreviewError ? error(caught.code === "forbidden" ? "forbidden" : caught.code === "not_found" ? "not_found" : "invalid_request", caught.code === "forbidden" ? "Энэ үйлдлийг хийх эрх алга." : caught.code === "not_found" ? "Баталгаатай идэвхтэй бүртгэл олдсонгүй." : caught.code === "policy_unavailable" ? "Гэр бүлийн хөнгөлөлтийн бодлогын тохиргоо олдсонгүй. Админ шалгана уу." : "Нэмэлт ангийн сонголтыг шалгана уу.", caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : 400, { "Cache-Control": "no-store" })
+        : caught instanceof ClassTransferError ? error(caught.code === "forbidden" ? "forbidden" : caught.code === "not_found" ? "not_found" : "invalid_request", caught.code === "forbidden" ? "Энэ үйлдлийг хийх эрх алга." : caught.code === "not_found" ? "Бүртгэлийн шилжүүлэх эх сурвалж олдсонгүй." : caught.code === "ineligible" ? "Энэ бүртгэлд одоогоор шилжүүлэх боломжтой идэвхтэй баталгаажсан суудал алга." : caught.code === "confirmation_in_progress" ? "Нэмэлт ангийн баталгаажуулалт явагдаж байна. Түр хүлээгээд дахин оролдоно уу." : caught.code === "additional_admission_pending" ? "Нэмэлт ангийн хүлээгдэж буй бүртгэл байна. Эхлээд тухайн бүртгэлийг шийдвэрлээд дахин оролдоно уу." : caught.code === "source_year_archived" ? "Эх бүртгэлийн хичээлийн жил архивлагдсан тул шилжүүлэх боломжгүй." : caught.code === "target_pricing" ? "Сонгосон ангийн төлбөрийн тохиргоо бүрэн биш байна." : caught.code === "target_ineligible" ? "Сонгосон анги шилжүүлэхэд идэвхгүй байна." : caught.code === "cross_year" ? "Зөвхөн ижил хичээлийн жилийн ангид шилжүүлнэ." : caught.code === "stale" ? "Анги эсвэл төлбөрийн тохиргоо өөрчлөгдсөн байна. Сонголтыг дахин нээнэ үү." : caught.code === "capacity" ? "Сонгосон ангид сул суудал алга." : caught.code === "conflict" ? "Мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу." : "Шилжүүлгийн талбаруудыг шалгана уу.", caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : caught.code === "capacity" || caught.code === "conflict" || caught.code === "confirmation_in_progress" || caught.code === "additional_admission_pending" || caught.code === "stale" ? 409 : 400, { "Cache-Control": "no-store" })
         : caught instanceof RegistrationCancellationError ? registrationCancellationError(caught)
         : caught instanceof DiscountPolicyError ? discountPolicyError(caught)
         : caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)

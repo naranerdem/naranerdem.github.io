@@ -134,16 +134,32 @@ export function effectiveInstallments(inputs: EffectiveInstallmentInput[], award
     const ordered = [...installments].sort((left, right) => left.installmentNumber - right.installmentNumber || left.id.localeCompare(right.id));
     const unpaid = ordered.map((installment) => Math.max(0, installment.amountMnt - Math.min(installment.amountMnt, installment.allocatedAmountMnt ?? 0)));
     const totalUnpaid = unpaid.reduce((sum, value) => sum + value, 0);
-    const totalAward = (awardsByChild.get(childId) ?? []).reduce((sum, award) => sum + award.awardAmountMnt, 0);
-    const applicableAward = Math.min(totalAward, totalUnpaid);
+    const awards = awardsByChild.get(childId) ?? [];
+    // Only the new staff additional-class promise uses second-installment-first
+    // allocation. Existing family awards keep their historic projection.
+    const deferredFamilyAward = awards.filter((award) => award.reason === "additional_class_canonical_confirmation")
+      .reduce((sum, award) => sum + award.awardAmountMnt, 0);
+    const ordinaryAward = awards.filter((award) => award.reason !== "additional_class_canonical_confirmation")
+      .reduce((sum, award) => sum + award.awardAmountMnt, 0);
+    const deferredByIndex = ordered.map(() => 0);
+    let remainingDeferred = Math.min(deferredFamilyAward, totalUnpaid);
+    for (let index = ordered.length - 1; index >= 0 && remainingDeferred > 0; index -= 1) {
+      const applied = Math.min(unpaid[index], remainingDeferred);
+      deferredByIndex[index] = applied;
+      remainingDeferred -= applied;
+    }
+    const remainingUnpaid = unpaid.map((value, index) => value - deferredByIndex[index]);
+    const remainingTotal = remainingUnpaid.reduce((sum, value) => sum + value, 0);
+    const applicableAward = Math.min(ordinaryAward, remainingTotal);
     let allocatedDiscount = 0;
     for (let index = 0; index < ordered.length; index += 1) {
       const installment = ordered[index];
-      const isLastUnpaid = unpaid.slice(index + 1).every((value) => value === 0);
-      const discountAmount = unpaid[index] === 0 ? 0 : isLastUnpaid
+      const isLastUnpaid = remainingUnpaid.slice(index + 1).every((value) => value === 0);
+      const ordinaryDiscount = remainingUnpaid[index] === 0 ? 0 : isLastUnpaid
         ? applicableAward - allocatedDiscount
-        : Math.floor((applicableAward * unpaid[index]) / totalUnpaid);
-      allocatedDiscount += discountAmount;
+        : Math.floor((applicableAward * remainingUnpaid[index]) / remainingTotal);
+      allocatedDiscount += ordinaryDiscount;
+      const discountAmount = deferredByIndex[index] + ordinaryDiscount;
       result.push({ ...installment, discountAmountMnt: discountAmount, effectiveAmountMnt: installment.amountMnt - discountAmount });
     }
   }

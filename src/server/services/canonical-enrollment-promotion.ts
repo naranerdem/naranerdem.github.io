@@ -3,7 +3,7 @@ import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 import { sendEnrollmentConfirmationEmail } from "../email/registration-transactional";
 import { ensureEnrollmentReferralCode } from "./referral-codes";
-import { awardFamilyDiscountsForGuardian, awardReferrerDiscountForReferral, getDiscountPolicySettingFromDatabase, reverseReferralAwardForSameFamily } from "./discounts";
+import { awardFamilyDiscountsForGuardian, awardReferrerDiscountForReferral, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
 
 type ResolutionStatus = "promoted" | "needs_identity_review" | "needs_guardian_review" | "not_eligible" | "failed";
 
@@ -92,6 +92,104 @@ interface ReviewRow {
   identityResolutionStatus: string;
 }
 
+interface AdditionalAdmissionRow {
+  id: string;
+  sourceChildId: string;
+  sourceEnrollmentId: string;
+  targetChildId: string;
+  canonicalStudentId: string;
+  canonicalGuardianId: string;
+  familyBasisPoints: number;
+  sourceBaseAmountMnt: number;
+  sourceAwardAmountMnt: number;
+  targetBaseAmountMnt: number;
+  targetAwardAmountMnt: number;
+  status: "pending_confirmation" | "confirmed" | "cancelled" | "expired";
+  activatedAt: string | null;
+  confirmationClaimId: string | null;
+  confirmationClaimExpiresAt: string | null;
+  confirmationFence: number;
+  confirmationLastErrorCode: string | null;
+  isTest: number;
+  testRunId: string | null;
+}
+
+const additionalAdmissionClaimLeaseMs = 2 * 60 * 1000;
+
+async function additionalAdmissionForTarget(env: WorkerEnv, targetChildId: string) {
+  return env.DB.prepare(`SELECT id, source_registration_draft_child_id AS sourceChildId,
+      source_enrollment_id AS sourceEnrollmentId, target_registration_draft_child_id AS targetChildId,
+      canonical_student_id AS canonicalStudentId, canonical_guardian_account_id AS canonicalGuardianId,
+      family_basis_points AS familyBasisPoints,
+      source_base_amount_mnt AS sourceBaseAmountMnt, source_award_amount_mnt AS sourceAwardAmountMnt,
+      target_base_amount_mnt AS targetBaseAmountMnt, target_award_amount_mnt AS targetAwardAmountMnt,
+      status, activated_at AS activatedAt,
+      confirmation_claim_id AS confirmationClaimId,
+      confirmation_claim_expires_at AS confirmationClaimExpiresAt,
+      confirmation_fence AS confirmationFence,
+      confirmation_last_error_code AS confirmationLastErrorCode,
+      is_test AS isTest, test_run_id AS testRunId
+    FROM additional_class_admission WHERE target_registration_draft_child_id = ?`).bind(targetChildId).first<AdditionalAdmissionRow>();
+}
+
+async function additionalAdmissionSourceIsCurrent(env: WorkerEnv, admission: Pick<AdditionalAdmissionRow, "sourceChildId" | "sourceEnrollmentId" | "canonicalStudentId">): Promise<boolean> {
+  const source = await env.DB.prepare(`SELECT enrollment.student_id AS studentId, enrollment.status, enrollment.transferred_out_at AS transferredOutAt
+    FROM enrollment INNER JOIN registration_draft_child ON registration_draft_child.id = ?
+    WHERE enrollment.id = ? AND registration_draft_child.status != 'cancelled'`).bind(admission.sourceChildId, admission.sourceEnrollmentId).first<{
+      studentId: string; status: string; transferredOutAt: string | null;
+    }>();
+  return Boolean(source && source.status === "confirmed" && !source.transferredOutAt && source.studentId === admission.canonicalStudentId);
+}
+
+type AdditionalAdmissionClaim =
+  | { state: "none" | "busy" | "ineligible" }
+  | { state: "claimed"; admission: AdditionalAdmissionRow; claimId: string; fence: number; expiresAt: string };
+
+export async function claimAdditionalAdmissionConfirmation(env: WorkerEnv, targetChildId: string, nowDate: Date): Promise<AdditionalAdmissionClaim> {
+  const admission = await additionalAdmissionForTarget(env, targetChildId);
+  if (!admission) return { state: "none" };
+  if (admission.status !== "pending_confirmation" || !(await additionalAdmissionSourceIsCurrent(env, admission))) return { state: "ineligible" };
+  const now = nowDate.toISOString();
+  const expiresAt = new Date(nowDate.getTime() + additionalAdmissionClaimLeaseMs).toISOString();
+  const claimId = crypto.randomUUID();
+  const claimed = await env.DB.prepare(`UPDATE additional_class_admission
+    SET confirmation_claim_id = ?, confirmation_claimed_at = ?, confirmation_claim_expires_at = ?,
+      confirmation_fence = confirmation_fence + 1, confirmation_last_error_code = NULL,
+      confirmation_last_error_at = NULL, updated_at = ?
+    WHERE id = ? AND status = 'pending_confirmation'
+      AND (confirmation_claim_expires_at IS NULL OR confirmation_claim_expires_at <= ?)
+      AND EXISTS (SELECT 1 FROM enrollment
+        INNER JOIN registration_draft_child AS source_child ON source_child.id = additional_class_admission.source_registration_draft_child_id
+        WHERE enrollment.id = additional_class_admission.source_enrollment_id AND enrollment.status = 'confirmed'
+          AND enrollment.transferred_out_at IS NULL AND enrollment.student_id = additional_class_admission.canonical_student_id
+          AND source_child.status != 'cancelled')
+      AND EXISTS (SELECT 1 FROM registration_draft_child AS target_child
+        WHERE target_child.id = additional_class_admission.target_registration_draft_child_id AND target_child.status != 'cancelled')`)
+    .bind(claimId, now, expiresAt, now, admission.id, now).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) {
+    const current = await additionalAdmissionForTarget(env, targetChildId);
+    return current?.status === "pending_confirmation" ? { state: "busy" } : { state: "ineligible" };
+  }
+  return { state: "claimed", admission: { ...admission, confirmationClaimId: claimId, confirmationClaimExpiresAt: expiresAt, confirmationFence: Number(admission.confirmationFence) + 1 }, claimId, fence: Number(admission.confirmationFence) + 1, expiresAt };
+}
+
+function additionalAdmissionFenceSql(): string {
+  return `EXISTS (SELECT 1 FROM additional_class_admission AS admission
+    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = admission.source_enrollment_id
+    INNER JOIN registration_draft_child AS source_child ON source_child.id = admission.source_registration_draft_child_id
+    INNER JOIN registration_draft_child AS target_child ON target_child.id = admission.target_registration_draft_child_id
+    WHERE admission.id = ? AND admission.status = 'pending_confirmation'
+      AND admission.confirmation_claim_id = ? AND admission.confirmation_fence = ?
+      AND admission.confirmation_claim_expires_at > ?
+      AND source_enrollment.status = 'confirmed' AND source_enrollment.transferred_out_at IS NULL
+      AND source_enrollment.student_id = admission.canonical_student_id
+      AND source_child.status != 'cancelled' AND target_child.status != 'cancelled')`;
+}
+
+function additionalAdmissionFenceBindings(claim: Extract<AdditionalAdmissionClaim, { state: "claimed" }>, now: string): [string, string, number, string] {
+  return [claim.admission.id, claim.claimId, claim.fence, now];
+}
+
 // Canonical identity/enrollment work may begin after all required installments
 // are finalized, or after a teacher has finalized an explicit seat approval.
 // A later scheduled installment remains financial work after that approval.
@@ -145,6 +243,159 @@ function audit(
   ) VALUES (?, ?, 'staff', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(crypto.randomUUID(), now, actor.staffAccountId, action, subjectType, subjectId,
       JSON.stringify(metadata), env.APP_ENV, isTest, testRunId, now);
+}
+
+export async function finalizeClaimedAdditionalClassAdmission(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  row: PromotionRow,
+  claim: Extract<AdditionalAdmissionClaim, { state: "claimed" }>,
+  now: string,
+): Promise<{ enrollmentId: string; createdEnrollment: boolean } | null> {
+  const admission = claim.admission;
+  const studentId = row.canonicalStudentId;
+  if (!studentId || studentId !== admission.canonicalStudentId || !row.canonicalGuardianId || row.canonicalGuardianId !== admission.canonicalGuardianId) {
+    throw new CanonicalPromotionError("conflict");
+  }
+  const fence = additionalAdmissionFenceSql();
+  const bindFence = () => additionalAdmissionFenceBindings(claim, now);
+  const preRegistrationId = row.canonicalPreRegistrationId || `${row.draftId}:pre-registration`;
+  const applicationChildId = row.canonicalApplicationChildId || `${row.childId}:application`;
+  const enrollmentId = row.canonicalEnrollmentId || `${row.childId}:enrollment`;
+  const needsEnrollment = !row.canonicalEnrollmentId;
+  if (needsEnrollment && (!promotionPaymentEligible(row) || !row.activeInitialHold || !row.selectedClassSessionId)) return null;
+
+  const sourceAwardId = `${admission.id}:source-family`;
+  const targetAwardId = `${admission.id}:target-family`;
+  const statements: D1PreparedStatement[] = [];
+  if (needsEnrollment) {
+    statements.push(
+      env.DB.prepare(`INSERT OR IGNORE INTO pre_registration (
+        id, guardian_id, academic_year_id, status, submitted_at, parent_rules_version, student_rules_version,
+        is_test, test_run_id, created_at, updated_at
+      ) SELECT ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ? WHERE ${fence}`)
+        .bind(preRegistrationId, admission.canonicalGuardianId, row.academicYearId, row.verifiedAt ?? now,
+          row.parentRulesVersion, row.studentRulesVersion, row.draftIsTest, row.draftTestRunId, now, now, ...bindFence()),
+      env.DB.prepare(`UPDATE registration_draft SET canonical_guardian_account_id = ?, canonical_pre_registration_id = ?,
+        guardian_resolution_status = 'resolved', updated_at = ? WHERE id = ? AND ${fence}`)
+        .bind(admission.canonicalGuardianId, preRegistrationId, now, row.draftId, ...bindFence()),
+      env.DB.prepare(`INSERT OR IGNORE INTO application_child (
+        id, pre_registration_id, student_id, current_school, current_grade, returning_status,
+        previous_stage_code, code_input, selected_payment_plan_code, selected_class_session_id,
+        status, is_test, test_run_id, created_at, updated_at
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enrolled', ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM pre_registration WHERE id = ?) AND ${fence}`)
+        .bind(applicationChildId, preRegistrationId, studentId, row.currentSchool, integerGrade(row.currentGrade), row.returningStatus,
+          row.previousStageCode === "unknown" ? null : row.previousStageCode, row.codeInput, row.paymentPlanCode,
+          row.selectedClassSessionId, row.childIsTest, row.childTestRunId, now, now, preRegistrationId, ...bindFence()),
+      env.DB.prepare(`INSERT OR IGNORE INTO enrollment (
+        id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at,
+        is_test, test_run_id, created_at, updated_at
+      ) SELECT ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM application_child WHERE id = ?)
+          AND EXISTS (SELECT 1 FROM registration_capacity_hold WHERE registration_draft_child_id = ?
+            AND hold_type = 'initial_payment' AND status = 'active') AND ${fence}`)
+        .bind(enrollmentId, applicationChildId, studentId, row.academicYearId, row.selectedClassSessionId, now,
+          row.childIsTest, row.childTestRunId, now, now, applicationChildId, row.childId, ...bindFence()),
+      env.DB.prepare(`UPDATE registration_capacity_hold SET status = 'released', converted_at = ?,
+        release_reason = 'promoted_to_enrollment', updated_at = ? WHERE registration_draft_child_id = ?
+        AND hold_type = 'initial_payment' AND status = 'active'
+        AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed') AND ${fence}`)
+        .bind(now, now, row.childId, enrollmentId, ...bindFence()),
+      env.DB.prepare(`UPDATE registration_draft_child SET canonical_student_id = ?, canonical_application_child_id = ?,
+        canonical_enrollment_id = ?, identity_resolution_status = 'promoted', promotion_status = 'promoted', updated_at = ?
+        WHERE id = ? AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed') AND ${fence}`)
+        .bind(studentId, applicationChildId, enrollmentId, now, row.childId, enrollmentId, ...bindFence()),
+      env.DB.prepare(`UPDATE payment_installment SET canonical_application_child_id = ?, canonical_enrollment_id = ?, updated_at = ?
+        WHERE registration_draft_child_id = ? AND ${fence}`)
+        .bind(applicationChildId, enrollmentId, now, row.childId, ...bindFence()),
+      env.DB.prepare(`UPDATE registration_draft_waitlist_entry SET canonical_application_child_id = ?, updated_at = ?
+        WHERE registration_draft_child_id = ? AND ${fence}`)
+        .bind(applicationChildId, now, row.childId, ...bindFence()),
+      env.DB.prepare(`INSERT INTO audit_event (
+        id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+        metadata_json, environment, is_test, test_run_id, created_at
+      ) SELECT ?, ?, 'staff', ?, 'canonical_enrollment_promoted', 'registration_draft_child', ?, ?, ?, ?, ?, ?
+        WHERE ${fence}`)
+        .bind(crypto.randomUUID(), now, actor.staffAccountId, row.childId,
+          JSON.stringify({ guardianId: admission.canonicalGuardianId, studentId, enrollmentId, identityResolution: "additional_class_admission" }),
+          env.APP_ENV, row.childIsTest, row.childTestRunId, now, ...bindFence()),
+    );
+  }
+  if (admission.sourceAwardAmountMnt > 0) {
+    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO discount_award (
+      id, registration_draft_child_id, beneficiary_enrollment_id, award_type, source_registration_draft_child_id,
+      basis_points, base_amount_mnt, award_amount_mnt, status, reason, awarded_at, is_test, test_run_id, created_at, updated_at
+    ) SELECT ?, ?, ?, 'family_multi_child', ?, ?, ?, ?, 'active', 'additional_class_canonical_confirmation', ?, ?, ?, ?, ?
+      WHERE ${fence}`)
+      .bind(sourceAwardId, admission.sourceChildId, admission.sourceEnrollmentId, admission.targetChildId,
+        admission.familyBasisPoints, admission.sourceBaseAmountMnt, admission.sourceAwardAmountMnt, now,
+        admission.isTest, admission.testRunId, now, now, ...bindFence()));
+  }
+  statements.push(
+    env.DB.prepare(`INSERT OR IGNORE INTO discount_award (
+      id, registration_draft_child_id, beneficiary_enrollment_id, award_type, source_registration_draft_child_id,
+      basis_points, base_amount_mnt, award_amount_mnt, status, reason, awarded_at, is_test, test_run_id, created_at, updated_at
+    ) SELECT ?, ?, ?, 'family_multi_child', ?, ?, ?, ?, 'active', 'additional_class_canonical_confirmation', ?, ?, ?, ?, ?
+      WHERE ${fence}`)
+      .bind(targetAwardId, admission.targetChildId, enrollmentId, admission.sourceChildId,
+        admission.familyBasisPoints, admission.targetBaseAmountMnt, admission.targetAwardAmountMnt, now,
+        admission.isTest, admission.testRunId, now, now, ...bindFence()),
+    env.DB.prepare(`UPDATE additional_class_admission SET status = 'confirmed', activated_at = ?,
+      confirmation_claim_id = NULL, confirmation_claimed_at = NULL, confirmation_claim_expires_at = NULL,
+      confirmation_last_error_code = NULL, confirmation_last_error_at = NULL, updated_at = ?
+      WHERE id = ? AND ${fence}
+        AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')
+        AND EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND status = 'active')
+        AND (? = 0 OR EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND status = 'active'))`)
+      .bind(now, now, admission.id, ...bindFence(), enrollmentId, targetAwardId, admission.sourceAwardAmountMnt, sourceAwardId),
+    env.DB.prepare(`INSERT INTO audit_event (
+      id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at
+    ) SELECT ?, ?, 'system', 'canonical-promotion', 'additional_class_awards_activated', 'additional_class_admission', ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM additional_class_admission WHERE id = ? AND status = 'confirmed' AND activated_at = ?)`)
+      .bind(crypto.randomUUID(), now, admission.id, JSON.stringify({ sourceAwardId, targetAwardId }),
+        env.APP_ENV, admission.isTest, admission.testRunId, now, admission.id, now),
+  );
+  const results = await env.DB.batch(statements);
+  const completion = results[results.length - 2];
+  if ((completion.meta?.changes ?? 0) !== 1) {
+    const current = await additionalAdmissionForTarget(env, row.childId);
+    if (current?.status === "confirmed") return { enrollmentId, createdEnrollment: needsEnrollment };
+    return null;
+  }
+  await Promise.all([
+    recalculateDiscountAwardBalances(env.DB, admission.sourceChildId, now),
+    recalculateDiscountAwardBalances(env.DB, admission.targetChildId, now),
+  ]);
+  return { enrollmentId, createdEnrollment: needsEnrollment };
+}
+
+// The finalizer and the interactive payment path use the same claimed-admission
+// continuation. Keeping it separate from claim acquisition makes a reclaimed
+// (stale-worker) continuation a harmless, fenced no-op.
+export async function finalizeAdditionalAdmissionClaim(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  targetChildId: string,
+  claim: Extract<AdditionalAdmissionClaim, { state: "claimed" }>,
+  now: string,
+): Promise<{ enrollmentId: string; createdEnrollment: boolean } | null> {
+  const row = await rowForChild(env.DB, targetChildId);
+  return row ? finalizeClaimedAdditionalClassAdmission(env, actor, row, claim, now) : null;
+}
+
+export async function recordAdditionalAdmissionDiagnostic(
+  env: WorkerEnv,
+  targetChildId: string,
+  code: "retryable_confirmation_failure" | "source_no_longer_current",
+  now: string,
+): Promise<void> {
+  await env.DB.prepare(`UPDATE additional_class_admission SET confirmation_last_error_code = ?,
+    confirmation_last_error_at = ?, updated_at = ?
+    WHERE target_registration_draft_child_id = ? AND status = 'pending_confirmation'
+      AND (confirmation_claim_expires_at IS NULL OR confirmation_claim_expires_at <= ?)`)
+    .bind(code, now, now, targetChildId, now).run();
 }
 
 async function rowForChild(database: D1Database, childId: string): Promise<PromotionRow | null> {
@@ -271,8 +522,23 @@ export async function promotePaidDraftChild(
   if (row.draftStatus === "cancelled" || row.childStatus === "cancelled" || row.canonicalEnrollmentStatus === "cancelled") {
     return { state: "not_eligible" };
   }
+  if (row.draftStatus === "expired") {
+    const now = nowDate.toISOString();
+    await env.DB.prepare(`UPDATE additional_class_admission SET status = 'expired', updated_at = ?
+      WHERE target_registration_draft_child_id = ? AND status = 'pending_confirmation'`).bind(now, row.childId).run();
+    return { state: "not_eligible" };
+  }
   if (row.canonicalEnrollmentId) {
     if (!row.canonicalStudentId) throw new CanonicalPromotionError("conflict");
+    const additionalClaim = await claimAdditionalAdmissionConfirmation(env, row.childId, nowDate);
+    if (additionalClaim.state === "busy" || additionalClaim.state === "ineligible") return { state: "not_eligible" };
+    if (additionalClaim.state === "claimed") {
+      const finalized = await finalizeAdditionalAdmissionClaim(env, actor, row.childId, additionalClaim, nowDate.toISOString());
+      if (!finalized) return { state: "not_eligible" };
+      await ensureEnrollmentReferralCode(env.DB, finalized.enrollmentId, row.canonicalStudentId,
+        { isTest: row.childIsTest, testRunId: row.childTestRunId }, nowDate.toISOString());
+      return { state: "promoted", enrollmentId: finalized.enrollmentId };
+    }
     await ensureEnrollmentReferralCode(env.DB, row.canonicalEnrollmentId, row.canonicalStudentId,
       { isTest: row.childIsTest, testRunId: row.childTestRunId }, new Date().toISOString());
     const policy = await getDiscountPolicySettingFromDatabase(env.DB);
@@ -287,6 +553,21 @@ export async function promotePaidDraftChild(
     await env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'not_eligible',
       promotion_status = 'not_eligible', updated_at = ? WHERE id = ?`).bind(now, row.childId).run();
     return { state: "not_eligible" };
+  }
+  // Additional admissions carry an already-bound canonical identity. Their
+  // target enrollment, award promise, and terminal admission status commit
+  // through one fenced batch before a parent notice can be queued.
+  const additionalClaim = await claimAdditionalAdmissionConfirmation(env, row.childId, nowDate);
+  if (additionalClaim.state === "busy" || additionalClaim.state === "ineligible") return { state: "not_eligible" };
+  if (additionalClaim.state === "claimed") {
+    const finalized = await finalizeAdditionalAdmissionClaim(env, actor, row.childId, additionalClaim, now);
+    if (!finalized) return { state: "not_eligible" };
+    await ensureEnrollmentReferralCode(env.DB, finalized.enrollmentId, additionalClaim.admission.canonicalStudentId,
+      { isTest: row.childIsTest, testRunId: row.childTestRunId }, now);
+    if (finalized.createdEnrollment) {
+      try { await sendEnrollmentConfirmationEmail(env, row.draftId); } catch { /* delivery is advisory */ }
+    }
+    return { state: "promoted", enrollmentId: finalized.enrollmentId };
   }
 
   const guardian = await resolveGuardian(env.DB, row);

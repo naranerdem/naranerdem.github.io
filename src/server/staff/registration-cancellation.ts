@@ -6,7 +6,7 @@ import { getClassCapacityProjections } from "../services/class-capacity";
 export type RegistrationCancellationReason = "guardian_request" | "payment_overdue" | "other";
 
 export class RegistrationCancellationError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "withdrawal_required" | "reinstatement_blocked") {
+  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "confirmation_in_progress" | "additional_admission_pending" | "withdrawal_required" | "reinstatement_blocked") {
     super("Registration cancellation failed.");
   }
 }
@@ -195,12 +195,29 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
   const now = nowDate.toISOString();
   // This conditional gate is intentionally first. It makes a replay or a racing
   // finalizer observe terminal state before any capacity representation changes.
+  // A live additional-class confirmation claim owns its source and target until
+  // it finishes or its short durable lease expires.
   const gate = await env.DB.prepare(`UPDATE registration_draft_child SET status = 'cancelled',
     identity_resolution_status = 'not_eligible', promotion_status = 'failed', updated_at = ?
-    WHERE id = ? AND status != 'cancelled'`).bind(now, row.childId).run();
+    WHERE id = ? AND status != 'cancelled'
+      AND NOT EXISTS (SELECT 1 FROM additional_class_admission
+        WHERE status = 'pending_confirmation' AND confirmation_claim_expires_at IS NOT NULL AND confirmation_claim_expires_at > ?
+          AND (source_registration_draft_child_id = ? OR target_registration_draft_child_id = ?))
+      AND NOT EXISTS (SELECT 1 FROM additional_class_admission
+        WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation')`)
+    .bind(now, row.childId, now, row.childId, row.childId, row.childId).run();
   if (changes(gate) !== 1) {
     const current = await rowForChild(env, row.childId);
     if (current?.childStatus === "cancelled") return { cancelled: false, idempotent: true, classSessionId: row.classSessionId, creditCount: 0 };
+    const activeClaim = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_admission
+      WHERE status = 'pending_confirmation' AND confirmation_claim_expires_at IS NOT NULL AND confirmation_claim_expires_at > ?
+        AND (source_registration_draft_child_id = ? OR target_registration_draft_child_id = ?) LIMIT 1`)
+      .bind(now, row.childId, row.childId).first();
+    if (activeClaim) throw new RegistrationCancellationError("confirmation_in_progress");
+    const pendingAdmission = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_admission
+      WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation' LIMIT 1`)
+      .bind(row.childId).first();
+    if (pendingAdmission) throw new RegistrationCancellationError("additional_admission_pending");
     throw new RegistrationCancellationError("conflict");
   }
 
@@ -228,6 +245,9 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
       )`).bind(now, now, row.childId, row.childId),
     env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
       WHERE registration_draft_child_id = ? AND status IN ('pending', 'failed', 'sending')`).bind(now, row.childId),
+    env.DB.prepare(`UPDATE additional_class_admission SET status = 'cancelled', updated_at = ?
+      WHERE (target_registration_draft_child_id = ? OR source_registration_draft_child_id = ?)
+        AND status = 'pending_confirmation'`).bind(now, row.childId, row.childId),
     env.DB.prepare(`UPDATE registration_draft SET status = 'cancelled', updated_at = ?
       WHERE id = ? AND NOT EXISTS (
         SELECT 1 FROM registration_draft_child WHERE registration_draft_id = ? AND status != 'cancelled'

@@ -1649,6 +1649,24 @@ textarea:focus {
   color: #17643a;
 }
 
+.staff-copy-fallback {
+  margin: 0 0 1rem;
+  border-left: 3px solid var(--line);
+  padding-left: 0.75rem;
+}
+
+.staff-copy-fallback p {
+  margin: 0 0 0.45rem;
+}
+
+.staff-copy-fallback textarea {
+  width: 100%;
+  min-height: 12rem;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
 .staff-login-form {
   display: grid;
   gap: 0.45rem;
@@ -1787,7 +1805,7 @@ textarea:focus {
 .staff-payment-item.is-open {
   position: relative;
   border-left: 3px solid rgba(7, 58, 175, 0.6);
-  background: rgba(7, 58, 175, 0.04);
+  background: #e2f0e6;
   margin: 0.85rem 0;
   padding: 0.7rem;
 }
@@ -1880,6 +1898,30 @@ textarea:focus {
   align-items: center;
 }
 
+.staff-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.staff-panel-actions .text-button.is-selected {
+  color: var(--blue-deep);
+  background: #e9f0ff;
+  text-decoration-thickness: 2px;
+}
+
+.staff-panel-region {
+  margin-top: 0.75rem;
+}
+
+.staff-panel-region > .staff-payment-form,
+.staff-panel-region > .staff-transfer-panel {
+  margin-bottom: 0;
+}
+
 .staff-payment-actions .button {
   flex: 1 1 11rem;
 }
@@ -1964,6 +2006,23 @@ textarea:focus {
 
 .staff-page-heading {
   margin-bottom: 1.25rem;
+}
+
+.staff-payment-heading {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.staff-payment-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.staff-payment-toolbar {
+  align-items: center;
+  gap: 0.65rem;
 }
 
 .staff-page-heading h1,
@@ -2075,6 +2134,40 @@ textarea:focus {
 .staff-group-toggle span {
   color: var(--muted);
   font-weight: 500;
+}
+
+.staff-waitlist-subsection {
+  border-top: 1px solid var(--line);
+  padding: 0.8rem 0;
+}
+
+.staff-waitlist-subsection:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.staff-waitlist-subsection-toggle {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--blue-deep);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.94rem;
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.3;
+  padding: 0;
+  text-align: left;
+}
+
+.staff-waitlist-subsection-toggle span,
+.staff-waitlist-subsection-toggle small {
+  color: var(--muted);
+  font: inherit;
+}
+
+.staff-waitlist-subsection-toggle small {
+  margin-left: 0.25rem;
 }
 
 .staff-section-heading .eyebrow,
@@ -2201,6 +2294,7 @@ textarea:focus {
 .staff-payment-toolbar .button {
   flex: 0 0 auto;
   width: auto;
+  min-inline-size: 7.75rem;
 }
 
 .staff-registration-intake-nav {
@@ -2362,6 +2456,17 @@ textarea:focus {
 .staff-registration-secondary {
   border-top: 1px solid var(--line);
   padding-top: 0.8rem;
+}
+
+.staff-registration-view > section {
+  border-top: 1px solid rgba(7, 58, 175, 0.2);
+  padding-top: 0.65rem;
+}
+
+.staff-registration-view h4 {
+  margin: 0;
+  color: var(--blue-deep);
+  font-size: 0.92rem;
 }
 
 .staff-action-status {
@@ -3524,6 +3629,11 @@ textarea:focus {
   .staff-page-heading,
   .staff-section-heading {
     align-items: start;
+    flex-direction: column;
+  }
+
+  .staff-payment-toolbar-row {
+    align-items: flex-start;
     flex-direction: column;
   }
 

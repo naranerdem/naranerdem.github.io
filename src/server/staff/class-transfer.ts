@@ -4,7 +4,7 @@ import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 
 export class ClassTransferError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "ineligible" | "invalid" | "conflict" | "capacity" | "source_year_archived" | "target_ineligible" | "target_pricing" | "cross_year" | "stale") { super("Class transfer is unavailable."); }
+  constructor(public readonly code: "forbidden" | "not_found" | "ineligible" | "invalid" | "conflict" | "confirmation_in_progress" | "additional_admission_pending" | "capacity" | "source_year_archived" | "target_ineligible" | "target_pricing" | "cross_year" | "stale") { super("Class transfer is unavailable."); }
 }
 
 type Source = { childId: string; enrollmentId: string; applicationChildId: string; guardianId: string; studentId: string; academicYearId: string; academicYearStatus: string; classSessionId: string; paymentPlanCode: string | null; currentSchool: string | null; currentGrade: number; returningStatus: string; previousStageCode: string | null; isTest: number; testRunId: string | null; version: string; paymentRequestId: string | null };
@@ -199,18 +199,42 @@ export async function completeClassTransfer(env: WorkerEnv, actor: StaffPrincipa
   const currentTargetMoney = targetMoney(targetConfig, source.paymentPlanCode);
   if (transfer.targetPaymentPlanCode !== currentTargetMoney.plan || transfer.targetEffectiveChargeMnt !== currentTargetMoney.charge || transfer.targetPricingSnapshotJson !== JSON.stringify(currentTargetMoney.snapshot)) throw new ClassTransferError("stale");
   const now = iso(nowDate); const preId = crypto.randomUUID(); const appId = crypto.randomUUID(); const enrollmentId = crypto.randomUUID();
+  const sourceTransferred = "EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND transferred_out_at = ? AND superseded_by_transfer_id = ?)";
   const completedAudit = (action: string, metadata: Record<string, unknown>) => env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id, metadata_json, environment, is_test, test_run_id, created_at) SELECT ?, ?, 'staff', ?, ?, 'class_transfer', ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM class_transfer WHERE id = ? AND status = 'completed')`).bind(crypto.randomUUID(), now, actor.staffAccountId, action, transfer.id, JSON.stringify(metadata), env.APP_ENV, source.isTest, source.testRunId, now, transfer.id);
   const result = await env.DB.batch([
-    env.DB.prepare(`UPDATE enrollment SET transferred_out_at = ?, superseded_by_transfer_id = ?, updated_at = ? WHERE id = ? AND status = 'confirmed' AND transferred_out_at IS NULL AND updated_at = ?`).bind(now, transfer.id, now, source.enrollmentId, source.version),
-    env.DB.prepare(`INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, submitted_at, is_test, test_run_id, created_at, updated_at) SELECT ?, ?, ?, 'completed', ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND transferred_out_at = ?)` ).bind(preId, source.guardianId, source.academicYearId, now, source.isTest, source.testRunId, now, now, source.enrollmentId, now),
+    env.DB.prepare(`UPDATE enrollment SET transferred_out_at = ?, superseded_by_transfer_id = ?, updated_at = ?
+      WHERE id = ? AND status = 'confirmed' AND transferred_out_at IS NULL AND updated_at = ?
+        AND NOT EXISTS (SELECT 1 FROM additional_class_admission
+          WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation'
+            AND confirmation_claim_expires_at IS NOT NULL AND confirmation_claim_expires_at > ?)
+        AND NOT EXISTS (SELECT 1 FROM additional_class_admission
+          WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation')`)
+      .bind(now, transfer.id, now, source.enrollmentId, source.version, source.childId, now, source.childId),
+    env.DB.prepare(`INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, submitted_at, is_test, test_run_id, created_at, updated_at) SELECT ?, ?, ?, 'completed', ?, ?, ?, ?, ? WHERE ${sourceTransferred}` ).bind(preId, source.guardianId, source.academicYearId, now, source.isTest, source.testRunId, now, now, source.enrollmentId, now, transfer.id),
     env.DB.prepare(`INSERT INTO application_child (id, pre_registration_id, student_id, current_school, current_grade, returning_status, previous_stage_code, selected_payment_plan_code, status, is_test, test_run_id, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'enrolled', ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM pre_registration WHERE id = ?)` ).bind(appId, preId, source.studentId, source.currentSchool, source.currentGrade, source.returningStatus, source.previousStageCode, transfer.sourcePaymentPlanCode, source.isTest, source.testRunId, now, now, preId),
     env.DB.prepare(`INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at) SELECT ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM application_child WHERE id = ?)` ).bind(enrollmentId, appId, source.studentId, source.academicYearId, transfer.targetClassSessionId, now, source.isTest, source.testRunId, now, now, appId),
-    env.DB.prepare(`UPDATE registration_draft_child SET canonical_application_child_id = ?, canonical_enrollment_id = ?, selected_class_session_id = ?, updated_at = ? WHERE id = ? AND canonical_enrollment_id = ?`).bind(appId, enrollmentId, transfer.targetClassSessionId, now, source.childId, source.enrollmentId),
-    env.DB.prepare(`UPDATE class_transfer_target_reservation SET status = 'completed', resolved_at = ?, updated_at = ? WHERE class_transfer_id = ? AND status = 'active'`).bind(now, now, transfer.id),
-    env.DB.prepare(`UPDATE class_transfer SET status = 'completed', target_application_child_id = ?, target_enrollment_id = ?, completed_at = ?, version = version + 1, updated_at = ? WHERE id = ? AND status = 'ready_to_complete' AND version = ?`).bind(appId, enrollmentId, now, now, transfer.id, transfer.version),
+    env.DB.prepare(`UPDATE registration_draft_child SET canonical_application_child_id = ?, canonical_enrollment_id = ?, selected_class_session_id = ?, updated_at = ?
+      WHERE id = ? AND canonical_enrollment_id = ? AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')`).bind(appId, enrollmentId, transfer.targetClassSessionId, now, source.childId, source.enrollmentId, enrollmentId),
+    env.DB.prepare(`UPDATE class_transfer_target_reservation SET status = 'completed', resolved_at = ?, updated_at = ?
+      WHERE class_transfer_id = ? AND status = 'active' AND ${sourceTransferred}`).bind(now, now, transfer.id, source.enrollmentId, now, transfer.id),
+    env.DB.prepare(`UPDATE class_transfer SET status = 'completed', target_application_child_id = ?, target_enrollment_id = ?, completed_at = ?, version = version + 1, updated_at = ?
+      WHERE id = ? AND status = 'ready_to_complete' AND version = ?
+        AND ${sourceTransferred} AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')`).bind(appId, enrollmentId, now, now, transfer.id, transfer.version, source.enrollmentId, now, transfer.id, enrollmentId),
     env.DB.prepare(`INSERT INTO class_transfer_credit (id, class_transfer_id, available_amount_mnt, status, is_test, test_run_id, created_at, updated_at) SELECT ?, ?, ?, 'available', ?, ?, ?, ? WHERE ? > 0 AND EXISTS (SELECT 1 FROM class_transfer WHERE id = ? AND status = 'completed')`).bind(crypto.randomUUID(), transfer.id, transfer.resultingCreditMnt, source.isTest, source.testRunId, now, now, transfer.resultingCreditMnt, transfer.id),
     completedAudit("class_transfer_completed", { sourceEnrollmentId: source.enrollmentId, targetEnrollmentId: enrollmentId, targetClassSessionId: transfer.targetClassSessionId, creditMnt: transfer.resultingCreditMnt }),
-  ]); if (changed(result[0]) !== 1 || changed(result[6]) !== 1) throw new ClassTransferError("conflict"); await allocateWaitlistOffers(env, transfer.sourceClassSessionId, nowDate); return { completed: true, idempotent: false, targetEnrollmentId: enrollmentId };
+  ]);
+  if (changed(result[0]) !== 1 || changed(result[6]) !== 1) {
+    const liveClaim = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_admission
+      WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation'
+        AND confirmation_claim_expires_at IS NOT NULL AND confirmation_claim_expires_at > ? LIMIT 1`).bind(source.childId, now).first();
+    if (liveClaim) throw new ClassTransferError("confirmation_in_progress");
+    const pendingAdmission = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_admission
+      WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation' LIMIT 1`).bind(source.childId).first();
+    if (pendingAdmission) throw new ClassTransferError("additional_admission_pending");
+    throw new ClassTransferError("conflict");
+  }
+  await allocateWaitlistOffers(env, transfer.sourceClassSessionId, nowDate);
+  return { completed: true, idempotent: false, targetEnrollmentId: enrollmentId };
 }
 
 export async function closeClassTransfer(env: WorkerEnv, actor: StaffPrincipal, input: { transferId: string; reason: string; expectedVersion: number }, nowDate = new Date()) {

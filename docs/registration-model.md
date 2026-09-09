@@ -756,6 +756,8 @@ Changing a requested class before confirmation is deliberately deferred. When it
 
 The next substantial enrollment work is same-child additional-class enrollment, combined payments, agreed discounts, optional parent time selection, and class-oriented export. It does not belong to the cancellation or transfer lifecycle.
 
+The concrete first-release boundaries, schema sketch, payment examples, parent-selection security model, and unresolved policy decisions are documented in [Same-Child Additional-Class Registration Plan](additional-class-registration-plan.md). This remains planning only until the listed policy decisions are approved.
+
 ### Experimental iPhone SMS Evidence Adapter
 
 The teacher uses an iPhone. A future experimental adapter may be investigated:

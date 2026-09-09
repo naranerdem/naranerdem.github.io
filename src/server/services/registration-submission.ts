@@ -60,6 +60,23 @@ export interface RegistrationSubmissionOptions {
     studentAcknowledged: boolean;
     receiptRequested: boolean;
   };
+  // This is deliberately internal-only: the staff additional-class service
+  // supplies canonical identity and an already reviewed award promise.  The
+  // public endpoint cannot opt into this path.
+  additionalClassAdmission?: {
+    id: string;
+    sourceRegistrationDraftChildId: string;
+    sourceEnrollmentId: string;
+    canonicalStudentId: string;
+    canonicalGuardianAccountId: string;
+    staffAccountId: string;
+    policyUpdatedAt: string;
+    familyBasisPoints: number;
+    sourceBaseAmountMnt: number;
+    sourceAwardAmountMnt: number;
+    targetBaseAmountMnt: number;
+    targetAwardAmountMnt: number;
+  };
 }
 
 interface ClassRow {
@@ -403,7 +420,9 @@ export async function createRegistrationDraft(
   nowDate = new Date(),
   options: RegistrationSubmissionOptions = {},
 ) {
-  if (!registrationWriteEnabled(env)) throw new RegistrationSubmissionError("disabled");
+  const additionalAdmission = options.additionalClassAdmission;
+  if (additionalAdmission && !options.staffAssisted) throw new RegistrationSubmissionError("invalid_staff_admission");
+  if (!registrationWriteEnabled(env) && !additionalAdmission) throw new RegistrationSubmissionError("disabled");
   const input = validateSubmission(rawInput);
   const staffIntake = staffAssistedIntake(options);
   const idempotencyKey = normalizedIdempotencyKey(options.idempotencyKey);
@@ -421,7 +440,7 @@ export async function createRegistrationDraft(
   if (yearIds.size !== 1 || classes.some((item) => !["available", "full"].includes(item.status))) {
     throw new RegistrationSubmissionError("invalid_class");
   }
-  if (classes.some((item) => item.registrationWindowActive !== 1)) {
+  if (!additionalAdmission && classes.some((item) => item.registrationWindowActive !== 1)) {
     throw new RegistrationSubmissionError("registration_closed");
   }
   const provenance = sourceProvenance(classes, env.APP_ENV);
@@ -478,7 +497,7 @@ export async function createRegistrationDraft(
     if (!snapshot) return [];
     const baseAmountMnt = snapshot.initial + Number(snapshot.second ?? 0);
     const awards: Array<{ id: string; childId: string; awardType: "family_multi_child" | "referral_referred"; basisPoints: number; reason: string }> = [];
-    if (selectedFamilyChildren.length >= 2 && discountPolicy.familyMultiChildBasisPoints > 0) {
+    if (!additionalAdmission && selectedFamilyChildren.length >= 2 && discountPolicy.familyMultiChildBasisPoints > 0) {
       awards.push({ id: `${childIds[index]}:discount:family`, childId: childIds[index], awardType: "family_multi_child",
         basisPoints: discountPolicy.familyMultiChildBasisPoints, reason: "same_registration_guardian_multiple_children" });
     }
@@ -564,6 +583,50 @@ export async function createRegistrationDraft(
       provenance.isTest, testRunId, now, now,
     ));
   });
+
+  if (additionalAdmission) {
+    if (input.children.length !== 1 || selectedSeatCount !== 1 || !idempotencyKey
+      || !clean(additionalAdmission.id, 160) || !clean(additionalAdmission.sourceRegistrationDraftChildId, 160)
+      || !clean(additionalAdmission.sourceEnrollmentId, 160) || !clean(additionalAdmission.canonicalStudentId, 160)
+      || !clean(additionalAdmission.canonicalGuardianAccountId, 160)
+      || !Number.isInteger(additionalAdmission.familyBasisPoints) || additionalAdmission.familyBasisPoints < 1
+      || additionalAdmission.sourceBaseAmountMnt < 1 || additionalAdmission.targetBaseAmountMnt < 1
+      || additionalAdmission.sourceAwardAmountMnt < 0 || additionalAdmission.targetAwardAmountMnt < 1) {
+      throw new RegistrationSubmissionError("invalid_staff_admission");
+    }
+    statements.push(
+      env.DB.prepare(`UPDATE registration_draft SET canonical_guardian_account_id = ?, guardian_resolution_status = 'resolved', updated_at = ?
+        WHERE id = ?`).bind(additionalAdmission.canonicalGuardianAccountId, now, draftId),
+      env.DB.prepare(`UPDATE registration_draft_child SET canonical_student_id = ?, identity_resolution_status = 'auto_resolved',
+        promotion_status = 'pending', updated_at = ? WHERE id = ?`)
+        .bind(additionalAdmission.canonicalStudentId, now, childIds[0]),
+      env.DB.prepare(`INSERT INTO additional_class_admission (
+        id, source_registration_draft_child_id, source_enrollment_id, target_registration_draft_id,
+        target_registration_draft_child_id, canonical_student_id, canonical_guardian_account_id,
+        created_by_staff_account_id, idempotency_key, policy_updated_at, family_basis_points,
+        source_base_amount_mnt, source_award_amount_mnt, target_base_amount_mnt, target_award_amount_mnt,
+        status, is_test, test_run_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?)`)
+        .bind(additionalAdmission.id, additionalAdmission.sourceRegistrationDraftChildId, additionalAdmission.sourceEnrollmentId,
+          draftId, childIds[0], additionalAdmission.canonicalStudentId, additionalAdmission.canonicalGuardianAccountId,
+          additionalAdmission.staffAccountId, idempotencyKey, additionalAdmission.policyUpdatedAt,
+          additionalAdmission.familyBasisPoints, additionalAdmission.sourceBaseAmountMnt,
+          additionalAdmission.sourceAwardAmountMnt, additionalAdmission.targetBaseAmountMnt,
+          additionalAdmission.targetAwardAmountMnt, provenance.isTest, testRunId, now, now),
+      env.DB.prepare(`INSERT INTO audit_event (
+        id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+        metadata_json, environment, is_test, test_run_id, created_at
+      ) VALUES (?, ?, 'staff', ?, 'additional_class_admission_created', 'additional_class_admission', ?, ?, ?, ?, ?, ?)`)
+        .bind(crypto.randomUUID(), now, additionalAdmission.staffAccountId, additionalAdmission.id, JSON.stringify({
+          sourceRegistrationDraftChildId: additionalAdmission.sourceRegistrationDraftChildId,
+          sourceEnrollmentId: additionalAdmission.sourceEnrollmentId,
+          familyBasisPoints: additionalAdmission.familyBasisPoints,
+          sourceAwardAmountMnt: additionalAdmission.sourceAwardAmountMnt,
+          targetAwardAmountMnt: additionalAdmission.targetAwardAmountMnt,
+          policyUpdatedAt: additionalAdmission.policyUpdatedAt,
+        }), env.APP_ENV, provenance.isTest, testRunId, now),
+    );
+  }
 
   referrals.forEach((referral, index) => {
     if (!referral) return;

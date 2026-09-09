@@ -22,6 +22,12 @@ const turnstileBundle = path.join(tempDir, "turnstile.mjs");
 const emailVerificationBundle = path.join(tempDir, "email-verification.mjs");
 const parentAccessBundle = path.join(tempDir, "parent-access.mjs");
 const paymentReconciliationBundle = path.join(tempDir, "payment-reconciliation.mjs");
+const canonicalPromotionBundle = path.join(tempDir, "canonical-enrollment-promotion.mjs");
+const additionalClassPreviewBundle = path.join(tempDir, "additional-class-preview.mjs");
+const additionalClassAdmissionBundle = path.join(tempDir, "additional-class-admission.mjs");
+const registrationCancellationBundle = path.join(tempDir, "registration-cancellation.mjs");
+const classTransferBundle = path.join(tempDir, "class-transfer.mjs");
+const discountsBundle = path.join(tempDir, "discounts.mjs");
 const registrationCorrectionBundle = path.join(tempDir, "registration-corrections.mjs");
 const initialPaymentDeadlineBundle = path.join(tempDir, "initial-payment-deadline.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
@@ -31,6 +37,12 @@ bundle("src/server/security/turnstile.ts", turnstileBundle);
 bundle("src/server/auth/email-verification.ts", emailVerificationBundle);
 bundle("src/server/services/parent-access.ts", parentAccessBundle);
 bundle("src/server/staff/payment-reconciliation.ts", paymentReconciliationBundle);
+bundle("src/server/services/canonical-enrollment-promotion.ts", canonicalPromotionBundle);
+bundle("src/server/staff/additional-class-preview.ts", additionalClassPreviewBundle);
+bundle("src/server/staff/additional-class-admission.ts", additionalClassAdmissionBundle);
+bundle("src/server/staff/registration-cancellation.ts", registrationCancellationBundle);
+bundle("src/server/staff/class-transfer.ts", classTransferBundle);
+bundle("src/server/services/discounts.ts", discountsBundle);
 bundle("src/server/staff/registration-corrections.ts", registrationCorrectionBundle);
 bundle("src/server/staff/initial-payment-deadline.ts", initialPaymentDeadlineBundle);
 const {
@@ -46,6 +58,12 @@ const {
   RegistrationSubmissionError,
 } = await import(pathToFileURL(registrationBundle).href);
 const { getRegistrationCatalog } = await import(pathToFileURL(catalogBundle).href);
+const { getAdditionalClassPreview, AdditionalClassPreviewError } = await import(pathToFileURL(additionalClassPreviewBundle).href);
+const { createAdditionalClassAdmission, AdditionalClassAdmissionError } = await import(pathToFileURL(additionalClassAdmissionBundle).href);
+const { claimAdditionalAdmissionConfirmation, finalizeAdditionalAdmissionClaim, promotePaidDraftChild } = await import(pathToFileURL(canonicalPromotionBundle).href);
+const { cancelRegistration } = await import(pathToFileURL(registrationCancellationBundle).href);
+const { closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets } = await import(pathToFileURL(classTransferBundle).href);
+const { effectiveInstallments } = await import(pathToFileURL(discountsBundle).href);
 const { getPublicSiteModel } = await import(pathToFileURL(publicSiteBundle).href);
 const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstileBundle).href);
 const gatesBundle = path.join(tempDir, "operational-gates.mjs");
@@ -57,6 +75,7 @@ const {
   claimParentPayment,
   confirmSeatForSufficientPayment,
   finalizeDuePaymentConfirmations,
+  getRegistrationExportRows,
   getInitialPaymentQueue,
   recordCheckedNotFound,
   recordManualPayment,
@@ -305,6 +324,7 @@ try {
   const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
     capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
   const registrationStaff = { ...paymentStaff, capabilities: ['registration.manage'] };
+  const exportStaff = { ...paymentStaff, capabilities: ['payment.view', 'registration.view'] };
   const adminStaff = { ...paymentStaff, staffAccountId: 'staff-admin-test', capabilities: ['admin.settings.manage'] };
 
   database.query("UPDATE academic_year SET registration_status = 'closed' WHERE id = 'year-test'");
@@ -484,9 +504,20 @@ try {
   const queueBeforePayment = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()));
   const twoQueueItem = queueBeforePayment.items.find((item) => item.paymentRequestId === twoRequest.id);
   assert.equal(twoQueueItem.parentClaimed, true, "parent claim is visible to staff without changing capacity");
-  await recordCheckedNotFound(env(database), paymentStaff, twoRequest.id, new Date(iso()));
-  assert.equal(count(database, "payment_evidence", `payment_request_id = '${twoRequest.id}' AND evidence_type = 'staff_checked_not_found'`), 1, "checking for a missing payment records auditable search evidence");
-  assert.equal(count(database, "audit_event", `subject_id = '${twoRequest.id}' AND action = 'payment_checked_not_found'`), 1, "checking for a missing payment retains a staff audit event");
+  const checkedOperationId = randomUUID();
+  assert.equal((await recordCheckedNotFound(env(database), paymentStaff, twoRequest.id, checkedOperationId, new Date(iso()))).idempotent, false, "the first payment-search note records one operation");
+  assert.equal((await recordCheckedNotFound(env(database), paymentStaff, twoRequest.id, checkedOperationId, new Date(iso()))).idempotent, true, "an ambiguous retry reuses the operation instead of duplicating it");
+  assert.equal(count(database, "payment_evidence", `payment_request_id = '${twoRequest.id}' AND evidence_type = 'staff_checked_not_found'`), 1, "rapid retries keep one payment-search evidence row");
+  assert.equal(count(database, "audit_event", `subject_id = '${twoRequest.id}' AND action = 'payment_checked_not_found'`), 1, "rapid retries keep one payment-search audit event");
+  const otherRequest = database.query(`SELECT id FROM payment_request WHERE id != ? ORDER BY id LIMIT 1`, [twoRequest.id])[0];
+  await assert.rejects(
+    recordCheckedNotFound(env(database), paymentStaff, otherRequest.id, checkedOperationId, new Date(iso())),
+    (error) => error?.code === "conflict",
+    "an operation ID already bound to another payment request cannot silently succeed",
+  );
+  assert.equal(count(database, "payment_evidence", `payment_request_id = '${otherRequest.id}' AND evidence_type = 'staff_checked_not_found'`), 0, "a cross-request replay records no evidence");
+  await recordCheckedNotFound(env(database), paymentStaff, twoRequest.id, randomUUID(), new Date(iso()));
+  assert.equal(count(database, "payment_evidence", `payment_request_id = '${twoRequest.id}' AND evidence_type = 'staff_checked_not_found'`), 2, "a later deliberate search records a new evidence event");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${twoInstallment.draftId}') AND status = 'active'`), 1, "checked-not-found never releases a seat");
   await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: twoRequest.id,
@@ -509,6 +540,353 @@ try {
   assert.equal(database.query(`SELECT remaining_payment_due_at AS remainingDueAt FROM payment_confirmation WHERE payment_request_id = ? ORDER BY created_at DESC LIMIT 1`, [twoRequest.id])[0].remainingDueAt, null,
     "the ordinary later-installment due date is not duplicated as a custom remaining-payment deadline");
   assert.equal(database.query(`SELECT status FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'later'`, [twoRequest.id])[0].status, 'pending', "later installment remains independent of initial seat confirmation");
+  const confirmedTwoQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()));
+  const confirmedTwoItem = confirmedTwoQueue.items.find((item) => item.paymentRequestId === twoRequest.id);
+  assert.equal(confirmedTwoItem.allocatedAmountMnt, 450000, "the initial allocation remains the actual received amount");
+  assert.equal(confirmedTwoItem.totalPaidMnt, 450000, "the confirmed-row paid projection includes authoritative allocations, not the required amount by label alone");
+  assert.equal(confirmedTwoItem.totalRemainingMnt, 450000, "the confirmed-row remaining projection includes the independently pending later installment");
+  const additionalPreviewCounts = Object.fromEntries(["registration_draft", "registration_capacity_hold", "payment_request", "discount_award", "audit_event", "outbound_email"]
+    .map((table) => [table, count(database, table)]));
+  const additionalPreview = await getAdditionalClassPreview(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id,
+    targetClassSessionId: "class-roomy",
+    paymentPlanCode: "two_installment",
+    proposeBaseDiscount: true,
+  }, new Date(iso()));
+  const additionalTarget = additionalPreview.targets.find((target) => target.id === "class-roomy");
+  assert.ok(additionalTarget, "staff additional-class preview uses a staff-eligible target even without consulting a public registration window");
+  assert.notEqual(database.query(`SELECT test_run_id AS testRunId FROM registration_draft_child WHERE id = ?`, [autoTwoChild.id])[0].testRunId, "catalog-test", "the synthetic registration has its own scoped test run rather than the shared fixture run");
+  const existingClassId = additionalPreview.currentClasses[0].classSessionId;
+  assert.equal(additionalPreview.targets.some((target) => target.id === existingClassId), false, "an existing current enrollment in the same class is excluded from additional-class choices");
+  assert.equal(additionalPreview.targets.find((target) => target.id === "class-full-preferred")?.selectable, false, "a full target is visible without becoming selectable or reserving a seat");
+  assert.equal(additionalPreview.proposal.originalTotalMnt, 1000000, "preview keeps the selected two-installment agreement total rather than borrowing the one-payment price");
+  assert.equal(database.query(`SELECT SUM(amount_mnt) AS totalMnt FROM payment_installment WHERE registration_draft_child_id = ?`, [autoTwoChild.id])[0].totalMnt, 900000,
+    "the source agreement snapshot remains 900,000 MNT while the selected target's authoritative agreement is 1,000,000 MNT");
+  assert.notEqual(additionalPreview.proposal.originalTotalMnt, 900000,
+    "target preview pricing is derived from the target offering rather than copied from the source agreement");
+  assert.equal(additionalPreview.proposal.firstInstallmentMnt, 500000, "a proposed base award leaves the original first installment intact");
+  assert.equal(additionalPreview.proposal.secondInstallmentMnt, 400000, "a proposed ten-percent base award reduces the second installment");
+  assert.equal(additionalPreview.proposal.totalAfterDiscountMnt, 900000, "preview arithmetic retains the selected-plan total less the proposed base award");
+  assert.deepEqual(Object.fromEntries(["registration_draft", "registration_capacity_hold", "payment_request", "discount_award", "audit_event", "outbound_email"]
+    .map((table) => [table, count(database, table)])), additionalPreviewCounts, "additional-class preview performs no business write");
+  database.query("UPDATE discount_policy_setting SET family_multi_child_basis_points = 750, updated_at = '2026-08-13T09:30:00.000Z' WHERE singleton = 1");
+  const configuredRatePreview = await getAdditionalClassPreview(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment", proposeBaseDiscount: true,
+  }, new Date(iso()));
+  assert.equal(configuredRatePreview.baseDiscount.basisPoints, 750, "the preview exposes the configured family-policy rate rather than a hard-coded percentage");
+  assert.equal(configuredRatePreview.proposal.baseDiscountMnt, 75000, "the proposed discount arithmetic uses the configured rate");
+  assert.equal(configuredRatePreview.proposal.secondInstallmentMnt, 425000, "the configured rate still leaves the original first installment intact");
+  database.query("UPDATE discount_policy_setting SET family_multi_child_basis_points = 0, updated_at = '2026-08-13T09:31:00.000Z' WHERE singleton = 1");
+  const disabledRatePreview = await getAdditionalClassPreview(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment", proposeBaseDiscount: true,
+  }, new Date(iso()));
+  assert.equal(disabledRatePreview.baseDiscount.enabled, false, "a disabled policy does not fall back to a default discount");
+  assert.equal(disabledRatePreview.proposal.baseDiscountMnt, 0, "a disabled policy produces no proposed base award");
+  database.query("UPDATE discount_policy_setting SET family_multi_child_basis_points = 1000, updated_at = '2026-08-13T09:32:00.000Z' WHERE singleton = 1");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${autoTwoChild.id}' AND award_type = 'family_multi_child' AND status = 'active'`), 0,
+    "the source begins without a base award, so confirmation must activate both promises");
+  const officialTwoInstallment = effectiveInstallments([
+    { id: "official-source-first", registrationDraftChildId: "official-source", installmentNumber: 1, amountMnt: 650000, allocatedAmountMnt: 650000 },
+    { id: "official-source-second", registrationDraftChildId: "official-source", installmentNumber: 2, amountMnt: 650000, allocatedAmountMnt: 0 },
+    { id: "official-target-first", registrationDraftChildId: "official-target", installmentNumber: 1, amountMnt: 650000, allocatedAmountMnt: 0 },
+    { id: "official-target-second", registrationDraftChildId: "official-target", installmentNumber: 2, amountMnt: 650000, allocatedAmountMnt: 0 },
+  ], new Map([
+    ["official-source", [{ awardAmountMnt: 130000, reason: "additional_class_canonical_confirmation" }]],
+    ["official-target", [{ awardAmountMnt: 130000, reason: "additional_class_canonical_confirmation" }]],
+  ]));
+  assert.deepEqual(officialTwoInstallment.map((item) => item.effectiveAmountMnt), [650000, 520000, 650000, 520000],
+    "a configured 10% award applies to each 1,300,000 MNT agreement's second installment, preserving both 650,000 MNT first installments");
+  assert.equal(officialTwoInstallment.reduce((sum, item) => sum + item.effectiveAmountMnt, 0), 2340000,
+    "the two agreement example totals 1,300,000 MNT first installments and 1,040,000 MNT second installments");
+  const sourcePaymentHistory = count(database, "received_payment", `payment_request_id = '${twoRequest.id}'`);
+  const sourceSeatCount = count(database, "enrollment", `id = '${autoTwoChild.enrollmentId}' AND status = 'confirmed'`);
+  const admission = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-idempotency-0001",
+  }, new Date("2026-08-13T09:35:00.000Z"));
+  assert.equal(admission.created, true, "staff additional admission creates an ordinary pending draft");
+  const admissionChild = admission.registrationDraftChildId;
+  assert.ok(admissionChild, "the new class has its own draft child");
+  assert.equal(count(database, "additional_class_admission", `target_registration_draft_child_id = '${admissionChild}' AND status = 'pending_confirmation'`), 1, "the accepted award promise is durable before payment");
+  assert.equal(count(database, "enrollment", `student_id = (SELECT canonical_student_id FROM registration_draft_child WHERE id = '${autoTwoChild.id}') AND status = 'confirmed'`), sourceSeatCount, "creation does not insert a second canonical enrollment directly");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${twoRequest.id}'`), sourcePaymentHistory, "creation never changes source payment history");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${admissionChild}' AND status = 'active'`), 1, "the new class uses an ordinary atomic initial-payment hold");
+  const admissionInstallments = database.query(`SELECT installment_kind AS kind, amount_mnt AS amountMnt FROM payment_installment WHERE registration_draft_child_id = ? ORDER BY installment_number`, [admissionChild]);
+  assert.deepEqual(admissionInstallments.map((row) => Number(row.amountMnt)), [500000, 500000], "raw selected-plan installments remain immutable before confirmation");
+  const replayAdmission = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-idempotency-0001",
+  }, new Date("2026-08-13T09:36:00.000Z"));
+  assert.equal(replayAdmission.created, false, "idempotent replay cannot create a second additional admission or hold");
+  await assert.rejects(createAdditionalClassAdmission(env(database), { ...registrationStaff, capabilities: ["payment.view"] }, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-second-offering", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-denied-0001",
+  }), AdditionalClassAdmissionError, "accountant-like staff cannot create an additional admission");
+  const admissionRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [admission.draftId])[0];
+  const admissionInitial = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [admissionChild])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: admissionRequest.id, allocations: [{ installmentId: admissionInitial.id, amountMnt: Number(admissionInitial.amountMnt) }],
+    source: "staff_manual_bank", idempotencyKey: "additional-admission-first-payment-0001",
+  }, new Date("2026-08-13T09:37:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:43:00.000Z"));
+  assert.equal(count(database, "enrollment", `id = '${admissionChild}:enrollment' AND status = 'confirmed'`), 1, "ordinary finalization promotes only the additional class after its first installment");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${autoTwoChild.id}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
+    "when neither agreement had the base award, target confirmation activates the source award exactly once");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${admissionChild}' AND award_type = 'family_multi_child' AND status = 'active'`), 1, "confirmation activates the target's missing base award once");
+  assert.deepEqual(database.query(`SELECT basis_points AS basisPoints, base_amount_mnt AS baseAmountMnt, award_amount_mnt AS awardAmountMnt
+    FROM discount_award WHERE registration_draft_child_id IN (?, ?) AND award_type = 'family_multi_child' AND status = 'active'
+    ORDER BY base_amount_mnt`, [autoTwoChild.id, admissionChild]), [
+    { basisPoints: 1000, baseAmountMnt: 900000, awardAmountMnt: 90000 },
+    { basisPoints: 1000, baseAmountMnt: 1000000, awardAmountMnt: 100000 },
+  ], "both awards use the configured policy instead of hard-coded percentages");
+  // Simulate an interruption after durable enrollment promotion but before
+  // award activation. The ordinary finalizer must recover this exact pending
+  // admission without another payment, enrollment, or capacity mutation.
+  database.query(`UPDATE additional_class_admission SET status = 'pending_confirmation', activated_at = NULL
+    WHERE target_registration_draft_child_id = ?;
+    DELETE FROM discount_award WHERE registration_draft_child_id IN (?, ?) AND award_type = 'family_multi_child'`,
+    [admissionChild, autoTwoChild.id, admissionChild]);
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:43:30.000Z"));
+  assert.equal(count(database, "additional_class_admission", `target_registration_draft_child_id = '${admissionChild}' AND status = 'confirmed'`), 1,
+    "the finalizer durably recovers award activation after an interrupted promotion");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN ('${autoTwoChild.id}', '${admissionChild}') AND award_type = 'family_multi_child' AND status = 'active'`), 2,
+    "recovery restores exactly one award on each agreement without another enrollment");
+  assert.equal(count(database, "enrollment", `id = '${admissionChild}:enrollment' AND status = 'confirmed'`), 1,
+    "award recovery does not duplicate the already confirmed target enrollment");
+  const additionalQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()));
+  const sourceQueue = additionalQueue.items.find((item) => item.registrationDraftChildId === autoTwoChild.id);
+  const targetQueue = additionalQueue.items.find((item) => item.registrationDraftChildId === admissionChild);
+  assert.deepEqual({
+    originalTotalMnt: 900000,
+    awardMnt: 90000,
+    paidMnt: sourceQueue.totalPaidMnt,
+    netRemainingMnt: sourceQueue.totalRemainingMnt,
+  }, {
+    originalTotalMnt: 900000,
+    awardMnt: 90000,
+    paidMnt: 450000,
+    netRemainingMnt: 360000,
+  }, "the authoritative staff queue exposes the source agreement's net post-award balance, not its raw second installment");
+  assert.deepEqual({
+    originalTotalMnt: 1000000,
+    awardMnt: 100000,
+    paidMnt: targetQueue.totalPaidMnt,
+    netRemainingMnt: targetQueue.totalRemainingMnt,
+  }, {
+    originalTotalMnt: 1000000,
+    awardMnt: 100000,
+    paidMnt: 500000,
+    netRemainingMnt: 400000,
+  }, "the authoritative staff queue applies the target agreement's own award and price snapshot independently of the source");
+  const additionalEffective = await getAdditionalClassPreview(env(database), registrationStaff, { registrationDraftChildId: admissionChild }, new Date(iso()));
+  const admitted = additionalEffective.currentClasses.find((entry) => entry.classSessionId === "class-roomy");
+  assert.ok(admitted, `the admitted class appears alongside the existing class: ${JSON.stringify(additionalEffective.currentClasses)}`);
+  assert.equal(admitted.discountMnt, 100000, "the admitted class projects its promised configured award");
+  assert.equal(database.query(`SELECT effective_due_at AS dueAt, amount_mnt AS amountMnt FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'later'`, [admissionChild])[0].amountMnt, 500000, "the raw second-installment snapshot stays immutable");
+  assert.equal(count(database, "additional_class_admission", `target_registration_draft_child_id = '${admissionChild}' AND status = 'confirmed'`), 1, "activation is durably marked for retry-safe promotion");
+  const confirmedReplay = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-idempotency-0001",
+  }, new Date("2026-08-13T09:44:00.000Z"));
+  assert.equal(confirmedReplay.lifecycleStatus, "confirmed", "a replay after promotion returns the existing confirmed admission even though its hold is gone");
+  assert.equal(count(database, "enrollment", `id = '${admissionChild}:enrollment' AND status = 'confirmed'`), 1, "confirmed-admission replay cannot create another enrollment");
+  database.query(`UPDATE enrollment SET transferred_out_at = ? WHERE id = ?`, [iso(), autoTwoChild.enrollmentId]);
+  const replayAfterSourceChange = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-idempotency-0001",
+  }, new Date("2026-08-13T09:44:30.000Z"));
+  assert.equal(replayAfterSourceChange.lifecycleStatus, "confirmed", "a completed operation remains recoverable after a later source lifecycle change");
+  database.query(`UPDATE enrollment SET transferred_out_at = NULL WHERE id = ?`, [autoTwoChild.enrollmentId]);
+  await assert.rejects(createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-last-seat", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-idempotency-0001",
+  }), (error) => error?.code === "conflict", "an operation key cannot be replayed against another target class");
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: admissionChild, reason: "guardian_request" }, new Date("2026-08-13T09:45:00.000Z"));
+  const existingAwardTarget = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-existing-award-0001",
+  }, new Date("2026-08-13T09:46:00.000Z"));
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${autoTwoChild.id}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
+    "a source with an existing base award remains unchanged when a later target admission is created");
+  const existingAwardRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [existingAwardTarget.draftId])[0];
+  const existingAwardInitial = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [existingAwardTarget.registrationDraftChildId])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: existingAwardRequest.id, allocations: [{ installmentId: existingAwardInitial.id, amountMnt: Number(existingAwardInitial.amountMnt) }],
+    source: "staff_manual_bank", idempotencyKey: "additional-admission-existing-award-payment",
+  }, new Date("2026-08-13T09:47:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:53:00.000Z"));
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${autoTwoChild.id}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
+    "promotion never duplicates the source's pre-existing base award");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${existingAwardTarget.registrationDraftChildId}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
+    "only the newly confirmed target receives its missing base award");
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: existingAwardTarget.registrationDraftChildId, reason: "guardian_request" }, new Date("2026-08-13T09:54:00.000Z"));
+  const pendingCancellation = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-cancelled-0001",
+  }, new Date("2026-08-13T09:55:00.000Z"));
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: pendingCancellation.registrationDraftChildId, reason: "guardian_request" }, new Date("2026-08-13T09:56:00.000Z"));
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${pendingCancellation.registrationDraftChildId}' AND award_type = 'family_multi_child' AND status = 'active'`), 0,
+    "cancellation before target confirmation activates neither a new target award nor another source award");
+  const cancelledReplay = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-cancelled-0001",
+  }, new Date("2026-08-13T09:48:00.000Z"));
+  assert.equal(cancelledReplay.lifecycleStatus, "cancelled", "a terminal admission replay reports its truthful state without recreating a hold");
+  const pendingExpiry = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-expired-0001",
+  }, new Date("2026-08-13T09:49:00.000Z"));
+  database.query(`UPDATE registration_draft SET status = 'expired' WHERE id = ?`, [pendingExpiry.draftId]);
+  assert.equal((await promotePaidDraftChild(env(database), paymentStaff, pendingExpiry.registrationDraftChildId, null, new Date("2026-08-13T09:50:00.000Z"))).state, "not_eligible",
+    "an expired pending target cannot be promoted by a late payment finalizer");
+  assert.equal(count(database, "additional_class_admission", `target_registration_draft_child_id = '${pendingExpiry.registrationDraftChildId}' AND status = 'expired'`), 1,
+    "expiry marks the proposal terminal before any target confirmation");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${pendingExpiry.registrationDraftChildId}' AND status = 'active'`), 0,
+    "expiry before confirmation activates no proposed award");
+  const expiredReplay = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-expired-0001",
+  }, new Date("2026-08-13T09:51:00.000Z"));
+  assert.equal(expiredReplay.lifecycleStatus, "expired", "an expired admission replay remains terminal and does not recreate a reservation");
+  database.query(`UPDATE registration_capacity_hold SET status = 'released', release_reason = 'test_expiry_cleanup'
+    WHERE registration_draft_child_id = ? AND status = 'active'`, [pendingExpiry.registrationDraftChildId]);
+  const cancellationRace = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-cancellation-race-0001",
+  }, new Date("2026-08-13T09:52:00.000Z"));
+  const raceRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [cancellationRace.draftId])[0];
+  const raceInitial = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [cancellationRace.registrationDraftChildId])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: raceRequest.id, allocations: [{ installmentId: raceInitial.id, amountMnt: Number(raceInitial.amountMnt) }],
+    source: "staff_manual_bank", idempotencyKey: "additional-admission-cancellation-race-payment",
+  }, new Date("2026-08-13T09:53:00.000Z"));
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: cancellationRace.registrationDraftChildId, reason: "guardian_request" }, new Date("2026-08-13T09:54:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T10:00:00.000Z"));
+  assert.equal(count(database, "enrollment", `id = '${cancellationRace.registrationDraftChildId}:enrollment' AND status = 'confirmed'`), 0,
+    "a cancellation winning the race against finalization cannot produce a late target enrollment");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${cancellationRace.registrationDraftChildId}' AND status = 'active'`), 0,
+    "a cancellation winning the race cannot activate a target award");
+  const sourceChangeRace = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-source-change-race-0001",
+  }, new Date("2026-08-13T10:01:00.000Z"));
+  const sourceChangeRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [sourceChangeRace.draftId])[0];
+  const sourceChangeInitial = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [sourceChangeRace.registrationDraftChildId])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: sourceChangeRequest.id, allocations: [{ installmentId: sourceChangeInitial.id, amountMnt: Number(sourceChangeInitial.amountMnt) }],
+    source: "staff_manual_bank", idempotencyKey: "additional-admission-source-change-race-payment",
+  }, new Date("2026-08-13T10:02:00.000Z"));
+  database.query(`UPDATE enrollment SET transferred_out_at = ? WHERE id = ?`, [iso(), autoTwoChild.enrollmentId]);
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T10:08:00.000Z"));
+  assert.equal(count(database, "enrollment", `id = '${sourceChangeRace.registrationDraftChildId}:enrollment' AND status = 'confirmed'`), 0,
+    "a source superseded before target confirmation blocks target promotion");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${sourceChangeRace.registrationDraftChildId}' AND status = 'active'`), 0,
+    "a superseded source cannot silently produce a target award");
+  database.query(`UPDATE enrollment SET transferred_out_at = NULL WHERE id = ?`, [autoTwoChild.enrollmentId]);
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: sourceChangeRace.registrationDraftChildId, reason: "guardian_request" }, new Date("2026-08-13T10:09:00.000Z"));
+  database.query("UPDATE activity_offering SET is_test = 0, test_run_id = NULL WHERE id IN (SELECT activity_offering_id FROM class_session WHERE academic_year_id = 'year-test')");
+  const provenanceMismatchPreview = await getAdditionalClassPreview(env(database), registrationStaff, { registrationDraftChildId: autoTwoChild.id }, new Date(iso()));
+  assert.equal(provenanceMismatchPreview.targetAvailability, "source_provenance_mismatch", "an inconsistent source aggregate is reported separately from an empty target selector");
+  database.query("UPDATE activity_offering SET is_test = 1, test_run_id = 'catalog-test' WHERE id IN (SELECT activity_offering_id FROM class_session WHERE academic_year_id = 'year-test')");
+  database.query("UPDATE discount_policy_setting SET family_multi_child_basis_points = 1000, updated_at = '2026-08-13T09:33:00.000Z' WHERE singleton = 1");
+  await assert.rejects(getAdditionalClassPreview(env(database), { ...registrationStaff, capabilities: ["payment.view"] }, {
+    registrationDraftChildId: autoTwoChild.id,
+  }, new Date(iso())), AdditionalClassPreviewError, "accountant-like staff cannot open the additional-class preview");
+
+  // A durable confirmation claim is the exact boundary between target
+  // promotion and promised-award activation. While it is live, a source
+  // transfer or cancellation must retry instead of overtaking the admission.
+  const claimedAdmission = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-live-claim-0001",
+  }, new Date("2026-08-13T10:10:00.000Z"));
+  const claimedRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [claimedAdmission.draftId])[0];
+  const claimedInitial = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [claimedAdmission.registrationDraftChildId])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: claimedRequest.id, allocations: [{ installmentId: claimedInitial.id, amountMnt: Number(claimedInitial.amountMnt) }],
+    source: "staff_manual_bank", approveSeatConfirmation: true, idempotencyKey: "additional-admission-live-claim-payment",
+  }, new Date("2026-08-13T10:11:00.000Z"));
+  // Freeze the ordinary payment finalization at its completed boundary so the
+  // following interleaving isolates only additional-admission coordination.
+  database.query(`UPDATE payment_confirmation SET status = 'finalized', finalized_at = ?, updated_at = ?
+    WHERE payment_request_id = ?`, ["2026-08-13T10:11:00.000Z", "2026-08-13T10:11:00.000Z", claimedRequest.id]);
+  database.query(`UPDATE payment_installment SET status = 'paid', paid_at = ?, updated_at = ? WHERE id = ?`,
+    ["2026-08-13T10:11:00.000Z", "2026-08-13T10:11:00.000Z", claimedInitial.id]);
+  const staleWorkerClaim = await claimAdditionalAdmissionConfirmation(env(database), claimedAdmission.registrationDraftChildId,
+    new Date("2026-08-13T10:12:00.000Z"));
+  assert.equal(staleWorkerClaim.state, "claimed", "worker A acquires a durable confirmation claim");
+  const transferTargets = await listClassTransferTargets(env(database), registrationStaff, autoTwoChild.id, new Date("2026-08-13T10:12:30.000Z"));
+  const transferTarget = transferTargets.targets.find((target) => target.classSessionId === "class-second-offering");
+  assert.ok(transferTarget, "an active source still has an eligible lower-price transfer target while confirmation is claimed");
+  const sourceVersion = database.query(`SELECT updated_at AS version FROM enrollment WHERE id = ?`, [autoTwoChild.enrollmentId])[0].version;
+  const claimedTransfer = await initiateClassTransfer(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-second-offering", reason: "Claim race",
+    idempotencyKey: "additional-admission-live-claim-transfer", expectedSourceVersion: sourceVersion,
+    expectedTargetVersion: transferTarget.eligibilityVersion,
+  }, new Date("2026-08-13T10:12:30.000Z"));
+  await assert.rejects(() => completeClassTransfer(env(database), registrationStaff, {
+    transferId: claimedTransfer.transferId, expectedVersion: claimedTransfer.version,
+  }, new Date("2026-08-13T10:12:45.000Z")), (error) => error?.code === "confirmation_in_progress",
+  "source transfer completion is blocked by the live durable confirmation claim");
+  assert.equal(count(database, "enrollment", `id = '${autoTwoChild.enrollmentId}' AND transferred_out_at IS NOT NULL`), 0,
+    "a blocked transfer leaves the source enrollment current");
+  await assert.rejects(() => cancelRegistration(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, reason: "guardian_request",
+  }, new Date("2026-08-13T10:12:50.000Z")), (error) => error?.code === "confirmation_in_progress",
+  "source cancellation is also blocked by the same live confirmation claim");
+  await closeClassTransfer(env(database), registrationStaff, {
+    transferId: claimedTransfer.transferId, reason: "Race test closed", expectedVersion: claimedTransfer.version,
+  }, new Date("2026-08-13T10:13:00.000Z"));
+  const reclaimingWorkerClaim = await claimAdditionalAdmissionConfirmation(env(database), claimedAdmission.registrationDraftChildId,
+    new Date("2026-08-13T10:15:00.000Z"));
+  assert.equal(reclaimingWorkerClaim.state, "claimed", "worker B reclaims the expired confirmation claim with a new fence");
+  const staleCompletion = await finalizeAdditionalAdmissionClaim(env(database), paymentStaff, claimedAdmission.registrationDraftChildId,
+    staleWorkerClaim, "2026-08-13T10:15:00.000Z");
+  assert.equal(staleCompletion, null, "a resumed worker A cannot write after worker B has reclaimed its fence");
+  assert.equal(count(database, "enrollment", `id = '${claimedAdmission.registrationDraftChildId}:enrollment'`), 0,
+    "a stale continuation creates neither enrollment nor award side effects");
+  const winningCompletion = await finalizeAdditionalAdmissionClaim(env(database), paymentStaff, claimedAdmission.registrationDraftChildId,
+    reclaimingWorkerClaim, "2026-08-13T10:15:00.000Z");
+  assert.ok(winningCompletion?.enrollmentId, "the fence owner completes the admission once");
+  assert.equal(count(database, "additional_class_admission", `target_registration_draft_child_id = '${claimedAdmission.registrationDraftChildId}' AND status = 'confirmed'`), 1,
+    "a stale claimed admission is recovered to one terminal confirmed result by concurrent finalizer retries");
+  assert.equal(count(database, "enrollment", `id = '${claimedAdmission.registrationDraftChildId}:enrollment' AND status = 'confirmed'`), 1,
+    "recovery after an interrupted claim creates exactly one target enrollment");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${claimedAdmission.registrationDraftChildId}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
+    "recovery activates the promised target award exactly once");
+  await cancelRegistration(env(database), registrationStaff, {
+    registrationDraftChildId: claimedAdmission.registrationDraftChildId, reason: "guardian_request",
+  }, new Date("2026-08-13T10:18:30.000Z"));
+
+  // A source action must not silently strand an unpaid target. Until the target
+  // is explicitly resolved through its own lifecycle, the source action is
+  // actionable-but-blocked; after target cancellation, source cancellation is
+  // safe and no finalizer can revive the terminal target.
+  const sourceCancellationWins = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-source-cancellation-wins-0001",
+  }, new Date("2026-08-13T10:19:00.000Z"));
+  await assert.rejects(() => cancelRegistration(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, reason: "guardian_request",
+  }, new Date("2026-08-13T10:19:30.000Z")), (error) => error?.code === "additional_admission_pending",
+  "source cancellation explains that its pending additional admission must be resolved first");
+  await cancelRegistration(env(database), registrationStaff, {
+    registrationDraftChildId: sourceCancellationWins.registrationDraftChildId, reason: "guardian_request",
+  }, new Date("2026-08-13T10:19:45.000Z"));
+  await cancelRegistration(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, reason: "guardian_request",
+  }, new Date("2026-08-13T10:20:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T10:26:00.000Z"));
+  assert.equal(count(database, "additional_class_admission", `target_registration_draft_child_id = '${sourceCancellationWins.registrationDraftChildId}' AND status = 'cancelled'`), 1,
+    "an explicitly cancelled pending target remains terminal after later source cancellation");
+  assert.equal(count(database, "enrollment", `id = '${sourceCancellationWins.registrationDraftChildId}:enrollment'`), 0,
+    "a finalizer cannot resurrect a target after the source cancellation won");
 
   const strandedInput = submission("class-priced", undefined, 1, "two_installment");
   strandedInput.children[0].givenName = "Finalizer retry";
@@ -658,7 +1036,7 @@ try {
     createRegistrationDraft(env(database), submission("class-roomy", undefined, 4), new Date(iso(3))),
     (error) => error instanceof RegistrationSubmissionError && error.code === "capacity_changed",
   );
-  const partialDraft = database.query("SELECT id FROM registration_draft ORDER BY created_at DESC LIMIT 1")[0];
+  const partialDraft = database.query("SELECT id FROM registration_draft WHERE status = 'seat_unavailable' ORDER BY created_at DESC LIMIT 1")[0];
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${partialDraft.id}')`), 0, "multi-child failure creates no partial hold");
 
   const waitlistOnly = await createRegistrationDraft(env(database), submission(undefined, "class-full-preferred"), new Date(iso(4)));
@@ -872,6 +1250,35 @@ try {
   );
   const storedChallenge = database.query("SELECT token_hash AS tokenHash FROM email_verification_challenge WHERE id = ?", [replayChallenge.id])[0];
   assert.notEqual(storedChallenge.tokenHash, replayChallenge.rawToken);
+  const twoLaterInstallment = database.query(`SELECT payment_installment.id,
+    payment_installment.amount_mnt - COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) AS remainingMnt
+    FROM payment_installment LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+    WHERE payment_installment.payment_request_id = ? AND payment_installment.installment_kind = 'later'
+    GROUP BY payment_installment.id`, [twoRequest.id])[0];
+  // This fixture only establishes a fully paid historical agreement for the
+  // export projection. Payment workflow behavior is exercised above.
+  database.query(`INSERT INTO received_payment (
+    id, payment_request_id, received_amount_mnt, received_at, payment_source,
+    reconciliation_status, confirmed_at, confirmed_by_staff_account_id,
+    idempotency_key, created_at, updated_at, is_test, test_run_id
+  ) VALUES (?, ?, ?, ?, 'staff_manual_bank', 'confirmed', ?, ?, ?, ?, ?, 1, ?)`, [
+    'two-later-export-payment', twoRequest.id, Number(twoLaterInstallment.remainingMnt),
+    '2026-08-13T09:30:00.000Z', '2026-08-13T09:31:00.000Z', paymentStaff.staffAccountId,
+    'two-later-export-plan-test', '2026-08-13T09:31:00.000Z', '2026-08-13T09:31:00.000Z', `test:${twoInstallment.draftId}`,
+  ]);
+  database.query(`INSERT INTO payment_allocation (
+    id, received_payment_id, payment_installment_id, allocated_amount_mnt,
+    allocated_at, allocated_by_staff_account_id, created_at, is_test, test_run_id
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`, [
+    'two-later-export-allocation', 'two-later-export-payment', twoLaterInstallment.id,
+    Number(twoLaterInstallment.remainingMnt), '2026-08-13T09:31:00.000Z', paymentStaff.staffAccountId,
+    '2026-08-13T09:31:00.000Z', `test:${twoInstallment.draftId}`,
+  ]);
+  const exportRows = await getRegistrationExportRows(env(database), exportStaff);
+  assert.ok(exportRows.rows.some((row) => row.paymentPlan === 'Нэг удаа'), "the generated export retains one-time agreement snapshots");
+  assert.ok(exportRows.rows.some((row) => row.paymentPlan === '2 хувааж' && Number(row.paid) > 0 && Number(row.remaining) === 0),
+    "the generated export retains a fully paid two-installment agreement instead of inferring one-time payment");
+  assert.equal(exportRows.rows.at(-1)?.status, 'Цуцлагдсан', "the generated export places terminal cancellations after active operational rows");
   const crossBrowserChallenge = addChallenge(database, twoInstallment.draftId, twoInstallment.normalizedEmail, "2026-08-13T10:01:00.000Z", "2026-08-14T10:01:00.000Z");
   const crossBrowserVerification = await verifyEmailToken(env(database), crossBrowserChallenge.rawToken, sessionToken, verificationTime);
   assert.match(crossBrowserVerification.redirectUrl, /status=confirmed/, "an unrelated browser session never changes which registration an email challenge verifies");

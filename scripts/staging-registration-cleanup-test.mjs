@@ -41,6 +41,11 @@ assert.ok(
   "discount awards must be deleted before their draft children and draft parents",
 );
 assert.ok(
+  position('DELETE FROM additional_class_admission WHERE ${childScoped("additional_class_admission", "target_registration_draft_child_id")};')
+    < position('DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};'),
+  "additional admission provenance must be deleted before its restrictive draft-child parent",
+);
+assert.ok(
   position('DELETE FROM email_verification_challenge WHERE ${scoped("email_verification_challenge")};')
     < position('DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};'),
   "email challenges must be deleted before drafts",
