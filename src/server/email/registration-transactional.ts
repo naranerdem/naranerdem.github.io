@@ -26,7 +26,7 @@ interface PaymentReceiptInstallmentRow {
 }
 
 interface EnrollmentEmailRow {
-  email: string; childId: string; childName: string; academicYearLabel: string; offeringLabel: string; classLabel: string;
+  email: string; childId: string; childName: string; academicYearLabel: string; offeringLabel: string; stageCode: string | null; classLabel: string;
   installmentId: string; installmentNumber: number; amountMnt: number; allocatedAmountMnt: number;
   remainingPaymentDueAt: string | null; referralCode: string | null;
 }
@@ -198,10 +198,13 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
     trim(registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childName,
     academic_year.public_label AS academicYearLabel,
     COALESCE(activity_offering.title, class_session.stage_code) AS offeringLabel,
+    class_session.stage_code AS stageCode,
     COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) || ' ' || COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' || COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
     payment_installment.id AS installmentId, payment_installment.installment_number AS installmentNumber,
     payment_installment.amount_mnt AS amountMnt,
-    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
+    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
     (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
       INNER JOIN received_payment AS receipt ON receipt.id = confirmation.received_payment_id
       INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = receipt.id
@@ -234,7 +237,8 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
   for (const row of rows.results) {
     const amount = effective.get(row.installmentId)?.effectiveAmountMnt ?? Number(row.amountMnt);
     const current = byChild.get(row.childId) ?? {
-      childName: row.childName, academicYearLabel: row.academicYearLabel, offeringLabel: row.offeringLabel, classLabel: row.classLabel,
+      childName: row.childName, academicYearLabel: row.academicYearLabel, offeringLabel: row.offeringLabel,
+      stageLabel: ({ stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" })[row.stageCode || ""] || null, classLabel: row.classLabel,
       paidAmountMnt: 0, remainingAmountMnt: 0, remainingPaymentDueAt: null, referralCode: row.referralCode,
     };
     current.paidAmountMnt += Number(row.allocatedAmountMnt);

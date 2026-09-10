@@ -1802,6 +1802,10 @@ textarea:focus {
   min-width: 0;
 }
 
+.staff-payment-summary[role="button"] {
+  cursor: pointer;
+}
+
 .staff-payment-item.is-open {
   position: relative;
   border-left: 3px solid rgba(7, 58, 175, 0.6);
@@ -1970,6 +1974,92 @@ textarea:focus {
 
 .staff-payment-release p {
   margin: 0.45rem 0;
+}
+
+.staff-credit-summary {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.85rem;
+}
+
+.staff-credit-summary h3,
+.staff-credit-summary p,
+.staff-credit-summary ul {
+  margin: 0;
+}
+
+.staff-credit-summary ul {
+  display: grid;
+  gap: 0.25rem;
+  padding-left: 1.2rem;
+}
+
+.staff-credit-subpanel {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  padding: 0.65rem;
+}
+
+.staff-credit-subpanel h4 {
+  margin: 0;
+  color: var(--blue-deep);
+  font-weight: 750;
+}
+
+.staff-credit-summary form {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.staff-credit-actions {
+  margin-top: 0;
+}
+
+.staff-credit-proposal {
+  margin: 0;
+}
+
+.staff-credit-summary label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.staff-credit-summary input,
+.staff-credit-summary select,
+.staff-credit-summary textarea {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.48rem 0.6rem;
+}
+
+.staff-credit-summary textarea {
+  resize: vertical;
+}
+
+.staff-warning {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(170, 112, 23, 0.36);
+  border-left: 3px solid #a87017;
+  border-radius: 4px;
+  background: #fff9ea;
+  padding: 0.75rem;
+}
+
+.staff-warning p {
+  margin: 0;
 }
 
 .staff-cancellation-confirmation {
@@ -2458,9 +2548,27 @@ textarea:focus {
   padding-top: 0.8rem;
 }
 
+.staff-registration-view {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .staff-registration-view > section {
   border-top: 1px solid rgba(7, 58, 175, 0.2);
   padding-top: 0.65rem;
+}
+
+.staff-registration-view > .staff-inline-actions {
+  grid-column: 1 / -1;
+}
+
+.staff-registration-view p {
+  margin: 0.35rem 0;
+}
+
+@media (max-width: 680px) {
+  .staff-registration-view {
+    grid-template-columns: 1fr;
+  }
 }
 
 .staff-registration-view h4 {

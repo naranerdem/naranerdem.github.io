@@ -13,7 +13,7 @@ export class ParentCommunicationError extends Error {
 
 type ConfirmedMessageSource = {
   lifecycle: "confirmed"; draftId: string; childName: string; academicYearLabel: string;
-  offeringLabel: string; classLabel: string; referralCode: string | null;
+  offeringLabel: string; stageCode: string | null; classLabel: string; referralCode: string | null;
 };
 
 type PendingPaymentMessageSource = {
@@ -29,6 +29,7 @@ async function source(env: WorkerEnv, actor: StaffPrincipal, childId: string): P
     trim(registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childName,
     academic_year.public_label AS academicYearLabel,
     COALESCE(activity_offering.title, class_session.stage_code) AS offeringLabel,
+    class_session.stage_code AS stageCode,
     COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) || ' ' || COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' || COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
     enrollment_referral_code.code AS referralCode
     FROM registration_draft_child
@@ -50,7 +51,9 @@ async function source(env: WorkerEnv, actor: StaffPrincipal, childId: string): P
       COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' ||
       COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
     payment_installment.id AS installmentId, payment_installment.amount_mnt AS rawAmountMnt,
-    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
+    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
     payment_installment.effective_due_at AS dueAt,
     EXISTS(SELECT 1 FROM payment_evidence WHERE payment_evidence.payment_request_id = payment_request.id
       AND payment_evidence.evidence_type = 'parent_claim') AS parentClaimed,
@@ -124,6 +127,7 @@ export async function generateParentManualMessage(env: WorkerEnv, actor: StaffPr
         childName: row.childName,
         academicYearLabel: row.academicYearLabel,
         offeringLabel: row.offeringLabel,
+        stageLabel: ({ stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" })[row.stageCode || ""] || null,
         classLabel: row.classLabel,
         paidAmountMnt: 0,
         remainingAmountMnt: 0,

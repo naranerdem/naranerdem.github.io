@@ -48,6 +48,7 @@ import { cancelRegistration, reinstateRegistration, RegistrationCancellationErro
 import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets, recordClassTransferDifference } from "../staff/class-transfer";
 import { AdditionalClassPreviewError, getAdditionalClassPreview } from "../staff/additional-class-preview";
 import { AdditionalClassAdmissionError, createAdditionalClassAdmission } from "../staff/additional-class-admission";
+import { addManualChildCredit, applyChildCredit, ChildCreditError, correctChildCredit, leaveChildCreditUnused, transferChildCredit } from "../services/child-credit-ledger";
 import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
 import {
   acceptWaitlistOffer,
@@ -323,6 +324,13 @@ function registrationWindowError(caught: unknown): Response {
 }
 
 function paymentReconciliationError(caught: unknown): Response {
+  if (caught instanceof ChildCreditError) {
+    if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+    if (caught.code === "not_found") return error("not_found", "Бүртгэл эсвэл сонгосон төлбөрийн үүрэг олдсонгүй. Хуудсыг шинэчлээд дахин шалгана уу.", 404, { "Cache-Control": "no-store" });
+    if (caught.code === "insufficient") return error("invalid_request", "Боломжтой кредит хүрэлцэхгүй эсвэл өмнө ашигласан дүнг засах боломжгүй.", 409, { "Cache-Control": "no-store" });
+    if (caught.code === "conflict") return error("invalid_request", "Кредитийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+    return error("invalid_request", "Кредитийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+  }
   if (!(caught instanceof PaymentReconciliationError)) {
     return error("internal_error", "Төлбөрийн мэдээллийг одоогоор хадгалж чадсангүй.", 500, { "Cache-Control": "no-store" });
   }
@@ -1348,6 +1356,33 @@ export async function handleApiRequest(
           return json({ ok: true, ...await undoTentativePaymentConfirmation(env, principal, String(payload.receivedPaymentId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "payment-credit.refund":
           return json({ ok: true, ...await markPaymentCreditRefunded(env, principal, String(payload.creditId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "child-credit.manual-add":
+          return json({ ok: true, ...await addManualChildCredit(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), amountMnt: Number(payload.amountMnt),
+            reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+            externalReference: typeof payload.externalReference === "string" ? payload.externalReference : undefined,
+          }) }, 201, { "Cache-Control": "no-store" });
+        case "child-credit.correct":
+          return json({ ok: true, ...await correctChildCredit(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), entryId: String(payload.entryId ?? ""),
+            adjustmentMnt: Number(payload.adjustmentMnt), reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+            externalReference: typeof payload.externalReference === "string" ? payload.externalReference : undefined,
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "child-credit.apply":
+          return json({ ok: true, ...await applyChildCredit(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), paymentInstallmentId: String(payload.paymentInstallmentId ?? ""),
+            amountMnt: Number(payload.amountMnt), reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "child-credit.leave-unused":
+          return json({ ok: true, ...await leaveChildCreditUnused(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), paymentInstallmentId: String(payload.paymentInstallmentId ?? ""),
+            reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "child-credit.transfer":
+          return json({ ok: true, ...await transferChildCredit(env, principal, {
+            sourceRegistrationDraftChildId: String(payload.sourceRegistrationDraftChildId ?? ""), targetRegistrationDraftChildId: String(payload.targetRegistrationDraftChildId ?? ""),
+            amountMnt: Number(payload.amountMnt), reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
         case "payment.checked-not-found":
           return json({ ok: true, ...await recordCheckedNotFound(
             env, principal, String(payload.paymentRequestId ?? ""), String(payload.operationId ?? ""),

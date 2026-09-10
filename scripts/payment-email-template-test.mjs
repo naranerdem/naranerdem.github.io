@@ -48,6 +48,14 @@ try {
   assert.match(confirmation.text, /Суудал баталгаажсан\./);
   assert.match(confirmation.text, /Суудал хараахан баталгаажаагүй байна\./);
   assert.doesNotMatch(confirmation.text, /verify-email|token=/i, "ordinary payment confirmation contains no capability link");
+  assert.doesNotMatch(confirmation.text, /Хүүхэд Facebook хаягтай бол мөн бүлэгт нэгдэж болно/, "a school Facebook page alone is never presented as a class-group invitation");
+  const groupedConfirmation = paymentConfirmedTemplate({
+    children: [{ childName: "Тест Бүлэг", classLabel: "2-р шат · 2-р шат · Ням 10:00–11:20", receivedAmountMnt: 1, totalPaidAmountMnt: 1,
+      remainingAmountMnt: 0, nextPaymentAmountMnt: null, nextPaymentDueAt: null, seatConfirmed: true, facebookGroupUrl: "https://facebook.example.test/groups/class" }],
+    centerFacebookUrl: "https://facebook.example.test/page",
+  });
+  assert.match(groupedConfirmation.text, /Facebook бүлэгт нэгдэнэ үү: https:\/\/facebook\.example\.test\/groups\/class/, "a configured class group is the only basis for a group invitation");
+  assert.equal((groupedConfirmation.text.match(/2-р шат/g) || []).length, 1, "duplicate historic class-label components are rendered once");
   const referralPolicy = { referrerBasisPoints: 725, referredChildBasisPoints: 175 };
   const enrollmentChild = { childName: "Тест Гурав", academicYearLabel: "2027–2028 хичээлийн жил", offeringLabel: "3-р шат", classLabel: "Пүрэв 15:00–16:20", paidAmountMnt: 650000, remainingAmountMnt: 650000, remainingPaymentDueAt: "2027-01-25T00:00:00.000Z", referralCode: "NE-DYNAMIC" };
   const enrollment = enrollmentConfirmationTemplate({ children: [enrollmentChild], accessUrl: "https://example.test/parent/?token=opaque", referralPolicy });
@@ -57,6 +65,7 @@ try {
     assert.match(copy, /7\.25%/, "referral copy reads the current referrer policy rather than a hard-coded percentage");
     assert.match(copy, /2027–2028 хичээлийн жил · 3-р шат · Пүрэв 15:00–16:20/);
   }
+  assert.ok(manual.indexOf("Манай сургалтад бүртгүүлсэнд баярлалаа.") < manual.indexOf("2027–2028 хичээлийн жил"), "the prepared confirmation thanks the family before its class line");
   assert.doesNotMatch(manual, /token=|https?:\/\//i, "the manually shared message cannot verify a contact channel");
   console.log("ok payment reminder wording and Mongolia-local deadline formatting");
 } finally {

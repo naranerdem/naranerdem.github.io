@@ -205,7 +205,11 @@ function promotionPaymentEligibleSql(childIdExpression: string): string {
       INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
       WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
         AND payment_installment.registration_draft_child_id = ${childIdExpression}
-        AND payment_installment.installment_kind = 'initial'))`;
+        AND payment_installment.installment_kind = 'initial')
+    OR EXISTS (SELECT 1 FROM credit_application_confirmation
+      WHERE credit_application_confirmation.registration_draft_child_id = ${childIdExpression}
+        AND credit_application_confirmation.status = 'finalized'
+        AND credit_application_confirmation.seat_confirmation_approved = 1))`;
 }
 
 function promotionPaymentEligible(row: PromotionRow): boolean {
@@ -432,12 +436,16 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
       AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid') AS initialInstallmentPaid,
     EXISTS(SELECT 1 FROM payment_installment WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
       AND payment_installment.installment_kind = 'later' AND payment_installment.status != 'paid') AS laterInstallmentOutstanding,
-    EXISTS(SELECT 1 FROM payment_confirmation
+    (EXISTS(SELECT 1 FROM payment_confirmation
       INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
       INNER JOIN payment_installment AS approved_installment ON approved_installment.id = payment_allocation.payment_installment_id
       WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
         AND approved_installment.registration_draft_child_id = registration_draft_child.id
-        AND approved_installment.installment_kind = 'initial') AS partialSeatApproved,
+        AND approved_installment.installment_kind = 'initial')
+      OR EXISTS(SELECT 1 FROM credit_application_confirmation
+        WHERE credit_application_confirmation.registration_draft_child_id = registration_draft_child.id
+          AND credit_application_confirmation.status = 'finalized'
+          AND credit_application_confirmation.seat_confirmation_approved = 1)) AS partialSeatApproved,
     EXISTS(SELECT 1 FROM registration_capacity_hold WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active') AS activeInitialHold
     FROM registration_draft_child
@@ -704,6 +712,21 @@ export async function promotePaidDraftChild(
       canonical_enrollment_id = ?, identity_resolution_status = 'promoted', promotion_status = 'promoted', updated_at = ?
       WHERE id = ? AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')`)
       .bind(studentId, applicationChildId, enrollmentId, now, row.childId, enrollmentId),
+    // Pre-confirmation credit is anchored to the draft child. Attach the
+    // canonical identity in this same promotion transaction, retaining the
+    // original operation and entry IDs.
+    env.DB.prepare(`UPDATE child_credit_entry SET canonical_student_id = ?
+      WHERE registration_draft_child_id = ? AND canonical_student_id IS NULL`)
+      .bind(studentId, row.childId),
+    env.DB.prepare(`UPDATE child_credit_operation SET source_student_id = ?
+      WHERE source_registration_draft_child_id = ? AND source_student_id IS NULL`)
+      .bind(studentId, row.childId),
+    env.DB.prepare(`UPDATE child_credit_operation SET target_student_id = ?
+      WHERE target_registration_draft_child_id = ? AND target_student_id IS NULL`)
+      .bind(studentId, row.childId),
+    env.DB.prepare(`UPDATE child_credit_payment_review SET canonical_student_id = ?
+      WHERE registration_draft_child_id = ? AND canonical_student_id IS NULL`)
+      .bind(studentId, row.childId),
     env.DB.prepare(`UPDATE payment_installment SET canonical_application_child_id = ?, canonical_enrollment_id = ?, updated_at = ?
       WHERE registration_draft_child_id = ?`).bind(applicationChildId, enrollmentId, now, row.childId),
     env.DB.prepare(`UPDATE registration_draft_waitlist_entry SET canonical_application_child_id = ?, updated_at = ?

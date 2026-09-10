@@ -6,6 +6,7 @@ import { deliverQueuedEmail } from "../email/service";
 import { paymentReminderTemplate } from "../email/templates/payment-reminder";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { effectiveInstallmentsForRows } from "../services/discounts";
+import { syncLegacyChildCreditEntries } from "../services/child-credit-ledger";
 
 export interface PaymentReminderSetting {
   initialReminderLeadMinutes: number;
@@ -27,6 +28,7 @@ interface ReminderContext {
   email: string; normalizedEmail: string; childName: string; classLabel: string | null;
   installmentId: string; registrationDraftChildId: string; installmentNumber: number; rawAmountMnt: number; allocatedAmountMnt: number; amountMnt: number; dueAt: string; installmentStatus: string; holdStatus: string | null;
   enrollmentStatus: string | null; confirmationStatus: string | null; seatConfirmationApproved: number | null;
+  availableCreditMnt: number;
   parentClaimed: number; bankName: string | null; accountHolderName: string | null; accountNumber: string | null;
   iban: string | null; transferInstruction: string | null;
 }
@@ -134,8 +136,16 @@ async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Pro
     class_session.display_label AS classLabel,
     COALESCE(payment_confirmation.remaining_payment_due_at, payment_installment.effective_due_at) AS dueAt,
     payment_installment.amount_mnt AS rawAmountMnt,
-    COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
-    payment_installment.amount_mnt - COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS amountMnt,
+    COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
+    payment_installment.amount_mnt - COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      - COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS amountMnt,
+    COALESCE((SELECT SUM(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit WHERE debit.origin_entry_id = root.id), 0))
+      FROM child_credit_entry AS root WHERE (root.registration_draft_child_id = registration_draft_child.id
+        OR (registration_draft_child.canonical_student_id IS NOT NULL AND root.canonical_student_id = registration_draft_child.canonical_student_id))
+        AND root.amount_mnt > 0), 0) AS availableCreditMnt,
     payment_installment.status AS installmentStatus, registration_capacity_hold.status AS holdStatus,
     enrollment.status AS enrollmentStatus, payment_confirmation.status AS confirmationStatus,
     payment_confirmation.seat_confirmation_approved AS seatConfirmationApproved,
@@ -180,6 +190,9 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
   if (env.EMAIL_ENABLED !== "true" || !env.RESEND_API_KEY) return 0;
   const emailProvider = provider ?? createResendProvider(env.RESEND_API_KEY);
   const now = nowDate.toISOString();
+  // Reconcile legacy cancellation/transfer credit before deciding whether a
+  // cash demand needs staff credit review.
+  await syncLegacyChildCreditEntries(env.DB);
   await ensureMilestones(env, now);
   const due = await env.DB.prepare(`SELECT id, milestone_key AS milestoneKey, milestone_type AS milestoneType,
     registration_draft_id AS registrationDraftId, registration_draft_child_id AS registrationDraftChildId,
@@ -207,6 +220,33 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
         ...item, installmentNumber: Number(item.installmentNumber), amountMnt: Number(item.amountMnt),
       })))).find((item) => item.id === context.installmentId);
       if (effective) context.amountMnt = Math.max(0, effective.effectiveAmountMnt - Number(context.allocatedAmountMnt));
+    }
+    if (context && Number(context.availableCreditMnt) > 0 && Number(context.amountMnt) > 0) {
+      const reviewed = await env.DB.prepare(`SELECT 1 AS value FROM child_credit_payment_review
+        WHERE child_credit_payment_review.payment_installment_id = ? AND child_credit_payment_review.decision = 'leave_unused'
+          AND child_credit_payment_review.available_credit_mnt = ? AND child_credit_payment_review.outstanding_amount_mnt = ?
+          AND child_credit_payment_review.registration_draft_child_id = ? ORDER BY child_credit_payment_review.created_at DESC LIMIT 1`)
+        .bind(context.installmentId, Number(context.availableCreditMnt), Number(context.amountMnt), context.registrationDraftChildId).first();
+      if (!reviewed) {
+        // Keep the existing milestone pending; neither its deadline nor its
+        // delivery history changes while a staff credit decision is required.
+        await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'pending', processing_started_at = NULL, updated_at = ? WHERE id = ?`)
+          .bind(now, milestone.id).run();
+        continue;
+      }
+    }
+    // A deferred reminder must not become a burst when a later overdue notice
+    // is already due. The overdue milestone is the current normal message.
+    if (context && milestone.milestoneType === "initial_reminder") {
+      const overdueAlreadyDue = await env.DB.prepare(`SELECT 1 AS value FROM payment_notification_milestone
+        WHERE registration_draft_child_id = ? AND payment_installment_id = ? AND milestone_type = 'initial_overdue'
+          AND status IN ('pending', 'failed') AND scheduled_at <= ? LIMIT 1`)
+        .bind(context.registrationDraftChildId, context.installmentId, now).first();
+      if (overdueAlreadyDue) {
+        await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ? WHERE id = ?`)
+          .bind(now, milestone.id).run();
+        continue;
+      }
     }
     if (!eligible(milestone, context)) {
       await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ? WHERE id = ?`).bind(now, milestone.id).run();

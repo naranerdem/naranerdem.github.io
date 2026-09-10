@@ -40,7 +40,9 @@ export async function getParentDashboard(env: WorkerEnv, rawSessionToken: string
     enrollment_referral_code.code AS referralCode,
     payment_installment.id AS installmentId, payment_installment.installment_number AS installmentNumber,
     payment_installment.amount_mnt AS amountMnt,
-    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
+    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
     (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
       INNER JOIN received_payment AS receipt ON receipt.id = confirmation.received_payment_id
       INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = receipt.id

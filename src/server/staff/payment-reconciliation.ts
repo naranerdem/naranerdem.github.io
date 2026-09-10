@@ -6,6 +6,7 @@ import { promotePaidDraftChild, promotePaidDraftChildren, recordAdditionalAdmiss
 import { getClassCapacityProjections } from "../services/class-capacity";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { discountAwardsForChildren, effectiveInstallmentsForRows, recalculateDiscountAwardBalances } from "../services/discounts";
+import { childCreditSummaryForChildren, creditPaymentReviewState } from "../services/child-credit-ledger";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
 type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid";
@@ -77,7 +78,9 @@ async function installmentsForRequest(env: WorkerEnv, paymentRequestId: string):
     payment_installment.registration_draft_child_id AS registrationDraftChildId,
     payment_installment.installment_kind AS installmentKind, payment_installment.installment_number AS installmentNumber, payment_installment.amount_mnt AS amountMnt,
     payment_installment.effective_due_at AS effectiveDueAt, payment_installment.status,
-    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt
+    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt
     FROM payment_installment
     LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
@@ -119,7 +122,7 @@ export async function updatePaymentConfirmationGraceSetting(env: WorkerEnv, acto
   return { graceMinutes: input.graceMinutes, updatedAt: now };
 }
 
-async function refreshInstallmentsAndDraft(env: WorkerEnv, request: PaymentRequestRow, now: string) {
+export async function refreshInstallmentsAndDraft(env: WorkerEnv, request: PaymentRequestRow, now: string) {
   const installments = await installmentsForRequest(env, request.id);
   const statements: D1PreparedStatement[] = [];
   for (const installment of installments) {
@@ -161,7 +164,10 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     payment_installment.id AS installmentId, payment_installment.registration_draft_child_id AS registrationDraftChildId,
     payment_installment.amount_mnt AS expectedAmountMnt,
     payment_installment.effective_due_at AS paymentDueAt, payment_installment.status AS installmentStatus,
-    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt,
+    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
+    COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS cashAllocatedAmountMnt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft_child.promotion_status AS promotionStatus,
     registration_draft_child.identity_resolution_status AS identityResolutionStatus,
@@ -177,10 +183,17 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     (SELECT later.amount_mnt FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
       AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterAmountMnt,
     (SELECT COALESCE(SUM(CASE WHEN later_confirmation.status = 'undone' THEN 0 ELSE later_allocation.allocated_amount_mnt END), 0)
+        + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+          WHERE credit_entry.payment_installment_id = later.id AND credit_entry.entry_kind = 'credit_application'), 0)
       FROM payment_installment AS later
       LEFT JOIN payment_allocation AS later_allocation ON later_allocation.payment_installment_id = later.id
       LEFT JOIN payment_confirmation AS later_confirmation ON later_confirmation.received_payment_id = later_allocation.received_payment_id
       WHERE later.registration_draft_child_id = registration_draft_child.id AND later.installment_kind = 'later') AS laterAllocatedAmountMnt,
+    (SELECT COALESCE(SUM(CASE WHEN later_confirmation.status = 'undone' THEN 0 ELSE later_allocation.allocated_amount_mnt END), 0)
+      FROM payment_installment AS later
+      LEFT JOIN payment_allocation AS later_allocation ON later_allocation.payment_installment_id = later.id
+      LEFT JOIN payment_confirmation AS later_confirmation ON later_confirmation.received_payment_id = later_allocation.received_payment_id
+      WHERE later.registration_draft_child_id = registration_draft_child.id AND later.installment_kind = 'later') AS laterCashAllocatedAmountMnt,
     (SELECT later.effective_due_at FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
       AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterDueAt,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN received_payment.id END) AS tentativePaymentId,
@@ -310,9 +323,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   }) }));
   const rawItems = result.results.map((item) => ({ ...item,
     expectedAmountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),
+    cashAllocatedAmountMnt: Number(item.cashAllocatedAmountMnt),
     parentClaimed: Boolean(item.parentClaimed), laterAmountMnt: item.laterAmountMnt == null ? null : Number(item.laterAmountMnt),
     laterAllocatedAmountMnt: Number(item.laterAllocatedAmountMnt ?? 0),
-  })) as Array<Record<string, unknown> & { installmentId: string; registrationDraftChildId: string; expectedAmountMnt: number; allocatedAmountMnt: number; parentClaimed: boolean; laterInstallmentId: string | null; laterAmountMnt: number | null; laterAllocatedAmountMnt: number }>;
+    laterCashAllocatedAmountMnt: Number(item.laterCashAllocatedAmountMnt ?? 0),
+  })) as Array<Record<string, unknown> & { installmentId: string; registrationDraftChildId: string; expectedAmountMnt: number; allocatedAmountMnt: number; cashAllocatedAmountMnt: number; parentClaimed: boolean; laterInstallmentId: string | null; laterAmountMnt: number | null; laterAllocatedAmountMnt: number; laterCashAllocatedAmountMnt: number }>;
   const effectiveById = new Map((await effectiveInstallmentsForRows(env.DB, rawItems.flatMap((item) => [
     {
     id: String(item.installmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 1,
@@ -320,16 +335,25 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     },
     item.laterInstallmentId && item.laterAmountMnt != null ? {
       id: String(item.laterInstallmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 2,
-      amountMnt: Number(item.laterAmountMnt),
+      amountMnt: Number(item.laterAmountMnt), allocatedAmountMnt: Number(item.laterAllocatedAmountMnt),
     } : null,
   ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
   const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
+  const creditByChild = await childCreditSummaryForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)));
+  const creditReviewByInstallment = new Map(await Promise.all(rawItems.flatMap((item) => [
+    { childId: String(item.registrationDraftChildId), installmentId: String(item.installmentId) },
+    ...(item.laterInstallmentId ? [{ childId: String(item.registrationDraftChildId), installmentId: String(item.laterInstallmentId) }] : []),
+  ]).map(async ({ childId, installmentId }) => {
+    try { return [installmentId, await creditPaymentReviewState(env.DB, childId, installmentId)] as const; }
+    catch { return [installmentId, null] as const; }
+  })));
   const cancelledItems = await Promise.all(cancelled.results.map(async (item) => ({
     ...item,
     canReinstate: hasStaffCapability(actor, "registration.manage")
       && await getRegistrationReinstatementEligibility(env, String(item.registrationDraftChildId), nowDate),
   })));
   return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"),
+  canManageCredits: hasStaffCapability(actor, "payment.manage"),
   canManageReferrals: hasStaffCapability(actor, "registration.manage"),
   canContactParents: hasStaffCapability(actor, "registration.manage"),
   canCorrectRegistrations: hasStaffCapability(actor, "registration.manage"),
@@ -341,11 +365,27 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const awards = awardByChild.get(String(item.registrationDraftChildId)) ?? [];
     const expectedAmountMnt = effective?.effectiveAmountMnt ?? item.expectedAmountMnt;
     const totalExpectedMnt = expectedAmountMnt + Number(later?.effectiveAmountMnt ?? 0);
-    const totalPaidMnt = item.allocatedAmountMnt + item.laterAllocatedAmountMnt;
+    const totalPaidMnt = item.cashAllocatedAmountMnt + item.laterCashAllocatedAmountMnt;
+    const totalCreditAppliedMnt = item.allocatedAmountMnt + item.laterAllocatedAmountMnt - totalPaidMnt;
+    const credit = creditByChild.get(String(item.registrationDraftChildId));
+    const initialOutstandingMnt = Math.max(0, expectedAmountMnt - item.allocatedAmountMnt);
+    const laterOutstandingMnt = later && item.laterInstallmentId
+      ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
+    const creditApplicationInstallmentId = initialOutstandingMnt > 0 ? String(item.installmentId)
+      : laterOutstandingMnt > 0 ? String(item.laterInstallmentId) : null;
+    const creditApplicationOutstandingMnt = initialOutstandingMnt > 0 ? initialOutstandingMnt : laterOutstandingMnt;
+    const creditReview = creditApplicationInstallmentId ? creditReviewByInstallment.get(creditApplicationInstallmentId) : null;
     return { ...item, expectedAmountMnt,
       laterAmountMnt: later?.effectiveAmountMnt ?? item.laterAmountMnt,
       totalPaidMnt,
-      totalRemainingMnt: Math.max(0, totalExpectedMnt - totalPaidMnt),
+      totalCreditAppliedMnt,
+    totalRemainingMnt: Math.max(0, totalExpectedMnt - item.allocatedAmountMnt - item.laterAllocatedAmountMnt),
+      availableCreditMnt: credit?.availableAmountMnt ?? 0,
+      creditEntries: credit?.roots ?? [],
+      creditApplicationInstallmentId,
+      creditApplicationOutstandingMnt,
+      creditReviewNeeded: Boolean(creditReview && creditReview.availableCreditMnt > 0 && creditReview.outstandingAmountMnt > 0 && !creditReview.reviewed),
+      creditReviewResolved: Boolean(creditReview?.reviewed),
       discountAmountMnt: effective?.discountAmountMnt ?? 0, discounts: awards,
       canConfirmSeat: !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved)
         && Boolean(item.hasUnapprovedInitialConfirmation) && item.allocatedAmountMnt >= expectedAmountMnt };
@@ -412,6 +452,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     registration_draft.guardian_full_name AS guardian,
     registration_draft.guardian_relationship AS relationship,
     registration_draft.primary_phone AS phone,
+    registration_draft.secondary_phone AS secondaryPhone,
     registration_draft.email,
     registration_draft.verified_at AS verifiedAt,
     registration_draft.home_address AS address,
@@ -431,6 +472,11 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
       INNER JOIN payment_installment AS installment ON installment.id = allocation.payment_installment_id
       WHERE installment.registration_draft_child_id = registration_draft_child.id
         AND COALESCE(confirmation.status, '') != 'undone') AS paid,
+    (SELECT COALESCE(SUM(-credit_entry.amount_mnt), 0)
+      FROM child_credit_entry AS credit_entry
+      INNER JOIN payment_installment AS installment ON installment.id = credit_entry.payment_installment_id
+      WHERE installment.registration_draft_child_id = registration_draft_child.id
+        AND credit_entry.entry_kind = 'credit_application') AS creditApplied,
     (SELECT effective_due_at FROM payment_installment WHERE registration_draft_child_id = registration_draft_child.id
       AND status IN ('pending', 'partially_paid') ORDER BY installment_number LIMIT 1) AS dueAt,
     (SELECT code FROM enrollment_referral_code WHERE enrollment_id = registration_draft_child.canonical_enrollment_id
@@ -461,7 +507,8 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
       const price = Number(row.price ?? 0);
       const discount = Number(row.discount ?? 0);
       const paid = Number(row.paid ?? 0);
-      const remaining = Math.max(price - discount - paid, 0);
+      const creditApplied = Number(row.creditApplied ?? 0);
+      const remaining = Math.max(price - discount - paid - creditApplied, 0);
       const dueAt = typeof row.dueAt === "string" ? row.dueAt : null;
       const due = dueAt && new Date(dueAt).getTime() < now.getTime();
       const status = row.childStatus === "cancelled" || row.draftStatus === "cancelled" ? "Цуцлагдсан"
@@ -473,11 +520,11 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
       const className = [row.className, row.weekday && row.startTime ? `${row.weekday} ${row.startTime}–${row.endTime}` : ""].filter(Boolean).join(" · ");
       return {
         status, child: row.child, birthDate: row.birthDate, grade: row.grade, school: row.school,
-        guardian: row.guardian, relationship: row.relationship, phone: row.phone, email: row.email,
+        guardian: row.guardian, relationship: row.relationship, phone: row.phone, secondaryPhone: row.secondaryPhone, email: row.email,
         emailStatus: row.verifiedAt ? "Баталгаажсан" : "Баталгаажаагүй", address: row.address,
         academicYear: row.academicYear, offering: row.offering, className,
         paymentPlan: planLabel(row.paymentPlan),
-        price, discount, paid, remaining, dueAt,
+        price, discount, paid, creditApplied, remaining, dueAt,
         ownReferral: row.ownReferral, usedReferral: row.usedReferral, registeredAt: row.registeredAt,
         sortSchedule: `${row.weekday ?? ""}\u0000${row.startTime ?? ""}\u0000${row.endTime ?? ""}`,
         sortClassName: className, sortChild: String(row.child ?? ""), sortId: String(row.childId ?? ""),
@@ -689,6 +736,35 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
         // The confirmation and its audit event are already durable; the queued email remains observable for retry.
       }
     }
+    finalized += 1;
+  }
+
+  // Credit applications are accounting adjustments, not received payments.
+  // They nevertheless use the same guarded grace/finalization boundary before
+  // a qualifying initial installment may promote an enrollment.
+  const creditRows = await env.DB.prepare(`SELECT credit_application_confirmation.id,
+    credit_application_confirmation.payment_request_id AS paymentRequestId,
+    credit_application_confirmation.registration_draft_child_id AS childId,
+    payment_request.registration_draft_id AS registrationDraftId,
+    credit_application_confirmation.is_test AS isTest, credit_application_confirmation.test_run_id AS testRunId
+    FROM credit_application_confirmation
+    INNER JOIN payment_request ON payment_request.id = credit_application_confirmation.payment_request_id
+    WHERE credit_application_confirmation.status = 'tentative'
+      AND credit_application_confirmation.finalize_after <= ?
+    ORDER BY credit_application_confirmation.finalize_after LIMIT 100`).bind(now)
+    .all<{ id: string; paymentRequestId: string; childId: string; registrationDraftId: string; isTest: number; testRunId: string | null }>();
+  for (const row of creditRows.results) {
+    const changed = await env.DB.prepare(`UPDATE credit_application_confirmation SET status = 'finalized', updated_at = ?
+      WHERE id = ? AND status = 'tentative' AND finalize_after <= ?`).bind(now, row.id, now).run();
+    if (!changes(changed)) continue;
+    const request = await requestForId(env, row.paymentRequestId);
+    const state = await refreshInstallmentsAndDraft(env, request, now);
+    const promotion = await promotePaidDraftChildren(env, systemActor, row.registrationDraftId, nowDate);
+    await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at) VALUES (?, ?, 'system', 'payment-finalizer',
+      'credit_application_finalized', 'credit_application_confirmation', ?, ?, ?, ?, ?, ?)`)
+      .bind(crypto.randomUUID(), now, row.id, JSON.stringify({ allInitialPaid: state.allInitialPaid, promotion: promotion.map((entry) => entry.state) }),
+        env.APP_ENV, row.isTest, row.testRunId, now).run();
     finalized += 1;
   }
 

@@ -76,7 +76,10 @@ async function targetForMutation(env: WorkerEnv, source: SourceRow, targetClassS
 async function sourceFinancialSupport(env: WorkerEnv, source: SourceRow, basisPoints: number) {
   const installments = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.registration_draft_child_id AS registrationDraftChildId,
       payment_installment.installment_number AS installmentNumber, payment_installment.amount_mnt AS amountMnt,
-      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt
+      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id
+          AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt
     FROM payment_installment LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id

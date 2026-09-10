@@ -2,17 +2,17 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 const args = new Set(process.argv.slice(2));
-const runArgument = process.argv.slice(2).find((value) => value.startsWith("--test-run-id="));
+const runArguments = process.argv.slice(2).filter((value) => value.startsWith("--test-run-id="));
 const nonTestArgument = process.argv.slice(2).find((value) => value.startsWith("--non-test-rehearsal-id="));
-const testRunId = runArgument?.slice("--test-run-id=".length) ?? "";
+const testRunIds = runArguments.map((value) => value.slice("--test-run-id=".length));
 const nonTestRehearsalId = nonTestArgument?.slice("--non-test-rehearsal-id=".length) ?? "";
 const confirmed = args.has("--confirm");
 
-if (Boolean(testRunId) === Boolean(nonTestRehearsalId)) {
-  throw new Error("Use exactly one of --test-run-id=registration:<draft-uuid> or --non-test-rehearsal-id=non-test:<uuid>.");
+if (Boolean(testRunIds.length) === Boolean(nonTestRehearsalId)) {
+  throw new Error("Use one or more --test-run-id=registration:<draft-uuid> values, or one --non-test-rehearsal-id=non-test:<uuid>.");
 }
-if (testRunId && !/^registration:[0-9a-f-]{36}$/.test(testRunId)) {
-  throw new Error("Use --test-run-id=registration:<draft-uuid> to scope cleanup to one staging test registration.");
+if (testRunIds.some((testRunId) => !/^registration:[0-9a-f-]{36}$/.test(testRunId))) {
+  throw new Error("Use --test-run-id=registration:<draft-uuid> to scope cleanup to explicit staging test registrations.");
 }
 if (nonTestRehearsalId && !/^non-test:[0-9a-f-]{36}$/.test(nonTestRehearsalId)) {
   throw new Error("Use --non-test-rehearsal-id=non-test:<uuid> for one explicitly tagged synthetic staging rehearsal.");
@@ -23,6 +23,7 @@ if (args.has("--env=production") || args.has("--production")) {
 
 const wrangler = path.resolve("node_modules/wrangler/wrangler-dist/cli.js");
 const rehearsalMarker = `STAGING NON-TEST REHEARSAL ${nonTestRehearsalId}`;
+const testRunScope = testRunIds.map((testRunId) => `'${testRunId}'`).join(", ");
 const nonTestDraftScope = `registration_draft.id IN (
   SELECT registration_draft.id
   FROM registration_draft
@@ -43,23 +44,23 @@ const nonTestDraftScope = `registration_draft.id IN (
     AND activity_offering.title = '${rehearsalMarker}'
     AND class_session.display_label = '${rehearsalMarker}'
 )`;
-const scoped = (table, draftColumn = "registration_draft_id") => testRunId
-  ? `${table}.is_test = 1 AND ${table}.test_run_id = '${testRunId}'`
+const scoped = (table, draftColumn = "registration_draft_id") => testRunIds.length
+  ? `${table}.is_test = 1 AND ${table}.test_run_id IN (${testRunScope})`
   : `${draftColumn} IN (SELECT id FROM registration_draft WHERE ${nonTestDraftScope})`;
-const childScoped = (table, childColumn = "registration_draft_child_id") => testRunId
-  ? `${table}.is_test = 1 AND ${table}.test_run_id = '${testRunId}'`
+const childScoped = (table, childColumn = "registration_draft_child_id") => testRunIds.length
+  ? `${table}.is_test = 1 AND ${table}.test_run_id IN (${testRunScope})`
   : `${childColumn} IN (
     SELECT registration_draft_child.id FROM registration_draft_child
     WHERE registration_draft_child.registration_draft_id IN (SELECT id FROM registration_draft WHERE ${nonTestDraftScope})
   )`;
-const requestScoped = (table, requestColumn = "payment_request_id") => testRunId
-  ? `${table}.is_test = 1 AND ${table}.test_run_id = '${testRunId}'`
+const requestScoped = (table, requestColumn = "payment_request_id") => testRunIds.length
+  ? `${table}.is_test = 1 AND ${table}.test_run_id IN (${testRunScope})`
   : `${requestColumn} IN (
     SELECT payment_request.id FROM payment_request
     WHERE ${scoped("payment_request")}
   )`;
-const installmentScoped = (table, installmentColumn = "payment_installment_id") => testRunId
-  ? `${table}.is_test = 1 AND ${table}.test_run_id = '${testRunId}'`
+const installmentScoped = (table, installmentColumn = "payment_installment_id") => testRunIds.length
+  ? `${table}.is_test = 1 AND ${table}.test_run_id IN (${testRunScope})`
   : `${installmentColumn} IN (
     SELECT payment_installment.id FROM payment_installment
     WHERE ${requestScoped("payment_installment")}
@@ -72,6 +73,10 @@ SELECT
   (SELECT COUNT(*) FROM class_transfer WHERE ${scoped("class_transfer")}) AS transfers,
   (SELECT COUNT(*) FROM class_transfer_target_reservation WHERE ${scoped("class_transfer_target_reservation")}) AS transfer_reservations,
   (SELECT COUNT(*) FROM additional_class_admission WHERE ${childScoped("additional_class_admission", "target_registration_draft_child_id")}) AS additional_admissions,
+  (SELECT COUNT(*) FROM child_credit_operation WHERE ${scoped("child_credit_operation")}) AS credit_operations,
+  (SELECT COUNT(*) FROM child_credit_entry WHERE ${scoped("child_credit_entry")}) AS credit_entries,
+  (SELECT COUNT(*) FROM child_credit_payment_review WHERE ${scoped("child_credit_payment_review")}) AS credit_reviews,
+  (SELECT COUNT(*) FROM credit_application_confirmation WHERE ${scoped("credit_application_confirmation")}) AS credit_confirmations,
   (SELECT COUNT(*) FROM outbound_email WHERE ${scoped("outbound_email")}) AS emails;
 `;
 const count = spawnSync(process.execPath, [
@@ -99,6 +104,11 @@ DELETE FROM class_transfer WHERE ${scoped("class_transfer")};
 DELETE FROM additional_class_admission WHERE ${childScoped("additional_class_admission", "target_registration_draft_child_id")};
 DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};
 DELETE FROM registration_data_correction WHERE ${childScoped("registration_data_correction")};
+DELETE FROM credit_application_confirmation WHERE ${scoped("credit_application_confirmation")};
+DELETE FROM child_credit_payment_review WHERE ${scoped("child_credit_payment_review")};
+DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")} AND amount_mnt < 0;
+DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")};
+DELETE FROM child_credit_operation WHERE ${scoped("child_credit_operation")};
 DELETE FROM payment_evidence WHERE ${scoped("payment_evidence")};
 DELETE FROM payment_allocation WHERE ${installmentScoped("payment_allocation")};
 DELETE FROM payment_confirmation WHERE ${requestScoped("payment_confirmation")};
@@ -110,7 +120,7 @@ DELETE FROM email_verification_challenge WHERE ${scoped("email_verification_chal
 DELETE FROM verified_email_session WHERE ${scoped("verified_email_session")};
 DELETE FROM outbound_email WHERE ${scoped("outbound_email")};
 DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};
-${testRunId ? `
+${testRunIds.length ? `
 -- A promoted synthetic registration has a separate canonical branch. It is
 -- still strictly test-run scoped, and must be retired before its application
 -- child/pre-registration lineage can be removed.
@@ -146,6 +156,6 @@ const cleanup = spawnSync(process.execPath, [
   wrangler, "d1", "execute", "DB", "--env", "staging", "--remote", "--command", deleteSql,
 ], { encoding: "utf8", stdio: "inherit" });
 if (cleanup.status !== 0) process.exit(cleanup.status ?? 1);
-console.log(testRunId
-  ? `Deleted staging test registration ${testRunId}.`
+console.log(testRunIds.length
+  ? `Deleted staging test registration ${testRunIds.join(", ")}.`
   : `Deleted explicitly tagged non-test staging rehearsal ${nonTestRehearsalId}.`);

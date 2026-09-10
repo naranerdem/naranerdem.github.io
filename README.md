@@ -50,6 +50,16 @@ Preview the production build:
 npm run preview
 ```
 
+Run the disposable staff credit browser workflow:
+
+```sh
+npm run test:credit-browser
+```
+
+It applies migrations to a temporary local D1 directory, starts a local staging
+Worker, and uses an isolated test-only teacher session. It never reads staging
+or production data, and removes its temporary Worker/D1 state on completion.
+
 ## Deployment Direction
 
 `https://naranerdem.com` is the primary production site. Cloudflare Workers Static Assets hosts the production domain, while the `workers.dev` URL remains useful for development and testing.

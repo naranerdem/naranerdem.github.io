@@ -30,6 +30,8 @@ const classTransferBundle = path.join(tempDir, "class-transfer.mjs");
 const discountsBundle = path.join(tempDir, "discounts.mjs");
 const registrationCorrectionBundle = path.join(tempDir, "registration-corrections.mjs");
 const initialPaymentDeadlineBundle = path.join(tempDir, "initial-payment-deadline.mjs");
+const childCreditBundle = path.join(tempDir, "child-credit-ledger.mjs");
+const paymentRemindersBundle = path.join(tempDir, "payment-reminders.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
 bundle("src/server/services/registration-catalog.ts", catalogBundle);
 bundle("src/server/services/public-site.ts", publicSiteBundle);
@@ -45,6 +47,8 @@ bundle("src/server/staff/class-transfer.ts", classTransferBundle);
 bundle("src/server/services/discounts.ts", discountsBundle);
 bundle("src/server/staff/registration-corrections.ts", registrationCorrectionBundle);
 bundle("src/server/staff/initial-payment-deadline.ts", initialPaymentDeadlineBundle);
+bundle("src/server/services/child-credit-ledger.ts", childCreditBundle);
+bundle("src/server/staff/payment-reminders.ts", paymentRemindersBundle);
 const {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -83,6 +87,8 @@ const {
 } = await import(pathToFileURL(paymentReconciliationBundle).href);
 const { registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } = await import(pathToFileURL(registrationCorrectionBundle).href);
 const { getInitialPaymentDeadlineSetting, updateInitialPaymentDeadlineSetting } = await import(pathToFileURL(initialPaymentDeadlineBundle).href);
+const { addManualChildCredit, applyChildCredit, childCreditSummary, correctChildCredit, creditPaymentReviewState, leaveChildCreditUnused, transferChildCredit } = await import(pathToFileURL(childCreditBundle).href);
+const { processDuePaymentReminders } = await import(pathToFileURL(paymentRemindersBundle).href);
 
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
@@ -943,6 +949,126 @@ try {
     source: 'staff_manual_bank', idempotencyKey: 'two-initial-approved',
   }, new Date('2026-08-13T09:22:00.000Z'));
   assert.equal(approvedTwoRetry.idempotent, true, "retrying an automatically confirmed first installment cannot create a second payment or seat");
+
+  // Child credit is an immutable child-level ledger. It supplements the normal
+  // agreement allocations without manufacturing another received payment.
+  const approvedTwoStudent = database.query(`SELECT canonical_student_id AS studentId FROM registration_draft_child WHERE id = ?`, [approvedTwoChild.id])[0];
+  const approvedTwoLater = database.query(`SELECT id FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'later'`, [approvedTwoRequest.id])[0];
+  const receivedBeforeCredit = count(database, "received_payment", `payment_request_id = '${approvedTwoRequest.id}'`);
+  const addCreditOperation = randomUUID();
+  const addedCredit = await addManualChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, amountMnt: 200000, reason: "Илүү төлөлтийн нягтлангийн засвар", externalReference: "CASH-TEST-01", operationId: addCreditOperation,
+  }, new Date('2026-08-13T09:23:00.000Z'));
+  assert.equal(addedCredit.availableAmountMnt, 200000, "a manual accounting adjustment creates usable child credit");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${approvedTwoRequest.id}'`), receivedBeforeCredit,
+    "a manual credit is never fabricated as a bank or cash receipt");
+  const repeatedCredit = await addManualChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, amountMnt: 200000, reason: "Илүү төлөлтийн нягтлангийн засвар", externalReference: "CASH-TEST-01", operationId: addCreditOperation,
+  }, new Date('2026-08-13T09:23:30.000Z'));
+  assert.equal(repeatedCredit.idempotent, true, "a duplicate manual-credit retry returns the same immutable operation");
+  assert.equal(count(database, "child_credit_operation", `id = '${addCreditOperation}'`), 1, "a retry cannot create a second manual adjustment");
+  const manualRoot = (await childCreditSummary(database, approvedTwoStudent.studentId)).roots.find((entry) => entry.entryKind === "manual_addition");
+  assert.ok(manualRoot, "manual credit has a durable ledger root");
+  await correctChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, entryId: manualRoot.id, adjustmentMnt: 50000, reason: "Дутуу бүртгэгдсэн засвар", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:24:00.000Z'));
+  const appliedCredit = await applyChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, paymentInstallmentId: approvedTwoLater.id, amountMnt: 100000, reason: "Дараагийн төлбөрт тооцсон", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:25:00.000Z'));
+  assert.equal(appliedCredit.availableAmountMnt, 150000, "credit application reduces only the available ledger balance");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${approvedTwoRequest.id}'`), receivedBeforeCredit,
+    "applying child credit does not alter immutable received-payment history");
+  assert.equal(Number(database.query(`SELECT SUM(-amount_mnt) AS applied FROM child_credit_entry WHERE payment_installment_id = ? AND entry_kind = 'credit_application'`, [approvedTwoLater.id])[0].applied), 100000,
+    "the later installment receives one explicit credit allocation");
+  const creditQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date('2026-08-13T09:25:30.000Z'));
+  const creditedAgreement = creditQueue.items.find((item) => item.paymentRequestId === approvedTwoRequest.id);
+  assert.equal(creditedAgreement.totalPaidMnt, 500000, "credit application does not inflate the received-payment total shown to staff");
+  assert.equal(creditedAgreement.totalCreditAppliedMnt, 100000, "staff see applied credit separately from cash payment history");
+  assert.equal(creditedAgreement.totalRemainingMnt, 400000, "the next outstanding installment is reduced by the authoritative credit allocation");
+  assert.equal(creditedAgreement.creditApplicationInstallmentId, approvedTwoLater.id, "the staff credit action targets the actual later obligation after the initial installment is satisfied");
+  await assert.rejects(correctChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, entryId: manualRoot.id, adjustmentMnt: -200000, reason: "Хэт засвар", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:26:00.000Z')), (error) => error?.code === "insufficient",
+  "a correction cannot erase credit already applied to an obligation");
+  const afterPartialCorrection = await correctChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, entryId: manualRoot.id, adjustmentMnt: -50000, reason: "Хэсэгчилсэн засвар", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:26:30.000Z'));
+  assert.equal(afterPartialCorrection.availableAmountMnt, 100000, "a linked correction may reduce only still-available value");
+  const transferredCredit = await transferChildCredit(env(database), paymentStaff, {
+    sourceRegistrationDraftChildId: approvedTwoChild.id, targetRegistrationDraftChildId: strandedChildId, amountMnt: 25000, reason: "Өөр хүүхдэд шилжүүлсэн", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:27:00.000Z'));
+  assert.equal(transferredCredit.source.availableAmountMnt, 75000, "cross-child transfer debits the source ledger once");
+  assert.equal(transferredCredit.target.availableAmountMnt, 25000, "cross-child transfer creates one destination ledger credit");
+  const reviewBefore = await creditPaymentReviewState(database, approvedTwoChild.id, approvedTwoLater.id);
+  assert.equal(reviewBefore.availableCreditMnt, 75000,
+    "the review sees the partial usable credit remaining after a linked cross-child transfer");
+  assert.equal(reviewBefore.outstandingAmountMnt, 400000,
+    "the review retains the larger cash obligation rather than requiring full credit coverage");
+  assert.equal(reviewBefore.reviewed, false, "usable credit keeps the affected cash demand awaiting a staff decision");
+  await leaveChildCreditUnused(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, paymentInstallmentId: approvedTwoLater.id, reason: "Асран хамгаалагч бэлнээр үргэлжлүүлнэ", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:27:30.000Z'));
+  assert.equal((await creditPaymentReviewState(database, approvedTwoChild.id, approvedTwoLater.id)).reviewed, true,
+    "an explicit leave-unused decision releases only this reviewed demand to the ordinary scheduler");
+  await addManualChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, amountMnt: 1, reason: "Шинэ нөхцөл", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:28:00.000Z'));
+  assert.equal((await creditPaymentReviewState(database, approvedTwoChild.id, approvedTwoLater.id)).reviewed, false,
+    "a changed credit balance invalidates an earlier leave-unused decision and requires review again");
+  const reminderProvider = { async send() { return { providerMessageId: randomUUID() }; } };
+  const reminderNow = new Date('2026-12-01T10:00:00.000Z');
+  await processDuePaymentReminders(env(database, { RESEND_API_KEY: 'test-reminder-key', STAGING_EMAIL_OVERRIDE_TO: 'safe@example.test' }), reminderNow, reminderProvider);
+  assert.equal(database.query(`SELECT status FROM payment_notification_milestone WHERE payment_installment_id = ? AND milestone_type = 'later_reminder'`, [approvedTwoLater.id])[0].status, 'pending',
+    "usable unallocated credit defers the affected cash reminder without recording delivery");
+  assert.equal(count(database, "outbound_email", `id = '${approvedTwoLater.id}:later-reminder:email'`), 0,
+    "a deferred credit-review demand creates no reminder Outbox row");
+  await leaveChildCreditUnused(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, paymentInstallmentId: approvedTwoLater.id, reason: "Асран хамгаалагч бэлнээр үргэлжлүүлнэ", operationId: randomUUID(),
+  }, new Date('2026-12-01T10:01:00.000Z'));
+  await processDuePaymentReminders(env(database, { RESEND_API_KEY: 'test-reminder-key', STAGING_EMAIL_OVERRIDE_TO: 'safe@example.test' }), new Date('2026-12-01T10:02:00.000Z'), reminderProvider);
+  assert.equal(database.query(`SELECT status FROM payment_notification_milestone WHERE payment_installment_id = ? AND milestone_type = 'later_reminder'`, [approvedTwoLater.id])[0].status, 'sent',
+    "after an explicit current-state decision, the ordinary reminder scheduler resumes exactly once");
+
+  // A staff adjustment may settle an ordinary draft before it has any canonical
+  // identity. Promotion must attach the same ledger rows rather than creating
+  // cash payment or a second child credit balance.
+  const creditOnlyInput = submission("class-priced", undefined, 1, "two_installment");
+  creditOnlyInput.children[0].givenName = "Кредитээр баталсан";
+  const creditOnlyDraft = await createRegistrationDraft(env(database), creditOnlyInput, new Date(iso(-3)));
+  const creditOnlyRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [creditOnlyDraft.draftId])[0];
+  const creditOnlyChild = database.query(`SELECT id, canonical_student_id AS studentId FROM registration_draft_child WHERE registration_draft_id = ?`, [creditOnlyDraft.draftId])[0];
+  assert.equal(creditOnlyChild.studentId, null, "an ordinary unpaid draft has no canonical student before credit is applied");
+  const creditOnlyItem = (await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()))).items
+    .find((item) => item.paymentRequestId === creditOnlyRequest.id);
+  const creditOnlyOperation = randomUUID();
+  const creditOnlyAdded = await addManualChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: creditOnlyChild.id, amountMnt: Number(creditOnlyItem.expectedAmountMnt),
+    reason: "Эхний төлбөрийг кредитээр тооцсон", operationId: creditOnlyOperation,
+  }, new Date('2026-08-13T09:29:00.000Z'));
+  assert.equal(creditOnlyAdded.canonicalStudentId, null, "the pre-confirmation ledger remains owned by the draft child");
+  await applyChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: creditOnlyChild.id, paymentInstallmentId: creditOnlyItem.installmentId,
+    amountMnt: Number(creditOnlyItem.expectedAmountMnt), reason: "Эхний төлбөрт тооцсон", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:30:00.000Z'));
+  assert.equal(count(database, "received_payment", `payment_request_id = '${creditOnlyRequest.id}'`), 0,
+    "credit-only initial settlement never fabricates a received cash payment");
+  await finalizeDuePaymentConfirmations(env(database), new Date('2026-08-13T09:36:00.000Z'));
+  const promotedCreditOnly = database.query(`SELECT canonical_student_id AS studentId, canonical_enrollment_id AS enrollmentId
+    FROM registration_draft_child WHERE id = ?`, [creditOnlyChild.id])[0];
+  assert.ok(promotedCreditOnly.enrollmentId && promotedCreditOnly.studentId,
+    "normal credit finalization promotes the ordinary registration after its grace period");
+  assert.equal(count(database, "child_credit_entry", `registration_draft_child_id = '${creditOnlyChild.id}' AND canonical_student_id = '${promotedCreditOnly.studentId}'`), 2,
+    "promotion attaches the original credit root and application to the canonical child without duplicating them");
+  assert.equal(count(database, "child_credit_operation", `source_registration_draft_child_id = '${creditOnlyChild.id}' AND source_student_id = '${promotedCreditOnly.studentId}'`), 2,
+    "the durable operation identities gain their canonical owner during promotion");
+  const laterCredit = await addManualChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: creditOnlyChild.id, amountMnt: 20000, reason: "Дараагийн төлбөрийн кредит", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:37:00.000Z'));
+  assert.equal(laterCredit.availableAmountMnt, 20000,
+    "a later visible 20,000 MNT balance is scoped to unused credit, not the earlier credit-only settlement");
+  assert.equal(Number(database.query(`SELECT SUM(-amount_mnt) AS applied FROM child_credit_entry
+    WHERE registration_draft_child_id = ? AND entry_kind = 'credit_application'`, [creditOnlyChild.id])[0].applied), Number(creditOnlyItem.expectedAmountMnt),
+  "the ledger retains the full cumulative credit settlement after promotion");
 
   const autoSingleInput = submission("class-priced");
   autoSingleInput.children[0].givenName = "Нэг удаагийн авто";

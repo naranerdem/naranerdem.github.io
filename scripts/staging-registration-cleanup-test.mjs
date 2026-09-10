@@ -11,6 +11,8 @@ function position(statement) {
 
 assert.match(source, /\^registration:\[0-9a-f-\]\{36\}\$/);
 assert.match(source, /\^non-test:\[0-9a-f-\]\{36\}\$/);
+assert.match(source, /runArguments = process\.argv\.slice\(2\)\.filter/,
+  "cleanup accepts multiple exact test-run scopes for linked synthetic aggregates");
 assert.match(source, /refuses production/);
 assert.match(source, /STAGING NON-TEST REHEARSAL/);
 assert.match(source, /COALESCE\(\s*registration_draft_child\.selected_class_session_id,\s*registration_draft_child\.preferred_waitlist_class_session_id\s*\)/);
@@ -54,6 +56,21 @@ assert.ok(
   position('DELETE FROM payment_confirmation WHERE ${requestScoped("payment_confirmation")};')
     < position('DELETE FROM received_payment WHERE ${requestScoped("received_payment")};'),
   "payment confirmations must be deleted before received payments",
+);
+assert.ok(
+  position('DELETE FROM credit_application_confirmation WHERE ${scoped("credit_application_confirmation")};')
+    < position('DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")} AND amount_mnt < 0;'),
+  "credit confirmations must be deleted before their ledger operation/entries",
+);
+assert.ok(
+  position('DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")} AND amount_mnt < 0;')
+    < position('DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")};'),
+  "ledger debits must be deleted before the credited origins they reference",
+);
+assert.ok(
+  position('DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")};')
+    < position('DELETE FROM child_credit_operation WHERE ${scoped("child_credit_operation")};'),
+  "ledger entries must be deleted before their operation parent",
 );
 assert.ok(
   position('DELETE FROM enrollment_referral_code WHERE ${scoped("enrollment_referral_code")};')

@@ -9,6 +9,7 @@ function mnt(value: number): string {
 export interface EnrollmentConfirmationChild {
   childName: string;
   academicYearLabel: string;
+  stageLabel?: string | null;
   offeringLabel: string;
   classLabel: string;
   paidAmountMnt: number;
@@ -27,13 +28,13 @@ function percentage(basisPoints: number): string {
 }
 
 export function enrollmentCommunicationDetails(child: EnrollmentConfirmationChild, policy: EnrollmentReferralPolicy) {
-  const referralLines = child.referralCode ? [
+  const referralLines = child.referralCode && policy.referrerBasisPoints > 0 && policy.referredChildBasisPoints > 0 ? [
     `Найзаа урьж бүртгүүлбэл найз нь ${percentage(policy.referredChildBasisPoints)}, танай хүүхэд ${percentage(policy.referrerBasisPoints)}-ийн төлбөрийн хөнгөлөлт эдэлнэ.`,
     `Найзаа урих код: ${child.referralCode}`,
     "Энэ кодыг найздаа илгээнэ үү.",
   ] : [];
   return {
-    enrollmentLine: `${child.academicYearLabel} · ${child.offeringLabel} · ${child.classLabel}`,
+    enrollmentLine: formatClassDisplay(child.academicYearLabel, child.stageLabel || child.offeringLabel, child.classLabel),
     paymentLines: child.remainingAmountMnt > 0
       ? [`Төлсөн: ${mnt(child.paidAmountMnt)}`, `Үлдсэн: ${mnt(child.remainingAmountMnt)}`,
         ...(child.remainingPaymentDueAt ? [`Төлөх хугацаа: ${child.remainingPaymentDueAt.slice(0, 10)}`] : [])]
@@ -46,8 +47,10 @@ export function enrollmentManualMessage(input: { child: EnrollmentConfirmationCh
   const details = enrollmentCommunicationDetails(input.child, input.referralPolicy);
   return [
     `Сайн байна уу. ${input.child.childName} хүүхдийн бүртгэл баталгаажлаа.`,
-    details.enrollmentLine,
+    "",
     "Манай сургалтад бүртгүүлсэнд баярлалаа.",
+    "",
+    details.enrollmentLine,
     ...(details.referralLines.length ? ["", ...details.referralLines] : []),
     "",
     "Наран Эрдэм",
@@ -62,7 +65,7 @@ export function enrollmentConfirmationTemplate(input: { children: EnrollmentConf
   }).join("<hr style=\"border:0;border-top:1px solid #dfe4ec;margin:20px 0\">");
   const textItems = input.children.map((child) => {
     const details = enrollmentCommunicationDetails(child, input.referralPolicy);
-    return `${child.childName} хүүхдийн бүртгэл баталгаажлаа.\n${details.enrollmentLine}\n${details.paymentLines.join("\n")}${details.referralLines.length ? `\n${details.referralLines.join("\n")}` : ""}`;
+    return `${child.childName} хүүхдийн бүртгэл баталгаажлаа.\nМанай сургалтад бүртгүүлсэнд баярлалаа.\n${details.enrollmentLine}\n${details.paymentLines.join("\n")}${details.referralLines.length ? `\n${details.referralLines.join("\n")}` : ""}`;
   }).join("\n\n");
   const safeUrl = escapeHtml(input.accessUrl);
   return {
@@ -71,3 +74,4 @@ export function enrollmentConfirmationTemplate(input: { children: EnrollmentConf
     text: `Наран Эрдэм — Бүртгэл баталгаажлаа\n\nМанай сургалтад бүртгүүлсэнд баярлалаа.\n\n${textItems}\n\nБүртгэлээ харах:\n${input.accessUrl}\n\nЭнэ холбоос 24 цагийн дараа хүчингүй болно.\n\nНаран Эрдэм`,
   };
 }
+import { formatClassDisplay } from "./class-display";

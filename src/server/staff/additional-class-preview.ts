@@ -76,21 +76,28 @@ async function currentClasses(env: WorkerEnv, source: Source) {
   const byChild = new Map<string, typeof effective>();
   for (const item of effective) byChild.set(item.registrationDraftChildId, [...(byChild.get(item.registrationDraftChildId) ?? []), item]);
   const paid = ids.length ? await env.DB.prepare(`SELECT payment_installment.registration_draft_child_id AS registrationDraftChildId,
-      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS paidMnt
+      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS paidMnt,
+      COALESCE(SUM((SELECT -credit_entry.amount_mnt FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.payment_installment_id = payment_installment.id
+          AND credit_entry.entry_kind = 'credit_application')), 0) AS creditAppliedMnt
     FROM payment_installment LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
     WHERE payment_installment.registration_draft_child_id IN (${ids.map(() => "?").join(", ")})
-    GROUP BY payment_installment.registration_draft_child_id`).bind(...ids).all<{ registrationDraftChildId: string; paidMnt: number }>() : { results: [] };
-  const paidByChild = new Map(paid.results.map((row) => [row.registrationDraftChildId, integer(row.paidMnt)]));
+    GROUP BY payment_installment.registration_draft_child_id`).bind(...ids).all<{ registrationDraftChildId: string; paidMnt: number; creditAppliedMnt: number }>() : { results: [] };
+  const paidByChild = new Map(paid.results.map((row) => [row.registrationDraftChildId, {
+    paidMnt: integer(row.paidMnt), creditAppliedMnt: integer(row.creditAppliedMnt),
+  }]));
   return classes.results.map((row) => {
     const obligations = row.registrationDraftChildId ? byChild.get(row.registrationDraftChildId) ?? [] : [];
     const originalTotalMnt = obligations.reduce((sum, item) => sum + integer(item.amountMnt), 0);
     const discountMnt = obligations.reduce((sum, item) => sum + integer(item.discountAmountMnt), 0);
     const effectiveTotalMnt = obligations.reduce((sum, item) => sum + integer(item.effectiveAmountMnt), 0);
-    const paidMnt = row.registrationDraftChildId ? paidByChild.get(row.registrationDraftChildId) ?? 0 : 0;
+    const settlement = row.registrationDraftChildId ? paidByChild.get(row.registrationDraftChildId) ?? { paidMnt: 0, creditAppliedMnt: 0 } : { paidMnt: 0, creditAppliedMnt: 0 };
     return { enrollmentId: row.enrollmentId, registrationDraftChildId: row.registrationDraftChildId,
       classSessionId: row.classSessionId, label: classLabel(row),
-      originalTotalMnt, discountMnt, effectiveTotalMnt, paidMnt, remainingMnt: Math.max(0, effectiveTotalMnt - paidMnt) };
+      originalTotalMnt, discountMnt, effectiveTotalMnt, paidMnt: settlement.paidMnt,
+      creditAppliedMnt: settlement.creditAppliedMnt,
+      remainingMnt: Math.max(0, effectiveTotalMnt - settlement.paidMnt - settlement.creditAppliedMnt) };
   });
 }
 

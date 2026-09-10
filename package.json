@@ -41,6 +41,7 @@
     "test:staff-reports": "node scripts/staff-reports-test.mjs",
     "test:reports": "npm run test:staff-reports",
     "test:registration": "node scripts/registration-hold-test.mjs",
+    "test:credit-browser": "npm run build && node scripts/child-credit-browser-test.mjs",
     "test:browser-uuid-compatibility": "node scripts/browser-uuid-compatibility-test.mjs",
     "test:staff-registration-intake": "node scripts/staff-registration-intake-test.mjs",
     "test:staff-intake-email": "node scripts/staff-intake-email-semantics-test.mjs",
@@ -70,7 +71,8 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
+    "@playwright/test": "^1.63.0",
     "typescript": "^5.9.3",
-    "wrangler": "^4.120.0"
+    "wrangler": "^4.130.0"
   }
 }

@@ -159,6 +159,7 @@ export function buildRegistrationPaymentReport(data) {
       { key: "guardian", label: "Асран хамгаалагч" },
       { key: "relationship", label: "Харилцаа" },
       { key: "phone", label: "Утас" },
+      { key: "secondaryPhone", label: "Нэмэлт утас" },
       { key: "email", label: "И-мэйл" },
       { key: "emailStatus", label: "И-мэйл" },
       { key: "address", label: "Хаяг" },
@@ -169,6 +170,7 @@ export function buildRegistrationPaymentReport(data) {
       { key: "price", label: "Төлөх дүн" },
       { key: "discount", label: "Хөнгөлөлт" },
       { key: "paid", label: "Төлөгдсөн" },
+      { key: "creditApplied", label: "Кредитээр тооцсон" },
       { key: "remaining", label: "Үлдсэн" },
       { key: "dueAt", label: "Дараагийн хугацаа" },
       { key: "ownReferral", label: "Найзаа урих код" },
@@ -179,6 +181,7 @@ export function buildRegistrationPaymentReport(data) {
       ...item,
       // Excel otherwise removes a leading zero. The apostrophe is an Excel text marker.
       phone: item.phone ? `'${item.phone}` : "",
+      secondaryPhone: item.secondaryPhone ? `'${item.secondaryPhone}` : "",
     })),
   );
 }
