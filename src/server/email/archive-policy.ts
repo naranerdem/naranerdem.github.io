@@ -20,10 +20,25 @@ function normalizedEmail(value: string): string | null {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? email : null;
 }
 
+export class ArchiveRecipientParseError extends Error {
+  constructor(public readonly invalidEntry?: string) { super("invalid_archive_recipients"); }
+}
+
+function recipientEntries(value: unknown): string[] {
+  if (typeof value === "string") return value.split(/[\r\n,]+/).map((entry) => entry.trim()).filter(Boolean);
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) throw new ArchiveRecipientParseError();
+  return (value as string[]).flatMap((entry) => entry.split(/[\r\n,]+/).map((part) => part.trim()).filter(Boolean));
+}
+
 export function parseArchiveRecipients(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length > 5 || value.some((entry) => typeof entry !== "string")) throw new Error("invalid_archive_recipients");
-  const recipients = value.map((entry) => normalizedEmail(entry)).filter((entry): entry is string => Boolean(entry));
-  if (recipients.length !== value.length || new Set(recipients).size !== recipients.length) throw new Error("invalid_archive_recipients");
+  const entries = recipientEntries(value);
+  if (entries.length > 5) throw new ArchiveRecipientParseError();
+  const recipients = entries.map((entry) => {
+    const email = normalizedEmail(entry);
+    if (!email) throw new ArchiveRecipientParseError(entry);
+    return email;
+  });
+  if (new Set(recipients).size !== recipients.length) throw new ArchiveRecipientParseError();
   return recipients;
 }
 

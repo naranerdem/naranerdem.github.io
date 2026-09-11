@@ -66,8 +66,13 @@ try {
   assert.match(outboxPage, /email\.context\?\.guardianName/, "legacy email rows with no context still open safely");
   await assert.rejects(() => listEmailOutbox(env, nonAdmin, {}), (error) => error instanceof EmailOutboxError && error.code === "forbidden");
   assert.deepEqual(parseArchiveRecipients([" Archive@Example.test ", "other@example.test"]), ["archive@example.test", "other@example.test"]);
+  assert.deepEqual(parseArchiveRecipients("Dotted.Name+tag@example.test, second@example.test\r\nthird@example.test\n\n"), ["dotted.name+tag@example.test", "second@example.test", "third@example.test"], "comma, LF, and CRLF entry formats normalize without changing dots or plus tags");
+  assert.throws(() => parseArchiveRecipients("valid@example.test\\nother@example.test"), /invalid_archive_recipients/, "literal backslash-n text is not mistaken for a line break");
   assert.throws(() => parseArchiveRecipients(["a@b.test", "A@b.test"]), /invalid_archive_recipients/);
   assert.throws(() => parseArchiveRecipients(["a@b.test", "b@b.test", "c@b.test", "d@b.test", "e@b.test", "f@b.test"]), /invalid_archive_recipients/);
+  const beforeRejectedArchiveUpdate = await getEmailArchiveBccSetting(env);
+  await assert.rejects(() => updateEmailArchiveBccSetting(env, actor, { recipients: "kept@example.test, not-an-email", expectedUpdatedAt: beforeRejectedArchiveUpdate.updatedAt }), (error) => error instanceof EmailArchiveBccError && error.code === "invalid" && error.invalidRecipient === "not-an-email");
+  assert.deepEqual((await getEmailArchiveBccSetting(env)).recipients, beforeRejectedArchiveUpdate.recipients, "a rejected archive entry leaves the saved setting unchanged");
   assert.equal(emailSensitivityForTemplate("payment_reminder_v1"), "archive_bcc_safe");
   assert.equal(emailSensitivityForTemplate("waitlist_offer_v1"), "sensitive_capability");
   assert.equal(emailSensitivityForTemplate("future_unknown_template"), "sensitive_capability");

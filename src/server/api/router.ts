@@ -2003,7 +2003,7 @@ export async function handleApiRequest(
         return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
-              : "И-мэйлийн хаягуудыг шалгана уу.", status, { "Cache-Control": "no-store" });
+              : caught.invalidRecipient ? `И-мэйлийн хаяг буруу байна: ${caught.invalidRecipient}` : "И-мэйлийн хаягуудыг шалгана уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PublicQrRedirectSettingsError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

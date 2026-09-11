@@ -482,6 +482,8 @@ Recommended qualification semantics:
 
 The bounded automatic rule is now implemented; future discretionary award types remain separate from it.
 
+Approved family-discount scope: automatic same-guardian qualification and future explicit cross-guardian family membership both qualify within the same academic year. A recorded family membership may persist across academic years, but eligibility and any resulting award are evaluated independently for each year.
+
 ### Referral Discount
 
 There is a normal referral program:

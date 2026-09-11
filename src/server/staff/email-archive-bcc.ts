@@ -1,9 +1,11 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
-import { parseArchiveRecipients } from "../email/archive-policy";
+import { ArchiveRecipientParseError, parseArchiveRecipients } from "../email/archive-policy";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 
 export interface EmailArchiveBccSetting { recipients: string[]; updatedAt: string; }
-export class EmailArchiveBccError extends Error { constructor(public readonly code: "forbidden" | "invalid" | "conflict") { super("Email archive setting failed."); } }
+export class EmailArchiveBccError extends Error {
+  constructor(public readonly code: "forbidden" | "invalid" | "conflict", public readonly invalidRecipient?: string) { super("Email archive setting failed."); }
+}
 
 function audit(env: WorkerEnv, actor: StaffPrincipal, value: EmailArchiveBccSetting, now: string): D1PreparedStatement {
   const isTest = env.APP_ENV === "staging" ? 1 : 0;
@@ -25,7 +27,10 @@ export async function updateEmailArchiveBccSetting(env: WorkerEnv, actor: StaffP
   if (!hasStaffCapability(actor, "admin.settings.manage")) throw new EmailArchiveBccError("forbidden");
   if (typeof input.expectedUpdatedAt !== "string" || !input.expectedUpdatedAt) throw new EmailArchiveBccError("invalid");
   let recipients: string[];
-  try { recipients = parseArchiveRecipients(input.recipients); } catch { throw new EmailArchiveBccError("invalid"); }
+  try { recipients = parseArchiveRecipients(input.recipients); } catch (caught) {
+    if (caught instanceof ArchiveRecipientParseError) throw new EmailArchiveBccError("invalid", caught.invalidEntry);
+    throw new EmailArchiveBccError("invalid");
+  }
   const now = new Date().toISOString();
   const result = await env.DB.prepare("UPDATE email_archive_bcc_setting SET recipients_json = ?, updated_at = ? WHERE singleton = 1 AND updated_at = ?")
     .bind(JSON.stringify(recipients), now, input.expectedUpdatedAt).run();
