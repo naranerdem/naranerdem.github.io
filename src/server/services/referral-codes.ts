@@ -60,6 +60,18 @@ export async function ensureEnrollmentReferralCode(
   const current = await database.prepare(`SELECT code FROM enrollment_referral_code
     WHERE enrollment_id = ? AND status = 'active'`).bind(enrollmentId).first<{ code: string }>();
   if (current) return current.code;
+  // Referral identity belongs to the child, not to every class agreement. A
+  // second current enrollment reuses the child's still-valid active code;
+  // transferred-out enrollment codes remain ineligible through this join.
+  const existingForStudent = await database.prepare(`SELECT enrollment_referral_code.code AS code
+    FROM enrollment_referral_code
+    INNER JOIN enrollment ON enrollment.id = enrollment_referral_code.enrollment_id
+    WHERE enrollment_referral_code.student_id = ? AND enrollment_referral_code.status = 'active'
+      AND enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL
+      AND enrollment_referral_code.is_test = ? AND enrollment.is_test = ?
+    ORDER BY enrollment_referral_code.activated_at ASC, enrollment_referral_code.id ASC LIMIT 1`)
+    .bind(studentId, provenance.isTest, provenance.isTest).first<{ code: string }>();
+  if (existingForStudent) return existingForStudent.code;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const code = generatedReferralCode();
     const inserted = await database.prepare(`INSERT OR IGNORE INTO enrollment_referral_code (

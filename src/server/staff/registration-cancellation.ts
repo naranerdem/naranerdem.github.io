@@ -2,6 +2,7 @@ import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { getClassCapacityProjections } from "../services/class-capacity";
+import { releaseAdditionalAdmissionCreditReservations } from "../services/child-credit-ledger";
 
 export type RegistrationCancellationReason = "guardian_request" | "payment_overdue" | "other";
 
@@ -219,6 +220,13 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
       .bind(row.childId).first();
     if (pendingAdmission) throw new RegistrationCancellationError("additional_admission_pending");
     throw new RegistrationCancellationError("conflict");
+  }
+
+  const pendingAdmissions = await env.DB.prepare(`SELECT id FROM additional_class_admission
+    WHERE (target_registration_draft_child_id = ? OR source_registration_draft_child_id = ?)
+      AND status = 'pending_confirmation'`).bind(row.childId, row.childId).all<{ id: string }>();
+  for (const admission of pendingAdmissions.results) {
+    await releaseAdditionalAdmissionCreditReservations(env.DB, admission.id, now);
   }
 
   const credits = await receivedPaymentCredits(env, row.childId);

@@ -211,7 +211,14 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
       WHERE allocation.payment_installment_id = payment_installment.id
         AND confirmation.status = 'finalized' AND confirmation.remaining_payment_due_at IS NOT NULL
       ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1) AS remainingPaymentDueAt,
-    enrollment_referral_code.code AS referralCode
+    COALESCE(
+      enrollment_referral_code.code,
+      (SELECT shared_code.code FROM enrollment_referral_code AS shared_code
+        INNER JOIN enrollment AS shared_enrollment ON shared_enrollment.id = shared_code.enrollment_id
+        WHERE shared_code.student_id = enrollment.student_id AND shared_code.status = 'active'
+          AND shared_enrollment.status = 'confirmed' AND shared_enrollment.transferred_out_at IS NULL
+        ORDER BY shared_code.activated_at ASC, shared_code.id ASC LIMIT 1)
+    ) AS referralCode
     FROM registration_draft
     INNER JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
     INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id AND enrollment.status = 'confirmed'

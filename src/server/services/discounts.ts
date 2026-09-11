@@ -126,6 +126,40 @@ export async function activeDiscountAwardsForChildren(database: D1Database, chil
   return discountAwardsForChildren(database, childIds);
 }
 
+// A staff-approved additional-class promise changes the target's effective
+// payment threshold before canonical promotion. It is intentionally projected
+// rather than persisted as an active award: cancellation or expiry therefore
+// removes it without an award reversal, while confirmation replaces it with
+// the immutable active award of the same deterministic id.
+async function pendingAdditionalClassAwardsForChildren(database: D1Database, childIds: string[]): Promise<Map<string, DiscountAward[]>> {
+  if (!childIds.length) return new Map();
+  const rows = await database.prepare(`SELECT id, target_registration_draft_child_id AS registrationDraftChildId,
+      source_registration_draft_child_id AS sourceRegistrationDraftChildId,
+      family_basis_points AS basisPoints, target_base_amount_mnt AS baseAmountMnt,
+      target_award_amount_mnt AS awardAmountMnt, created_at AS awardedAt
+    FROM additional_class_admission
+    WHERE status = 'pending_confirmation' AND target_registration_draft_child_id IN (${childIds.map(() => "?").join(", ")})
+      AND NOT EXISTS (SELECT 1 FROM discount_award
+        WHERE discount_award.id = additional_class_admission.id || ':target-family' AND discount_award.status = 'active')`)
+    .bind(...childIds).all<{
+      id: string; registrationDraftChildId: string; sourceRegistrationDraftChildId: string;
+      basisPoints: number; baseAmountMnt: number; awardAmountMnt: number; awardedAt: string;
+    }>();
+  const byChild = new Map<string, DiscountAward[]>();
+  for (const row of rows.results) {
+    const award: DiscountAward = {
+      id: `${row.id}:target-family`, registrationDraftChildId: row.registrationDraftChildId,
+      beneficiaryEnrollmentId: null, awardType: "family_multi_child",
+      sourceRegistrationDraftChildId: row.sourceRegistrationDraftChildId, sourceReferralId: null,
+      basisPoints: Number(row.basisPoints), baseAmountMnt: Number(row.baseAmountMnt), awardAmountMnt: Number(row.awardAmountMnt),
+      appliedAmountMnt: 0, creditAmountMnt: 0, status: "active", reason: "additional_class_canonical_confirmation",
+      awardedAt: row.awardedAt, reversedAt: null, reversalReason: null,
+    };
+    byChild.set(award.registrationDraftChildId, [...(byChild.get(award.registrationDraftChildId) ?? []), award]);
+  }
+  return byChild;
+}
+
 export function effectiveInstallments(inputs: EffectiveInstallmentInput[], awardsByChild: Map<string, DiscountAward[]>): EffectiveInstallment[] {
   const byChild = new Map<string, EffectiveInstallmentInput[]>();
   for (const input of inputs) byChild.set(input.registrationDraftChildId, [...(byChild.get(input.registrationDraftChildId) ?? []), input]);
@@ -167,7 +201,12 @@ export function effectiveInstallments(inputs: EffectiveInstallmentInput[], award
 }
 
 export async function effectiveInstallmentsForRows(database: D1Database, inputs: EffectiveInstallmentInput[]): Promise<EffectiveInstallment[]> {
-  return effectiveInstallments(inputs, await activeDiscountAwardsForChildren(database, [...new Set(inputs.map((item) => item.registrationDraftChildId))]));
+  const childIds = [...new Set(inputs.map((item) => item.registrationDraftChildId))];
+  const [active, pending] = await Promise.all([
+    activeDiscountAwardsForChildren(database, childIds), pendingAdditionalClassAwardsForChildren(database, childIds),
+  ]);
+  for (const [childId, awards] of pending) active.set(childId, [...(active.get(childId) ?? []), ...awards]);
+  return effectiveInstallments(inputs, active);
 }
 
 export async function recalculateDiscountAwardBalances(database: D1Database, childId: string, now: string): Promise<void> {
@@ -177,7 +216,10 @@ export async function recalculateDiscountAwardBalances(database: D1Database, chi
   if (!child?.initialAmountMnt) return;
   const awards = (await activeDiscountAwardsForChildren(database, [childId])).get(childId) ?? [];
   const paid = await database.prepare(`SELECT COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0
-      ELSE payment_allocation.allocated_amount_mnt END), 0) AS amountMnt
+      ELSE payment_allocation.allocated_amount_mnt END), 0)
+      + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
+        WHERE credit_entry.registration_draft_child_id = payment_installment.registration_draft_child_id
+          AND credit_entry.entry_kind = 'credit_application'), 0) AS amountMnt
     FROM payment_installment
     LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id

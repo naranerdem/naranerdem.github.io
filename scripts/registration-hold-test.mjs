@@ -63,7 +63,7 @@ const {
 } = await import(pathToFileURL(registrationBundle).href);
 const { getRegistrationCatalog } = await import(pathToFileURL(catalogBundle).href);
 const { getAdditionalClassPreview, AdditionalClassPreviewError } = await import(pathToFileURL(additionalClassPreviewBundle).href);
-const { createAdditionalClassAdmission, AdditionalClassAdmissionError } = await import(pathToFileURL(additionalClassAdmissionBundle).href);
+const { createAdditionalClassAdmission: createAdditionalClassAdmissionService, AdditionalClassAdmissionError } = await import(pathToFileURL(additionalClassAdmissionBundle).href);
 const { claimAdditionalAdmissionConfirmation, finalizeAdditionalAdmissionClaim, promotePaidDraftChild } = await import(pathToFileURL(canonicalPromotionBundle).href);
 const { cancelRegistration } = await import(pathToFileURL(registrationCancellationBundle).href);
 const { closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets } = await import(pathToFileURL(classTransferBundle).href);
@@ -270,8 +270,10 @@ try {
     ["class-roomy", 3, "available", "12:00"],
     ["class-full-preferred", 1, "full", "14:00"],
     ["class-priced", 10, "available", "16:00"],
-    ["class-second-offering", 10, "available", "17:00"],
-    ["class-legacy-status", 10, "available", "17:30"],
+   ["class-second-offering", 10, "available", "17:00"],
+   ["class-legacy-status", 10, "available", "17:30"],
+    ["class-award-source", 10, "available", "18:00"],
+    ["class-award-target", 10, "available", "18:30"],
   ]) {
     database.query(`
       INSERT INTO class_session (
@@ -329,7 +331,28 @@ try {
     VALUES ('staff-payment-test', 'payment@example.test', 'Тест Багш', 'active', 1, 'payment-test', ?, ?)`, [iso(), iso()]);
   const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
     capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
-  const registrationStaff = { ...paymentStaff, capabilities: ['registration.manage'] };
+ const registrationStaff = { ...paymentStaff, capabilities: ['registration.manage'] };
+  async function createAdditionalClassAdmission(workerEnv, actor, input, nowDate) {
+    const existing = await workerEnv.DB.prepare(`SELECT 1 AS value FROM additional_class_admission WHERE idempotency_key = ?`)
+      .bind(input.idempotencyKey).first();
+    if (existing || !actor.capabilities?.includes("registration.manage")) {
+      return createAdditionalClassAdmissionService(workerEnv, actor, {
+        ...input, policyUpdatedAt: "replay", proposedSourceAwardMnt: 0, proposedTargetAwardMnt: 0,
+      }, nowDate);
+    }
+    const preview = await getAdditionalClassPreview(workerEnv, registrationStaff, {
+      registrationDraftChildId: input.registrationDraftChildId,
+      targetClassSessionId: input.targetClassSessionId,
+      paymentPlanCode: input.paymentPlanCode,
+    }, nowDate);
+    assert.ok(preview.proposal, "a fresh additional admission must carry an authoritative pricing proposal");
+    return createAdditionalClassAdmissionService(workerEnv, actor, {
+      ...input,
+      policyUpdatedAt: preview.baseDiscount.policyUpdatedAt,
+      proposedSourceAwardMnt: preview.sourceEffect.awardMnt,
+      proposedTargetAwardMnt: preview.proposal.baseDiscountMnt,
+    }, nowDate);
+  }
   const exportStaff = { ...paymentStaff, capabilities: ['payment.view', 'registration.view'] };
   const adminStaff = { ...paymentStaff, staffAccountId: 'staff-admin-test', capabilities: ['admin.settings.manage'] };
 
@@ -575,6 +598,12 @@ try {
   assert.equal(additionalPreview.proposal.totalAfterDiscountMnt, 900000, "preview arithmetic retains the selected-plan total less the proposed base award");
   assert.deepEqual(Object.fromEntries(["registration_draft", "registration_capacity_hold", "payment_request", "discount_award", "audit_event", "outbound_email"]
     .map((table) => [table, count(database, table)])), additionalPreviewCounts, "additional-class preview performs no business write");
+  await assert.rejects(createAdditionalClassAdmissionService(env(database), registrationStaff, {
+    registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-stale-proposal-0001",
+    policyUpdatedAt: additionalPreview.baseDiscount.policyUpdatedAt, proposedSourceAwardMnt: 0, proposedTargetAwardMnt: 0,
+  }, new Date("2026-08-13T09:34:00.000Z")), (error) => error?.code === "stale",
+  "the service rejects a browser proposal whose configured award totals no longer match the authoritative source and target calculation");
   database.query("UPDATE discount_policy_setting SET family_multi_child_basis_points = 750, updated_at = '2026-08-13T09:30:00.000Z' WHERE singleton = 1");
   const configuredRatePreview = await getAdditionalClassPreview(env(database), registrationStaff, {
     registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment", proposeBaseDiscount: true,
@@ -587,7 +616,7 @@ try {
     registrationDraftChildId: autoTwoChild.id, targetClassSessionId: "class-roomy", paymentPlanCode: "two_installment", proposeBaseDiscount: true,
   }, new Date(iso()));
   assert.equal(disabledRatePreview.baseDiscount.enabled, false, "a disabled policy does not fall back to a default discount");
-  assert.equal(disabledRatePreview.proposal.baseDiscountMnt, 0, "a disabled policy produces no proposed base award");
+  assert.equal(disabledRatePreview.proposal, null, "a disabled policy does not present an admission proposal without its configured award");
   database.query("UPDATE discount_policy_setting SET family_multi_child_basis_points = 1000, updated_at = '2026-08-13T09:32:00.000Z' WHERE singleton = 1");
   assert.equal(count(database, "discount_award", `registration_draft_child_id = '${autoTwoChild.id}' AND award_type = 'family_multi_child' AND status = 'active'`), 0,
     "the source begins without a base award, so confirmation must activate both promises");
@@ -959,6 +988,10 @@ try {
   const addedCredit = await addManualChildCredit(env(database), paymentStaff, {
     registrationDraftChildId: approvedTwoChild.id, amountMnt: 200000, reason: "Илүү төлөлтийн нягтлангийн засвар", externalReference: "CASH-TEST-01", operationId: addCreditOperation,
   }, new Date('2026-08-13T09:23:00.000Z'));
+  await assert.rejects(applyChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, paymentInstallmentId: approvedTwoItem.installmentId,
+    amountMnt: 1, reason: "Эхний төлбөрт хэрэглэхгүй", operationId: randomUUID(),
+  }), { code: "invalid" }, "a two-installment agreement's first installment remains cash-only even when child credit exists");
   assert.equal(addedCredit.availableAmountMnt, 200000, "a manual accounting adjustment creates usable child credit");
   assert.equal(count(database, "received_payment", `payment_request_id = '${approvedTwoRequest.id}'`), receivedBeforeCredit,
     "a manual credit is never fabricated as a bank or cash receipt");
@@ -1032,7 +1065,7 @@ try {
   // A staff adjustment may settle an ordinary draft before it has any canonical
   // identity. Promotion must attach the same ledger rows rather than creating
   // cash payment or a second child credit balance.
-  const creditOnlyInput = submission("class-priced", undefined, 1, "two_installment");
+  const creditOnlyInput = submission("class-priced", undefined, 1, "single");
   creditOnlyInput.children[0].givenName = "Кредитээр баталсан";
   const creditOnlyDraft = await createRegistrationDraft(env(database), creditOnlyInput, new Date(iso(-3)));
   const creditOnlyRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [creditOnlyDraft.draftId])[0];
@@ -1043,12 +1076,12 @@ try {
   const creditOnlyOperation = randomUUID();
   const creditOnlyAdded = await addManualChildCredit(env(database), paymentStaff, {
     registrationDraftChildId: creditOnlyChild.id, amountMnt: Number(creditOnlyItem.expectedAmountMnt),
-    reason: "Эхний төлбөрийг кредитээр тооцсон", operationId: creditOnlyOperation,
+    reason: "Нэг удаагийн төлбөрийг кредитээр тооцсон", operationId: creditOnlyOperation,
   }, new Date('2026-08-13T09:29:00.000Z'));
   assert.equal(creditOnlyAdded.canonicalStudentId, null, "the pre-confirmation ledger remains owned by the draft child");
   await applyChildCredit(env(database), paymentStaff, {
     registrationDraftChildId: creditOnlyChild.id, paymentInstallmentId: creditOnlyItem.installmentId,
-    amountMnt: Number(creditOnlyItem.expectedAmountMnt), reason: "Эхний төлбөрт тооцсон", operationId: randomUUID(),
+    amountMnt: Number(creditOnlyItem.expectedAmountMnt), reason: "Төлбөрт тооцсон", operationId: randomUUID(),
   }, new Date('2026-08-13T09:30:00.000Z'));
   assert.equal(count(database, "received_payment", `payment_request_id = '${creditOnlyRequest.id}'`), 0,
     "credit-only initial settlement never fabricates a received cash payment");
@@ -1088,6 +1121,120 @@ try {
   assert.ok(autoSingleChild.enrollmentId, "a finalized full one-time payment creates the canonical enrollment without a seat checkbox");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${autoSingleChild.id}' AND status = 'active'`), 0,
     "one-time automatic promotion transfers the original seat reservation exactly once");
+
+  const onePaymentPreview = await getAdditionalClassPreview(env(database), registrationStaff, {
+    registrationDraftChildId: autoSingleChild.id, targetClassSessionId: "class-second-offering", paymentPlanCode: "single", proposeBaseDiscount: true,
+  }, new Date(iso()));
+  assert.deepEqual(onePaymentPreview.targets.find((target) => target.id === "class-second-offering")?.paymentOptions.map((plan) => plan.code), ["single"],
+    "the staff preview exposes a target's authoritative one-payment agreement");
+  assert.deepEqual(onePaymentPreview.proposal, {
+    paymentPlanCode: "single", originalTotalMnt: 700000, baseDiscountMnt: 70000,
+    totalAfterDiscountMnt: 630000, firstInstallmentMnt: 630000, secondInstallmentMnt: null,
+    secondInstallmentDueOn: null, unresolved: [],
+  }, "the target's configured 10% award reduces its one-payment initial obligation without borrowing the source price");
+  assert.deepEqual(onePaymentPreview.creditProposal, {
+    eligibleNow: true, targetInstallmentNumber: 1, availableChildCreditMnt: 0,
+    useExistingCredit: true, useSourceAwardCredit: true, proposedExistingCreditMnt: 0,
+    proposedSourceAwardCreditMnt: 95000, cashRequiredMnt: 535000, remainingChildCreditMnt: 0,
+    note: null,
+  }, "a fully paid source proposes only its contingent award credit against an eligible one-payment target");
+  const onePaymentAdmission = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: autoSingleChild.id, targetClassSessionId: "class-second-offering", paymentPlanCode: "single",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-single-target-0001",
+    useExistingCredit: true, useSourceAwardCredit: true,
+    proposedExistingCreditMnt: 0, proposedSourceAwardCreditMnt: 95000,
+  }, new Date("2026-08-13T09:22:30.000Z"));
+  const onePaymentTargetId = onePaymentAdmission.registrationDraftChildId;
+  assert.equal(database.query(`SELECT amount_mnt AS amountMnt FROM payment_installment WHERE registration_draft_child_id = ?`, [onePaymentTargetId])[0].amountMnt, 700000,
+    "the target retains its immutable gross selected-plan snapshot before confirmation");
+  const onePaymentTargetQueue = (await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso())))
+    .items.find((item) => item.registrationDraftChildId === onePaymentTargetId);
+  assert.equal(onePaymentTargetQueue.expectedAmountMnt, 630000,
+    "the pending one-payment promise projects its discounted initial confirmation threshold before award activation");
+  assert.equal(onePaymentTargetQueue.reservedCreditMnt, 95000,
+    "the payment queue identifies the frozen contingent credit separately from an applied payment");
+  assert.equal(onePaymentTargetQueue.cashRequiredMnt, 535000,
+    "the payment queue asks only for the authoritative cash remainder while the reservation remains valid");
+  const onePaymentTargetRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [onePaymentAdmission.draftId])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: onePaymentTargetRequest.id,
+    allocations: [{ installmentId: onePaymentTargetQueue.installmentId, amountMnt: 535000 }],
+    source: "staff_manual_bank", idempotencyKey: "additional-admission-single-target-payment-0001",
+  }, new Date("2026-08-13T09:23:00.000Z"));
+  assert.equal(count(database, "enrollment", `id = '${onePaymentTargetId}:enrollment'`), 0,
+    "recording the reduced cash receipt alone never creates a target enrollment");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [onePaymentTargetId])[0].status, "pending",
+    "a reservation is not treated as an independently settled installment before protected finalization");
+  assert.equal(count(database, "child_credit_entry", `registration_draft_child_id = '${onePaymentTargetId}' AND entry_kind = 'credit_application'`), 0,
+    "the contingent source award is not written as spendable or applied credit before the fenced finalizer");
+  assert.equal(count(database, "additional_class_credit_reservation", `admission_id = '${onePaymentAdmission.admissionId}' AND status = 'pending'`), 1,
+    "the exact proposed credit stays reserved through the cash-only recording step");
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:29:00.000Z"));
+  assert.equal(count(database, "enrollment", `id = '${onePaymentTargetId}:enrollment' AND status = 'confirmed'`), 1,
+    "cash plus the fenced contingent award credit completes the one-payment target confirmation path");
+  assert.equal(count(database, "child_credit_entry", `source_discount_award_id = (SELECT id FROM discount_award
+    WHERE registration_draft_child_id = '${autoSingleChild.id}' AND reason = 'additional_class_canonical_confirmation')`), 1,
+  "a fully paid source receives one durable child-credit root linked to its newly earned award");
+  const fullyPaidSourceAward = database.query(`SELECT award_amount_mnt AS awardAmountMnt FROM discount_award
+    WHERE registration_draft_child_id = ? AND reason = 'additional_class_canonical_confirmation'`, [autoSingleChild.id])[0];
+  assert.equal(Number(database.query(`SELECT amount_mnt AS amountMnt FROM child_credit_entry WHERE source_discount_award_id = (
+    SELECT id FROM discount_award WHERE registration_draft_child_id = ? AND reason = 'additional_class_canonical_confirmation')`, [autoSingleChild.id])[0].amountMnt), Number(fullyPaidSourceAward.awardAmountMnt),
+  "the fully paid source's entire configured award becomes available credit without changing received cash history");
+  assert.equal(Number(database.query(`SELECT COALESCE(SUM(-amount_mnt), 0) AS appliedMnt FROM child_credit_entry
+    WHERE registration_draft_child_id = ? AND entry_kind = 'credit_application'`, [onePaymentTargetId])[0].appliedMnt), 95000,
+  "the fenced completion applies exactly the reservation to the target installment");
+  assert.equal(count(database, "additional_class_credit_reservation", `admission_id = '${onePaymentAdmission.admissionId}' AND status = 'pending'`), 0,
+    "completed settlement consumes the reservation and leaves no independently spendable duplicate");
+
+  const partialAdditionalInput = submission("class-award-source");
+  partialAdditionalInput.guardian.primaryPhone = "98123456";
+  partialAdditionalInput.children[0].givenName = "Хэсэгчилсэн эх";
+  const partialAdditionalDraft = await createRegistrationDraft(env(database), partialAdditionalInput, new Date("2026-08-13T09:30:00.000Z"));
+  const partialAdditionalRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [partialAdditionalDraft.draftId])[0];
+  const partialAdditionalQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-13T09:30:00.000Z"));
+  const partialAdditionalItem = partialAdditionalQueue.items.find((item) => item.paymentRequestId === partialAdditionalRequest.id);
+  const partialSourceGrossMnt = Number(partialAdditionalItem.expectedAmountMnt);
+  const partialSourcePaidMnt = partialSourceGrossMnt - 25000;
+  const partialSourceAwardMnt = Math.floor(partialSourceGrossMnt * 1000 / 10000);
+  assert.ok(partialSourceGrossMnt > partialSourcePaidMnt, "the independent source starts with an authoritative one-payment agreement");
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: partialAdditionalRequest.id, allocations: [{ installmentId: partialAdditionalItem.installmentId, amountMnt: partialSourcePaidMnt }],
+    source: "staff_manual_bank", approveSeatConfirmation: true, remainingPaymentDueAt: "2026-09-30T09:30:00.000Z",
+    idempotencyKey: "additional-admission-partial-source-payment-0001",
+  }, new Date("2026-08-13T09:31:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:37:00.000Z"));
+  const partialAdditionalSource = database.query(`SELECT id, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [partialAdditionalDraft.draftId])[0];
+  assert.ok(partialAdditionalSource.enrollmentId, "an explicitly approved partial source is a normal confirmed enrollment before adding another class");
+  const partialSourcePreview = await getAdditionalClassPreview(env(database), registrationStaff, {
+    registrationDraftChildId: partialAdditionalSource.id, targetClassSessionId: "class-award-target", paymentPlanCode: "two_installment",
+  }, new Date("2026-08-13T09:38:00.000Z"));
+  assert.deepEqual(partialSourcePreview.sourceEffect, { awardMnt: partialSourceAwardMnt, reducesUnpaidMnt: 25000, createsCreditMnt: partialSourceAwardMnt - 25000 },
+    "the preview distinguishes the unpaid source reduction from its residual child credit");
+  const partialSourceAdmission = await createAdditionalClassAdmission(env(database), registrationStaff, {
+    registrationDraftChildId: partialAdditionalSource.id, targetClassSessionId: "class-award-target", paymentPlanCode: "two_installment",
+    parentAcknowledged: true, childAcknowledged: true, idempotencyKey: "additional-admission-partial-source-0001",
+  }, new Date("2026-08-13T09:39:00.000Z"));
+  assert.equal(count(database, "child_credit_entry", `registration_draft_child_id = '${partialAdditionalSource.id}'`), 0,
+    "creating an additional admission freezes the promise without changing the partially paid source ledger");
+  const partialTargetQueue = (await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-13T09:39:00.000Z")))
+    .items.find((item) => item.registrationDraftChildId === partialSourceAdmission.registrationDraftChildId);
+  const partialTargetRawFirstMnt = Number(database.query(`SELECT amount_mnt AS amountMnt FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [partialSourceAdmission.registrationDraftChildId])[0].amountMnt);
+  assert.equal(partialTargetQueue.expectedAmountMnt, partialTargetRawFirstMnt, "the target's own first installment remains the net confirmation threshold");
+  const partialTargetRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [partialSourceAdmission.draftId])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: partialTargetRequest.id, allocations: [{ installmentId: partialTargetQueue.installmentId, amountMnt: partialTargetRawFirstMnt }],
+    source: "staff_manual_bank", idempotencyKey: "additional-admission-partial-source-target-payment-0001",
+  }, new Date("2026-08-13T09:40:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-13T09:46:00.000Z"));
+  const partialSourceAward = database.query(`SELECT id, applied_amount_mnt AS appliedMnt, credit_amount_mnt AS creditMnt
+    FROM discount_award WHERE registration_draft_child_id = ? AND reason = 'additional_class_canonical_confirmation'`, [partialAdditionalSource.id])[0];
+  assert.deepEqual({ appliedMnt: Number(partialSourceAward.appliedMnt), creditMnt: Number(partialSourceAward.creditMnt) }, { appliedMnt: 25000, creditMnt: partialSourceAwardMnt - 25000 },
+    "a partially paid source reduces only its unpaid obligation and leaves the residual award as credit");
+  assert.equal(Number(database.query(`SELECT amount_mnt AS amountMnt FROM child_credit_entry WHERE source_discount_award_id = ?`, [partialSourceAward.id])[0].amountMnt), partialSourceAwardMnt - 25000,
+    "the residual source award is linked to exactly one available child-credit root");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${partialAdditionalRequest.id}'`), 1,
+    "the award-credit split preserves the source's immutable cash-payment history");
 
   const legacyCorrectionInput = submission("class-priced", undefined, 1, "two_installment");
   legacyCorrectionInput.children[0].givenName = "Засвар баталгаа";

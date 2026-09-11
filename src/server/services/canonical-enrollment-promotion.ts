@@ -3,7 +3,9 @@ import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 import { sendEnrollmentConfirmationEmail } from "../email/registration-transactional";
 import { ensureEnrollmentReferralCode } from "./referral-codes";
-import { awardFamilyDiscountsForGuardian, awardReferrerDiscountForReferral, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
+import { awardFamilyDiscountsForGuardian, awardReferrerDiscountForReferral, effectiveInstallmentsForRows, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
+import { ensureDiscountAwardCredit, releaseAdditionalAdmissionCreditReservations } from "./child-credit-ledger";
+import { pendingAdditionalClassCashSettlement } from "./additional-class-credit-settlement";
 
 type ResolutionStatus = "promoted" | "needs_identity_review" | "needs_guardian_review" | "not_eligible" | "failed";
 
@@ -104,6 +106,9 @@ interface AdditionalAdmissionRow {
   sourceAwardAmountMnt: number;
   targetBaseAmountMnt: number;
   targetAwardAmountMnt: number;
+  proposedExistingCreditMnt: number;
+  proposedSourceAwardCreditMnt: number;
+  proposedCreditInstallmentNumber: number | null;
   status: "pending_confirmation" | "confirmed" | "cancelled" | "expired";
   activatedAt: string | null;
   confirmationClaimId: string | null;
@@ -123,6 +128,9 @@ async function additionalAdmissionForTarget(env: WorkerEnv, targetChildId: strin
       family_basis_points AS familyBasisPoints,
       source_base_amount_mnt AS sourceBaseAmountMnt, source_award_amount_mnt AS sourceAwardAmountMnt,
       target_base_amount_mnt AS targetBaseAmountMnt, target_award_amount_mnt AS targetAwardAmountMnt,
+      proposed_existing_credit_mnt AS proposedExistingCreditMnt,
+      proposed_source_award_credit_mnt AS proposedSourceAwardCreditMnt,
+      proposed_credit_installment_number AS proposedCreditInstallmentNumber,
       status, activated_at AS activatedAt,
       confirmation_claim_id AS confirmationClaimId,
       confirmation_claim_expires_at AS confirmationClaimExpiresAt,
@@ -216,6 +224,38 @@ function promotionPaymentEligible(row: PromotionRow): boolean {
   return Boolean(row.partialSeatApproved || (row.initialInstallmentPaid && !row.laterInstallmentOutstanding));
 }
 
+// A pending additional admission may count only its own frozen reservations
+// toward the target payment. Those values are not ledger debits yet; the
+// fenced continuation consumes them before the admission becomes confirmed.
+async function reservedCreditMakesAdditionalAdmissionEligible(env: WorkerEnv, admission: AdditionalAdmissionRow, childId: string): Promise<boolean> {
+  const proposed = Number(admission.proposedExistingCreditMnt) + Number(admission.proposedSourceAwardCreditMnt);
+  if (!proposed || !admission.proposedCreditInstallmentNumber) return false;
+  const installment = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.amount_mnt AS amountMnt,
+      payment_installment.installment_number AS installmentNumber,
+      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'finalized' THEN payment_allocation.allocated_amount_mnt ELSE 0 END), 0)
+        + COALESCE((SELECT SUM(-entry.amount_mnt) FROM child_credit_entry AS entry
+          WHERE entry.payment_installment_id = payment_installment.id AND entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt
+    FROM payment_installment
+    LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+    LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
+    WHERE payment_installment.registration_draft_child_id = ? AND payment_installment.installment_number = ?
+    GROUP BY payment_installment.id`).bind(childId, admission.proposedCreditInstallmentNumber)
+    .first<{ id: string; amountMnt: number; installmentNumber: number; allocatedAmountMnt: number }>();
+  if (!installment) return false;
+  const effective = await effectiveInstallmentsForRows(env.DB, [{
+    id: installment.id, registrationDraftChildId: childId, installmentNumber: Number(installment.installmentNumber),
+    amountMnt: Number(installment.amountMnt), allocatedAmountMnt: Number(installment.allocatedAmountMnt),
+  }]);
+  const required = Number(effective[0]?.effectiveAmountMnt ?? installment.amountMnt);
+  const settlement = await pendingAdditionalClassCashSettlement(env.DB, {
+    registrationDraftChildId: childId,
+    paymentInstallmentId: installment.id,
+    effectiveAmountMnt: required,
+    allocatedAmountMnt: Number(installment.allocatedAmountMnt),
+  });
+  return Boolean(settlement && settlement.admissionId === admission.id && settlement.reservedCreditMnt === proposed && settlement.cashRequiredMnt === 0);
+}
+
 function normalizedText(value: string): string {
   return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -249,6 +289,274 @@ function audit(
       JSON.stringify(metadata), env.APP_ENV, isTest, testRunId, now);
 }
 
+async function consumeAdditionalAdmissionCreditReservations(
+  env: WorkerEnv,
+  admission: AdditionalAdmissionRow,
+  targetChildId: string,
+  canonicalStudentId: string,
+  sourceAwardId: string,
+  claim: Extract<AdditionalAdmissionClaim, { state: "claimed" }>,
+  now: string,
+): Promise<boolean> {
+  const reservations = await env.DB.prepare(`SELECT id, source_credit_entry_id AS sourceCreditEntryId,
+      target_payment_installment_id AS targetPaymentInstallmentId, reservation_kind AS reservationKind,
+      amount_mnt AS amountMnt
+    FROM additional_class_credit_reservation WHERE admission_id = ? AND status = 'pending' ORDER BY id`)
+    .bind(admission.id).all<{
+      id: string; sourceCreditEntryId: string | null; targetPaymentInstallmentId: string;
+      reservationKind: "existing_credit" | "source_award_credit"; amountMnt: number;
+    }>();
+  if (!reservations.results.length) return true;
+  const total = reservations.results.reduce((sum, row) => sum + Number(row.amountMnt), 0);
+  const operationId = `${admission.id}:credit-settlement`;
+  const fence = additionalAdmissionFenceSql();
+  const bindings = additionalAdmissionFenceBindings(claim, now);
+  const statements: D1PreparedStatement[] = [env.DB.prepare(`INSERT OR IGNORE INTO child_credit_operation (
+      id, operation_type, source_student_id, source_registration_draft_child_id, amount_mnt, reason,
+      request_fingerprint, is_test, test_run_id, created_at
+    ) VALUES (?, 'apply', ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(operationId, canonicalStudentId, targetChildId, total, "Additional-class reserved credit settlement",
+      JSON.stringify(["additional_class_credit_settlement", admission.id, total]), admission.isTest, admission.testRunId, now)];
+  for (const reservation of reservations.results) {
+    const rootId = reservation.reservationKind === "source_award_credit"
+      ? `child-credit:award:${sourceAwardId}` : reservation.sourceCreditEntryId;
+    if (!rootId) return false;
+    const debitId = `${reservation.id}:application`;
+    statements.push(
+      env.DB.prepare(`INSERT OR IGNORE INTO child_credit_entry (
+        id, canonical_student_id, registration_draft_child_id, operation_id, entry_kind, amount_mnt,
+        origin_entry_id, payment_installment_id, reason, is_test, test_run_id, created_at
+      ) SELECT ?, ?, ?, ?, 'credit_application', -?, ?, ?, 'Additional-class reserved credit settlement', ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM child_credit_entry WHERE id = ? AND reserved_amount_mnt >= ?)
+          AND ${fence}`)
+        .bind(debitId, canonicalStudentId, targetChildId, operationId, Number(reservation.amountMnt), rootId,
+          reservation.targetPaymentInstallmentId, admission.isTest, admission.testRunId, now, rootId,
+          Number(reservation.amountMnt), ...bindings),
+      env.DB.prepare(`UPDATE child_credit_entry SET reserved_amount_mnt = reserved_amount_mnt - ?
+        WHERE id = ? AND reserved_amount_mnt >= ? AND EXISTS (SELECT 1 FROM child_credit_entry WHERE id = ?)
+          AND ${fence}`)
+        .bind(Number(reservation.amountMnt), rootId, Number(reservation.amountMnt), debitId, ...bindings),
+      env.DB.prepare(`UPDATE additional_class_credit_reservation SET status = 'consumed', resolved_at = ?
+        WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM child_credit_entry WHERE id = ?)
+          AND ${fence}`)
+        .bind(now, reservation.id, debitId, ...bindings),
+    );
+  }
+  await env.DB.batch(statements);
+  const unresolved = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_credit_reservation
+    WHERE admission_id = ? AND status = 'pending' LIMIT 1`).bind(admission.id).first();
+  return !unresolved;
+}
+
+async function settleReservedAdditionalAdmission(
+  env: WorkerEnv,
+  row: PromotionRow,
+  claim: Extract<AdditionalAdmissionClaim, { state: "claimed" }>,
+  now: string,
+): Promise<{ enrollmentId: string; createdEnrollment: boolean } | null> {
+  const admission = claim.admission;
+  const studentId = row.canonicalStudentId;
+  if (!studentId || !row.canonicalGuardianId || !row.activeInitialHold || !row.selectedClassSessionId) return null;
+  if (!(await reservedCreditMakesAdditionalAdmissionEligible(env, admission, row.childId))) return null;
+  const reservations = await env.DB.prepare(`SELECT id, source_credit_entry_id AS sourceCreditEntryId,
+      target_payment_installment_id AS targetPaymentInstallmentId, reservation_kind AS reservationKind,
+      amount_mnt AS amountMnt
+    FROM additional_class_credit_reservation WHERE admission_id = ? AND status = 'pending' ORDER BY id`)
+    .bind(admission.id).all<{
+      id: string; sourceCreditEntryId: string | null; targetPaymentInstallmentId: string;
+      reservationKind: "existing_credit" | "source_award_credit"; amountMnt: number;
+    }>();
+  if (!reservations.results.length) return null;
+
+  const fence = additionalAdmissionFenceSql();
+  const bindFence = () => additionalAdmissionFenceBindings(claim, now);
+  const preRegistrationId = `${row.draftId}:pre-registration`;
+  const applicationChildId = `${row.childId}:application`;
+  const enrollmentId = `${row.childId}:enrollment`;
+  const sourceAwardId = `${admission.id}:source-family`;
+  const targetAwardId = `${admission.id}:target-family`;
+  const sourceCreditOperationId = `${sourceAwardId}:credit`;
+  const sourceCreditRootId = `child-credit:award:${sourceAwardId}`;
+  const settlementOperationId = `${admission.id}:credit-settlement`;
+  const totalReservationMnt = reservations.results.reduce((sum, entry) => sum + Number(entry.amountMnt), 0);
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`INSERT OR IGNORE INTO pre_registration (
+      id, guardian_id, academic_year_id, status, submitted_at, parent_rules_version, student_rules_version,
+      is_test, test_run_id, created_at, updated_at
+    ) SELECT ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ? WHERE ${fence}`)
+      .bind(preRegistrationId, admission.canonicalGuardianId, row.academicYearId, row.verifiedAt ?? now,
+        row.parentRulesVersion, row.studentRulesVersion, row.draftIsTest, row.draftTestRunId, now, now, ...bindFence()),
+    env.DB.prepare(`UPDATE registration_draft SET canonical_guardian_account_id = ?, canonical_pre_registration_id = ?,
+      guardian_resolution_status = 'resolved', updated_at = ? WHERE id = ? AND ${fence}`)
+      .bind(admission.canonicalGuardianId, preRegistrationId, now, row.draftId, ...bindFence()),
+    env.DB.prepare(`INSERT OR IGNORE INTO application_child (
+      id, pre_registration_id, student_id, current_school, current_grade, returning_status,
+      previous_stage_code, code_input, selected_payment_plan_code, selected_class_session_id,
+      status, is_test, test_run_id, created_at, updated_at
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enrolled', ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM pre_registration WHERE id = ?) AND ${fence}`)
+      .bind(applicationChildId, preRegistrationId, studentId, row.currentSchool, integerGrade(row.currentGrade), row.returningStatus,
+        row.previousStageCode === "unknown" ? null : row.previousStageCode, row.codeInput, row.paymentPlanCode,
+        row.selectedClassSessionId, row.childIsTest, row.childTestRunId, now, now, preRegistrationId, ...bindFence()),
+    env.DB.prepare(`INSERT OR IGNORE INTO enrollment (
+      id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at,
+      is_test, test_run_id, created_at, updated_at
+    ) SELECT ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM application_child WHERE id = ?)
+        AND EXISTS (SELECT 1 FROM registration_capacity_hold WHERE registration_draft_child_id = ?
+          AND hold_type = 'initial_payment' AND status = 'active') AND ${fence}`)
+      .bind(enrollmentId, applicationChildId, studentId, row.academicYearId, row.selectedClassSessionId, now,
+        row.childIsTest, row.childTestRunId, now, now, applicationChildId, row.childId, ...bindFence()),
+  ];
+  if (admission.sourceAwardAmountMnt > 0) {
+    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO discount_award (
+      id, registration_draft_child_id, beneficiary_enrollment_id, award_type, source_registration_draft_child_id,
+      basis_points, base_amount_mnt, award_amount_mnt, applied_amount_mnt, credit_amount_mnt, status, reason,
+      awarded_at, is_test, test_run_id, created_at, updated_at
+    ) SELECT ?, ?, ?, 'family_multi_child', ?, ?, ?, ?, ?, ?, 'active', 'additional_class_canonical_confirmation', ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM enrollment WHERE id = ?) AND ${fence}`)
+      .bind(sourceAwardId, admission.sourceChildId, admission.sourceEnrollmentId, admission.targetChildId,
+        admission.familyBasisPoints, admission.sourceBaseAmountMnt, admission.sourceAwardAmountMnt,
+        admission.sourceAwardAmountMnt - Number(admission.proposedSourceAwardCreditMnt), admission.proposedSourceAwardCreditMnt,
+        now, admission.isTest, admission.testRunId, now, now, enrollmentId, ...bindFence()));
+  }
+  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO discount_award (
+    id, registration_draft_child_id, beneficiary_enrollment_id, award_type, source_registration_draft_child_id,
+    basis_points, base_amount_mnt, award_amount_mnt, applied_amount_mnt, credit_amount_mnt, status, reason,
+    awarded_at, is_test, test_run_id, created_at, updated_at
+  ) SELECT ?, ?, ?, 'family_multi_child', ?, ?, ?, ?, ?, 0, 'active', 'additional_class_canonical_confirmation', ?, ?, ?, ?, ?
+    WHERE EXISTS (SELECT 1 FROM enrollment WHERE id = ?) AND ${fence}`)
+    .bind(targetAwardId, admission.targetChildId, enrollmentId, admission.sourceChildId,
+      admission.familyBasisPoints, admission.targetBaseAmountMnt, admission.targetAwardAmountMnt, admission.targetAwardAmountMnt,
+      now, admission.isTest, admission.testRunId, now, now, enrollmentId, ...bindFence()));
+  if (Number(admission.proposedSourceAwardCreditMnt) > 0) {
+    statements.push(
+      env.DB.prepare(`INSERT OR IGNORE INTO child_credit_operation (
+        id, operation_type, source_student_id, source_registration_draft_child_id, amount_mnt, reason,
+        request_fingerprint, is_test, test_run_id, created_at
+      ) SELECT ?, 'discount_award_credit', ?, ?, ?, 'Additional class source award residual credit', ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND credit_amount_mnt = ?) AND ${fence}`)
+        .bind(sourceCreditOperationId, studentId, admission.sourceChildId, admission.proposedSourceAwardCreditMnt,
+          JSON.stringify(["discount_award_credit", sourceAwardId, admission.sourceChildId, admission.proposedSourceAwardCreditMnt]),
+          admission.isTest, admission.testRunId, now, sourceAwardId, admission.proposedSourceAwardCreditMnt, ...bindFence()),
+      env.DB.prepare(`INSERT OR IGNORE INTO child_credit_entry (
+        id, canonical_student_id, registration_draft_child_id, operation_id, entry_kind, amount_mnt,
+        source_discount_award_id, reserved_amount_mnt, reason, is_test, test_run_id, created_at
+      ) SELECT ?, ?, ?, ?, 'discount_award_credit', ?, ?, ?, 'Additional class source award residual credit', ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM child_credit_operation WHERE id = ?) AND ${fence}`)
+        .bind(sourceCreditRootId, studentId, admission.sourceChildId, sourceCreditOperationId, admission.proposedSourceAwardCreditMnt,
+          sourceAwardId, admission.proposedSourceAwardCreditMnt, admission.isTest, admission.testRunId, now,
+          sourceCreditOperationId, ...bindFence()),
+    );
+  }
+  statements.push(env.DB.prepare(`INSERT OR IGNORE INTO child_credit_operation (
+    id, operation_type, source_student_id, source_registration_draft_child_id, amount_mnt, reason,
+    request_fingerprint, is_test, test_run_id, created_at
+  ) SELECT ?, 'apply', ?, ?, ?, 'Additional-class reserved credit settlement', ?, ?, ?, ?
+    WHERE EXISTS (SELECT 1 FROM enrollment WHERE id = ?) AND ${fence}`)
+    .bind(settlementOperationId, studentId, row.childId, totalReservationMnt,
+      JSON.stringify(["additional_class_credit_settlement", admission.id, totalReservationMnt]), admission.isTest, admission.testRunId,
+      now, enrollmentId, ...bindFence()));
+  for (const reservation of reservations.results) {
+    const rootId = reservation.reservationKind === "source_award_credit" ? sourceCreditRootId : reservation.sourceCreditEntryId;
+    if (!rootId) return null;
+    const debitId = `${reservation.id}:application`;
+    statements.push(
+      env.DB.prepare(`INSERT OR IGNORE INTO child_credit_entry (
+        id, canonical_student_id, registration_draft_child_id, operation_id, entry_kind, amount_mnt,
+        origin_entry_id, payment_installment_id, reason, is_test, test_run_id, created_at
+      ) SELECT ?, ?, ?, ?, 'credit_application', -?, ?, ?, 'Additional-class reserved credit settlement', ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM child_credit_operation WHERE id = ?)
+          AND EXISTS (SELECT 1 FROM child_credit_entry WHERE id = ? AND reserved_amount_mnt >= ?)
+          AND ${fence}`)
+        .bind(debitId, studentId, row.childId, settlementOperationId, reservation.amountMnt, rootId,
+          reservation.targetPaymentInstallmentId, admission.isTest, admission.testRunId, now, settlementOperationId,
+          rootId, reservation.amountMnt, ...bindFence()),
+      env.DB.prepare(`UPDATE child_credit_entry SET reserved_amount_mnt = reserved_amount_mnt - ?
+        WHERE id = ? AND reserved_amount_mnt >= ? AND EXISTS (SELECT 1 FROM child_credit_entry WHERE id = ?)
+          AND ${fence}`)
+        .bind(reservation.amountMnt, rootId, reservation.amountMnt, debitId, ...bindFence()),
+      env.DB.prepare(`UPDATE additional_class_credit_reservation SET status = 'consumed', resolved_at = ?
+        WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM child_credit_entry WHERE id = ?)
+          AND ${fence}`)
+        .bind(now, reservation.id, debitId, ...bindFence()),
+    );
+  }
+  const targetInstallmentId = reservations.results[0].targetPaymentInstallmentId;
+  // The initial eligibility read is advisory. Repeat the exact effective
+  // settlement threshold inside the fenced batch so an intervening change
+  // cannot turn a zero-row update into a partially promoted admission.
+  const effectiveSettlementSql = `
+    COALESCE((SELECT SUM(payment_allocation.allocated_amount_mnt)
+      FROM payment_allocation
+      INNER JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
+      WHERE payment_allocation.payment_installment_id = payment_installment.id
+        AND payment_confirmation.status = 'finalized'), 0)
+    + COALESCE((SELECT SUM(-child_credit_entry.amount_mnt)
+      FROM child_credit_entry
+      WHERE child_credit_entry.payment_installment_id = payment_installment.id
+        AND child_credit_entry.entry_kind = 'credit_application'), 0)
+    >= payment_installment.amount_mnt - COALESCE((SELECT SUM(discount_award.award_amount_mnt)
+      FROM discount_award
+      WHERE discount_award.registration_draft_child_id = payment_installment.registration_draft_child_id
+        AND discount_award.status = 'active'), 0)`;
+  statements.push(
+    env.DB.prepare(`UPDATE payment_installment SET status = 'paid', paid_at = ?, updated_at = ?
+      WHERE id = ? AND status != 'released' AND NOT EXISTS (
+        SELECT 1 FROM additional_class_credit_reservation WHERE admission_id = ? AND status = 'pending'
+      ) AND EXISTS (SELECT 1 FROM enrollment WHERE id = ?) AND (${effectiveSettlementSql}) AND ${fence}`)
+      .bind(now, now, targetInstallmentId, admission.id, enrollmentId, ...bindFence()),
+    env.DB.prepare(`UPDATE registration_draft_child SET initial_payment_reconciled_at = ?, canonical_student_id = ?,
+      canonical_application_child_id = ?, canonical_enrollment_id = ?, identity_resolution_status = 'promoted',
+      promotion_status = 'promoted', updated_at = ?
+      WHERE id = ? AND EXISTS (SELECT 1 FROM payment_installment WHERE id = ? AND status = 'paid')
+        AND EXISTS (SELECT 1 FROM enrollment WHERE id = ?) AND ${fence}`)
+      .bind(now, studentId, applicationChildId, enrollmentId, now, row.childId, targetInstallmentId, enrollmentId, ...bindFence()),
+    env.DB.prepare(`UPDATE registration_draft SET initial_payment_reconciled_at = ?, updated_at = ?
+      WHERE id = ? AND ${fence}`).bind(now, now, row.draftId, ...bindFence()),
+    env.DB.prepare(`UPDATE registration_capacity_hold SET status = 'released', converted_at = ?, release_reason = 'promoted_to_enrollment', updated_at = ?
+      WHERE registration_draft_child_id = ? AND hold_type = 'initial_payment' AND status = 'active'
+        AND EXISTS (SELECT 1 FROM enrollment WHERE id = ?) AND ${fence}`)
+      .bind(now, now, row.childId, enrollmentId, ...bindFence()),
+    env.DB.prepare(`UPDATE payment_installment SET canonical_application_child_id = ?, canonical_enrollment_id = ?, updated_at = ?
+      WHERE registration_draft_child_id = ? AND EXISTS (SELECT 1 FROM enrollment WHERE id = ?) AND ${fence}`)
+      .bind(applicationChildId, enrollmentId, now, row.childId, enrollmentId, ...bindFence()),
+    // A failing guard turns an unexpected zero-row dependency into a database
+    // error, so D1 rolls the entire batch back instead of committing a partial
+    // award, credit, or enrollment chain.
+    env.DB.prepare(`INSERT INTO child_credit_entry (
+      id, registration_draft_child_id, entry_kind, amount_mnt, reason, is_test, test_run_id, created_at
+    ) SELECT ?, ?, 'credit_application', 0, 'Additional-class settlement guard', ?, ?, ?
+      WHERE NOT (
+        EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')
+        AND EXISTS (SELECT 1 FROM payment_installment WHERE id = ? AND status = 'paid'
+          AND (${effectiveSettlementSql}))
+        AND NOT EXISTS (SELECT 1 FROM additional_class_credit_reservation WHERE admission_id = ? AND status = 'pending')
+        AND EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND status = 'active')
+        AND (? = 0 OR EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND status = 'active'))
+      )`)
+      .bind(`${admission.id}:settlement-guard`, row.childId, admission.isTest, admission.testRunId, now,
+        enrollmentId, targetInstallmentId, admission.id, targetAwardId, admission.sourceAwardAmountMnt, sourceAwardId),
+    env.DB.prepare(`UPDATE additional_class_admission SET status = 'confirmed', activated_at = ?,
+      confirmation_claim_id = NULL, confirmation_claimed_at = NULL, confirmation_claim_expires_at = NULL,
+      confirmation_last_error_code = NULL, confirmation_last_error_at = NULL, updated_at = ?
+      WHERE id = ? AND ${fence} AND NOT EXISTS (
+        SELECT 1 FROM additional_class_credit_reservation WHERE admission_id = additional_class_admission.id AND status = 'pending'
+      )`).bind(now, now, admission.id, ...bindFence()),
+    env.DB.prepare(`INSERT INTO audit_event (
+      id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at
+    ) SELECT ?, ?, 'system', 'canonical-promotion', 'additional_class_awards_activated', 'additional_class_admission', ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM additional_class_admission WHERE id = ? AND status = 'confirmed' AND activated_at = ?)`)
+      .bind(crypto.randomUUID(), now, admission.id, JSON.stringify({ sourceAwardId, targetAwardId }),
+        env.APP_ENV, admission.isTest, admission.testRunId, now, admission.id, now),
+  );
+  await env.DB.batch(statements);
+  const completed = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_admission WHERE id = ? AND status = 'confirmed'`)
+    .bind(admission.id).first();
+  return completed ? { enrollmentId, createdEnrollment: true } : null;
+}
+
 export async function finalizeClaimedAdditionalClassAdmission(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -267,7 +575,11 @@ export async function finalizeClaimedAdditionalClassAdmission(
   const applicationChildId = row.canonicalApplicationChildId || `${row.childId}:application`;
   const enrollmentId = row.canonicalEnrollmentId || `${row.childId}:enrollment`;
   const needsEnrollment = !row.canonicalEnrollmentId;
-  if (needsEnrollment && (!promotionPaymentEligible(row) || !row.activeInitialHold || !row.selectedClassSessionId)) return null;
+  const reservedCreditEligible = await reservedCreditMakesAdditionalAdmissionEligible(env, admission, row.childId);
+  if (needsEnrollment && (!(promotionPaymentEligible(row) || reservedCreditEligible) || !row.activeInitialHold || !row.selectedClassSessionId)) return null;
+  if (needsEnrollment && reservedCreditEligible) {
+    return settleReservedAdditionalAdmission(env, row, claim, now);
+  }
 
   const sourceAwardId = `${admission.id}:source-family`;
   const targetAwardId = `${admission.id}:target-family`;
@@ -345,14 +657,46 @@ export async function finalizeClaimedAdditionalClassAdmission(
       .bind(targetAwardId, admission.targetChildId, enrollmentId, admission.sourceChildId,
         admission.familyBasisPoints, admission.targetBaseAmountMnt, admission.targetAwardAmountMnt, now,
         admission.isTest, admission.testRunId, now, now, ...bindFence()),
+  );
+  await env.DB.batch(statements);
+  await Promise.all([
+    recalculateDiscountAwardBalances(env.DB, admission.sourceChildId, now),
+    recalculateDiscountAwardBalances(env.DB, admission.targetChildId, now),
+  ]);
+  if (admission.sourceAwardAmountMnt > 0) {
+    await ensureDiscountAwardCredit(env, {
+      awardId: sourceAwardId, registrationDraftChildId: admission.sourceChildId,
+      reason: "Additional class source award residual credit", now,
+      reservedAmountMnt: Number(admission.proposedSourceAwardCreditMnt),
+    });
+  }
+  if (!(await consumeAdditionalAdmissionCreditReservations(env, admission, row.childId, studentId, sourceAwardId, claim, now))) {
+    return null;
+  }
+  if (Number(admission.proposedExistingCreditMnt) + Number(admission.proposedSourceAwardCreditMnt) > 0) {
+    const request = await env.DB.prepare(`SELECT id, registration_draft_id AS registrationDraftId,
+      payment_reference AS paymentReference, is_test AS isTest, test_run_id AS testRunId
+      FROM payment_request WHERE registration_draft_id = ?`).bind(row.draftId)
+      .first<{ id: string; registrationDraftId: string; paymentReference: string; isTest: number; testRunId: string | null }>();
+    if (!request) return null;
+    const { refreshInstallmentsAndDraft } = await import("../staff/payment-reconciliation");
+    await refreshInstallmentsAndDraft(env, request, now);
+  }
+  const completion = await env.DB.batch([
     env.DB.prepare(`UPDATE additional_class_admission SET status = 'confirmed', activated_at = ?,
       confirmation_claim_id = NULL, confirmation_claimed_at = NULL, confirmation_claim_expires_at = NULL,
       confirmation_last_error_code = NULL, confirmation_last_error_at = NULL, updated_at = ?
       WHERE id = ? AND ${fence}
         AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')
         AND EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND status = 'active')
-        AND (? = 0 OR EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND status = 'active'))`)
-      .bind(now, now, admission.id, ...bindFence(), enrollmentId, targetAwardId, admission.sourceAwardAmountMnt, sourceAwardId),
+        AND (? = 0 OR EXISTS (SELECT 1 FROM discount_award WHERE id = ? AND status = 'active'))
+        AND (? = 0 OR NOT EXISTS (SELECT 1 FROM discount_award
+          WHERE id = ? AND credit_amount_mnt > 0 AND NOT EXISTS (SELECT 1 FROM child_credit_entry
+            WHERE source_discount_award_id = discount_award.id)))
+        AND NOT EXISTS (SELECT 1 FROM additional_class_credit_reservation
+          WHERE admission_id = additional_class_admission.id AND status = 'pending')`)
+      .bind(now, now, admission.id, ...bindFence(), enrollmentId, targetAwardId,
+        admission.sourceAwardAmountMnt, sourceAwardId, admission.sourceAwardAmountMnt, sourceAwardId),
     env.DB.prepare(`INSERT INTO audit_event (
       id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
       metadata_json, environment, is_test, test_run_id, created_at
@@ -360,18 +704,12 @@ export async function finalizeClaimedAdditionalClassAdmission(
       WHERE EXISTS (SELECT 1 FROM additional_class_admission WHERE id = ? AND status = 'confirmed' AND activated_at = ?)`)
       .bind(crypto.randomUUID(), now, admission.id, JSON.stringify({ sourceAwardId, targetAwardId }),
         env.APP_ENV, admission.isTest, admission.testRunId, now, admission.id, now),
-  );
-  const results = await env.DB.batch(statements);
-  const completion = results[results.length - 2];
-  if ((completion.meta?.changes ?? 0) !== 1) {
+  ]);
+  if ((completion[0]?.meta?.changes ?? 0) !== 1) {
     const current = await additionalAdmissionForTarget(env, row.childId);
     if (current?.status === "confirmed") return { enrollmentId, createdEnrollment: needsEnrollment };
     return null;
   }
-  await Promise.all([
-    recalculateDiscountAwardBalances(env.DB, admission.sourceChildId, now),
-    recalculateDiscountAwardBalances(env.DB, admission.targetChildId, now),
-  ]);
   return { enrollmentId, createdEnrollment: needsEnrollment };
 }
 
@@ -532,6 +870,11 @@ export async function promotePaidDraftChild(
   }
   if (row.draftStatus === "expired") {
     const now = nowDate.toISOString();
+    const admissions = await env.DB.prepare(`SELECT id FROM additional_class_admission
+      WHERE target_registration_draft_child_id = ? AND status = 'pending_confirmation'`).bind(row.childId).all<{ id: string }>();
+    for (const admission of admissions.results) {
+      await releaseAdditionalAdmissionCreditReservations(env.DB, admission.id, now);
+    }
     await env.DB.prepare(`UPDATE additional_class_admission SET status = 'expired', updated_at = ?
       WHERE target_registration_draft_child_id = ? AND status = 'pending_confirmation'`).bind(now, row.childId).run();
     return { state: "not_eligible" };
@@ -557,7 +900,10 @@ export async function promotePaidDraftChild(
     return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
   }
   const now = nowDate.toISOString();
-  if (!promotionPaymentEligible(row) || !row.selectedClassSessionId || !row.activeInitialHold) {
+  const pendingAdditionalAdmission = await additionalAdmissionForTarget(env, row.childId);
+  const pendingReservedCreditEligible = pendingAdditionalAdmission
+    ? await reservedCreditMakesAdditionalAdmissionEligible(env, pendingAdditionalAdmission, row.childId) : false;
+  if ((!promotionPaymentEligible(row) && !pendingReservedCreditEligible) || !row.selectedClassSessionId || !row.activeInitialHold) {
     await env.DB.prepare(`UPDATE registration_draft_child SET identity_resolution_status = 'not_eligible',
       promotion_status = 'not_eligible', updated_at = ? WHERE id = ?`).bind(now, row.childId).run();
     return { state: "not_eligible" };

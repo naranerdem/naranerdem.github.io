@@ -35,25 +35,34 @@ export function createStaffPanelState() {
 }
 
 export function supportedAdditionalClassPlans(target) {
-  return (target?.paymentOptions ?? []).filter((plan) => plan.code === "two_installment");
+  return target?.paymentOptions ?? [];
 }
 
 export function selectAdditionalClassTarget(draft, targets, targetClassSessionId) {
   const target = (targets ?? []).find((item) => item.id === targetClassSessionId);
   const plans = supportedAdditionalClassPlans(target);
+  const { preview: _preview, createIdempotencyKey: _createIdempotencyKey, policyUpdatedAt: _policyUpdatedAt,
+    proposedSourceAwardMnt: _proposedSourceAwardMnt, proposedTargetAwardMnt: _proposedTargetAwardMnt, ...nextDraft } = draft ?? {};
   return {
-    ...draft,
+    ...nextDraft,
     targetClassSessionId,
-    // V1 intentionally supports only the approved two-installment lifecycle.
     paymentPlanCode: plans.length === 1 ? plans[0].code : "",
+    policyUpdatedAt: "",
+    proposedSourceAwardMnt: 0,
+    proposedTargetAwardMnt: 0,
   };
 }
 
 export function selectAdditionalClassPlan(draft, target, paymentPlanCode) {
   const plans = supportedAdditionalClassPlans(target);
+  const { preview: _preview, createIdempotencyKey: _createIdempotencyKey, policyUpdatedAt: _policyUpdatedAt,
+    proposedSourceAwardMnt: _proposedSourceAwardMnt, proposedTargetAwardMnt: _proposedTargetAwardMnt, ...nextDraft } = draft ?? {};
   return {
-    ...draft,
+    ...nextDraft,
     paymentPlanCode: plans.some((plan) => plan.code === paymentPlanCode) ? paymentPlanCode : "",
+    policyUpdatedAt: "",
+    proposedSourceAwardMnt: 0,
+    proposedTargetAwardMnt: 0,
   };
 }
 

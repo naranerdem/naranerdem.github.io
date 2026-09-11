@@ -1,4 +1,5 @@
 import { rulesContent } from "../../content/rules";
+import { releaseAdditionalAdmissionCreditReservations } from "./child-credit-ledger";
 import { currentGradeOptions, guardianRelationshipOptions } from "../../content/registration";
 import { normalizeEmail, validEmail } from "../auth/email-address";
 import { randomToken, sha256 } from "../auth/crypto";
@@ -76,6 +77,10 @@ export interface RegistrationSubmissionOptions {
     sourceAwardAmountMnt: number;
     targetBaseAmountMnt: number;
     targetAwardAmountMnt: number;
+    proposedExistingCreditMnt: number;
+    proposedSourceAwardCreditMnt: number;
+    proposedCreditInstallmentNumber: number | null;
+    existingCreditReservations: Array<{ sourceCreditEntryId: string; amountMnt: number }>;
   };
 }
 
@@ -591,7 +596,15 @@ export async function createRegistrationDraft(
       || !clean(additionalAdmission.canonicalGuardianAccountId, 160)
       || !Number.isInteger(additionalAdmission.familyBasisPoints) || additionalAdmission.familyBasisPoints < 1
       || additionalAdmission.sourceBaseAmountMnt < 1 || additionalAdmission.targetBaseAmountMnt < 1
-      || additionalAdmission.sourceAwardAmountMnt < 0 || additionalAdmission.targetAwardAmountMnt < 1) {
+      || additionalAdmission.sourceAwardAmountMnt < 0 || additionalAdmission.targetAwardAmountMnt < 1
+      || additionalAdmission.proposedExistingCreditMnt < 0 || additionalAdmission.proposedSourceAwardCreditMnt < 0
+      || !Array.isArray(additionalAdmission.existingCreditReservations)
+      || additionalAdmission.existingCreditReservations.some((reservation) => !clean(reservation.sourceCreditEntryId, 160)
+        || !Number.isInteger(reservation.amountMnt) || reservation.amountMnt < 1)
+      || additionalAdmission.existingCreditReservations.reduce((sum, reservation) => sum + reservation.amountMnt, 0)
+        !== additionalAdmission.proposedExistingCreditMnt
+      || ((additionalAdmission.proposedExistingCreditMnt + additionalAdmission.proposedSourceAwardCreditMnt) > 0
+        && additionalAdmission.proposedCreditInstallmentNumber !== 1 && additionalAdmission.proposedCreditInstallmentNumber !== 2)) {
       throw new RegistrationSubmissionError("invalid_staff_admission");
     }
     statements.push(
@@ -605,14 +618,17 @@ export async function createRegistrationDraft(
         target_registration_draft_child_id, canonical_student_id, canonical_guardian_account_id,
         created_by_staff_account_id, idempotency_key, policy_updated_at, family_basis_points,
         source_base_amount_mnt, source_award_amount_mnt, target_base_amount_mnt, target_award_amount_mnt,
+        proposed_existing_credit_mnt, proposed_source_award_credit_mnt, proposed_credit_installment_number,
         status, is_test, test_run_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?)`)
         .bind(additionalAdmission.id, additionalAdmission.sourceRegistrationDraftChildId, additionalAdmission.sourceEnrollmentId,
           draftId, childIds[0], additionalAdmission.canonicalStudentId, additionalAdmission.canonicalGuardianAccountId,
           additionalAdmission.staffAccountId, idempotencyKey, additionalAdmission.policyUpdatedAt,
           additionalAdmission.familyBasisPoints, additionalAdmission.sourceBaseAmountMnt,
           additionalAdmission.sourceAwardAmountMnt, additionalAdmission.targetBaseAmountMnt,
-          additionalAdmission.targetAwardAmountMnt, provenance.isTest, testRunId, now, now),
+          additionalAdmission.targetAwardAmountMnt, additionalAdmission.proposedExistingCreditMnt,
+          additionalAdmission.proposedSourceAwardCreditMnt, additionalAdmission.proposedCreditInstallmentNumber,
+          provenance.isTest, testRunId, now, now),
       env.DB.prepare(`INSERT INTO audit_event (
         id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
         metadata_json, environment, is_test, test_run_id, created_at
@@ -623,6 +639,9 @@ export async function createRegistrationDraft(
           familyBasisPoints: additionalAdmission.familyBasisPoints,
           sourceAwardAmountMnt: additionalAdmission.sourceAwardAmountMnt,
           targetAwardAmountMnt: additionalAdmission.targetAwardAmountMnt,
+          proposedExistingCreditMnt: additionalAdmission.proposedExistingCreditMnt,
+          proposedSourceAwardCreditMnt: additionalAdmission.proposedSourceAwardCreditMnt,
+          proposedCreditInstallmentNumber: additionalAdmission.proposedCreditInstallmentNumber,
           policyUpdatedAt: additionalAdmission.policyUpdatedAt,
         }), env.APP_ENV, provenance.isTest, testRunId, now),
     );
@@ -693,6 +712,37 @@ export async function createRegistrationDraft(
       AND registration_draft_child.second_payment_amount_mnt IS NOT NULL AND registration_draft_child.second_payment_due_on IS NOT NULL
       AND EXISTS (SELECT 1 FROM payment_request WHERE id = ?)
   `).bind(paymentRequestId, paymentReminder.laterReminderLeadMinutes, paymentReminder.laterReminderLeadMinutes, now, now, draftId, paymentRequestId));
+  const creditReservationStatementIndexes: number[] = [];
+  if (additionalAdmission?.existingCreditReservations.length) {
+    const targetInstallmentId = `${childIds[0]}:${additionalAdmission.proposedCreditInstallmentNumber === 2 ? "later" : "initial"}-installment`;
+    for (const reservation of additionalAdmission.existingCreditReservations) {
+      // The root-level counter is updated conditionally in the same atomic
+      // draft/hold/payment batch. A competing credit operation therefore
+      // cannot reserve or spend this amount twice.
+      statements.push(env.DB.prepare(`UPDATE child_credit_entry SET reserved_amount_mnt = reserved_amount_mnt + ?
+        WHERE id = ? AND amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt)
+          FROM child_credit_entry AS debit WHERE debit.origin_entry_id = child_credit_entry.id), 0) - reserved_amount_mnt >= ?`)
+        .bind(reservation.amountMnt, reservation.sourceCreditEntryId, reservation.amountMnt));
+      creditReservationStatementIndexes.push(statements.length);
+      statements.push(env.DB.prepare(`INSERT INTO additional_class_credit_reservation (
+        id, admission_id, source_credit_entry_id, target_payment_installment_id, reservation_kind,
+        amount_mnt, status, created_at, is_test, test_run_id
+      ) SELECT ?, ?, ?, ?, 'existing_credit', ?, 'pending', ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM child_credit_entry WHERE id = ? AND reserved_amount_mnt >= ?)`)
+        .bind(crypto.randomUUID(), additionalAdmission.id, reservation.sourceCreditEntryId, targetInstallmentId,
+          reservation.amountMnt, now, provenance.isTest, testRunId, reservation.sourceCreditEntryId, reservation.amountMnt));
+    }
+  }
+  if (additionalAdmission && additionalAdmission.proposedSourceAwardCreditMnt > 0) {
+    const targetInstallmentId = `${childIds[0]}:${additionalAdmission.proposedCreditInstallmentNumber === 2 ? "later" : "initial"}-installment`;
+    creditReservationStatementIndexes.push(statements.length);
+    statements.push(env.DB.prepare(`INSERT INTO additional_class_credit_reservation (
+      id, admission_id, source_credit_entry_id, target_payment_installment_id, reservation_kind,
+      amount_mnt, status, created_at, is_test, test_run_id
+    ) VALUES (?, ?, NULL, ?, 'source_award_credit', ?, 'pending', ?, ?, ?)`)
+      .bind(crypto.randomUUID(), additionalAdmission.id, targetInstallmentId,
+        additionalAdmission.proposedSourceAwardCreditMnt, now, provenance.isTest, testRunId));
+  }
   if (staffIntake) {
     statements.push(env.DB.prepare(`INSERT INTO audit_event (
       id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
@@ -739,6 +789,23 @@ export async function createRegistrationDraft(
     await env.DB.batch([
       env.DB.prepare("UPDATE registration_draft SET status = 'seat_unavailable', updated_at = ? WHERE id = ?").bind(now, draftId),
       env.DB.prepare("UPDATE registration_draft_child SET status = 'seat_unavailable', updated_at = ? WHERE registration_draft_id = ? AND selected_class_session_id IS NOT NULL").bind(now, draftId),
+    ]);
+    throw new RegistrationSubmissionError("capacity_changed");
+  }
+  if (additionalAdmission && creditReservationStatementIndexes.some((index) => changeCount(results[index]) !== 1)) {
+    // A competing debit can only make this conditional reservation fail. Leave
+    // no active hold or pending admission behind; the caller may safely retry
+    // with a fresh projection and idempotency key.
+    await releaseAdditionalAdmissionCreditReservations(env.DB, additionalAdmission.id, now);
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE additional_class_admission SET status = 'cancelled', updated_at = ?
+        WHERE id = ? AND status = 'pending_confirmation'`).bind(now, additionalAdmission.id),
+      env.DB.prepare(`UPDATE registration_capacity_hold SET status = 'released', released_at = ?,
+        release_reason = 'credit_reservation_conflict', updated_at = ? WHERE registration_draft_child_id = ? AND status = 'active'`)
+        .bind(now, now, childIds[0]),
+      env.DB.prepare(`UPDATE registration_draft_child SET status = 'seat_unavailable', updated_at = ? WHERE id = ?`)
+        .bind(now, childIds[0]),
+      env.DB.prepare(`UPDATE registration_draft SET status = 'seat_unavailable', updated_at = ? WHERE id = ?`).bind(now, draftId),
     ]);
     throw new RegistrationSubmissionError("capacity_changed");
   }

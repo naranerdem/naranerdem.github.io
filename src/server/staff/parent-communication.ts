@@ -4,6 +4,7 @@ import { sendEnrollmentConfirmationEmail } from "../email/registration-transacti
 import { enrollmentManualMessage } from "../email/templates/enrollment-confirmation";
 import { paymentReminderTemplate } from "../email/templates/payment-reminder";
 import { effectiveInstallmentsForRows, getDiscountPolicySetting } from "../services/discounts";
+import { pendingAdditionalClassCashSettlement } from "../services/additional-class-credit-settlement";
 
 export class ParentCommunicationError extends Error {
   constructor(public readonly code: "forbidden" | "not_found" | "cooldown") {
@@ -109,7 +110,14 @@ export async function generateParentManualMessage(env: WorkerEnv, actor: StaffPr
       id: row.installmentId, registrationDraftChildId: childId, installmentNumber: 1,
       amountMnt: row.rawAmountMnt, allocatedAmountMnt: row.allocatedAmountMnt,
     }]);
-    const amountMnt = Math.max(0, Number(effective[0]?.effectiveAmountMnt ?? row.rawAmountMnt) - row.allocatedAmountMnt);
+    const effectiveAmountMnt = Number(effective[0]?.effectiveAmountMnt ?? row.rawAmountMnt);
+    const settlement = await pendingAdditionalClassCashSettlement(env.DB, {
+      registrationDraftChildId: childId,
+      paymentInstallmentId: row.installmentId,
+      effectiveAmountMnt,
+      allocatedAmountMnt: row.allocatedAmountMnt,
+    });
+    const amountMnt = settlement?.cashRequiredMnt ?? Math.max(0, effectiveAmountMnt - row.allocatedAmountMnt);
     if (!amountMnt) throw new ParentCommunicationError("not_found");
     await audit(env, actor, "parent_manual_message_generated", childId, row.draftId, row.lifecycle);
     return {

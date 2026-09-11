@@ -38,6 +38,16 @@ assert.ok(
   "transfer aggregates must be deleted before their scoped enrollment lineage",
 );
 assert.ok(
+  position('DELETE FROM additional_class_credit_reservation WHERE ${scoped("additional_class_credit_reservation")};')
+    < position('DELETE FROM additional_class_admission WHERE ${childScoped("additional_class_admission", "target_registration_draft_child_id")};'),
+  "additional-class credit reservations must be deleted before their restrictive admission parent",
+);
+assert.ok(
+  position('DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")};')
+    < position('DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};'),
+  "linked award-credit ledger roots must be deleted before their restrictive discount award",
+);
+assert.ok(
   position('DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};')
     < position('DELETE FROM registration_draft WHERE ${scoped("registration_draft", "id")};'),
   "discount awards must be deleted before their draft children and draft parents",

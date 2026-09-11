@@ -72,6 +72,7 @@ SELECT
   (SELECT COUNT(*) FROM payment_notification_milestone WHERE ${scoped("payment_notification_milestone")}) AS notification_milestones,
   (SELECT COUNT(*) FROM class_transfer WHERE ${scoped("class_transfer")}) AS transfers,
   (SELECT COUNT(*) FROM class_transfer_target_reservation WHERE ${scoped("class_transfer_target_reservation")}) AS transfer_reservations,
+  (SELECT COUNT(*) FROM additional_class_credit_reservation WHERE ${scoped("additional_class_credit_reservation")}) AS additional_credit_reservations,
   (SELECT COUNT(*) FROM additional_class_admission WHERE ${childScoped("additional_class_admission", "target_registration_draft_child_id")}) AS additional_admissions,
   (SELECT COUNT(*) FROM child_credit_operation WHERE ${scoped("child_credit_operation")}) AS credit_operations,
   (SELECT COUNT(*) FROM child_credit_entry WHERE ${scoped("child_credit_entry")}) AS credit_entries,
@@ -101,14 +102,17 @@ DELETE FROM class_transfer_payment_obligation WHERE ${scoped("class_transfer_pay
 DELETE FROM class_transfer_credit WHERE ${scoped("class_transfer_credit")};
 DELETE FROM class_transfer_target_reservation WHERE ${scoped("class_transfer_target_reservation")};
 DELETE FROM class_transfer WHERE ${scoped("class_transfer")};
+DELETE FROM additional_class_credit_reservation WHERE ${scoped("additional_class_credit_reservation")};
 DELETE FROM additional_class_admission WHERE ${childScoped("additional_class_admission", "target_registration_draft_child_id")};
-DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};
 DELETE FROM registration_data_correction WHERE ${childScoped("registration_data_correction")};
 DELETE FROM credit_application_confirmation WHERE ${scoped("credit_application_confirmation")};
 DELETE FROM child_credit_payment_review WHERE ${scoped("child_credit_payment_review")};
 DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")} AND amount_mnt < 0;
 DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")};
 DELETE FROM child_credit_operation WHERE ${scoped("child_credit_operation")};
+-- Award-credit roots have a restrictive durable award link, so remove the
+-- scoped immutable ledger lineage before deleting its source award.
+DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};
 DELETE FROM payment_evidence WHERE ${scoped("payment_evidence")};
 DELETE FROM payment_allocation WHERE ${installmentScoped("payment_allocation")};
 DELETE FROM payment_confirmation WHERE ${requestScoped("payment_confirmation")};

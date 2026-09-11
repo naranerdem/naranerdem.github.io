@@ -7,6 +7,7 @@ import { getClassCapacityProjections } from "../services/class-capacity";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { discountAwardsForChildren, effectiveInstallmentsForRows, recalculateDiscountAwardBalances } from "../services/discounts";
 import { childCreditSummaryForChildren, creditPaymentReviewState } from "../services/child-credit-ledger";
+import { pendingAdditionalClassCashSettlement } from "../services/additional-class-credit-settlement";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
 type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid";
@@ -169,12 +170,17 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
         WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS cashAllocatedAmountMnt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+    registration_draft_child.payment_plan_code AS paymentPlanCode,
     registration_draft_child.promotion_status AS promotionStatus,
     registration_draft_child.identity_resolution_status AS identityResolutionStatus,
+    registration_draft_child.canonical_student_id AS canonicalStudentId,
     registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
     enrollment.updated_at AS canonicalEnrollmentUpdatedAt,
     MAX(CASE WHEN registration_capacity_hold.id IS NOT NULL THEN 1 ELSE 0 END) AS hasActiveInitialPaymentHold,
-    registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
+    COALESCE(guardian_account.full_name, registration_draft.guardian_full_name) AS guardianName,
+    COALESCE(guardian_account.primary_phone, registration_draft.primary_phone) AS primaryPhone,
+    COALESCE(guardian_account.secondary_phone, registration_draft.secondary_phone) AS secondaryPhone,
+    COALESCE(guardian_account.facebook_name, registration_draft.facebook_name) AS guardianFacebookName,
     registration_draft.email, registration_draft.verified_at AS verifiedAt,
     class_session.display_label AS classLabel, class_session.weekday AS weekday,
     class_session.start_time AS startTime, class_session.end_time AS endTime,
@@ -212,9 +218,17 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
         AND confirmation.status IN ('tentative', 'finalized')
         AND confirmation.remaining_payment_due_at IS NOT NULL
       ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1) AS remainingPaymentDueAt,
-    (SELECT code FROM enrollment_referral_code
-      WHERE enrollment_id = registration_draft_child.canonical_enrollment_id AND status = 'active'
-      ORDER BY activated_at DESC, id DESC LIMIT 1) AS ownReferralCode,
+    COALESCE(
+      (SELECT code FROM enrollment_referral_code
+        WHERE enrollment_id = registration_draft_child.canonical_enrollment_id AND status = 'active'
+        ORDER BY activated_at DESC, id DESC LIMIT 1),
+      (SELECT code FROM enrollment_referral_code
+        INNER JOIN enrollment AS referral_enrollment ON referral_enrollment.id = enrollment_referral_code.enrollment_id
+        WHERE enrollment_referral_code.student_id = registration_draft_child.canonical_student_id
+          AND enrollment_referral_code.status = 'active' AND referral_enrollment.status = 'confirmed'
+          AND referral_enrollment.transferred_out_at IS NULL
+        ORDER BY enrollment_referral_code.activated_at ASC, enrollment_referral_code.id ASC LIMIT 1)
+    ) AS ownReferralCode,
     (SELECT captured_code FROM registration_draft_referral
       WHERE registration_draft_child_id = registration_draft_child.id AND status = 'captured'
       ORDER BY created_at DESC LIMIT 1) AS usedReferralCode,
@@ -263,6 +277,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
     INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
+    LEFT JOIN guardian_account ON guardian_account.id = registration_draft.canonical_guardian_account_id
     LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
     LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active'
@@ -338,6 +353,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       amountMnt: Number(item.laterAmountMnt), allocatedAmountMnt: Number(item.laterAllocatedAmountMnt),
     } : null,
   ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
+  const settlementByInstallment = new Map(await Promise.all(rawItems.map(async (item) => {
+    const effective = effectiveById.get(String(item.installmentId));
+    return [String(item.installmentId), await pendingAdditionalClassCashSettlement(env.DB, {
+      registrationDraftChildId: String(item.registrationDraftChildId),
+      paymentInstallmentId: String(item.installmentId),
+      effectiveAmountMnt: Number(effective?.effectiveAmountMnt ?? item.expectedAmountMnt),
+      allocatedAmountMnt: item.allocatedAmountMnt,
+    })] as const;
+  })));
   const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
   const creditByChild = await childCreditSummaryForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)));
   const creditReviewByInstallment = new Map(await Promise.all(rawItems.flatMap((item) => [
@@ -369,16 +393,25 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const totalCreditAppliedMnt = item.allocatedAmountMnt + item.laterAllocatedAmountMnt - totalPaidMnt;
     const credit = creditByChild.get(String(item.registrationDraftChildId));
     const initialOutstandingMnt = Math.max(0, expectedAmountMnt - item.allocatedAmountMnt);
+    const settlement = settlementByInstallment.get(String(item.installmentId)) ?? null;
+    const reservedCreditMnt = settlement?.reservedCreditMnt ?? 0;
+    const cashRequiredMnt = settlement?.cashRequiredMnt ?? initialOutstandingMnt;
     const laterOutstandingMnt = later && item.laterInstallmentId
       ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
-    const creditApplicationInstallmentId = initialOutstandingMnt > 0 ? String(item.installmentId)
+    // A two-installment agreement's first installment is deliberately
+    // cash-only. Credit review belongs to its final scheduled installment,
+    // even while the first installment is still outstanding.
+    const creditMaySettleInitial = item.paymentPlanCode !== "two_installment";
+    const creditApplicationInstallmentId = creditMaySettleInitial && initialOutstandingMnt > 0 ? String(item.installmentId)
       : laterOutstandingMnt > 0 ? String(item.laterInstallmentId) : null;
-    const creditApplicationOutstandingMnt = initialOutstandingMnt > 0 ? initialOutstandingMnt : laterOutstandingMnt;
+    const creditApplicationOutstandingMnt = creditMaySettleInitial && initialOutstandingMnt > 0 ? initialOutstandingMnt : laterOutstandingMnt;
     const creditReview = creditApplicationInstallmentId ? creditReviewByInstallment.get(creditApplicationInstallmentId) : null;
     return { ...item, expectedAmountMnt,
       laterAmountMnt: later?.effectiveAmountMnt ?? item.laterAmountMnt,
       totalPaidMnt,
       totalCreditAppliedMnt,
+      reservedCreditMnt,
+      cashRequiredMnt,
     totalRemainingMnt: Math.max(0, totalExpectedMnt - item.allocatedAmountMnt - item.laterAllocatedAmountMnt),
       availableCreditMnt: credit?.availableAmountMnt ?? 0,
       creditEntries: credit?.roots ?? [],
@@ -479,8 +512,16 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
         AND credit_entry.entry_kind = 'credit_application') AS creditApplied,
     (SELECT effective_due_at FROM payment_installment WHERE registration_draft_child_id = registration_draft_child.id
       AND status IN ('pending', 'partially_paid') ORDER BY installment_number LIMIT 1) AS dueAt,
-    (SELECT code FROM enrollment_referral_code WHERE enrollment_id = registration_draft_child.canonical_enrollment_id
-      AND status = 'active' ORDER BY activated_at DESC, id DESC LIMIT 1) AS ownReferral,
+    COALESCE(
+      (SELECT code FROM enrollment_referral_code WHERE enrollment_id = registration_draft_child.canonical_enrollment_id
+        AND status = 'active' ORDER BY activated_at DESC, id DESC LIMIT 1),
+      (SELECT code FROM enrollment_referral_code
+        INNER JOIN enrollment AS referral_enrollment ON referral_enrollment.id = enrollment_referral_code.enrollment_id
+        WHERE enrollment_referral_code.student_id = registration_draft_child.canonical_student_id
+          AND enrollment_referral_code.status = 'active' AND referral_enrollment.status = 'confirmed'
+          AND referral_enrollment.transferred_out_at IS NULL
+        ORDER BY enrollment_referral_code.activated_at ASC, enrollment_referral_code.id ASC LIMIT 1)
+    ) AS ownReferral,
     (SELECT captured_code FROM registration_draft_referral WHERE registration_draft_child_id = registration_draft_child.id
       AND status = 'captured' ORDER BY created_at DESC LIMIT 1) AS usedReferral
     FROM registration_draft_child

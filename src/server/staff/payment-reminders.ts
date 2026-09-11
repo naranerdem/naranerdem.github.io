@@ -6,7 +6,8 @@ import { deliverQueuedEmail } from "../email/service";
 import { paymentReminderTemplate } from "../email/templates/payment-reminder";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { effectiveInstallmentsForRows } from "../services/discounts";
-import { syncLegacyChildCreditEntries } from "../services/child-credit-ledger";
+import { creditPaymentReviewState, syncLegacyChildCreditEntries } from "../services/child-credit-ledger";
+import { pendingAdditionalClassCashSettlement } from "../services/additional-class-credit-settlement";
 
 export interface PaymentReminderSetting {
   initialReminderLeadMinutes: number;
@@ -219,15 +220,21 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
       const effective = (await effectiveInstallmentsForRows(env.DB, raw.results.map((item) => ({
         ...item, installmentNumber: Number(item.installmentNumber), amountMnt: Number(item.amountMnt),
       })))).find((item) => item.id === context.installmentId);
-      if (effective) context.amountMnt = Math.max(0, effective.effectiveAmountMnt - Number(context.allocatedAmountMnt));
+      if (effective) {
+        const settlement = await pendingAdditionalClassCashSettlement(env.DB, {
+          registrationDraftChildId: context.registrationDraftChildId,
+          paymentInstallmentId: context.installmentId,
+          effectiveAmountMnt: effective.effectiveAmountMnt,
+          allocatedAmountMnt: Number(context.allocatedAmountMnt),
+        });
+        context.amountMnt = settlement?.cashRequiredMnt ?? Math.max(0, effective.effectiveAmountMnt - Number(context.allocatedAmountMnt));
+      }
     }
-    if (context && Number(context.availableCreditMnt) > 0 && Number(context.amountMnt) > 0) {
-      const reviewed = await env.DB.prepare(`SELECT 1 AS value FROM child_credit_payment_review
-        WHERE child_credit_payment_review.payment_installment_id = ? AND child_credit_payment_review.decision = 'leave_unused'
-          AND child_credit_payment_review.available_credit_mnt = ? AND child_credit_payment_review.outstanding_amount_mnt = ?
-          AND child_credit_payment_review.registration_draft_child_id = ? ORDER BY child_credit_payment_review.created_at DESC LIMIT 1`)
-        .bind(context.installmentId, Number(context.availableCreditMnt), Number(context.amountMnt), context.registrationDraftChildId).first();
-      if (!reviewed) {
+    const creditReview = context
+      ? await creditPaymentReviewState(env.DB, context.registrationDraftChildId, context.installmentId).catch(() => null)
+      : null;
+    if (creditReview?.eligible && creditReview.availableCreditMnt > 0 && creditReview.outstandingAmountMnt > 0) {
+      if (!creditReview.reviewed) {
         // Keep the existing milestone pending; neither its deadline nor its
         // delivery history changes while a staff credit decision is required.
         await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'pending', processing_started_at = NULL, updated_at = ? WHERE id = ?`)

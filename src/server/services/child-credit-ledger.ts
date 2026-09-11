@@ -2,7 +2,7 @@ import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { effectiveInstallmentsForRows } from "./discounts";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 
-export type CreditOperationType = "manual_add" | "manual_correction" | "apply" | "transfer" | "refund";
+export type CreditOperationType = "manual_add" | "manual_correction" | "apply" | "transfer" | "refund" | "discount_award_credit";
 
 export class ChildCreditError extends Error {
   constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "insufficient") {
@@ -32,6 +32,8 @@ export interface CreditPaymentReviewState {
   availableCreditMnt: number;
   outstandingAmountMnt: number;
   reviewed: boolean;
+  eligible: boolean;
+  ineligibleReason: "two_installment_first" | null;
 }
 
 function positive(value: unknown): number | null {
@@ -149,7 +151,7 @@ export async function childCreditSummary(database: D1Database, canonicalStudentI
   const result = await database.prepare(`SELECT root.id, root.canonical_student_id AS canonicalStudentId, root.entry_kind AS entryKind,
     root.registration_draft_child_id AS registrationDraftChildId,
     root.amount_mnt AS amountMnt, root.created_at AS createdAt, root.reason, root.external_reference AS externalReference,
-    root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) AS availableAmountMnt
+    root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt
     FROM child_credit_entry AS root
     LEFT JOIN child_credit_entry AS debit ON debit.origin_entry_id = root.id
     WHERE root.canonical_student_id = ? AND root.amount_mnt > 0
@@ -164,7 +166,7 @@ async function childCreditSummaryForOwner(database: D1Database, owner: ChildCred
   const result = await database.prepare(`SELECT root.id, root.canonical_student_id AS canonicalStudentId,
     root.registration_draft_child_id AS registrationDraftChildId, root.entry_kind AS entryKind,
     root.amount_mnt AS amountMnt, root.created_at AS createdAt, root.reason, root.external_reference AS externalReference,
-    root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) AS availableAmountMnt
+    root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt
     FROM child_credit_entry AS root
     LEFT JOIN child_credit_entry AS debit ON debit.origin_entry_id = root.id
     WHERE root.registration_draft_child_id = ? AND root.amount_mnt > 0
@@ -206,17 +208,49 @@ async function installmentOutstanding(database: D1Database, registrationDraftChi
   return Math.max(0, installment.effectiveAmountMnt - Number(installment.allocatedAmountMnt ?? 0));
 }
 
+// Credit eligibility is a property of the immutable agreement snapshot and
+// installment identity. It must never be inferred from the current balance or
+// number of cash receipts: a two-installment first payment remains cash-only
+// even when it is the only outstanding amount.
+export async function creditInstallmentEligibility(database: D1Database, registrationDraftChildId: string, paymentInstallmentId: string) {
+  const installment = await database.prepare(`SELECT payment_installment.id,
+      payment_installment.installment_number AS installmentNumber,
+      registration_draft_child.payment_plan_code AS paymentPlanCode,
+      (SELECT MAX(later.installment_number) FROM payment_installment AS later
+        WHERE later.registration_draft_child_id = payment_installment.registration_draft_child_id) AS finalInstallmentNumber
+    FROM payment_installment
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    WHERE payment_installment.id = ? AND payment_installment.registration_draft_child_id = ?`)
+    .bind(paymentInstallmentId, registrationDraftChildId)
+    .first<{ id: string; installmentNumber: number; paymentPlanCode: string | null; finalInstallmentNumber: number | null }>();
+  if (!installment) throw new ChildCreditError("not_found");
+  const twoInstallment = installment.paymentPlanCode === "two_installment";
+  const eligible = !twoInstallment || Number(installment.installmentNumber) === Number(installment.finalInstallmentNumber);
+  return {
+    eligible,
+    paymentPlanCode: installment.paymentPlanCode,
+    installmentNumber: Number(installment.installmentNumber),
+    finalInstallmentNumber: Number(installment.finalInstallmentNumber),
+    ineligibleReason: eligible ? null : "two_installment_first" as const,
+  };
+}
+
 export async function creditPaymentReviewState(database: D1Database, registrationDraftChildId: string, paymentInstallmentId: string): Promise<CreditPaymentReviewState> {
   const child = await creditOwnerForChild(database, registrationDraftChildId);
-  const [summary, outstandingAmountMnt] = await Promise.all([
+  const [summary, outstandingAmountMnt, eligibility] = await Promise.all([
     childCreditSummaryForOwner(database, child), installmentOutstanding(database, registrationDraftChildId, paymentInstallmentId),
+    creditInstallmentEligibility(database, registrationDraftChildId, paymentInstallmentId),
   ]);
-  if (!summary.availableAmountMnt || !outstandingAmountMnt) return { availableCreditMnt: summary.availableAmountMnt, outstandingAmountMnt, reviewed: false };
+  if (!eligibility.eligible || !summary.availableAmountMnt || !outstandingAmountMnt) {
+    return { availableCreditMnt: summary.availableAmountMnt, outstandingAmountMnt, reviewed: false,
+      eligible: eligibility.eligible, ineligibleReason: eligibility.ineligibleReason };
+  }
   const review = await database.prepare(`SELECT 1 AS value FROM child_credit_payment_review
     WHERE registration_draft_child_id = ? AND payment_installment_id = ? AND decision = 'leave_unused'
       AND available_credit_mnt = ? AND outstanding_amount_mnt = ? ORDER BY created_at DESC LIMIT 1`)
     .bind(registrationDraftChildId, paymentInstallmentId, summary.availableAmountMnt, outstandingAmountMnt).first();
-  return { availableCreditMnt: summary.availableAmountMnt, outstandingAmountMnt, reviewed: Boolean(review) };
+  return { availableCreditMnt: summary.availableAmountMnt, outstandingAmountMnt, reviewed: Boolean(review),
+    eligible: true, ineligibleReason: null };
 }
 
 export async function leaveChildCreditUnused(env: WorkerEnv, actor: StaffPrincipal, input: {
@@ -227,7 +261,7 @@ export async function leaveChildCreditUnused(env: WorkerEnv, actor: StaffPrincip
   if (!reason || !id || !input.paymentInstallmentId) throw new ChildCreditError("invalid");
   const child = await creditOwnerForChild(env.DB, input.registrationDraftChildId);
   const state = await creditPaymentReviewState(env.DB, input.registrationDraftChildId, input.paymentInstallmentId);
-  if (!state.availableCreditMnt || !state.outstandingAmountMnt) throw new ChildCreditError("invalid");
+  if (!state.eligible || !state.availableCreditMnt || !state.outstandingAmountMnt) throw new ChildCreditError("invalid");
   const requestFingerprint = JSON.stringify(["leave_unused", child.registrationDraftChildId, input.paymentInstallmentId, state.availableCreditMnt, state.outstandingAmountMnt, reason]);
   const existing = await env.DB.prepare(`SELECT request_fingerprint AS requestFingerprint FROM child_credit_payment_review WHERE operation_id = ?`)
     .bind(id).first<{ requestFingerprint: string }>();
@@ -306,16 +340,81 @@ function audit(env: WorkerEnv, actor: StaffPrincipal, action: string, subjectId:
 
 function entryInsert(env: WorkerEnv, input: {
   id?: string; owner: ChildCreditOwner; operationId: string; entryKind: string; amountMnt: number; originEntryId?: string | null;
-  installmentId?: string | null; correctionOfEntryId?: string | null; actor: StaffPrincipal; reason: string; externalReference?: string | null;
+  installmentId?: string | null; correctionOfEntryId?: string | null; sourceDiscountAwardId?: string | null; actor?: StaffPrincipal | null; reason: string; externalReference?: string | null;
   isTest: number; testRunId: string | null; now: string;
 }): D1PreparedStatement {
   return env.DB.prepare(`INSERT INTO child_credit_entry (
     id, canonical_student_id, registration_draft_child_id, operation_id, entry_kind, amount_mnt, origin_entry_id, payment_installment_id,
-    correction_of_entry_id, created_by_staff_account_id, reason, external_reference, is_test, test_run_id, created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    correction_of_entry_id, source_discount_award_id, created_by_staff_account_id, reason, external_reference, is_test, test_run_id, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(input.id ?? crypto.randomUUID(), input.owner.canonicalStudentId, input.owner.registrationDraftChildId, input.operationId, input.entryKind, input.amountMnt,
-      input.originEntryId ?? null, input.installmentId ?? null, input.correctionOfEntryId ?? null, input.actor.staffAccountId,
-      input.reason, input.externalReference ?? null, input.isTest, input.testRunId, input.now);
+      input.originEntryId ?? null, input.installmentId ?? null, input.correctionOfEntryId ?? null, input.sourceDiscountAwardId ?? null,
+      input.actor?.staffAccountId ?? null, input.reason, input.externalReference ?? null, input.isTest, input.testRunId, input.now);
+}
+
+// A discount award is not a received payment. When its immutable award exceeds
+// the unpaid source agreement, the excess becomes an ordinary child-credit
+// root, linked one-to-one to that award so it cannot be double-spent or minted
+// again by a retrying additional-class finalizer.
+export async function ensureDiscountAwardCredit(env: WorkerEnv, input: {
+  awardId: string; registrationDraftChildId: string; reason: string; now: string; reservedAmountMnt?: number;
+}): Promise<{ created: boolean; amountMnt: number }> {
+  const row = await env.DB.prepare(`SELECT discount_award.credit_amount_mnt AS creditAmountMnt,
+      registration_draft_child.canonical_student_id AS canonicalStudentId,
+      registration_draft_child.is_test AS isTest, registration_draft_child.test_run_id AS testRunId
+    FROM discount_award
+    INNER JOIN registration_draft_child ON registration_draft_child.id = discount_award.registration_draft_child_id
+    WHERE discount_award.id = ? AND discount_award.registration_draft_child_id = ?
+      AND discount_award.status = 'active'`).bind(input.awardId, input.registrationDraftChildId)
+    .first<{ creditAmountMnt: number; canonicalStudentId: string | null; isTest: number; testRunId: string | null }>();
+  const amountMnt = Number(row?.creditAmountMnt ?? 0);
+  if (!row || !row.canonicalStudentId || amountMnt <= 0) return { created: false, amountMnt: 0 };
+  const reservedAmountMnt = Math.max(0, Number(input.reservedAmountMnt ?? 0));
+  if (!Number.isInteger(reservedAmountMnt) || reservedAmountMnt > amountMnt) throw new ChildCreditError("invalid");
+  const operationId = `${input.awardId}:credit`;
+  const rootId = `child-credit:award:${input.awardId}`;
+  const fingerprintValue = JSON.stringify(["discount_award_credit", input.awardId, input.registrationDraftChildId, amountMnt]);
+  const result = await env.DB.batch([
+    env.DB.prepare(`INSERT OR IGNORE INTO child_credit_operation (
+      id, operation_type, source_student_id, source_registration_draft_child_id, amount_mnt, reason,
+      request_fingerprint, is_test, test_run_id, created_at
+    ) VALUES (?, 'discount_award_credit', ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(operationId, row.canonicalStudentId, input.registrationDraftChildId, amountMnt, input.reason,
+        fingerprintValue, Number(row.isTest), row.testRunId, input.now),
+    env.DB.prepare(`INSERT OR IGNORE INTO child_credit_entry (
+      id, canonical_student_id, registration_draft_child_id, operation_id, entry_kind, amount_mnt,
+      source_discount_award_id, reserved_amount_mnt, reason, is_test, test_run_id, created_at
+    ) VALUES (?, ?, ?, ?, 'discount_award_credit', ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(rootId, row.canonicalStudentId, input.registrationDraftChildId, operationId, amountMnt,
+        input.awardId, reservedAmountMnt, input.reason, Number(row.isTest), row.testRunId, input.now),
+  ]);
+  if (reservedAmountMnt) {
+    const root = await env.DB.prepare(`SELECT reserved_amount_mnt AS reservedAmountMnt FROM child_credit_entry WHERE id = ?`)
+      .bind(rootId).first<{ reservedAmountMnt: number }>();
+    if (!root || Number(root.reservedAmountMnt) < reservedAmountMnt) throw new ChildCreditError("conflict");
+  }
+  return { created: (result[1]?.meta?.changes ?? 0) === 1, amountMnt };
+}
+
+// Pending additional-class admissions reserve credit without changing any
+// obligation. Terminal non-confirmation paths call this before releasing their
+// hold so the reserved value becomes available again as one durable operation.
+export async function releaseAdditionalAdmissionCreditReservations(database: D1Database, admissionId: string, now: string) {
+  const rows = await database.prepare(`SELECT id, source_credit_entry_id AS sourceCreditEntryId, amount_mnt AS amountMnt
+    FROM additional_class_credit_reservation WHERE admission_id = ? AND status = 'pending'`)
+    .bind(admissionId).all<{ id: string; sourceCreditEntryId: string | null; amountMnt: number }>();
+  if (!rows.results.length) return 0;
+  const statements: D1PreparedStatement[] = [];
+  for (const row of rows.results) {
+    if (row.sourceCreditEntryId) {
+      statements.push(database.prepare(`UPDATE child_credit_entry SET reserved_amount_mnt = reserved_amount_mnt - ?
+        WHERE id = ? AND reserved_amount_mnt >= ?`).bind(Number(row.amountMnt), row.sourceCreditEntryId, Number(row.amountMnt)));
+    }
+    statements.push(database.prepare(`UPDATE additional_class_credit_reservation SET status = 'released', resolved_at = ?
+      WHERE id = ? AND status = 'pending'`).bind(now, row.id));
+  }
+  await database.batch(statements);
+  return rows.results.length;
 }
 
 export async function addManualChildCredit(env: WorkerEnv, actor: StaffPrincipal, input: {
@@ -393,7 +492,7 @@ function debitAdmissionGuard(env: WorkerEnv, owner: ChildCreditOwner, rootIds: s
     id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, reason, is_test, test_run_id, created_at
   ) SELECT ?, ?, ?, 'credit_application', 0, 'Credit debit guard', ?, ?, ?
     WHERE COALESCE((SELECT SUM(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt)
-      FROM child_credit_entry AS debit WHERE debit.origin_entry_id = root.id), 0))
+      FROM child_credit_entry AS debit WHERE debit.origin_entry_id = root.id), 0) - root.reserved_amount_mnt)
       FROM child_credit_entry AS root WHERE root.id IN (${rootIds.map(() => "?").join(", ")})
         AND ${owner.canonicalStudentId ? "root.canonical_student_id = ?" : "root.registration_draft_child_id = ?"}), 0) < ?`)
     .bind(crypto.randomUUID(), owner.canonicalStudentId, owner.registrationDraftChildId, isTest, testRunId, now, ...rootIds,
@@ -435,6 +534,7 @@ export async function applyChildCredit(env: WorkerEnv, actor: StaffPrincipal, in
     FROM payment_installment INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
     WHERE payment_installment.id = ?`).bind(input.paymentInstallmentId).first<{ id: string; paymentRequestId: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number; status: string; canonicalStudentId: string | null }>();
   if (!installment || installment.registrationDraftChildId !== input.registrationDraftChildId || installment.status === "released") throw new ChildCreditError("not_found");
+  if (!(await creditInstallmentEligibility(env.DB, input.registrationDraftChildId, installment.id)).eligible) throw new ChildCreditError("invalid");
   const key = fingerprint("apply", child.registrationDraftChildId, null, amountMnt, reason, null, installment.id, null);
   if (await assertNewOperation(env.DB, id, key)) return { operationId: id, idempotent: true, ...(await childCreditSummaryForOwner(env.DB, child)) };
   const rows = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.registration_draft_child_id AS registrationDraftChildId,

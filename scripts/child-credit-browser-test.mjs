@@ -115,7 +115,7 @@ async function dbJson(query) {
   return parsed[0]?.results ?? [];
 }
 
-async function fillIntake(page, childName) {
+async function fillIntake(page, childName, paymentPlanCode = "two_installment") {
   await page.goto(`${baseUrl}/staff/registration-intake/`);
   await page.locator("#intake-app").waitFor({ state: "visible" });
   await page.selectOption('select[name="intakeChannel"]', "paper_form");
@@ -132,7 +132,7 @@ async function fillIntake(page, childName) {
   await page.selectOption('select[name="currentGrade"]', "5");
   await page.selectOption('select[name="stage"]', "stage_1");
   await page.selectOption('select[name="classSessionId"]', "browser-class-source");
-  await page.selectOption('select[name="paymentPlanCode"]', "two_installment");
+  await page.selectOption('select[name="paymentPlanCode"]', paymentPlanCode);
   await page.check('input[name="parentRulesAcknowledged"]');
   await page.check('input[name="studentRulesAcknowledged"]');
   const submission = page.waitForResponse((response) => response.url().endsWith("/api/staff/registration-intake") && response.request().method() === "POST");
@@ -231,8 +231,13 @@ async function submitPublicRegistration(browser, { childName, email, paymentPlan
 
 async function openCredit(page, childId) {
   const row = page.locator(`[data-registration-child="${childId}"]`);
-  if (await row.locator('[data-credit-open]').count() === 0) await row.locator('button[data-payment-detail]').click();
-  await row.locator('[data-credit-open]').last().waitFor({ state: "visible" });
+  const creditOpen = row.locator('[data-credit-open]').last();
+  if (!await creditOpen.isVisible()) {
+    const detail = row.locator('button[data-payment-detail][aria-expanded="false"]');
+    await detail.waitFor({ state: "visible" });
+    await detail.click();
+  }
+  await creditOpen.waitFor({ state: "visible" });
   await row.locator('[data-credit-open]').last().click();
   const add = row.locator('[data-credit-subpanel-name="add"]');
   if (await add.getAttribute("aria-expanded") !== "true") await add.click();
@@ -251,8 +256,12 @@ async function addCredit(page, childId, amount) {
 
 async function applyCredit(page, childId, amount) {
   const row = page.locator(`[data-registration-child="${childId}"]`);
-  if (await row.locator('[data-credit-open]').count() === 0) await row.locator('button[data-payment-detail]').click();
-  if (await row.locator('[data-child-credit-form="apply"]:visible').count() === 0) await row.locator('[data-credit-open]').last().click();
+  const creditOpen = row.locator('[data-credit-open]').last();
+  if (!await creditOpen.isVisible()) {
+    await row.locator('button[data-payment-detail][aria-expanded="false"]').click();
+    await creditOpen.waitFor({ state: "visible" });
+  }
+  if (await row.locator('[data-child-credit-form="apply"]:visible').count() === 0) await creditOpen.click();
   if (await row.locator('[data-child-credit-form="apply"]:visible').count() === 0) {
     await row.locator('[data-credit-subpanel-name="apply"]').click();
     assert.equal(await row.locator('[data-child-credit-form="manual-add"]:visible, [data-child-credit-form="correct"]:visible').count(), 0,
@@ -270,8 +279,12 @@ async function applyCredit(page, childId, amount) {
 
 async function correctCredit(page, childId, adjustmentMnt) {
   const row = page.locator(`[data-registration-child="${childId}"]`);
-  if (await row.locator('[data-credit-open]').count() === 0) await row.locator('button[data-payment-detail]').click();
-  if (await row.locator('[data-credit-subpanel-name="correct"]').count() === 0) await row.locator('[data-credit-open]').last().click();
+  const creditOpen = row.locator('[data-credit-open]').last();
+  if (!await creditOpen.isVisible()) {
+    await row.locator('button[data-payment-detail][aria-expanded="false"]').click();
+    await creditOpen.waitFor({ state: "visible" });
+  }
+  if (await row.locator('[data-credit-subpanel-name="correct"]:visible').count() === 0) await creditOpen.click();
   const correct = row.locator('[data-credit-subpanel-name="correct"]');
   if (await correct.getAttribute("aria-expanded") !== "true") await correct.click();
   assert.equal(await row.locator('[data-child-credit-form="manual-add"]:visible, [data-child-credit-form="apply"]:visible').count(), 0,
@@ -297,6 +310,23 @@ async function recordPartialCashPayment(page, childId) {
   await form.locator('button[type="submit"]').click();
   const response = await request;
   if (!response.ok()) throw new Error(`partial cash payment failed: ${await response.text()}`);
+  await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
+}
+
+async function recordCashPayment(page, childId, amount) {
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  await row.waitFor({ state: "visible" });
+  const form = row.locator("[data-payment-form]");
+  await form.waitFor({ state: "visible" });
+  assert.equal(Number(await form.locator('input[name="amount"]').inputValue()), amount,
+    "the rendered staff payment form requests the authoritative effective amount");
+  await form.locator('select[name="source"]').selectOption("staff_manual_cash");
+  const request = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST");
+  await form.locator('button[type="submit"]').click();
+  const response = await request;
+  if (!response.ok()) throw new Error(`cash payment failed: ${await response.text()}`);
   await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
 }
 
@@ -451,6 +481,30 @@ async function finalizeCreditOnlyRegistration(page, childId) {
   return row;
 }
 
+async function finalizeCashRegistration(page, childId) {
+  execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+    WHERE received_payment_id IN (
+      SELECT received_payment.id FROM received_payment
+      INNER JOIN payment_request ON payment_request.id = received_payment.payment_request_id
+      WHERE payment_request.registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(childId)}
+      )
+    );`);
+  const scheduled = await fetch(`${baseUrl}/__scheduled`);
+  assert.ok(scheduled.ok, "the local scheduled Worker accepts the deterministic cash-finalization trigger");
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  const identity = row.locator(`[data-promotion-new="${childId}"]`);
+  if (await identity.count()) {
+    page.once("dialog", (dialog) => dialog.accept());
+    await identity.click();
+  }
+  const confirmed = await dbJson(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child
+    WHERE id = ${sql(childId)}`);
+  assert.ok(confirmed[0]?.enrollmentId, "cash settlement reaches the normal canonical enrollment path");
+  return row;
+}
+
 async function cancelAndRestoreRegistration(page, childId) {
   let row = page.locator(`[data-registration-child="${childId}"]`);
   await row.waitFor({ state: "visible" });
@@ -558,6 +612,111 @@ try {
   assert.equal(paymentSearch[0].enrollmentId, null, "the audit-only payment-search action has no lifecycle side effect");
   await verifyRegistrationExport(page, context, "CashBrowser");
 
+  // A confirmed two-installment agreement retains an ordinary, usable cash
+  // recording path for its second installment before that deadline arrives.
+  const laterCashChildId = await fillIntake(page, "LaterCashBrowser");
+  await recordCashPayment(page, laterCashChildId, 500);
+  await finalizeCashRegistration(page, laterCashChildId);
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(laterCashChildId)}`);
+  const laterCashRow = page.locator(`[data-registration-child="${laterCashChildId}"]`);
+  await laterCashRow.locator('[data-payment-open]').click();
+  const laterForm = laterCashRow.locator(".staff-later-payment-form[data-payment-form]");
+  await laterForm.waitFor({ state: "visible" });
+  await laterCashRow.locator('[data-credit-open]').click();
+  assert.equal(await laterForm.count(), 0, "switching to credit closes the payment panel without changing payment state");
+  await laterCashRow.locator('[data-payment-open]').click();
+  await laterForm.waitFor({ state: "visible" });
+  await laterCashRow.locator('[data-payment-close]').click();
+  assert.equal(await laterForm.count(), 0, "the payment panel closes explicitly without collapsing the record");
+  await laterCashRow.locator('[data-payment-open]').click();
+  await laterForm.waitFor({ state: "visible" });
+  await laterForm.getByText("Төлбөрийн нөхцөл: 2 хувааж").waitFor({ state: "visible" });
+  await laterForm.getByText("Хоёр дахь төлбөрийн хугацаа:").waitFor({ state: "visible" });
+  assert.equal(Number(await laterForm.locator('input[name="amount"]').inputValue()), 500,
+    "the confirmed record exposes the authoritative not-yet-due second-installment balance");
+  const receivedAt = await laterForm.locator('input[name="receivedAt"]').inputValue();
+  await laterForm.locator('input[name="receivedAt"]').fill("");
+  await laterForm.locator('button[type="submit"]').click();
+  await laterForm.getByText("Орсон хугацааг зөв оруулна уу.").waitFor({ state: "visible" });
+  await laterForm.locator('input[name="receivedAt"]').fill(receivedAt);
+  await laterForm.locator('select[name="source"]').selectOption("staff_manual_cash");
+  let failRefresh = true;
+  await page.route("**/api/staff/payments", async (route) => {
+    if (failRefresh && route.request().method() === "GET") {
+      failRefresh = false;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "түр туршилтын шинэчлэлтийн алдаа" } }) });
+      return;
+    }
+    await route.continue();
+  });
+  const laterRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST");
+  await laterForm.locator('button[type="submit"]').click();
+  const laterResponse = await laterRequest;
+  if (!laterResponse.ok()) throw new Error(`later cash payment failed: ${await laterResponse.text()}`);
+  await laterForm.locator('[data-action-feedback]').getByText("Төлбөр бүртгэгдлээ. Жагсаалтыг шинэчилж чадсангүй").waitFor({ state: "visible" });
+  const retryRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST");
+  await laterForm.locator('button[type="submit"]').click();
+  const retryResponse = await retryRequest;
+  assert.ok(retryResponse.ok(), "an ambiguous retry of the same later-payment operation is accepted");
+  assert.equal((await retryResponse.json()).idempotent, true, "the retry resolves the original receipt rather than creating another");
+  await page.unroute("**/api/staff/payments");
+  const laterCashState = await dbJson(`SELECT
+    (SELECT COUNT(*) FROM received_payment WHERE payment_request_id = payment_request.id) AS receivedCount,
+    (SELECT COUNT(*) FROM payment_allocation
+      INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+      WHERE payment_allocation.received_payment_id IN (SELECT id FROM received_payment WHERE payment_request_id = payment_request.id)
+        AND payment_installment.installment_kind = 'initial') AS initialAllocations,
+    (SELECT COUNT(*) FROM payment_allocation
+      INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+      WHERE payment_allocation.received_payment_id IN (SELECT id FROM received_payment WHERE payment_request_id = payment_request.id)
+        AND payment_installment.installment_kind = 'later') AS laterAllocations,
+    (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id = payment_request.id) AS receivedAmount,
+    registration_draft_child.canonical_enrollment_id AS enrollmentId,
+    (SELECT COUNT(*) FROM registration_capacity_hold WHERE registration_draft_child_id = registration_draft_child.id AND status = 'active') AS activeHolds
+    FROM registration_draft_child
+    INNER JOIN payment_request ON payment_request.registration_draft_id = registration_draft_child.registration_draft_id
+    WHERE registration_draft_child.id = ${sql(laterCashChildId)}`);
+  assert.equal(Number(laterCashState[0].receivedCount), 2, "two cash receipts exist after the second installment and retry");
+  assert.equal(Number(laterCashState[0].initialAllocations), 1, "the original first-installment allocation remains immutable");
+  assert.equal(Number(laterCashState[0].laterAllocations), 1, "the second receipt is allocated once to the later installment");
+  assert.equal(Number(laterCashState[0].receivedAmount), 1000, "cash receipts settle the two raw installments without fabricated credit");
+  assert.ok(laterCashState[0].enrollmentId, "later cash collection does not change the confirmed enrollment identity");
+  assert.equal(Number(laterCashState[0].activeHolds), 0, "later cash collection does not create another capacity hold");
+  await finalizeCashRegistration(page, laterCashChildId);
+  const settledSourceRow = page.locator(`[data-registration-child="${laterCashChildId}"]`);
+  await settledSourceRow.locator('[data-additional-class-open]').click();
+  const laterCashPreview = settledSourceRow.locator('[data-additional-class-preview]');
+  await laterCashPreview.waitFor({ state: "visible" });
+  await laterCashPreview.locator('select[name="targetClassSessionId"]').selectOption("browser-class-target");
+  await laterCashPreview.locator('select[name="paymentPlanCode"]').selectOption("single");
+  await laterCashPreview.locator('button[type="submit"]').click();
+  await laterCashPreview.locator('input[name="parentAcknowledged"]').check();
+  await laterCashPreview.locator('input[name="childAcknowledged"]').check();
+  await laterCashPreview.locator('[data-additional-class-create]').click();
+  const laterCashAdmission = await dbJson(`SELECT target_registration_draft_child_id AS targetChildId
+    FROM additional_class_admission WHERE source_registration_draft_child_id = ${sql(laterCashChildId)}
+      AND status = 'pending_confirmation' ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(laterCashAdmission.length, 1, "the fully cash-settled source can create a pending discounted one-payment target");
+  await recordCashPayment(page, laterCashAdmission[0].targetChildId, 900);
+  await finalizeCashRegistration(page, laterCashAdmission[0].targetChildId);
+  const laterCashAward = await dbJson(`SELECT
+    additional_class_admission.status AS admissionStatus,
+    (SELECT COUNT(*) FROM child_credit_entry WHERE source_discount_award_id = (
+      SELECT id FROM discount_award WHERE registration_draft_child_id = ${sql(laterCashChildId)}
+        AND status = 'active' LIMIT 1
+    ) AND entry_kind = 'discount_award_credit') AS sourceAwardCreditEntries,
+    (SELECT amount_mnt FROM child_credit_entry WHERE source_discount_award_id = (
+      SELECT id FROM discount_award WHERE registration_draft_child_id = ${sql(laterCashChildId)}
+        AND status = 'active' LIMIT 1
+    ) AND entry_kind = 'discount_award_credit' LIMIT 1) AS sourceAwardCreditMnt
+    FROM additional_class_admission
+    WHERE target_registration_draft_child_id = ${sql(laterCashAdmission[0].targetChildId)}`);
+  assert.equal(laterCashAward[0]?.admissionStatus, "confirmed", "the discounted one-payment target confirms through ordinary finalization");
+  assert.equal(Number(laterCashAward[0]?.sourceAwardCreditEntries), 1, "the fully paid cash source receives one linked award credit");
+  assert.equal(Number(laterCashAward[0]?.sourceAwardCreditMnt), 100, "the source award credit uses the configured 10% policy");
+
   const childId = await fillIntake(page, "CreditBrowser");
   assert.ok(childId, "staff intake returns a normal registration anchor");
   const freshRow = page.locator(`[data-registration-child="${childId}"]`);
@@ -567,6 +726,8 @@ try {
   const summary = freshRow.locator('[data-payment-detail][role="button"]');
   await summary.click();
   await freshRow.locator('[data-credit-open]').waitFor({ state: "visible" });
+  await freshRow.getByText("Утас: 99112233, 00112233").waitFor({ state: "visible" });
+  await freshRow.getByText("Facebook: Browser guardian CreditBrowser").waitFor({ state: "visible" });
   await freshRow.locator('[data-credit-open]').last().click();
   await freshRow.locator('[data-credit-subpanel-name="add"]').waitFor({ state: "visible" });
   assert.equal(await freshRow.locator('[data-child-credit-form]:visible').count(), 0, "credit subpanels start closed on a fresh opening");
@@ -605,9 +766,10 @@ try {
   await page.getByText("Төлбөр баталгаажсан (1)").waitFor({ state: "visible", timeout: 5_000 });
   await page.getByText("Кредитээр тооцсон: 500 ₮").waitFor({ state: "visible", timeout: 5_000 });
   const actionOrder = await page.locator(`[data-registration-child="${childId}"] .staff-panel-actions[aria-label="Бүртгэлийн үйлдэл"]`).textContent();
-  assert.ok(actionOrder.indexOf("Мэдээлэл харах") < actionOrder.indexOf("Кредит")
-    && actionOrder.indexOf("Кредит") < actionOrder.indexOf("Анги шилжүүлэх")
-    && actionOrder.indexOf("Анги шилжүүлэх") < actionOrder.indexOf("Анги нэмэх"), "outer actions use the staff workflow order");
+  assert.ok(actionOrder.indexOf("Мэдээлэл") < actionOrder.indexOf("Төлбөр")
+    && actionOrder.indexOf("Төлбөр") < actionOrder.indexOf("Кредит")
+    && actionOrder.indexOf("Кредит") < actionOrder.indexOf("Шилжих")
+    && actionOrder.indexOf("Шилжих") < actionOrder.indexOf("Анги нэмэх"), "outer actions use the staff workflow order");
   const promoted = await dbJson(`SELECT canonical_student_id AS canonicalStudentId, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ${sql(childId)}`);
   assert.ok(promoted[0].canonicalStudentId && promoted[0].enrollmentId, "normal finalization promotes the credit-settled draft");
   const ledger = await dbJson(`SELECT COUNT(*) AS entries, COUNT(DISTINCT operation_id) AS operations FROM child_credit_entry WHERE registration_draft_child_id = ${sql(childId)} AND canonical_student_id = ${sql(promoted[0].canonicalStudentId)}`);
@@ -626,6 +788,7 @@ try {
   const additional = sourceRow.locator('[data-additional-class-preview]');
   await additional.waitFor({ state: "visible" });
   await additional.locator('select[name="targetClassSessionId"]').selectOption("browser-class-target");
+  await additional.locator('select[name="paymentPlanCode"]').selectOption("two_installment");
   await additional.locator('button[type="submit"]').click();
   await additional.locator('input[name="parentAcknowledged"]').check();
   await additional.locator('input[name="childAcknowledged"]').check();
@@ -671,6 +834,7 @@ try {
   const expiringPreview = sourceAfterCancel.locator('[data-additional-class-preview]');
   await expiringPreview.waitFor({ state: "visible" });
   await expiringPreview.locator('select[name="targetClassSessionId"]').selectOption("browser-class-target");
+  await expiringPreview.locator('select[name="paymentPlanCode"]').selectOption("two_installment");
   await expiringPreview.locator('button[type="submit"]').click();
   await expiringPreview.locator('input[name="parentAcknowledged"]').check();
   await expiringPreview.locator('input[name="childAcknowledged"]').check();
@@ -679,6 +843,13 @@ try {
     WHERE source_registration_draft_child_id = ${sql(childId)} AND status = 'pending_confirmation' ORDER BY created_at DESC LIMIT 1`);
   assert.equal(expiringTarget.length, 1, "a later pending additional target is created through the rendered staff flow");
   execute(`UPDATE registration_draft SET status = 'expired' WHERE id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(expiringTarget[0].targetChildId)});`);
+  const expiryRecovery = await page.evaluate(async (draftChildId) => (await fetch("/api/staff/payments", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "additional-class.retry-confirmation", registrationDraftChildId: draftChildId }),
+  })).status, expiringTarget[0].targetChildId);
+  assert.equal(expiryRecovery, 200, "the normal retry endpoint resolves an expired target");
+  assert.equal((await dbJson(`SELECT status FROM additional_class_admission WHERE target_registration_draft_child_id = ${sql(expiringTarget[0].targetChildId)}`))[0]?.status, "expired",
+    "an expired target no longer blocks unrelated source actions");
   const sourceCreditAfterExpiry = await dbJson(`SELECT COALESCE(SUM(amount_mnt), 0) AS netAmount FROM child_credit_entry
     WHERE canonical_student_id = ${sql(promoted[0].canonicalStudentId)}`);
   assert.equal(Number(sourceCreditAfterExpiry[0].netAmount), 50,
@@ -686,14 +857,119 @@ try {
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
   await page.locator(`[data-registration-child="${childId}"]`).getByText("Кредит: 50 ₮").waitFor({ state: "visible" });
 
+  // A fully settled source can select an independent one-payment target. The
+  // rendered payment form must subtract only its durable contingent credit;
+  // the credit remains unapplied until the fenced finalizer settles it.
+  const onePaymentSource = await fillIntake(page, "OnePaymentAdditionalBrowser", "single");
+  await addCredit(page, onePaymentSource, 1000);
+  await applyCredit(page, onePaymentSource, 1000);
+  await finalizeCreditOnlyRegistration(page, onePaymentSource);
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(onePaymentSource)}`);
+  const onePaymentSourceRow = page.locator(`[data-registration-child="${onePaymentSource}"]`);
+  await onePaymentSourceRow.locator('[data-additional-class-open]').click();
+  const onePaymentPreview = onePaymentSourceRow.locator('[data-additional-class-preview]');
+  await onePaymentPreview.waitFor({ state: "visible" });
+  await onePaymentPreview.locator('select[name="targetClassSessionId"]').selectOption("browser-class-target");
+  await onePaymentPreview.locator('select[name="paymentPlanCode"]').selectOption("single");
+  await onePaymentPreview.locator('button[type="submit"]').click();
+  await onePaymentPreview.getByText("Нэг удаа төлөх").waitFor({ state: "visible" });
+  await onePaymentPreview.locator('input[name="parentAcknowledged"]').check();
+  await onePaymentPreview.locator('input[name="childAcknowledged"]').check();
+  await onePaymentPreview.locator('[data-additional-class-create]').click();
+  const onePaymentAdmission = await dbJson(`SELECT target_registration_draft_child_id AS targetChildId, status
+    FROM additional_class_admission
+    WHERE source_registration_draft_child_id = ${sql(onePaymentSource)}
+      AND status = 'pending_confirmation'
+    ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(onePaymentAdmission.length, 1, "the rendered one-payment target creates one pending admission");
+  const onePaymentTargetId = onePaymentAdmission[0].targetChildId;
+  await recordCashPayment(page, onePaymentTargetId, 800);
+  const beforeReservedSettlement = await dbJson(`SELECT
+      registration_draft_child.canonical_enrollment_id AS targetEnrollmentId,
+      payment_installment.status AS installmentStatus,
+      COALESCE((SELECT SUM(amount_mnt) FROM additional_class_credit_reservation
+        WHERE admission_id = additional_class_admission.id AND status = 'pending'), 0) AS pendingReservationMnt,
+      COALESCE((SELECT SUM(-amount_mnt) FROM child_credit_entry
+        WHERE payment_installment_id = payment_installment.id AND entry_kind = 'credit_application'), 0) AS appliedCreditMnt
+    FROM additional_class_admission
+    INNER JOIN registration_draft_child ON registration_draft_child.id = additional_class_admission.target_registration_draft_child_id
+    INNER JOIN payment_installment ON payment_installment.registration_draft_child_id = registration_draft_child.id
+      AND payment_installment.installment_kind = 'initial'
+    WHERE additional_class_admission.target_registration_draft_child_id = ${sql(onePaymentTargetId)}`);
+  assert.equal(beforeReservedSettlement[0]?.targetEnrollmentId, null,
+    "recording the reduced cash receipt does not independently promote the target");
+  assert.equal(beforeReservedSettlement[0]?.installmentStatus, "pending",
+    "the reservation does not make the installment paid before protected settlement");
+  assert.equal(Number(beforeReservedSettlement[0]?.pendingReservationMnt), 100,
+    "the source award remains a pending reservation before the finalizer owns it");
+  assert.equal(Number(beforeReservedSettlement[0]?.appliedCreditMnt), 0,
+    "the contingent credit is not prematurely written as an application");
+  execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+    WHERE received_payment_id IN (
+      SELECT received_payment.id FROM received_payment
+      INNER JOIN payment_request ON payment_request.id = received_payment.payment_request_id
+      WHERE payment_request.registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(onePaymentTargetId)}
+      )
+    );`);
+  const onePaymentScheduled = await fetch(`${baseUrl}/__scheduled`);
+  assert.ok(onePaymentScheduled.ok, "the normal scheduled finalizer handles the one-payment additional target");
+  const onePaymentResult = await dbJson(`SELECT
+      additional_class_admission.status AS admissionStatus,
+      registration_draft_child.canonical_enrollment_id AS targetEnrollmentId,
+      (SELECT COUNT(*) FROM discount_award
+        WHERE registration_draft_child_id = ${sql(onePaymentSource)} AND status = 'active') AS sourceAwards,
+      (SELECT COUNT(*) FROM child_credit_entry
+        WHERE source_discount_award_id = (
+          SELECT id FROM discount_award WHERE registration_draft_child_id = ${sql(onePaymentSource)}
+            AND status = 'active' LIMIT 1
+        ) AND entry_kind = 'discount_award_credit') AS sourceAwardCreditEntries,
+      (SELECT amount_mnt FROM child_credit_entry
+        WHERE source_discount_award_id = (
+          SELECT id FROM discount_award WHERE registration_draft_child_id = ${sql(onePaymentSource)}
+            AND status = 'active' LIMIT 1
+      ) AND entry_kind = 'discount_award_credit' LIMIT 1) AS sourceAwardCreditMnt,
+      (SELECT COALESCE(SUM(allocated_amount_mnt), 0) FROM payment_allocation
+        INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_installment.registration_draft_child_id = ${sql(onePaymentTargetId)}) AS targetCashMnt,
+      (SELECT COALESCE(SUM(-amount_mnt), 0) FROM child_credit_entry
+        WHERE registration_draft_child_id = ${sql(onePaymentTargetId)} AND entry_kind = 'credit_application') AS targetCreditAppliedMnt,
+      (SELECT COUNT(*) FROM additional_class_credit_reservation
+        WHERE admission_id = additional_class_admission.id AND status = 'pending') AS pendingReservationCount
+    FROM additional_class_admission
+    INNER JOIN registration_draft_child
+      ON registration_draft_child.id = additional_class_admission.target_registration_draft_child_id
+    WHERE additional_class_admission.target_registration_draft_child_id = ${sql(onePaymentTargetId)}`);
+  assert.equal(onePaymentResult[0]?.admissionStatus, "confirmed", "the paid one-payment admission completes normally");
+  assert.ok(onePaymentResult[0]?.targetEnrollmentId, "the one-payment target receives exactly one canonical enrollment");
+  assert.equal(Number(onePaymentResult[0]?.sourceAwards), 1, "confirmation activates the missing source base award once");
+  assert.equal(Number(onePaymentResult[0]?.sourceAwardCreditEntries), 1, "the fully paid source receives one linked credit root");
+  assert.equal(Number(onePaymentResult[0]?.sourceAwardCreditMnt), 100, "the linked source credit equals its configured 10% award");
+  assert.equal(Number(onePaymentResult[0]?.targetCashMnt), 800, "the actual receipt remains the reduced cash amount");
+  assert.equal(Number(onePaymentResult[0]?.targetCreditAppliedMnt), 100, "the fenced finalizer applies exactly the reserved source credit");
+  assert.equal(Number(onePaymentResult[0]?.pendingReservationCount), 0, "successful settlement consumes the reservation exactly once");
+  const sharedReferral = await dbJson(`SELECT enrollment_referral_code.code AS code
+    FROM enrollment_referral_code
+    INNER JOIN registration_draft_child AS source ON source.canonical_enrollment_id = enrollment_referral_code.enrollment_id
+    WHERE source.id = ${sql(onePaymentSource)} AND enrollment_referral_code.status = 'active'`);
+  const childReferralCount = await dbJson(`SELECT COUNT(*) AS count
+    FROM enrollment_referral_code
+    WHERE student_id = (SELECT canonical_student_id FROM registration_draft_child WHERE id = ${sql(onePaymentSource)})
+      AND status = 'active'`);
+  assert.equal(Number(childReferralCount[0]?.count), 1,
+    "an additional confirmed class reuses the child's active referral identity instead of minting a second code");
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(onePaymentTargetId)}`);
+  await page.locator(`[data-registration-child="${onePaymentTargetId}"]`).getByText(sharedReferral[0].code).waitFor({ state: "visible" });
+
   const sourceCapacityBeforeTransfer = await dbJson(`SELECT COUNT(*) AS reserved FROM registration_capacity_hold
     WHERE class_session_id = 'browser-class-target' AND status = 'active'`);
   await openAndAbandonTransfer(page, childId);
-  const closedTransfer = await dbJson(`SELECT status, source_registration_draft_child_id AS sourceChildId,
+  const closedTransfer = await dbJson(`SELECT status, source_enrollment_id AS sourceEnrollmentId,
     target_class_session_id AS targetClassId FROM class_transfer
-    WHERE source_registration_draft_child_id = ${sql(childId)} ORDER BY created_at DESC LIMIT 1`);
+    WHERE source_enrollment_id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = ${sql(childId)})
+    ORDER BY created_at DESC LIMIT 1`);
   assert.equal(closedTransfer[0]?.status, "closed", "the rendered transfer workflow records an explicit abandonment");
-  assert.equal(closedTransfer[0]?.sourceChildId, childId, "transfer abandonment remains bound to the selected source record");
+  assert.ok(closedTransfer[0]?.sourceEnrollmentId, "transfer abandonment remains bound to the selected source enrollment");
   assert.equal(closedTransfer[0]?.targetClassId, "browser-class-target", "transfer preview retains the chosen authoritative target");
   const sourceCapacityAfterTransfer = await dbJson(`SELECT COUNT(*) AS reserved FROM registration_capacity_hold
     WHERE class_session_id = 'browser-class-target' AND status = 'active'`);

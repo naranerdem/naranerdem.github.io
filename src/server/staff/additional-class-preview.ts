@@ -1,5 +1,6 @@
 import type { WorkerEnv } from "../env";
 import { discountAmountMnt, effectiveInstallmentsForRows, getDiscountPolicySetting } from "../services/discounts";
+import { childCreditSummaryForChild } from "../services/child-credit-ledger";
 import { getClassCapacityProjections } from "../services/class-capacity";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 
@@ -12,7 +13,6 @@ export class AdditionalClassPreviewError extends Error {
 type Source = {
   childId: string; enrollmentId: string; studentId: string; academicYearId: string; childName: string; isTest: number;
   sourceClassIsTest: number; sourceOfferingIsTest: number; sourceYearIsTest: number;
-  sourcePaymentPlanCode: string | null;
 };
 
 type TargetRow = {
@@ -101,14 +101,14 @@ async function currentClasses(env: WorkerEnv, source: Source) {
   });
 }
 
-function selectedPlan(row: TargetRow, paymentPlanCode: string | null, proposeBaseDiscount: boolean, basisPoints: number) {
+function selectedPlan(row: TargetRow, paymentPlanCode: string | null, basisPoints: number) {
   if (!paymentPlanCode) return null;
   const two = paymentPlanCode === "two_installment" && integer(row.twoInstallmentEnabled) === 1
     && integer(row.firstInstallmentAmountMnt) > 0 && integer(row.secondInstallmentAmountMnt) > 0;
   if (paymentPlanCode !== "single" && !two) throw new AdditionalClassPreviewError("invalid");
   const originalTotalMnt = two ? integer(row.firstInstallmentAmountMnt) + integer(row.secondInstallmentAmountMnt) : integer(row.oneTimeAmountMnt);
   if (originalTotalMnt <= 0) throw new AdditionalClassPreviewError("invalid");
-  const baseDiscountMnt = proposeBaseDiscount ? discountAmountMnt(originalTotalMnt, basisPoints) : 0;
+  const baseDiscountMnt = discountAmountMnt(originalTotalMnt, basisPoints);
   // This is an agreed preview rule for a newly proposed two-installment agreement.
   // Existing settled installments remain projected by effectiveInstallmentsForRows above.
   const firstInstallmentMnt = two ? integer(row.firstInstallmentAmountMnt) : originalTotalMnt - baseDiscountMnt;
@@ -123,12 +123,13 @@ function selectedPlan(row: TargetRow, paymentPlanCode: string | null, proposeBas
 }
 
 export async function getAdditionalClassPreview(env: WorkerEnv, actor: StaffPrincipal, input: {
-  registrationDraftChildId: string; targetClassSessionId?: string; paymentPlanCode?: string; proposeBaseDiscount?: boolean;
+  registrationDraftChildId: string; targetClassSessionId?: string; paymentPlanCode?: string;
+  useExistingCredit?: boolean; useSourceAwardCredit?: boolean;
 }, nowDate = new Date()) {
   const source = await sourceForChild(env, actor, input.registrationDraftChildId);
-  const [current, policy] = await Promise.all([currentClasses(env, source), getDiscountPolicySetting(env).catch(() => {
+  const [current, policy, childCredit] = await Promise.all([currentClasses(env, source), getDiscountPolicySetting(env).catch(() => {
     throw new AdditionalClassPreviewError("policy_unavailable");
-  })]);
+  }), childCreditSummaryForChild(env.DB, source.childId)]);
   const sourceProvenanceConsistent = [source.sourceClassIsTest, source.sourceOfferingIsTest, source.sourceYearIsTest]
     .every((value) => value === source.isTest);
   const currentClassIds = new Set(current.map((row) => row.classSessionId));
@@ -168,24 +169,43 @@ export async function getAdditionalClassPreview(env: WorkerEnv, actor: StaffPrin
     return { id: row.classSessionId, label: classLabel(row), stageCode: row.stageCode,
       freeSeats: projection?.freeSeats ?? 0, pendingConflict,
       selectable: row.classStatus === 'available' && !pendingConflict && (projection?.freeSeats ?? 0) > 0,
-      paymentOptions: [{ code: "single", totalAmountMnt: integer(row.oneTimeAmountMnt), initialAmountMnt: integer(row.oneTimeAmountMnt) },
+      paymentOptions: [
+        ...(integer(row.oneTimeAmountMnt) > 0 ? [{ code: "single", totalAmountMnt: integer(row.oneTimeAmountMnt), initialAmountMnt: integer(row.oneTimeAmountMnt) }] : []),
         ...(integer(row.twoInstallmentEnabled) === 1 && integer(row.firstInstallmentAmountMnt) > 0 && integer(row.secondInstallmentAmountMnt) > 0
           ? [{ code: "two_installment", totalAmountMnt: integer(row.firstInstallmentAmountMnt) + integer(row.secondInstallmentAmountMnt), initialAmountMnt: integer(row.firstInstallmentAmountMnt), secondAmountMnt: integer(row.secondInstallmentAmountMnt), secondDueOn: row.secondInstallmentDueOn }]
           : [])] };
   });
   const selectedRow = input.targetClassSessionId ? pricedCandidates.find((row) => row.classSessionId === input.targetClassSessionId) : null;
   if (input.targetClassSessionId && !selectedRow) throw new AdditionalClassPreviewError("invalid");
-  const currentChildIds = current.flatMap((row) => row.registrationDraftChildId ? [row.registrationDraftChildId] : []);
-  const existingBaseAward = currentChildIds.length ? await env.DB.prepare(`SELECT award_amount_mnt AS amountMnt, basis_points AS basisPoints
-    FROM discount_award WHERE registration_draft_child_id IN (${currentChildIds.map(() => "?").join(", ")})
+  const existingBaseAward = await env.DB.prepare(`SELECT award_amount_mnt AS amountMnt, basis_points AS basisPoints
+    FROM discount_award WHERE registration_draft_child_id = ?
       AND award_type = 'family_multi_child' AND status = 'active' ORDER BY awarded_at DESC LIMIT 1`)
-    .bind(...currentChildIds).first<{ amountMnt: number; basisPoints: number }>() : null;
+    .bind(source.childId).first<{ amountMnt: number; basisPoints: number }>();
   const policyEnabled = policy.familyMultiChildBasisPoints > 0;
   // The target agreement may still need its one base award even when the
   // source agreement already earned one.  Duplication is prevented per
   // beneficiary at activation, not by hiding the target's promised preview.
-  const proposal = selectedRow ? selectedPlan(selectedRow, input.paymentPlanCode ?? null,
-    input.proposeBaseDiscount === true && policyEnabled, policy.familyMultiChildBasisPoints) : null;
+  const proposal = selectedRow && policyEnabled
+    ? selectedPlan(selectedRow, input.paymentPlanCode ?? null, policy.familyMultiChildBasisPoints) : null;
+  const sourceCurrent = current.find((row) => row.registrationDraftChildId === source.childId);
+  const sourceAwardMnt = policyEnabled && !existingBaseAward && sourceCurrent
+    ? discountAmountMnt(sourceCurrent.originalTotalMnt, policy.familyMultiChildBasisPoints) : 0;
+  const sourceAwardAppliedMnt = Math.min(sourceAwardMnt, sourceCurrent?.remainingMnt ?? 0);
+  const sourceAwardCreditMnt = sourceAwardMnt - sourceAwardAppliedMnt;
+  // Only a one-payment target has a final installment at admission
+  // confirmation. A two-installment target's first payment remains cash-only;
+  // available and contingent credit are offered against its later payment only
+  // after ordinary confirmation.
+  const creditEligibleNow = proposal?.paymentPlanCode === "single";
+  const effectiveTargetAmountMnt = proposal?.paymentPlanCode === "single"
+    ? Number(proposal.totalAfterDiscountMnt) : Number(proposal?.firstInstallmentMnt ?? 0);
+  const useExistingCredit = input.useExistingCredit !== false;
+  const useSourceAwardCredit = input.useSourceAwardCredit !== false;
+  const proposedExistingCreditMnt = creditEligibleNow && useExistingCredit
+    ? Math.min(childCredit.availableAmountMnt, effectiveTargetAmountMnt) : 0;
+  const proposedSourceAwardCreditMnt = creditEligibleNow && useSourceAwardCredit
+    ? Math.min(sourceAwardCreditMnt, Math.max(0, effectiveTargetAmountMnt - proposedExistingCreditMnt)) : 0;
+  const cashRequiredMnt = Math.max(0, effectiveTargetAmountMnt - proposedExistingCreditMnt - proposedSourceAwardCreditMnt);
   const candidateProvenance = candidates.results.reduce((counts, row) => ({
     classMismatch: counts.classMismatch + Number(integer(row.classIsTest) !== source.isTest),
     programMismatch: counts.programMismatch + Number(integer(row.offeringIsTest) !== source.isTest),
@@ -198,10 +218,6 @@ export async function getAdditionalClassPreview(env: WorkerEnv, actor: StaffPrin
         : candidateTargets.length === 0 ? "already_enrolled"
           : candidateTargets.every((row) => pendingClassIds.has(row.classSessionId)) ? "pending_admission"
             : targetRows.some((row) => row.selectable) ? "available" : "full";
-  const sourceCurrent = current.find((row) => row.enrollmentId === source.enrollmentId);
-  const admissionEligibility = source.sourcePaymentPlanCode !== "two_installment"
-    ? sourceCurrent && sourceCurrent.remainingMnt <= 0 ? "source_fully_paid" : "source_not_two_installment"
-    : "eligible";
   return {
     readOnly: true, child: { id: source.childId, name: source.childName },
     currentClasses: current.map(({ registrationDraftChildId: _registrationDraftChildId, ...row }) => row),
@@ -211,7 +227,17 @@ export async function getAdditionalClassPreview(env: WorkerEnv, actor: StaffPrin
         : null, selectedTargetId: selectedRow?.classSessionId ?? null, proposal,
     baseDiscount: { basisPoints: policy.familyMultiChildBasisPoints, enabled: policyEnabled, policyUpdatedAt: policy.updatedAt,
       existingAwardMnt: integer(existingBaseAward?.amountMnt), existingAwardBasisPoints: integer(existingBaseAward?.basisPoints) },
-    admissionEligibility,
+    sourceEffect: { awardMnt: sourceAwardMnt, reducesUnpaidMnt: sourceAwardAppliedMnt, createsCreditMnt: sourceAwardCreditMnt },
+    creditProposal: proposal ? {
+      eligibleNow: creditEligibleNow, targetInstallmentNumber: creditEligibleNow ? 1 : 2,
+      availableChildCreditMnt: childCredit.availableAmountMnt,
+      useExistingCredit, proposedExistingCreditMnt,
+      useSourceAwardCredit, proposedSourceAwardCreditMnt,
+      cashRequiredMnt,
+      remainingChildCreditMnt: Math.max(0, childCredit.availableAmountMnt - proposedExistingCreditMnt),
+      note: creditEligibleNow ? null : "Хоёр хувааж төлөх сонголтын эхний төлбөрт кредит хэрэглэхгүй. Кредитийг хоёр дахь төлбөрт тусад нь тооцно.",
+    } : null,
+    admissionEligibility: "eligible",
     publicRegistrationWindowIsNotRequired: true,
   };
 }

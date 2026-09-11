@@ -347,8 +347,8 @@ function additionalClassAdmissionError(caught: unknown): Response {
   if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
   if (caught.code === "not_found") return error("not_found", "Эх бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Сонгосон ангид аль хэдийн хүсэлт үүссэн эсвэл суудал дүүрсэн байна.", 409, { "Cache-Control": "no-store" });
-  if (caught.code === "source_fully_paid") return error("invalid_request", "Эх бүртгэлийн төлбөр бүрэн дууссан тул хөнгөлөлтийг үлдсэн хоёр дахь төлбөрөөс тооцох боломжгүй.", 409, { "Cache-Control": "no-store" });
-  if (caught.code === "unsupported") return error("invalid_request", "Анги нэмэхдээ эх бүртгэл болон шинэ анги хоёулаа хоёр хувааж төлөх тохиролцоотой байх шаардлагатай.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "stale") return error("invalid_request", "Төлбөр эсвэл хөнгөлөлтийн тооцоо өөрчлөгдсөн байна. Урьдчилан харалтыг дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "unsupported") return error("invalid_request", "Сонгосон ангийн төлбөрийн хэлбэр эсвэл хөнгөлөлтийн бодлого одоогоор тохирохгүй байна.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Анги, төлбөрийн сонголт болон зөвшөөрлөө шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
@@ -1287,11 +1287,12 @@ export async function handleApiRequest(
       }
       if (payload.action === "additional-class.preview") {
         if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
-        return json({ ok: true, ...await getAdditionalClassPreview(env, principal, {
-          registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
-          targetClassSessionId: typeof payload.targetClassSessionId === "string" ? payload.targetClassSessionId : undefined,
-          paymentPlanCode: typeof payload.paymentPlanCode === "string" ? payload.paymentPlanCode : undefined,
-          proposeBaseDiscount: payload.proposeBaseDiscount === true,
+          return json({ ok: true, ...await getAdditionalClassPreview(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            targetClassSessionId: typeof payload.targetClassSessionId === "string" ? payload.targetClassSessionId : undefined,
+            paymentPlanCode: typeof payload.paymentPlanCode === "string" ? payload.paymentPlanCode : undefined,
+            useExistingCredit: payload.useExistingCredit !== false,
+            useSourceAwardCredit: payload.useSourceAwardCredit !== false,
         }) }, 200, { "Cache-Control": "no-store" });
       }
       if (payload.action === "additional-class.create") {
@@ -1304,6 +1305,13 @@ export async function handleApiRequest(
             parentAcknowledged: payload.parentAcknowledged === true,
             childAcknowledged: payload.childAcknowledged === true,
             idempotencyKey: String(payload.idempotencyKey ?? ""),
+            policyUpdatedAt: String(payload.policyUpdatedAt ?? ""),
+            proposedSourceAwardMnt: Number(payload.proposedSourceAwardMnt),
+            proposedTargetAwardMnt: Number(payload.proposedTargetAwardMnt),
+            proposedExistingCreditMnt: Number(payload.proposedExistingCreditMnt),
+            proposedSourceAwardCreditMnt: Number(payload.proposedSourceAwardCreditMnt),
+            useExistingCredit: payload.useExistingCredit !== false,
+            useSourceAwardCredit: payload.useSourceAwardCredit !== false,
           }) }, 201, { "Cache-Control": "no-store" });
         } catch (caught) {
           return additionalClassAdmissionError(caught);

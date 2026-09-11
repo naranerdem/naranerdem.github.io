@@ -30,6 +30,20 @@ assert.match(page, /item\.canonicalEnrollmentId && feedback\.text === "Төлб�
 assert.match(page, /"Суудал баталгаажлаа\."/, "the teacher receives an explicit final seat-confirmation status after the grace refresh");
 assert.match(page, /Boolean\(form\.elements\.approveSeat\?\.checked && !form\.elements\.approveSeat\?\.disabled\)/, "a disabled sufficient state cannot submit a stale incomplete-payment override");
 assert.match(page, /const alreadyApproved = !seat;/, "later payments remain usable when no seat-approval control is rendered");
+assert.match(page, /const laterOutstanding = item\.laterInstallmentId/, "the confirmed-record projection calculates the later installment's effective outstanding balance");
+assert.match(page, /staff-later-payment-form/, "a confirmed two-installment record exposes the ordinary later-payment form");
+assert.match(page, /activePanel\(item\.registrationDraftChildId\) === "payment"/, "the later-payment form opens only in the shared payment panel");
+assert.match(page, /data-payment-open=/, "the action strip has an explicit payment-panel opener");
+assert.match(page, /data-payment-close=/, "the later-payment panel has an explicit close action");
+assert.match(page, /if \(!deadline\) return;/, "the initial-payment deadline initializer skips later-payment forms without deadline controls");
+assert.match(page, /улаанбаатар|ulaanbaatarDateTimeIso/i, "received transaction dates are parsed as the displayed Ulaanbaatar local time");
+assert.match(page, /paymentDrafts/, "payment form values and operation identity survive a failed refresh");
+assert.match(page, /Төлбөр бүртгэгдлээ\. Жагсаалтыг шинэчилж чадсангүй/, "a saved payment followed by refresh failure is reported truthfully");
+assert.match(page, /Хоёр дахь төлбөрийн хугацаа:/, "the later-payment form identifies the authoritative second-installment due date");
+assert.match(page, /entry\.installmentId === installmentId \|\| entry\.laterInstallmentId === installmentId/,
+  "the rendered payment handler accepts the selected later-installment identifier");
+assert.match(page, /allocations: \[\{ installmentId, amountMnt \}\]/,
+  "later cash uses the existing ordinary payment allocation route rather than a separate accounting path");
 assert.match(page, /Үлдсэн төлбөрийн хугацаа: \$\{escape\(localLabel\(item\.remainingPaymentDueAt\)\)\}/, "an approved partial payment shows its existing remaining-balance deadline");
 assert.match(page, /Үлдсэн төлбөрийн хугацааг өөрчлөх/, "staff can explicitly replace an existing deadline without re-entering it routinely");
 assert.match(page, /function updateRemainingDeadline\(form\)/, "full and partial payment amount changes update only the relevant deadline controls");
@@ -48,11 +62,21 @@ assert.match(paymentService, /suppliedRemainingDueAt \?\? priorConfirmation\?\.r
 assert.match(paymentService, /ownReferralCode/, "payment queue projects an active confirmed-enrollment referral code");
 assert.match(paymentService, /creditApplicationInstallmentId/, "the payment queue identifies the actual outstanding obligation for a credit decision");
 assert.match(paymentService, /totalCreditAppliedMnt/, "applied credit is projected separately from received cash");
+assert.match(paymentService, /COALESCE\(guardian_account\.secondary_phone, registration_draft\.secondary_phone\) AS secondaryPhone/,
+  "the expanded payment record receives the authoritative guardian secondary phone");
+assert.match(paymentService, /COALESCE\(guardian_account\.facebook_name, registration_draft\.facebook_name\) AS guardianFacebookName/,
+  "the expanded payment record receives the authoritative guardian Facebook account");
+assert.match(page, /secondaryPhone && secondaryPhone !== primaryPhone \? secondaryPhone : ""/,
+  "the compact contact summary omits an absent or duplicate secondary phone");
+assert.match(page, /\.join\(", "\)/,
+  "the compact contact summary separates distinct guardian phones with one comma");
+assert.match(page, /guardianFacebook \? `Facebook: \$\{guardianFacebook\}` : ""/,
+  "the compact contact summary labels the authoritative guardian Facebook account");
 assert.match(page, /Кредитийн хяналт шаардлагатай/, "staff see when a usable child credit requires an allocation decision before a demand is reminded");
 assert.match(page, /Кредит ашиглахгүйг батлах/, "staff can explicitly leave a reviewed credit unused with a reason");
 assert.match(page, /child-credit\.leave-unused/, "the UI submits the guarded leave-unused decision through its staff route");
 assert.match(page, /button\("credit", "Кредит", state\.data\?\.canManageCredits\)/, "credit shares the owning child's action strip with transfer, admission, and information");
-assert.match(page, /button\("info", "Мэдээлэл харах"[\s\S]*button\("credit", "Кредит"[\s\S]*button\("transfer", "Анги шилжүүлэх"[\s\S]*button\("additional", "Анги нэмэх"/, "outer actions follow the requested staff workflow order");
+assert.match(page, /button\("info", "Мэдээлэл"[\s\S]*button\("payment", "Төлбөр"[\s\S]*button\("credit", "Кредит"[\s\S]*button\("transfer", "Шилжих"[\s\S]*button\("additional", "Анги нэмэх"/, "outer actions follow the requested staff workflow order");
 assert.match(page, /data-credit-close=/, "the credit panel can close without selecting an inner credit operation");
 assert.match(page, /data-payment-detail=.*role="button" tabindex="0"/, "collapsed registration summaries are keyboard-accessible expand controls");
 assert.match(page, /addEventListener\("keydown"/, "summary disclosure supports Enter and Space without relying on a pointer");
@@ -61,7 +85,8 @@ assert.match(page, /И-мэйл хаяг/, "information view distinguishes the a
 assert.match(page, /И-мэйл баталгаажуулалт/, "information view labels verification status explicitly");
 assert.match(page, /if \(activePanel\(item\.registrationDraftChildId\) !== "credit"\) return ""/, "the long credit controls render only in the selected shared panel");
 assert.match(page, /childCreditReviewNotice\(item\)/, "a credit-review requirement remains visible outside its collapsible panel");
-assert.match(page, /<p>Кредит: <strong>/, "the upper financial summary uses the concise current-unused-credit label");
+assert.match(page, /<p>Хүүхдийн нийт кредит: <strong>/, "the upper financial summary identifies credit as shared across the child’s classes");
+assert.match(page, /Энэ хүүхдийн бүх ангид хамт ашиглагдана/, "the shared-credit summary explains its scope without changing agreement-specific applications");
 assert.match(page, /toggle\("add", "Нэмэх"\)/, "new credit opens directly from the shared credit action level");
 assert.match(page, /toggle\("correct", "Засах"\)/, "credit correction opens directly from the shared credit action level");
 assert.match(page, /toggle\("transfer", "Шилжүүлэх"\)/, "cross-child transfer stays distinct from applying credit to this payment");
@@ -133,9 +158,12 @@ assert.doesNotMatch(page, /Нэмэлт анги нэмэх/, "the staff-facing 
 assert.match(page, /data-additional-class-preview=/, "additional-class choice is a distinct preview form rather than a registration submission");
 assert.match(page, /selectAdditionalClassTarget/, "changing the target updates the panel's authoritative supported-plan selection");
 assert.match(page, /panel\.preview = \{ \.\.\.panel\.preview, selectedTargetId: null, proposal: null \}/, "target or plan changes invalidate a stale preview before admission can be submitted");
-assert.match(page, /Одоогоор анги нэмэхдээ хоёр хувааж төлөх хэлбэрийг сонгох боломжтой\./, "the sole supported plan is explained as the current V1 workflow rather than an unavailable selector");
-assert.match(page, /admissionEligibility === "source_fully_paid"/, "a source whose agreement is fully settled receives a specific pre-creation restriction");
-assert.match(page, /Эх бүртгэлийн төлбөр бүрэн дууссан тул хөнгөлөлтийг үлдсэн хоёр дахь төлбөрөөс тооцох боломжгүй\./, "the fully paid source restriction is actionable and does not suggest recording another payment");
+assert.match(page, /Энэ ангид нэг л төлбөрийн хэлбэр боломжтой\./, "a sole authoritative plan is displayed instead of an unusable selector");
+assert.match(page, /Нэг удаа төлөх/, "a target's supported one-payment agreement is available in the staff preview");
+assert.doesNotMatch(page, /admissionEligibility === "source_fully_paid"/, "a fully paid source is no longer rejected before a residual award credit can be created");
+assert.match(page, /Эх ангийн хөнгөлөлт, кредитийн өөрчлөлт нь шинэ анги баталгаажсаны дараа хэрэгжинэ\./, "the preview explains that source award and credit effects wait for target confirmation");
+assert.match(page, /суурь хөнгөлөлт нь тохирох нөхцөл хангагдвал баталгаажуулалтын үед автоматаар тооцогдоно/, "the configured discount is explanatory policy rather than a staff-set checkbox");
+assert.doesNotMatch(page, /name="proposeBaseDiscount"/, "the preview has no disabled discount checkbox that could be mistaken for a staff allocation choice");
 assert.match(page, /item\.tentativePaymentId[\s\S]*Суудлын баталгаажуулалт боловсруулагдаж байна/, "a recorded payment in automatic confirmation processing does not tell staff to perform a missing confirmation action");
 assert.doesNotMatch(page, /Хүүхдийн бүртгэлийг эхлээд баталгаажуулна уу\./, "staff contact states never imply an unspecified prerequisite confirmation action");
 assert.match(page, /Энэ бүртгэлийн холбоо барих үйлдэл одоогоор нээгдээгүй байна\./, "unavailable contact actions use a neutral lifecycle-specific explanation");
