@@ -14,6 +14,7 @@ const cancellationBundlePath = path.join(tempDir, "registration-cancellation.mjs
 const paymentBundlePath = path.join(tempDir, "payment-reconciliation.mjs");
 const parentCommunicationBundlePath = path.join(tempDir, "parent-communication.mjs");
 const verificationBundlePath = path.join(tempDir, "email-verification.mjs");
+const familyDiscountBundlePath = path.join(tempDir, "family-discounts.mjs");
 
 function sqlite(input, json = false) {
   const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], {
@@ -75,13 +76,14 @@ function seedDraft(database, id, options = {}) {
   const gender = options.gender ?? "female";
   const returning = options.returning ?? "new";
   const classId = options.classId ?? "class-1";
+  const academicYearId = options.academicYearId ?? "year";
   database.query(`INSERT INTO registration_draft (
     id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone,
     email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version,
     status, verified_at, expires_at, is_test, test_run_id, created_at, updated_at
-  ) VALUES (?, ?, 'year', ?, 'Ээж', '99000000', ?, ?, 'Тест хаяг', 'single', 'parent-rules-v1', 'student-rules-v1',
+  ) VALUES (?, ?, ?, ?, 'Ээж', '99000000', ?, ?, 'Тест хаяг', 'single', 'parent-rules-v1', 'student-rules-v1',
     'awaiting_initial_payment', ?, '2026-08-22T04:00:00.000Z', 1, 'promotion-test', ?, ?)`,
-  [id, `${id}`.padEnd(64, "x"), `Асран ${id}`, email, email.toLowerCase(), now, now, now]);
+  [id, `${id}`.padEnd(64, "x"), academicYearId, `Асран ${id}`, email, email.toLowerCase(), now, now, now]);
   database.query(`INSERT INTO registration_draft_child (
     id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade,
     current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code,
@@ -174,7 +176,10 @@ try {
   const { verifyEmailToken } = await import(pathToFileURL(verificationBundlePath).href);
   const discountsBundle = spawnSync(esbuild, ["src/server/services/discounts.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${discountBundlePath}`], { encoding: "utf8" });
   if (discountsBundle.status !== 0) throw new Error(discountsBundle.stderr);
+  const familyDiscountBundle = spawnSync(esbuild, ["src/server/staff/family-discounts.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${familyDiscountBundlePath}`], { encoding: "utf8" });
+  if (familyDiscountBundle.status !== 0) throw new Error(familyDiscountBundle.stderr);
   const { getDiscountPolicySetting, updateDiscountPolicySetting, effectiveInstallments, DiscountPolicyError } = await import(pathToFileURL(discountBundlePath).href);
+  const { FamilyDiscountError, confirmFamilyDiscountMembership, familyDiscountDetail, findFamilyDiscountCandidates, previewFamilyDiscountMembership, recoverFamilyDiscountCredits } = await import(pathToFileURL(familyDiscountBundlePath).href);
   const database = new SqliteD1();
   database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at)
     VALUES ('year', 'Тест жил', 'open', 1, 1, 'promotion-test', '${now}', '${now}');
@@ -182,7 +187,14 @@ try {
     VALUES ('class-1', 'year', 'stage_1', '1-р шат', 'Бямба', '10:00', '11:20', 20, 'available', 1, 1, 'promotion-test', '${now}', '${now}');`);
   database.query(`INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
     VALUES ('class-cancel', 'year', 'stage_1', 'Цуцлалтын анги', 'Мягмар', '10:00', '11:20', 3, 'available', 1, 1, 'promotion-test', '${now}', '${now}'),
-      ('class-wait', 'year', 'stage_1', 'Хүлээлтийн анги', 'Пүрэв', '10:00', '11:20', 1, 'available', 1, 1, 'promotion-test', '${now}', '${now}');`);
+      ('class-wait', 'year', 'stage_1', 'Хүлээлтийн анги', 'Пүрэв', '10:00', '11:20', 1, 'available', 1, 1, 'promotion-test', '${now}', '${now}'),
+      ('class-2', 'year', 'stage_2', '2-р шат', 'Ням', '10:00', '11:20', 20, 'available', 1, 1, 'promotion-test', '${now}', '${now}');`);
+  database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at)
+    VALUES ('year-next', 'Дараагийн тест жил', 'open', 0, 1, 'promotion-test', '${now}', '${now}');
+    INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
+    VALUES ('class-next', 'year-next', 'stage_1', 'Дараагийн 1-р шат', 'Бямба', '12:00', '13:20', 20, 'available', 1, 1, 'promotion-test', '${now}', '${now}');`);
+  database.query(`INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('teacher', 'teacher@example.test', 'Тест Багш', 'active', 1, 'promotion-test', '${now}', '${now}');`);
 
   const policy = await getDiscountPolicySetting(env(database));
   assert.deepEqual({ family: policy.familyMultiChildBasisPoints, referrer: policy.referrerBasisPoints, referred: policy.referredChildBasisPoints }, { family: 1000, referrer: 500, referred: 200 }, "the typed policy starts at the reviewed 10/5/2 defaults");
@@ -417,6 +429,87 @@ try {
     "two confirmed children under one canonical guardian each receive exactly one family award");
   assert.equal(database.query(`SELECT award_amount_mnt AS amountMnt FROM discount_award WHERE registration_draft_child_id = 'siblings-child' AND award_type = 'family_multi_child'`)[0].amountMnt, 10000,
     "family award snapshots the default ten percent of the selected plan");
+  const siblingStudentId = database.query(`SELECT canonical_student_id AS studentId FROM registration_draft_child WHERE id = 'siblings-child'`)[0].studentId;
+  const sameChildSecondClass = seedDraft(database, "same-child-second-class", { email: "siblings@example.test", classId: "class-2", surname: "Ах", givenName: "Нэг" });
+  await promotePaidDraftChild(env(database), actor, sameChildSecondClass.childId, { kind: "existing", studentId: siblingStudentId });
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${sameChildSecondClass.childId}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
+    "one canonical child in two distinct classes qualifies once per agreement without creating a second identity");
+
+  const crossGuardian = seedDraft(database, "cross-guardian", { email: "cross-guardian@example.test", surname: "Өөр", givenName: "ГэрБүл" });
+  await promotePaidDraftChild(env(database), actor, crossGuardian.childId);
+  database.query(`INSERT INTO received_payment (
+    id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
+    confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id
+  ) VALUES ('cross-guardian-full-payment', 'cross-guardian-request', 100000, ?, 'staff_manual_bank', 'confirmed',
+    ?, 'cross-guardian-full-payment', ?, ?, 1, 'promotion-test')`, [now, now, now, now]);
+  database.query(`INSERT INTO payment_allocation (
+    id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id
+  ) VALUES ('cross-guardian-full-allocation', 'cross-guardian-full-payment', 'cross-guardian-initial', 100000, ?, ?, 1, 'promotion-test')`, [now, now]);
+  const familyDetail = await familyDiscountDetail(env(database), actor, siblings.childId);
+  assert.equal(familyDetail.familyGroupId, null, "same-guardian eligibility does not fabricate an explicit staff family group");
+  const candidates = await findFamilyDiscountCandidates(env(database), actor, { childId: siblings.childId, query: "ГэрБ" });
+  assert.equal(candidates.candidates.some((candidate) => candidate.childId === crossGuardian.childId), true, "teacher lookup finds a distinct confirmed canonical child without merging identity");
+  await assert.rejects(() => findFamilyDiscountCandidates(env(database), { ...actor, roles: ["accountant"], capabilities: ["payment.view"] }, { childId: siblings.childId, query: "ГэрБ" }), FamilyDiscountError,
+    "accountant cannot search or establish family qualification");
+  const familyPreview = await previewFamilyDiscountMembership(env(database), actor, { childId: siblings.childId, relatedChildId: crossGuardian.childId });
+  assert.equal(familyPreview.willQualifyWhenConfirmedInSameYear, true, "preview states same-year qualification without writing membership");
+  assert.equal(familyPreview.financialPreview.find((entry) => entry.childId === crossGuardian.childId)?.proposedFamilyAwardMnt, 10000,
+    "the preview derives the proposed award from the selected agreement snapshot and configured policy");
+  const familyOperation = "9a1a1111-1111-4111-8111-111111111111";
+  const familyConfirmed = await confirmFamilyDiscountMembership(env(database), actor, {
+    childId: siblings.childId, relatedChildId: crossGuardian.childId, reason: "Асран хамгаалагчийн хүсэлтээр баталгаажуулав", operationId: familyOperation,
+  });
+  assert.equal(familyConfirmed.replayed, false, "explicit cross-guardian confirmation records one durable operation");
+  assert.equal(count(database, "family_group_member", `family_group_id = '${familyConfirmed.familyGroupId}' AND status = 'active'`), 2,
+    "confirmed family membership retains separate canonical student identities");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${crossGuardian.childId}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
+    "the newly qualified agreement receives one non-stacking family award from its own pricing snapshot");
+  const crossGuardianAward = database.query(`SELECT id, credit_amount_mnt AS creditAmountMnt FROM discount_award
+    WHERE registration_draft_child_id = ? AND award_type = 'family_multi_child' AND status = 'active'`, [crossGuardian.childId])[0];
+  assert.equal(Number(crossGuardianAward.creditAmountMnt), 10000,
+    "a fully paid cross-guardian agreement keeps its award residual distinct from immutable cash history");
+  assert.equal(count(database, "child_credit_entry", `source_discount_award_id = '${crossGuardianAward.id}' AND entry_kind = 'discount_award_credit' AND amount_mnt = 10000`), 1,
+    "family confirmation materializes the fully paid award residual as one durable child-owned credit root");
+  database.query(`DELETE FROM child_credit_entry WHERE source_discount_award_id = ?`, [crossGuardianAward.id]);
+  const interruptedFamilyDetail = await familyDiscountDetail(env(database), actor, crossGuardian.childId);
+  assert.equal(interruptedFamilyDetail.needsCreditRecovery, true,
+    "an interrupted family-award ledger step is visible instead of being reported as available credit");
+  await recoverFamilyDiscountCredits(env(database), actor, crossGuardian.childId);
+  assert.equal(count(database, "child_credit_entry", `source_discount_award_id = '${crossGuardianAward.id}' AND entry_kind = 'discount_award_credit' AND amount_mnt = 10000`), 1,
+    "the explicit recovery recreates the deterministic missing root without changing the award");
+  await recoverFamilyDiscountCredits(env(database), actor, crossGuardian.childId);
+  assert.equal(count(database, "child_credit_entry", `source_discount_award_id = '${crossGuardianAward.id}'`), 1,
+    "a recovery retry cannot mint a second family-award credit root");
+  database.query(`DELETE FROM child_credit_entry WHERE source_discount_award_id = ?`, [crossGuardianAward.id]);
+  database.query(`DELETE FROM discount_award WHERE id = ?`, [crossGuardianAward.id]);
+  assert.equal((await familyDiscountDetail(env(database), actor, crossGuardian.childId)).needsCreditRecovery, true,
+    "an interruption before the family award itself is written is also visibly recoverable");
+  await recoverFamilyDiscountCredits(env(database), actor, crossGuardian.childId);
+  assert.equal(count(database, "discount_award", `id = '${crossGuardianAward.id}' AND status = 'active'`), 1,
+    "recovery recreates the deterministic missing family award exactly once");
+  assert.equal(count(database, "child_credit_entry", `source_discount_award_id = '${crossGuardianAward.id}' AND amount_mnt = 10000`), 1,
+    "award recovery materializes the corresponding child-owned root exactly once");
+  const familyReplay = await confirmFamilyDiscountMembership(env(database), actor, {
+    childId: siblings.childId, relatedChildId: crossGuardian.childId, reason: "Асран хамгаалагчийн хүсэлтээр баталгаажуулав", operationId: familyOperation,
+  });
+  assert.equal(familyReplay.replayed, true, "the same operation replays instead of duplicating membership or awards");
+  assert.equal(count(database, "family_group_confirmation", `operation_id = '${familyOperation}'`), 1, "operation identity is durable and unique");
+  assert.equal(count(database, "audit_event", "action = 'family_group_confirmed'"), 1, "cross-guardian qualification has a staff audit event without contact text");
+  await assert.rejects(() => previewFamilyDiscountMembership(env(database), actor, { childId: siblings.childId, relatedChildId: siblings.childId }), FamilyDiscountError,
+    "the family tool refuses to reinterpret one canonical student as two children");
+  const nextYearChild = seedDraft(database, "cross-year-family", {
+    academicYearId: "year-next", classId: "class-next", email: "cross-year-family@example.test", surname: "Дараа", givenName: "Жил",
+  });
+  await promotePaidDraftChild(env(database), actor, nextYearChild.childId);
+  const awardsBeforeCrossYearMembership = count(database, "discount_award", "award_type = 'family_multi_child' AND status = 'active'");
+  await confirmFamilyDiscountMembership(env(database), actor, {
+    childId: siblings.childId, relatedChildId: nextYearChild.childId, reason: "Гэр бүл нь дараагийн жилд ч үргэлжилнэ", operationId: "9a1a1111-1111-4111-8111-222222222222",
+  });
+  assert.equal(count(database, "family_group_member", "status = 'active'"), 3, "membership persists across academic years without merging students");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id = '${nextYearChild.childId}' AND award_type = 'family_multi_child' AND status = 'active'`), 0,
+    "a cross-year membership extension does not award the unrelated academic-year agreement");
+  assert.equal(count(database, "discount_award", "award_type = 'family_multi_child' AND status = 'active'"), awardsBeforeCrossYearMembership,
+    "cross-year confirmation leaves current-year awards unchanged");
 
   const fallback = seedDraft(database, "fallback", { email: "fallback@example.test" });
   database.query(`INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)

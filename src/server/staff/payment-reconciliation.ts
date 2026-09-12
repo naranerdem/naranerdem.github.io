@@ -8,9 +8,10 @@ import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { discountAwardsForChildren, effectiveInstallmentsForRows, recalculateDiscountAwardBalances } from "../services/discounts";
 import { childCreditSummaryForChildren, creditPaymentReviewState } from "../services/child-credit-ledger";
 import { pendingAdditionalClassCashSettlement } from "../services/additional-class-credit-settlement";
+import { familyCreditSuggestionsForChild } from "./family-discounts";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
-type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid";
+type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid" | "family_credit_review_required";
 
 export class PaymentReconciliationError extends Error {
   constructor(public readonly code: PaymentErrorCode) {
@@ -303,15 +304,19 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     WHERE payment_credit.status = 'available'
     GROUP BY payment_credit.id
     ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
-  const discountCredits = await env.DB.prepare(`SELECT discount_award.id, discount_award.credit_amount_mnt AS availableAmountMnt,
+  const discountCredits = await env.DB.prepare(`SELECT root.id,
+    root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt,
     registration_draft.guardian_full_name AS guardianName,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childNames,
     discount_award.award_type AS awardType
-    FROM discount_award
-    INNER JOIN registration_draft_child ON registration_draft_child.id = discount_award.registration_draft_child_id
+    FROM child_credit_entry AS root
+    INNER JOIN discount_award ON discount_award.id = root.source_discount_award_id
+    INNER JOIN registration_draft_child ON registration_draft_child.id = root.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
-    WHERE discount_award.status = 'active' AND discount_award.credit_amount_mnt > 0
-    ORDER BY discount_award.awarded_at`).all<Record<string, unknown>>();
+    LEFT JOIN child_credit_entry AS debit ON debit.origin_entry_id = root.id
+    WHERE discount_award.status = 'active' AND root.entry_kind = 'discount_award_credit'
+    GROUP BY root.id HAVING root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt > 0
+    ORDER BY root.created_at`).all<Record<string, unknown>>();
   const cancelled = await env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, class_session.display_label AS classLabel,
@@ -363,6 +368,19 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     })] as const;
   })));
   const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
+  const awardIds = [...awardByChild.values()].flat().map((award) => award.id);
+  const awardCreditRows = awardIds.length ? await env.DB.prepare(`SELECT root.source_discount_award_id AS awardId,
+      root.amount_mnt AS rootAmountMnt, root.reserved_amount_mnt AS reservedAmountMnt,
+      COALESCE(SUM(CASE WHEN debit.amount_mnt < 0 THEN -debit.amount_mnt ELSE 0 END), 0) AS usedAmountMnt,
+      root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt
+    FROM child_credit_entry AS root
+    LEFT JOIN child_credit_entry AS debit ON debit.origin_entry_id = root.id
+    WHERE root.source_discount_award_id IN (${awardIds.map(() => "?").join(", ")})
+    GROUP BY root.id`).bind(...awardIds).all<{ awardId: string; rootAmountMnt: number; reservedAmountMnt: number; usedAmountMnt: number; availableAmountMnt: number }>() : { results: [] };
+  const awardCreditById = new Map(awardCreditRows.results.map((row) => [row.awardId, {
+    rootAmountMnt: Number(row.rootAmountMnt), reservedAmountMnt: Number(row.reservedAmountMnt),
+    usedAmountMnt: Number(row.usedAmountMnt), availableAmountMnt: Number(row.availableAmountMnt),
+  }]));
   const creditByChild = await childCreditSummaryForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)));
   const creditReviewByInstallment = new Map(await Promise.all(rawItems.flatMap((item) => [
     { childId: String(item.registrationDraftChildId), installmentId: String(item.installmentId) },
@@ -371,6 +389,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     try { return [installmentId, await creditPaymentReviewState(env.DB, childId, installmentId)] as const; }
     catch { return [installmentId, null] as const; }
   })));
+  const familySuggestionByChild = new Map(await Promise.all(
+    hasStaffCapability(actor, "payment.manage") ? rawItems.map(async (item) => {
+      const childId = String(item.registrationDraftChildId);
+      try {
+        const suggestions = await familyCreditSuggestionsForChild(env, childId);
+        return [childId, suggestions.find((suggestion) => suggestion.recipientChildId === childId) ?? null] as const;
+      } catch { return [childId, null] as const; }
+    }) : [],
+  ));
   const cancelledItems = await Promise.all(cancelled.results.map(async (item) => ({
     ...item,
     canReinstate: hasStaffCapability(actor, "registration.manage")
@@ -382,11 +409,14 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   canContactParents: hasStaffCapability(actor, "registration.manage"),
   canCorrectRegistrations: hasStaffCapability(actor, "registration.manage"),
   canManageAdditionalClasses: hasStaffCapability(actor, "registration.manage"),
+  canManageFamilyDiscounts: hasStaffCapability(actor, "registration.manage"),
   canManageTransfers: hasStaffCapability(actor, "registration.manage"),
   canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
     const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
-    const awards = awardByChild.get(String(item.registrationDraftChildId)) ?? [];
+    const awards = (awardByChild.get(String(item.registrationDraftChildId)) ?? []).map((award) => ({ ...award,
+      creditState: awardCreditById.get(award.id) ?? null,
+    }));
     const expectedAmountMnt = effective?.effectiveAmountMnt ?? item.expectedAmountMnt;
     const totalExpectedMnt = expectedAmountMnt + Number(later?.effectiveAmountMnt ?? 0);
     const totalPaidMnt = item.cashAllocatedAmountMnt + item.laterCashAllocatedAmountMnt;
@@ -419,6 +449,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       creditApplicationOutstandingMnt,
       creditReviewNeeded: Boolean(creditReview && creditReview.availableCreditMnt > 0 && creditReview.outstandingAmountMnt > 0 && !creditReview.reviewed),
       creditReviewResolved: Boolean(creditReview?.reviewed),
+      familyCreditSuggestion: familySuggestionByChild.get(String(item.registrationDraftChildId)) ?? null,
       discountAmountMnt: effective?.discountAmountMnt ?? 0, discounts: awards,
       canConfirmSeat: !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved)
         && Boolean(item.hasUnapprovedInitialConfirmation) && item.allocatedAmountMnt >= expectedAmountMnt };
@@ -584,7 +615,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
 export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal, input: {
   paymentRequestId: string; allocations: Array<{ installmentId: string; amountMnt: number }>;
   source: PaymentSource; receivedAt?: string; receivedAmountMnt?: number; idempotencyKey: string;
-  approveSeatConfirmation?: boolean; remainingPaymentDueAt?: string;
+  approveSeatConfirmation?: boolean; remainingPaymentDueAt?: string; proceedWithoutFamilyCredit?: boolean;
 }, nowDate = new Date()) {
   if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
   if (!input.idempotencyKey || input.idempotencyKey.length > 160 || !["staff_manual_bank", "staff_manual_cash"].includes(input.source)) {
@@ -609,6 +640,15 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     }
     total += allocatedAmount;
   }
+  const familySuggestions = await Promise.all([...allocatedByInstallment.keys()].map(async (installmentId) => {
+    const installment = installments.find((item) => item.id === installmentId);
+    if (!installment) return null;
+    const suggestions = await familyCreditSuggestionsForChild(env, installment.registrationDraftChildId);
+    return suggestions.find((suggestion) => suggestion.recipientChildId === installment.registrationDraftChildId
+      && suggestion.paymentInstallmentId === installmentId) ?? null;
+  }));
+  const activeFamilySuggestion = familySuggestions.find((suggestion) => suggestion && suggestion.proposedAmountMnt > 0) ?? null;
+  if (activeFamilySuggestion && input.proceedWithoutFamilyCredit !== true) throw new PaymentReconciliationError("family_credit_review_required");
   const receivedAmount = input.receivedAmountMnt == null ? total : positive(input.receivedAmountMnt);
   if (!receivedAmount || total > receivedAmount) throw new PaymentReconciliationError("invalid");
   const initialAllocated = [...allocatedByInstallment.entries()].some(([id]) => installments.find((item) => item.id === id)?.installmentKind === "initial");
@@ -660,7 +700,10 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     .bind(crypto.randomUUID(), request.id, paymentId, request.registrationDraftId, input.source, now,
       actor.staffAccountId, JSON.stringify({ allocationCount: allocations.length }), now, request.isTest, request.testRunId));
   statements.push(audit(env, actor, "payment_recorded", "received_payment", paymentId,
-    { source: input.source, receivedAt, amountMnt: receivedAmount, allocatedAmountMnt: total, allocationCount: allocations.length, finalizeAfter, approvedPartial, seatApprovalRequested }, request, now));
+    { source: input.source, receivedAt, amountMnt: receivedAmount, allocatedAmountMnt: total, allocationCount: allocations.length, finalizeAfter, approvedPartial, seatApprovalRequested,
+      ...(activeFamilySuggestion ? { familyCreditDeclined: { donorRegistrationDraftChildId: activeFamilySuggestion.donorChildId,
+        recipientRegistrationDraftChildId: activeFamilySuggestion.recipientChildId, paymentInstallmentId: activeFamilySuggestion.paymentInstallmentId,
+        proposedAmountMnt: activeFamilySuggestion.proposedAmountMnt } } : {}) }, request, now));
   statements.push(env.DB.prepare(`INSERT INTO payment_confirmation (
     id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
     remaining_payment_due_at, remaining_reminder_lead_minutes, remaining_reminder_at, created_at, updated_at, is_test, test_run_id

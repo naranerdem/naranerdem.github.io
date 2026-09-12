@@ -48,7 +48,7 @@ import "../../styles/global.css";
       const launchCreated = launchParams.get("created") === "1";
       const panelState = createStaffPanelState();
       const paymentDetailSelection = createPaymentDetailSelectionState(launchRegistrationId);
-      const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, paymentCheckOperations: {}, paymentDrafts: {}, manualMessages: {}, corrections: {}, registrationViews: {}, transfers: {}, additionalClassPreviews: {}, activePanels: {}, panelEpochs: {}, creditSubpanels: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", openGroups: {}, openWaitlistSections: {}, refreshTimer: null, refreshing: false, queuedRefresh: null, canRegistrationExport: false, registrationReportCache: null, registrationReportVersion: 0, registrationReportLoading: false, cancellationConfirmation: null };
+      const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, paymentCheckOperations: {}, paymentDrafts: {}, manualMessages: {}, corrections: {}, registrationViews: {}, transfers: {}, additionalClassPreviews: {}, familyDiscounts: {}, familyCreditApplications: {}, activePanels: {}, panelEpochs: {}, creditSubpanels: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", openGroups: {}, openWaitlistSections: {}, refreshTimer: null, refreshing: false, queuedRefresh: null, canRegistrationExport: false, registrationReportCache: null, registrationReportVersion: 0, registrationReportLoading: false, cancellationConfirmation: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -150,11 +150,11 @@ import "../../styles/global.css";
       }
       function panelActionStrip(item) {
         const childId = item.registrationDraftChildId; const active = activePanel(childId);
-        const action = { payment: "payment-open", transfer: "transfer-open", additional: "additional-class-open", credit: "credit-open", info: "registration-view" };
+        const action = { payment: "payment-open", transfer: "transfer-open", additional: "additional-class-open", family: "family-discount-open", credit: "credit-open", info: "registration-view" };
         const button = (panel, label, available) => available ? `<button class="text-button ${active === panel || (panel === "info" && active === "edit") ? "is-selected" : ""}" type="button" data-${action[panel]}="${escape(childId)}" ${panelMutationBusy(childId) ? "disabled" : ""}>${label}</button>` : "";
         const laterOutstanding = item.laterInstallmentId ? Math.max(0, Number(item.laterAmountMnt || 0) - Number(item.laterAllocatedAmountMnt || 0)) : 0;
-        const buttons = [button("info", "Мэдээлэл", state.data?.canCorrectRegistrations), button("payment", "Төлбөр", state.data?.canManageCredits && laterOutstanding > 0), button("credit", "Кредит", state.data?.canManageCredits), button("transfer", "Шилжих", state.data?.canManageTransfers && item.canonicalEnrollmentId), button("additional", "Анги нэмэх", state.data?.canManageAdditionalClasses && item.canonicalEnrollmentId)].filter(Boolean).join("");
-        return buttons ? `<div class="staff-panel-actions" role="group" aria-label="Бүртгэлийн үйлдэл">${buttons}</div>` : "";
+        const buttons = [button("info", "Мэдээлэл", state.data?.canCorrectRegistrations), button("payment", "Төлбөр", state.data?.canManageCredits && laterOutstanding > 0), button("credit", "Кредит", state.data?.canManageCredits), button("transfer", "Шилжих", state.data?.canManageTransfers && item.canonicalEnrollmentId), button("additional", "Анги нэмэх", state.data?.canManageAdditionalClasses && item.canonicalEnrollmentId), button("family", "Гэр бүл", state.data?.canManageFamilyDiscounts && item.canonicalEnrollmentId)].filter(Boolean).join("");
+        return buttons ? `<div class="staff-panel-actions" role="group" aria-label="Бүртгэлийн үйлдэл">${buttons}</div>${familyDiscountMarkup(item)}` : "";
       }
       function registrationView(item) {
         if (!state.data?.canCorrectRegistrations) return "";
@@ -193,6 +193,23 @@ import "../../styles/global.css";
             : "Нэмэлт ангийн бүртгэл төлбөрийн баталгаажуулалт хүлээж байна. Тухайн бүртгэлийг нээж шийдвэрлэнэ үү.";
         const target = [item.pendingAdditionalTargetChildName, classSchedule({ classLabel: item.pendingAdditionalTargetClassLabel, weekday: item.pendingAdditionalTargetWeekday, startTime: item.pendingAdditionalTargetStartTime, endTime: item.pendingAdditionalTargetEndTime })].filter(Boolean).join(" · ");
         return `<p class="staff-muted" role="status">${escape(stateText)} ${target ? `<strong>${escape(target)}</strong>` : ""} <button class="text-button" type="button" data-additional-admission-open="${escape(item.pendingAdditionalTargetChildId)}">Нээх</button>${item.pendingAdditionalLastErrorCode && !claimActive ? ` <button class="text-button" type="button" data-additional-admission-retry="${escape(item.pendingAdditionalTargetChildId)}">Дахин оролдох</button>` : ""}</p>`;
+      }
+      function familyDiscountMarkup(item) {
+        if (!state.data?.canManageFamilyDiscounts || activePanel(item.registrationDraftChildId) !== "family") return "";
+        const panel = state.familyDiscounts[item.registrationDraftChildId];
+        if (panel?.loading) return `<section class="staff-payment-form" aria-live="polite"><h3>Гэр бүл</h3><p class="staff-muted">Мэдээллийг бэлтгэж байна…</p></section>`;
+        if (panel?.error) return `<section class="staff-payment-form" aria-live="polite"><h3>Гэр бүл</h3><p class="staff-error" role="status">${escape(panel.error)}</p><button class="text-button" type="button" data-family-discount-open="${escape(item.registrationDraftChildId)}">Дахин оролдох</button></section>`;
+        if (!panel?.detail) return "";
+        const members = (panel.detail.members || []).map((member) => `<li>${escape(member.childName || "Баталгаатай сурагч")}${member.classLabel ? ` · ${escape(member.classLabel)}` : ""}</li>`).join("") || "<li>Одоогоор баталгаажуулсан гишүүн алга.</li>";
+        const filter = String(panel.query || "").trim().toLocaleLowerCase();
+        const candidates = (panel.candidates || []).filter((candidate) => !filter || `${candidate.childName} ${candidate.classLabel} ${candidate.guardianName || ""}`.toLocaleLowerCase().includes(filter))
+          .map((candidate) => `<option value="${escape(candidate.childId)}">${escape(candidate.childName)} · ${escape(candidate.classLabel)}${candidate.guardianName ? ` · ${escape(candidate.guardianName)}` : ""}</option>`).join("");
+        const preview = panel.preview;
+        const financialPreview = (preview?.financialPreview || []).map((entry) => `<li><strong>${escape(entry.childName)}</strong>: ${escape(mnt(entry.proposedFamilyAwardMnt))} хөнгөлөлт</li>`).join("");
+        const suggestion = (panel.detail.creditSuggestions || []).find((entry) => entry.recipientChildId === item.registrationDraftChildId);
+        const suggestionMarkup = suggestion ? `<aside class="staff-warning"><p><strong>${escape(suggestion.donorName)}</strong>-ын ашиглаж болох кредит: ${escape(mnt(suggestion.donorAvailableMnt))}</p><p>${escape(suggestion.recipientName)} · ${escape(suggestion.installmentLabel)}: ${escape(mnt(suggestion.proposedAmountMnt))} шилжүүлж тооцвол үлдэгдэл ${escape(mnt(suggestion.recipientRemainingAfterMnt))}.</p><button class="button secondary" type="button" data-family-credit-suggestion data-family-credit-donor="${escape(suggestion.donorChildId)}" data-family-credit-recipient="${escape(suggestion.recipientChildId)}" data-family-credit-installment="${escape(suggestion.paymentInstallmentId)}" data-family-credit-amount="${escape(suggestion.proposedAmountMnt)}">Энэ төлбөрт кредит хэрэглэх</button></aside>` : "";
+        const recovery = panel.detail.needsCreditRecovery ? `<aside class="staff-warning"><p><strong>Гэр бүлийн хөнгөлөлтийн санхүүгийн бүртгэл дутуу байна.</strong></p><p>Гишүүнчлэл хадгалагдсан боловч хөнгөлөлт болон ашиглаж болох кредитийн дэвтэрт бүрэн тусгагдаагүй байна.</p><button class="button secondary" type="button" data-family-discount-recover="${escape(item.registrationDraftChildId)}" ${panel.recovering ? "disabled aria-busy=true" : ""}>${panel.recovering ? "Сэргээж байна…" : "Санхүүгийн бүртгэлийг сэргээх"}</button></aside>` : "";
+        return `<section class="staff-payment-form" aria-live="polite"><div class="staff-payment-open-header"><h3>Гэр бүл</h3><button class="text-button" type="button" data-family-discount-close="${escape(item.registrationDraftChildId)}">Хаах</button></div><ul>${members}</ul>${suggestionMarkup}${recovery}<label>Хүүхэд сонгох<select data-family-discount-select="${escape(item.registrationDraftChildId)}"><option value="">Сонгоно уу</option>${candidates}</select></label>${!candidates ? `<p class="staff-muted">Энэ хичээлийн жилд нэмэх боломжтой хүүхэд алга.</p>` : ""}<label>Хүүхдийн нэрээр шүүх<input data-family-discount-filter="${escape(item.registrationDraftChildId)}" value="${escape(panel.query || "")}" /></label>${preview ? `<form data-family-discount-confirm="${escape(item.registrationDraftChildId)}"><p><strong>${escape(preview.primary.childName)}</strong> ба <strong>${escape(preview.related.childName)}</strong> хүүхдийг гэр бүлийн гишүүнээр баталгаажуулна.</p>${financialPreview ? `<ul class="staff-muted">${financialPreview}</ul>` : ""}<label class="staff-wide">Шалтгаан<textarea name="reason" rows="2" maxlength="400" required></textarea></label><button class="button primary" type="submit" ${panel.confirming ? "disabled aria-busy=true" : ""}>${panel.confirming ? "Баталгаажуулж байна…" : "Гишүүнчлэлийг баталгаажуулах"}</button></form>` : ""}<details class="staff-muted"><summary>Дэлгэрэнгүй</summary><p>Гишүүнчлэл нь хүүхэд, асран хамгаалагчийн хандалт, төлбөр, кредитийг нэгтгэхгүй. Хөнгөлөлтийг ижил хичээлийн жилд тооцно.</p><p>Таних мэдээллийн зөрчил илэрвэл тусад нь шалгана.</p></details>${actionFeedback(item.registrationDraftChildId, ["family-discount"])}</section>`;
       }
       function transferMarkup(item) {
         if (!state.data?.canManageTransfers || !item.canonicalEnrollmentId) return "";
@@ -263,9 +280,18 @@ import "../../styles/global.css";
         const roots = item.creditEntries || [];
         const panel = state.creditSubpanels[item.registrationDraftChildId] || {};
         const open = panel.open || "";
-        const targets = (state.data?.items || []).filter((candidate) => candidate.registrationDraftChildId !== item.registrationDraftChildId && candidate.canonicalEnrollmentId)
-          .map((candidate) => `<option value="${escape(candidate.registrationDraftChildId)}">${escape(candidate.childName)} · ${escape(classSchedule(candidate))}</option>`).join("");
-        const rootOptions = roots.map((entry) => `<option value="${escape(entry.id)}">${escape(localLabel(entry.createdAt))} · ${escape(mnt(entry.availableAmountMnt))} · ${escape(entry.reason)}</option>`).join("");
+        const transferPrefill = panel.transferPrefill || {};
+        const targetByStudent = new Map();
+        for (const candidate of state.data?.items || []) {
+          if (candidate.registrationDraftChildId === item.registrationDraftChildId || !candidate.canonicalEnrollmentId || targetByStudent.has(candidate.canonicalStudentId)) continue;
+          targetByStudent.set(candidate.canonicalStudentId, candidate);
+        }
+        const transferFilter = String(panel.transferFilter || "").trim().toLocaleLowerCase();
+        const targetRows = [...targetByStudent.values()].sort((left, right) => `${left.childName}\u0000${classSchedule(left)}`.localeCompare(`${right.childName}\u0000${classSchedule(right)}`, "mn"));
+        const targets = targetRows.filter((candidate) => !transferFilter || `${candidate.childName} ${classSchedule(candidate)} ${candidate.guardianName || ""}`.toLocaleLowerCase().includes(transferFilter))
+          .map((candidate) => `<option value="${escape(candidate.registrationDraftChildId)}" ${transferPrefill.targetRegistrationDraftChildId === candidate.registrationDraftChildId ? "selected" : ""}>${escape(candidate.childName)} · ${escape(classSchedule(candidate))}${candidate.guardianName ? ` · ${escape(candidate.guardianName)}` : ""}</option>`).join("");
+        const creditOrigin = (entry) => entry.entryKind === "discount_award_credit" ? "Гэр бүлийн хөнгөлөлтийн үлдэгдэл кредит" : entry.reason;
+        const rootOptions = roots.map((entry) => `<option value="${escape(entry.id)}">${escape(localLabel(entry.createdAt))} · ${escape(mnt(entry.availableAmountMnt))} · ${escape(creditOrigin(entry))}</option>`).join("");
         const pending = actionPending(item.registrationDraftChildId, "credit");
         const disabled = pending ? " disabled" : "";
         const outstanding = Number(item.creditApplicationOutstandingMnt || 0);
@@ -277,14 +303,29 @@ import "../../styles/global.css";
         const add = !state.data?.canManageCredits ? "" : `<section class="staff-credit-subpanel" ${open === "add" ? "" : "hidden"}><h4>Кредит нэмэх</h4><form data-child-credit-form="manual-add" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Дүн<input name="amountMnt" type="number" min="1" step="1" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label><label>Баримтын дугаар / холбоос (заавал биш)<input name="externalReference" maxlength="160"${disabled} /></label>${proposal}<button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит нэмэх"}</button></form></section>`;
         const correct = roots.length ? `<section class="staff-credit-subpanel" ${open === "correct" ? "" : "hidden"}><h4>Кредит засах</h4><form data-child-credit-form="correct" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Одоогийн кредит<select name="entryId" required${disabled}>${rootOptions}</select></label><label>Өөрчлөх дүн<input name="adjustmentMnt" type="number" step="1" required${disabled} /><span class="staff-muted">Нэмэх бол эерэг, багасгах бол сөрөг дүн.</span></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label><label>Баримтын дугаар / холбоос (заавал биш)<input name="externalReference" maxlength="160"${disabled} /></label>${proposal}<button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Засвар хадгалах"}</button></form></section>` : "";
         const leaveUnused = reviewNeeded ? `<section class="staff-credit-subpanel" ${open === "leave-unused" ? "" : "hidden"}><h4>Кредит ашиглахгүй үлдээх</h4><form data-child-credit-form="leave-unused" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label><button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит ашиглахгүйг батлах"}</button></form></section>` : "";
-        const apply = applyAvailable ? `<section class="staff-credit-subpanel" ${open === "apply" ? "" : "hidden"}><h4>Энэ ангийн төлбөрт кредит хэрэглэх</h4><form data-child-credit-form="apply" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Энэ ангийн үлдэгдэл<input value="${escape(mnt(outstanding))}" disabled /></label><label>Хэрэглэх дүн<input name="amountMnt" type="number" min="1" max="${escape(Math.min(available, outstanding))}" value="${escape(Math.min(available, outstanding))}" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label>${proposal}<button class="button primary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит хэрэглэх"}</button></form></section>` : "";
-        const transfer = available && targets ? `<section class="staff-credit-subpanel" ${open === "transfer" ? "" : "hidden"}><h4>Кредит шилжүүлэх</h4><form data-child-credit-form="transfer" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Хүлээн авах хүүхэд<select name="targetRegistrationDraftChildId" required${disabled}><option value="">Сонгоно уу</option>${targets}</select></label><label>Дүн<input name="amountMnt" type="number" min="1" max="${escape(available)}" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label>${proposal}<button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит шилжүүлэх"}</button></form></section>` : "";
+        const applyPrefill = panel.applyPrefill || {};
+        const apply = applyAvailable ? `<section class="staff-credit-subpanel" ${open === "apply" ? "" : "hidden"}><h4>Энэ ангийн төлбөрт кредит хэрэглэх</h4><form data-child-credit-form="apply" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Энэ ангийн үлдэгдэл<input value="${escape(mnt(outstanding))}" disabled /></label><label>Хэрэглэх дүн<input name="amountMnt" type="number" min="1" max="${escape(Math.min(available, outstanding))}" value="${escape(Math.min(available, outstanding, Number(applyPrefill.amountMnt || Infinity)))}" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label>${proposal}<button class="button primary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит хэрэглэх"}</button></form></section>` : "";
+        const transfer = available && targetRows.length ? `<section class="staff-credit-subpanel" ${open === "transfer" ? "" : "hidden"}><h4>Кредит шилжүүлэх</h4><form data-child-credit-form="transfer" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Хүүхэд сонгох<select name="targetRegistrationDraftChildId" required${disabled}><option value="">Сонгоно уу</option>${targets}</select></label><label>Хүүхдийн нэрээр шүүх<input name="transferFilter" value="${escape(panel.transferFilter || "")}"${disabled} /></label><label>Дүн<input name="amountMnt" type="number" min="1" max="${escape(available)}" value="${escape(Math.min(available, Number(transferPrefill.amountMnt || 0)) || "")}" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label>${proposal}<button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит шилжүүлэх"}</button></form></section>` : "";
         const controls = state.data?.canManageCredits ? `<div class="staff-panel-actions staff-credit-actions" role="group" aria-label="Кредитийн үйлдэл">${toggle("add", "Нэмэх")}${roots.length ? toggle("correct", "Засах") : ""}${applyAvailable ? toggle("apply", "Кредит хэрэглэх") : ""}${available && targets ? toggle("transfer", "Шилжүүлэх") : ""}${reviewNeeded ? toggle("leave-unused", "Кредит ашиглахгүй үлдээх") : ""}</div>` : "";
-        return `<section class="staff-credit-summary" aria-label="Хүүхдийн нийт кредит"><div class="staff-payment-open-header"><h3>Кредит</h3><button class="text-button" type="button" data-credit-close="${escape(item.registrationDraftChildId)}"${disabled}>Хаах</button></div><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(available))}</strong></p><p class="staff-muted">Энэ хүүхдийн бүх ангид хамт ашиглагдана.</p>${firstInstallmentCreditBlocked ? `<p class="staff-muted">Хоёр хувааж төлөх гэрээний эхний төлбөрт кредит хэрэглэхгүй. Дараагийн төлбөрт кредитийг тусад нь хянаж болно.</p>` : ""}${available ? `<ul aria-label="Одоогийн кредит">${roots.map((entry) => `<li>${escape(localLabel(entry.createdAt))} · ${escape(mnt(entry.availableAmountMnt))} · ${escape(entry.reason)}</li>`).join("")}</ul>` : `<p class="staff-muted">Ашиглаагүй кредит алга.</p>`}${controls}${add}${correct}${apply}${transfer}${leaveUnused}${actionFeedback(item.registrationDraftChildId, ["credit"])}</section>`;
+        return `<section class="staff-credit-summary" aria-label="Хүүхдийн нийт кредит"><div class="staff-payment-open-header"><h3>Кредит</h3><button class="text-button" type="button" data-credit-close="${escape(item.registrationDraftChildId)}"${disabled}>Хаах</button></div><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(available))}</strong></p><p class="staff-muted">Энэ хүүхдийн бүх ангид хамт ашиглагдана.</p>${firstInstallmentCreditBlocked ? `<p class="staff-muted">Хоёр хувааж төлөх гэрээний эхний төлбөрт кредит хэрэглэхгүй. Дараагийн төлбөрт кредитийг тусад нь хянаж болно.</p>` : ""}${available ? `<ul aria-label="Одоогийн кредит">${roots.map((entry) => `<li>${escape(localLabel(entry.createdAt))} · ${escape(mnt(entry.availableAmountMnt))} · ${escape(creditOrigin(entry))}</li>`).join("")}</ul>` : `<p class="staff-muted">Ашиглаагүй кредит алга.</p>`}${controls}${add}${correct}${apply}${transfer}${leaveUnused}${actionFeedback(item.registrationDraftChildId, ["credit"])}</section>`;
       }
       function childCreditReviewNotice(item) {
         if (!item.creditReviewNeeded || item.creditReviewResolved) return "";
         return `<aside class="staff-warning"><p><strong>Кредитийн хяналт шаардлагатай</strong></p><p>${escape(mnt(item.availableCreditMnt || 0))} кредит энэ ангийн ${escape(mnt(item.creditApplicationOutstandingMnt || 0))} үлдэгдэлд хэрэглэж болно.</p><button class="text-button" type="button" data-credit-open="${escape(item.registrationDraftChildId)}">Кредит нээх</button></aside>`;
+      }
+      function familyCreditSuggestionNotice(item) {
+        const suggestion = item.familyCreditSuggestion;
+        if (!suggestion) return "";
+        return `<aside class="staff-warning" data-family-credit-notice><p><strong>${escape(suggestion.donorName)}</strong>-ын ашиглаж болох кредит: <strong>${escape(mnt(suggestion.donorAvailableMnt))}</strong></p><p>${escape(suggestion.installmentLabel)} ${escape(mnt(suggestion.recipientOutstandingMnt))} · шилжүүлж тооцвол бэлнээр авах үлдэгдэл ${escape(mnt(suggestion.recipientRemainingAfterMnt))}.</p><button class="text-button" type="button" data-family-credit-suggestion data-family-credit-donor="${escape(suggestion.donorChildId)}" data-family-credit-recipient="${escape(suggestion.recipientChildId)}" data-family-credit-installment="${escape(suggestion.paymentInstallmentId)}" data-family-credit-amount="${escape(suggestion.proposedAmountMnt)}">Энэ төлбөрт кредит хэрэглэх</button></aside>`;
+      }
+      function familyCreditApplicationMarkup(item) {
+        const panel = state.familyCreditApplications[item.registrationDraftChildId];
+        if (!panel) return "";
+        const pending = panel.pending === true;
+        if (panel.completed) return `<section class="staff-payment-form staff-family-credit-confirmation" aria-live="polite"><h3>Гэр бүлийн кредитийг төлбөрт тооцлоо</h3><p>${escape(mnt(panel.amountMnt))} кредитийг энэ ангийн сонгосон төлбөрт тооцсон. Жагсаалтыг шинэчилж чадсангүй; дахин дарахаас өмнө Шинэчлэхийг сонгоно уу.</p></section>`;
+        const donorAfter = Math.max(0, Number(panel.donorAvailableMnt) - Number(panel.amountMnt));
+        const recipientAfter = Math.max(0, Number(panel.recipientOutstandingMnt) - Number(panel.amountMnt));
+        return `<section class="staff-payment-form staff-family-credit-confirmation" aria-live="polite" ${pending ? 'aria-busy="true"' : ""}><h3>Гэр бүлийн кредитийг энэ төлбөрт тооцох</h3><p><strong>Кредит эзэмшигч:</strong> ${escape(panel.donorName)} · ${escape(mnt(panel.donorAvailableMnt))} → ${escape(mnt(donorAfter))}</p><p><strong>Хүлээн авах хүүхэд:</strong> ${escape(item.childName)} · ${escape(classSchedule(item))}</p><p><strong>${escape(panel.installmentLabel)}:</strong> ${escape(mnt(panel.recipientOutstandingMnt))} → ${escape(mnt(recipientAfter))}</p><p><strong>Тооцох дүн:</strong> ${escape(mnt(panel.amountMnt))}</p><form data-family-credit-apply="${escape(item.registrationDraftChildId)}"><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${pending ? "disabled" : ""}></textarea></label><div class="staff-inline-actions"><button class="button primary" type="submit" ${pending ? "disabled aria-busy=true" : ""}>${pending ? "Баталгаажуулж байна…" : "Баталгаажуулах"}</button><button class="text-button" type="button" data-family-credit-apply-cancel="${escape(item.registrationDraftChildId)}" ${pending ? "disabled" : ""}>Болих</button></div></form>${actionFeedback(item.registrationDraftChildId, ["family-credit-apply"])}</section>`;
       }
       function itemMarkup(item) {
         const primaryPhone = String(item.primaryPhone || "").trim();
@@ -301,7 +342,11 @@ import "../../styles/global.css";
         const laterOutstanding = item.laterInstallmentId
           ? Math.max(0, Number(item.laterAmountMnt || 0) - Number(item.laterAllocatedAmountMnt || 0)) : 0;
         const discountLabels = { family_multi_child: "Нэг гэр бүлийн хүүхэд", referral_referred: "Урилгаар бүртгүүлсэн", referral_referrer: "Амжилттай урилга" };
-        const discounts = (item.discounts || []).map((award) => `<p class="staff-muted">${escape(discountLabels[award.awardType] || "Хөнгөлөлт")} · ${Number(award.basisPoints || 0) / 100}% · ${escape(mnt(award.awardAmountMnt))}${award.creditAmountMnt ? ` · Кредит ${escape(mnt(award.creditAmountMnt))}` : ""}${award.status === "reversed" ? " · Буцаасан" : ""}${state.data?.canManageDiscounts && award.status === "active" ? ` <button class="text-button" type="button" data-discount-reverse="${escape(award.id)}">Буцаах</button>` : ""}</p>`).join("");
+        const discounts = (item.discounts || []).map((award) => {
+          const projected = Number(award.creditAmountMnt || 0); const creditState = award.creditState;
+          const credit = !projected ? "" : creditState ? ` · Үлдэгдэл кредит ${escape(mnt(projected))} · Ашиглах боломжтой ${escape(mnt(creditState.availableAmountMnt || 0))}${creditState.reservedAmountMnt ? ` · Нөөцөлсөн ${escape(mnt(creditState.reservedAmountMnt))}` : ""}${creditState.usedAmountMnt ? ` · Ашигласан ${escape(mnt(creditState.usedAmountMnt))}` : ""}` : ` · Үлдэгдэл кредит ${escape(mnt(projected))} · Бүртгэл дутуу`;
+          return `<p class="staff-muted">${escape(discountLabels[award.awardType] || "Хөнгөлөлт")} · ${Number(award.basisPoints || 0) / 100}% · ${escape(mnt(award.awardAmountMnt))}${credit}${award.status === "reversed" ? " · Буцаасан" : ""}${state.data?.canManageDiscounts && award.status === "active" ? ` <button class="text-button" type="button" data-discount-reverse="${escape(award.id)}">Буцаах</button>` : ""}</p>`;
+        }).join("");
         const open = state.openId === item.installmentId;
         const effectiveDue = item.remainingPaymentDueAt || item.paymentDueAt;
         const overdue = remaining > 0 && new Date(effectiveDue) < new Date(state.data.now);
@@ -349,8 +394,9 @@ import "../../styles/global.css";
           : "";
         const paymentDraftKey = `${item.registrationDraftChildId}:${item.laterInstallmentId || ""}`;
         const laterPaymentDraft = state.paymentDrafts[paymentDraftKey] || {};
+        const familyCreditDecision = item.familyCreditSuggestion ? `<div class="staff-warning staff-wide"><p><strong>${escape(item.familyCreditSuggestion.donorName)}</strong>-ын ${escape(mnt(item.familyCreditSuggestion.proposedAmountMnt))} кредитийг шилжүүлж тооцож болно.</p><button class="text-button" type="button" data-family-credit-suggestion data-family-credit-donor="${escape(item.familyCreditSuggestion.donorChildId)}" data-family-credit-recipient="${escape(item.familyCreditSuggestion.recipientChildId)}" data-family-credit-installment="${escape(item.familyCreditSuggestion.paymentInstallmentId)}" data-family-credit-amount="${escape(item.familyCreditSuggestion.proposedAmountMnt)}">Энэ төлбөрт кредит хэрэглэх</button><label class="staff-check"><input name="proceedWithoutFamilyCredit" type="checkbox" /><span>Энэ кредитийг шилжүүлэхгүйгээр бэлэн мөнгөний төлбөрийг үргэлжлүүлнэ.</span></label></div>` : "";
         const laterPaymentForm = activePanel(item.registrationDraftChildId) === "payment" && item.laterInstallmentId && laterOutstanding > 0
-          ? `<form class="staff-payment-form staff-later-payment-form" data-payment-form="${escape(item.laterInstallmentId)}" data-payment-draft-key="${escape(paymentDraftKey)}" novalidate ${pending ? 'aria-busy="true"' : ""}><h3>Хоёр дахь төлбөр бүртгэх</h3><p>Төлбөрийн нөхцөл: <strong>2 хувааж</strong></p><p>Хоёр дахь төлбөрийн хугацаа: <strong>${escape(localLabel(item.laterDueAt))}</strong></p><p>Үлдсэн төлбөр: <strong>${escape(mnt(laterOutstanding))}</strong></p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong> · Энэ хүүхдийн бүх ангид хамт ашиглагдана.${item.creditReviewNeeded ? " · Эхлээд кредитийг төлбөрт тооцох эсвэл ашиглахгүйг шийднэ үү." : ""}</p><label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(laterOutstanding)}" step="1" value="${escape(laterPaymentDraft.amountMnt ?? laterOutstanding)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank" ${laterPaymentDraft.source === "staff_manual_bank" || !laterPaymentDraft.source ? "selected" : ""}>Дансаар</option><option value="staff_manual_cash" ${laterPaymentDraft.source === "staff_manual_cash" ? "selected" : ""}>Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${escape(laterPaymentDraft.receivedAt || localDateTime(new Date()))}" required ${pending ? "disabled" : ""} /></label><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-close="${escape(item.registrationDraftChildId)}" ${pending ? "disabled" : ""}>Хаах</button></div>${actionFeedback(item.registrationDraftChildId, ["payment"])}</form>`
+          ? `<form class="staff-payment-form staff-later-payment-form" data-payment-form="${escape(item.laterInstallmentId)}" data-payment-draft-key="${escape(paymentDraftKey)}" novalidate ${pending ? 'aria-busy="true"' : ""}><h3>Хоёр дахь төлбөр бүртгэх</h3><p>Төлбөрийн нөхцөл: <strong>2 хувааж</strong></p><p>Хоёр дахь төлбөрийн хугацаа: <strong>${escape(localLabel(item.laterDueAt))}</strong></p><p>Үлдсэн төлбөр: <strong>${escape(mnt(laterOutstanding))}</strong></p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong> · Энэ хүүхдийн бүх ангид хамт ашиглагдана.${item.creditReviewNeeded ? " · Эхлээд кредитийг төлбөрт тооцох эсвэл ашиглахгүйг шийднэ үү." : ""}</p>${familyCreditDecision}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(laterOutstanding)}" step="1" value="${escape(laterPaymentDraft.amountMnt ?? laterOutstanding)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank" ${laterPaymentDraft.source === "staff_manual_bank" || !laterPaymentDraft.source ? "selected" : ""}>Дансаар</option><option value="staff_manual_cash" ${laterPaymentDraft.source === "staff_manual_cash" ? "selected" : ""}>Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${escape(laterPaymentDraft.receivedAt || localDateTime(new Date()))}" required ${pending ? "disabled" : ""} /></label><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-close="${escape(item.registrationDraftChildId)}" ${pending ? "disabled" : ""}>Хаах</button></div>${actionFeedback(item.registrationDraftChildId, ["payment"])}</form>`
           : "";
         const identityReview = item.identityResolutionStatus === "needs_identity_review"
           ? `<p class="staff-muted">Хүүхдийн бүртгэлийг баталгаажуулах шаардлагатай</p>` : "";
@@ -361,7 +407,7 @@ import "../../styles/global.css";
         return `<article class="staff-payment-item ${overdue ? "is-overdue" : ""} ${open ? "is-open" : ""}" data-registration-child="${escape(item.registrationDraftChildId)}" data-payment-item="${escape(item.installmentId)}">
           ${open ? "" : summary}
           ${open ? "" : `<div class="staff-payment-actions"><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="false" aria-controls="payment-detail-${escape(item.installmentId)}">Нээх</button></div>`}
-          ${open ? `<div id="payment-detail-${escape(item.installmentId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="true" aria-controls="payment-detail-${escape(item.installmentId)}">Хаах</button></div>${pendingAdditionalAdmissionNotice(item)}${remaining > 0 && !awaitingReservedSettlement ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}" ${pending ? 'aria-busy="true"' : ""}><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong>${item.canonicalStudentId ? " · Энэ хүүхдийн бүх ангид хамт ашиглагдана." : ""}</p>${reservedCredit ? `<p>Төлбөрийн үүрэг: <strong>${escape(mnt(remaining))}</strong><br>Нөөцөлсөн кредит: <strong>${escape(mnt(reservedCredit))}</strong><br>Одоо бэлнээр/дансаар авах: <strong>${escape(mnt(cashRequired))}</strong></p>` : ""}${discounts}<p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p><p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p>${ownReferral}${usedReferral}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(cashRequired)}" step="1" value="${escape(cashRequired)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${localDateTime(new Date())}" required ${pending ? "disabled" : ""} /></label>${seatApprovalControl}${remainingDeadlineControls}<div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}" ${checkedNotFoundPending ? 'disabled aria-busy="true"' : ""}>${checkedNotFoundPending ? "Тэмдэглэж байна…" : "Төлбөр олдоогүйг тэмдэглэх"}</button></div>${actionFeedback(item.registrationDraftChildId, ["payment", "payment-checked"])}</form>` : `<div class="staff-payment-form"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong></p>${reservedCredit ? `<p>Төлбөрийн үүрэг: <strong>${escape(mnt(remaining))}</strong><br>Нөөцөлсөн кредит: <strong>${escape(mnt(reservedCredit))}</strong><br>Одоо бэлнээр/дансаар авах: <strong>${escape(mnt(cashRequired))}</strong></p>` : ""}${awaitingReservedSettlement ? `<p class="staff-muted">Бэлэн мөнгөний төлбөр бүртгэгдсэн. Нөөцөлсөн кредитийг хамгаалсан баталгаажуулалт хүлээгдэж байна.</p>` : ""}${discounts}${ownReferral}${usedReferral}<p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p><p>Төлсөн дүн: <strong>${escape(mnt(item.totalPaidMnt))}</strong></p>${item.totalCreditAppliedMnt ? `<p>Кредитээр тооцсон: <strong>${escape(mnt(item.totalCreditAppliedMnt))}</strong></p>` : ""}<p>Үлдэгдэл: <strong>${escape(mnt(item.totalRemainingMnt))}</strong></p><p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p>${seatCorrection}${actionFeedback(item.registrationDraftChildId, ["payment", "seat-confirm"])}</div>`}${childCreditReviewNotice(item)}${contact}${panelActionStrip(item)}${actionFeedback(item.registrationDraftChildId, ["transfer", "additional-class"])}<div class="staff-panel-region">${laterPaymentForm}${transferMarkup(item)}${additionalClassMarkup(item)}${childCreditMarkup(item)}${activePanel(item.registrationDraftChildId) === "edit" ? correctionForm(item) : registrationView(item)}</div>${tentative}${overdue && !item.seatConfirmationApproved && remaining > 0 ? `<details class="staff-payment-release"><summary>Суудал чөлөөлөх</summary><p>${item.parentClaimed ? "Асран хамгаалагч төлбөр хийсэн гэж мэдэгдсэн. Банкны орлогыг дахин шалгана уу." : "Энэ үйлдлээр суудал шууд сулрана."}</p><button class="button danger" type="button" data-payment-release="${escape(item.paymentRequestId)}">Суудлыг чөлөөлөх</button></details>` : ""}${cancellation}</div>` : ""}
+          ${open ? `<div id="payment-detail-${escape(item.installmentId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="true" aria-controls="payment-detail-${escape(item.installmentId)}">Хаах</button></div>${pendingAdditionalAdmissionNotice(item)}${remaining > 0 && !awaitingReservedSettlement ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}" ${pending ? 'aria-busy="true"' : ""}><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong>${item.canonicalStudentId ? " · Энэ хүүхдийн бүх ангид хамт ашиглагдана." : ""}</p>${reservedCredit ? `<p>Төлбөрийн үүрэг: <strong>${escape(mnt(remaining))}</strong><br>Нөөцөлсөн кредит: <strong>${escape(mnt(reservedCredit))}</strong><br>Одоо бэлнээр/дансаар авах: <strong>${escape(mnt(cashRequired))}</strong></p>` : ""}${familyCreditDecision}${discounts}<p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p><p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p>${ownReferral}${usedReferral}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(cashRequired)}" step="1" value="${escape(cashRequired)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${localDateTime(new Date())}" required ${pending ? "disabled" : ""} /></label>${seatApprovalControl}${remainingDeadlineControls}<div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}" ${checkedNotFoundPending ? 'disabled aria-busy="true"' : ""}>${checkedNotFoundPending ? "Тэмдэглэж байна…" : "Төлбөр олдоогүйг тэмдэглэх"}</button></div>${actionFeedback(item.registrationDraftChildId, ["payment", "payment-checked"])}</form>` : `<div class="staff-payment-form"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong></p>${reservedCredit ? `<p>Төлбөрийн үүрэг: <strong>${escape(mnt(remaining))}</strong><br>Нөөцөлсөн кредит: <strong>${escape(mnt(reservedCredit))}</strong><br>Одоо бэлнээр/дансаар авах: <strong>${escape(mnt(cashRequired))}</strong></p>` : ""}${awaitingReservedSettlement ? `<p class="staff-muted">Бэлэн мөнгөний төлбөр бүртгэгдсэн. Нөөцөлсөн кредитийг хамгаалсан баталгаажуулалт хүлээгдэж байна.</p>` : ""}${discounts}${ownReferral}${usedReferral}<p>Гүйлгээний утга: <strong>${escape(item.transferDescription || item.paymentReference)}</strong></p><p>Төлсөн дүн: <strong>${escape(mnt(item.totalPaidMnt))}</strong></p>${item.totalCreditAppliedMnt ? `<p>Кредитээр тооцсон: <strong>${escape(mnt(item.totalCreditAppliedMnt))}</strong></p>` : ""}<p>Үлдэгдэл: <strong>${escape(mnt(item.totalRemainingMnt))}</strong></p><p>${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p>${seatCorrection}${actionFeedback(item.registrationDraftChildId, ["payment", "seat-confirm"])}</div>`}${childCreditReviewNotice(item)}${familyCreditSuggestionNotice(item)}${familyCreditApplicationMarkup(item)}${contact}${panelActionStrip(item)}${actionFeedback(item.registrationDraftChildId, ["transfer", "additional-class"])}<div class="staff-panel-region">${laterPaymentForm}${transferMarkup(item)}${additionalClassMarkup(item)}${childCreditMarkup(item)}${activePanel(item.registrationDraftChildId) === "edit" ? correctionForm(item) : registrationView(item)}</div>${tentative}${overdue && !item.seatConfirmationApproved && remaining > 0 ? `<details class="staff-payment-release"><summary>Суудал чөлөөлөх</summary><p>${item.parentClaimed ? "Асран хамгаалагч төлбөр хийсэн гэж мэдэгдсэн. Банкны орлогыг дахин шалгана уу." : "Энэ үйлдлээр суудал шууд сулрана."}</p><button class="button danger" type="button" data-payment-release="${escape(item.paymentRequestId)}">Суудлыг чөлөөлөх</button></details>` : ""}${cancellation}</div>` : ""}
         </article>`;
       }
       function cancelledMarkup(item) { let reason = ""; try { reason = JSON.parse(item.cancellationMetadata || "{}").reason || ""; } catch {} const labels = { guardian_request: "Эцэг эхийн хүсэлтээр", payment_overdue: "Төлбөр хугацаандаа хийгдээгүй", other: "Бусад" }; const open = state.openCancelledId === item.registrationDraftChildId; const detailId = `cancelled-detail-${item.registrationDraftChildId}`; const toggle = `<div class="staff-payment-actions"><button class="text-button" type="button" data-cancelled-detail="${escape(item.registrationDraftChildId)}" aria-expanded="${open}" aria-controls="${escape(detailId)}">${open ? "Хаах" : "Нээх"}</button></div>`; const summary = `<div class="staff-payment-summary" data-cancelled-detail="${escape(item.registrationDraftChildId)}" role="button" tabindex="0" aria-expanded="false" aria-controls="${escape(detailId)}"><strong>${escape(item.childName)}</strong><p>${escape(classSchedule(item))}</p><p><strong>Бүртгэл цуцлагдсан</strong>${reason ? ` · ${escape(labels[reason] || reason)}` : ""}</p>${item.cancelledAt ? `<p class="staff-muted">${escape(localLabel(item.cancelledAt))}</p>` : ""}</div>`; const restore = item.canReinstate ? `<p>Энэ үйлдэл нь өмнөх төлсөн мөнгө, сонгосон анги, төлбөрийн нөхцөлийг сэргээнэ.</p><button class="button primary" type="button" data-registration-reinstate="${escape(item.registrationDraftChildId)}" data-registration-child-name="${escape(item.childName)}" data-registration-class-label="${escape(classSchedule(item))}">Бүртгэлийг сэргээх</button>` : `<p class="staff-muted">Энэ бүртгэл одоогийн нөхцөлд сэргээх боломжгүй.</p>`; const detail = open ? `<div id="${escape(detailId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p>${toggle}</div><div class="staff-payment-form"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Анги: ${escape(classSchedule(item))}</p><p>Төлөв: Бүртгэл цуцлагдсан</p>${reason ? `<p>Шалтгаан: ${escape(labels[reason] || reason)}</p>` : ""}${item.cancelledAt ? `<p>Цуцалсан: ${escape(localLabel(item.cancelledAt))}</p>` : ""}${restore}</div></div>` : ""; return `<article class="staff-payment-item ${open ? "is-open" : ""}" data-registration-child="${escape(item.registrationDraftChildId)}">${open ? detail : `${summary}${toggle}`}</article>`; }
@@ -553,6 +599,65 @@ import "../../styles/global.css";
         if (target.dataset.paymentDetail) { const id = target.dataset.paymentDetail; const closing = state.openId === id; if (closing) paymentDetailSelection.close(id); else paymentDetailSelection.select(id); state.openId = paymentDetailSelection.selected(); if (closing) { const item = state.data.items.find((entry) => entry.installmentId === id); if (item) closePanel(item.registrationDraftChildId); } render(); q(`[data-payment-detail="${id}"]`)?.focus(); return; }
         if (target.dataset.paymentOpen) { const childId = target.dataset.paymentOpen; if (!canSwitchPanel(childId, "payment")) return; activatePanel(childId, "payment"); render(); q(`[data-payment-form] input[name="amount"]`)?.focus(); return; }
         if (target.dataset.paymentClose) { closePanel(target.dataset.paymentClose, "payment"); render(); q(`[data-payment-open="${target.dataset.paymentClose}"]`)?.focus(); return; }
+        if (target.dataset.familyDiscountOpen) {
+          const childId = target.dataset.familyDiscountOpen;
+          if (!canSwitchPanel(childId, "family")) return;
+          const request = activatePanel(childId, "family");
+          if (state.familyDiscounts[childId]?.detail) { render(); return; }
+          state.familyDiscounts[childId] = { loading: true, request }; render();
+          try {
+            const [detail, candidates] = await Promise.all([
+              post({ action: "family-discount.detail", registrationDraftChildId: childId }),
+              post({ action: "family-discount.candidates", registrationDraftChildId: childId }),
+            ]);
+            if (panelIsCurrent(request)) state.familyDiscounts[childId] = { detail, candidates: candidates.candidates };
+          }
+          catch (error) { if (panelIsCurrent(request)) state.familyDiscounts[childId] = { error: error.message || "Гэр бүлийн мэдээллийг авч чадсангүй." }; }
+          render(); return;
+        }
+        if (target.dataset.familyDiscountClose) { closePanel(target.dataset.familyDiscountClose, "family"); render(); return; }
+        if (target.dataset.familyDiscountRecover) {
+          const childId = target.dataset.familyDiscountRecover; const panel = state.familyDiscounts[childId];
+          if (!panel?.detail || panel.recovering) return;
+          panel.recovering = true; setActionFeedback(childId, "family-discount", "Хөнгөлөлтийн кредитийн бүртгэлийг сэргээж байна…"); render();
+          try { await post({ action: "family-discount.recover-credit", registrationDraftChildId: childId }); delete state.familyDiscounts[childId]; setActionFeedback(childId, "family-discount", "Хөнгөлөлтийн кредитийн бүртгэлийг сэргээж шалгалаа."); await refresh("", { anchorChildId: childId }); }
+          catch (error) { panel.recovering = false; setActionFeedback(childId, "family-discount", error.message || "Кредитийн бүртгэлийг сэргээж чадсангүй."); render(); }
+          return;
+        }
+        if (target.dataset.familyDiscountPreview) {
+          const childId = target.dataset.familyDiscountPreview; const panel = state.familyDiscounts[childId];
+          if (!panel?.detail || panel.previewing) return;
+          panel.previewing = true; panel.searchError = ""; render();
+          try { panel.preview = await post({ action: "family-discount.preview", registrationDraftChildId: childId, relatedRegistrationDraftChildId: target.dataset.familyDiscountRelated }); }
+          catch (error) { panel.searchError = error.message || "Сонгосон хүүхдийн мэдээллийг шалгаж чадсангүй."; }
+          finally { panel.previewing = false; render(); }
+          return;
+        }
+        if (target.dataset.familyCreditSuggestion !== undefined) {
+          const donorChildId = target.dataset.familyCreditDonor; const recipientChildId = target.dataset.familyCreditRecipient;
+          const recipient = state.data.items.find((item) => item.registrationDraftChildId === recipientChildId);
+          if (!recipient || !donorChildId || actionPending(recipientChildId, "family-credit-apply")) return;
+          const paymentForm = target.closest("[data-payment-form]");
+          if (paymentForm) {
+            const key = paymentForm.dataset.paymentDraftKey || `${recipientChildId}:${paymentForm.dataset.paymentForm}`;
+            state.paymentDrafts[key] = { ...(state.paymentDrafts[key] || {}), amountMnt: paymentForm.elements.amount?.value,
+              source: paymentForm.elements.source?.value, receivedAt: paymentForm.elements.receivedAt?.value };
+          }
+          const suggestion = recipient.familyCreditSuggestion;
+          if (!suggestion || suggestion.donorChildId !== donorChildId || suggestion.paymentInstallmentId !== target.dataset.familyCreditInstallment
+            || Number(suggestion.proposedAmountMnt) !== Number(target.dataset.familyCreditAmount)) {
+            setActionFeedback(recipientChildId, "family-credit-apply", "Кредитийн санал өөрчлөгдсөн байна. Дахин шалгана уу."); render(); return;
+          }
+          state.familyCreditApplications[recipientChildId] = { donorChildId, donorName: suggestion.donorName, installmentId: suggestion.paymentInstallmentId,
+            installmentLabel: suggestion.installmentLabel, donorAvailableMnt: Number(suggestion.donorAvailableMnt),
+            recipientOutstandingMnt: Number(suggestion.recipientOutstandingMnt), amountMnt: Number(suggestion.proposedAmountMnt) };
+          render(); q(`[data-family-credit-apply="${recipientChildId}"] textarea[name="reason"]`)?.focus(); return;
+        }
+        if (target.dataset.familyCreditApplyCancel) {
+          const childId = target.dataset.familyCreditApplyCancel;
+          if (state.familyCreditApplications[childId]?.pending) return;
+          delete state.familyCreditApplications[childId]; render(); return;
+        }
         if (target.dataset.registrationView) { const childId = target.dataset.registrationView; if (!canSwitchPanel(childId, "info")) return; const request = activatePanel(childId, "info"); if (state.registrationViews[childId]?.detail) { render(); return; } state.registrationViews[childId] = { loading: true, request }; render(); try { const detail = await registrationDetail({ action: "registration-detail.get", childId }); if (panelIsCurrent(request)) state.registrationViews[childId] = { detail }; } catch (error) { if (panelIsCurrent(request)) state.registrationViews[childId] = { error: error.message || "Мэдээллийг авч чадсангүй." }; } render(); return; }
         if (target.dataset.registrationViewClose) { closePanel(target.dataset.registrationViewClose, "info"); render(); return; }
         if (target.dataset.creditSubpanel) {
@@ -785,6 +890,29 @@ import "../../styles/global.css";
       });
       q("#payment-list").addEventListener("submit", async (event) => {
         const form = event.target;
+        if (form.matches("[data-family-discount-search]")) {
+          event.preventDefault(); const childId = form.dataset.familyDiscountSearch; const panel = state.familyDiscounts[childId]; const query = form.elements.query.value.trim();
+          if (!panel?.detail || panel.searching || query.length < 2) return;
+          panel.searching = true; panel.searchError = ""; panel.query = query; panel.preview = null; render();
+          try { const result = await post({ action: "family-discount.candidates", registrationDraftChildId: childId, query }); panel.candidates = result.candidates; panel.searched = true; }
+          catch (error) { panel.searchError = error.message || "Хайлт хийж чадсангүй."; }
+          finally { panel.searching = false; render(); }
+          return;
+        }
+        if (form.matches("[data-family-discount-confirm]")) {
+          event.preventDefault(); const childId = form.dataset.familyDiscountConfirm; const panel = state.familyDiscounts[childId]; const reason = form.elements.reason.value.trim();
+          if (!panel?.preview || !reason || panel.confirming) { setActionFeedback(childId, "family-discount", "Шалтгааныг оруулна уу."); render(); return; }
+          panel.confirming = true; setActionFeedback(childId, "family-discount", "Гэр бүлийн гишүүнчлэлийг баталгаажуулж байна…"); render();
+          try {
+            panel.operationId ||= await secureStaffUuidV4();
+            await post({ action: "family-discount.confirm", registrationDraftChildId: childId, relatedRegistrationDraftChildId: panel.preview.related.childId, reason, operationId: panel.operationId });
+            panel.confirming = false; panel.preview = null; panel.candidates = []; panel.searched = false;
+            panel.detail = await post({ action: "family-discount.detail", registrationDraftChildId: childId });
+            setActionFeedback(childId, "family-discount", "Гэр бүлийн гишүүнчлэл болон тохирох хөнгөлөлтийг баталгаажууллаа.");
+            render();
+          } catch (error) { panel.confirming = false; setActionFeedback(childId, "family-discount", error.message || "Гэр бүлийн гишүүнчлэлийг хадгалж чадсангүй."); render(); }
+          return;
+        }
         if (form.matches("[data-additional-class-preview]")) {
           event.preventDefault(); const childId = form.dataset.additionalClassPreview; const panel = state.additionalClassPreviews[childId];
           if (!panel || panel.loading) return;
@@ -824,6 +952,30 @@ import "../../styles/global.css";
           openCancellationConfirmation({ childId, reason, note, childName: item.childName, classLabel: classSchedule(item), hasActiveSeat: Boolean(item.canonicalEnrollmentId || item.hasActiveInitialPaymentHold), initiator: form.querySelector('button[type="submit"]') });
           return;
         }
+        if (form.matches("[data-family-credit-apply]")) {
+          event.preventDefault();
+          const childId = form.dataset.familyCreditApply; const panel = state.familyCreditApplications[childId];
+          const reason = form.elements.reason.value.trim();
+          if (!panel || panel.pending || panel.completed) return;
+          if (!reason) { setActionFeedback(childId, "family-credit-apply", "Шалтгааныг оруулна уу."); render(); return; }
+          panel.pending = true; setActionPending(childId, "family-credit-apply", true);
+          setActionFeedback(childId, "family-credit-apply", "Кредитийг шилжүүлж, төлбөрт тооцож байна…"); render();
+          try {
+            panel.operationId ||= await secureStaffUuidV4();
+            await post({ action: "family-credit.apply-suggestion", operationId: panel.operationId,
+              sourceRegistrationDraftChildId: panel.donorChildId, registrationDraftChildId: childId,
+              paymentInstallmentId: panel.installmentId, amountMnt: panel.amountMnt, reason });
+            panel.pending = false; panel.completed = true;
+            setActionFeedback(childId, "family-credit-apply", `${mnt(panel.amountMnt)} кредитийг энэ төлбөрт тооцлоо.`);
+            try { await refresh("", { anchorChildId: childId }); delete state.familyCreditApplications[childId]; }
+            catch { setActionFeedback(childId, "family-credit-apply", "Кредитийг төлбөрт тооцлоо. Жагсаалтыг шинэчилж чадсангүй; дахин дарахаас өмнө Шинэчлэхийг сонгоно уу."); }
+          } catch (error) {
+            panel.pending = false;
+            setActionFeedback(childId, "family-credit-apply", error.message || "Кредитийг энэ төлбөрт тооцож чадсангүй.");
+            if (/өөрчлөгдсөн/.test(String(error.message || ""))) delete state.familyCreditApplications[childId];
+          } finally { setActionPending(childId, "family-credit-apply", false); render(); }
+          return;
+        }
         if (form.matches("[data-child-credit-form]")) {
           event.preventDefault();
           const type = form.dataset.childCreditForm; const childId = form.dataset.creditChild;
@@ -853,7 +1005,18 @@ import "../../styles/global.css";
               sourceRegistrationDraftChildId: childId, targetRegistrationDraftChildId: targetChildId };
             await post(payload);
             setActionFeedback(childId, "credit", type === "apply" ? "Кредитийг төлбөрт тооцлоо." : type === "transfer" ? "Кредит шилжлээ." : type === "correct" ? "Кредитийн засвар хадгалагдлаа." : type === "leave-unused" ? "Кредитийг энэ төлбөрт ашиглахгүйг тэмдэглэлээ." : "Кредит нэмэгдлээ.");
-            await refresh("", { anchorChildId: childId });
+            const transferPrefill = type === "transfer" ? state.creditSubpanels[childId]?.transferPrefill : null;
+            const followUpChildId = transferPrefill?.targetRegistrationDraftChildId || null;
+            if (followUpChildId) {
+              const target = state.data.items.find((entry) => entry.registrationDraftChildId === followUpChildId);
+              if (target) {
+                paymentDetailSelection.select(target.installmentId); state.openId = paymentDetailSelection.selected();
+                activatePanel(followUpChildId, "credit");
+                state.creditSubpanels[followUpChildId] = { open: "apply", applyPrefill: { amountMnt } };
+                setActionFeedback(followUpChildId, "credit", "Шилжсэн кредитийг энэ төлбөрт тооцож болно.");
+              }
+            }
+            await refresh("", { anchorChildId: followUpChildId || childId });
           } catch (error) {
             setActionFeedback(childId, "credit", error.message || "Кредитийн өөрчлөлтийг хадгалж чадсангүй.");
           } finally { setActionPending(childId, "credit", false); render(); }
@@ -869,12 +1032,12 @@ import "../../styles/global.css";
         state.paymentDrafts[draftKey] = { ...state.paymentDrafts[draftKey], amountMnt, source, receivedAt: rawReceivedAt };
         if (!Number.isInteger(amountMnt) || amountMnt < 1 || (maximum > 0 && amountMnt > maximum)) { setActionFeedback(item.registrationDraftChildId, "payment", "Орсон дүнг зөв оруулна уу."); render(); return; }
         if (!receivedAt) { setActionFeedback(item.registrationDraftChildId, "payment", "Орсон хугацааг зөв оруулна уу."); render(); return; }
-        const approveSeat = Boolean(form.elements.approveSeat?.checked && !form.elements.approveSeat?.disabled); const remainingDueAt = form.elements.remainingDueAt?.value ? ulaanbaatarDateTimeIso(form.elements.remainingDueAt.value) : undefined;
+        const approveSeat = Boolean(form.elements.approveSeat?.checked && !form.elements.approveSeat?.disabled); const proceedWithoutFamilyCredit = Boolean(form.elements.proceedWithoutFamilyCredit?.checked); const remainingDueAt = form.elements.remainingDueAt?.value ? ulaanbaatarDateTimeIso(form.elements.remainingDueAt.value) : undefined;
         if (form.elements.remainingDueAt?.value && !remainingDueAt) { setActionFeedback(item.registrationDraftChildId, "payment", "Үлдсэн төлбөрийн хугацааг зөв оруулна уу."); render(); return; }
         setActionPending(item.registrationDraftChildId, "payment", true); setActionFeedback(item.registrationDraftChildId, "payment", "Бүртгэж байна…"); render();
         try {
           state.paymentDrafts[draftKey].idempotencyKey ||= `manual:${item.paymentRequestId}:${installmentId}:${await secureStaffUuidV4()}`;
-          const result = await post({ action: "payment.record", paymentRequestId: item.paymentRequestId, allocations: [{ installmentId, amountMnt }], source, receivedAt, approveSeatConfirmation: approveSeat, remainingPaymentDueAt: remainingDueAt, idempotencyKey: state.paymentDrafts[draftKey].idempotencyKey });
+          const result = await post({ action: "payment.record", paymentRequestId: item.paymentRequestId, allocations: [{ installmentId, amountMnt }], source, receivedAt, approveSeatConfirmation: approveSeat, proceedWithoutFamilyCredit, remainingPaymentDueAt: remainingDueAt, idempotencyKey: state.paymentDrafts[draftKey].idempotencyKey });
           setActionFeedback(item.registrationDraftChildId, "payment", result.seatApprovalRequested ? "Төлбөр бүртгэгдлээ. Суудал удахгүй баталгаажна." : "Төлбөр бүртгэгдлээ");
           try { await refresh("", { anchorChildId: item.registrationDraftChildId }); delete state.paymentDrafts[draftKey]; }
           catch { setActionFeedback(item.registrationDraftChildId, "payment", "Төлбөр бүртгэгдлээ. Жагсаалтыг шинэчилж чадсангүй; дахин дарахаас өмнө Шинэчлэхийг сонгоно уу."); }
@@ -904,6 +1067,26 @@ import "../../styles/global.css";
       q("#payment-list").addEventListener("change", (event) => { const input = event.target;
         const paymentForm = input.closest("[data-payment-form]");
         if (paymentForm && (input.name === "source" || input.name === "receivedAt")) { const draft = state.paymentDrafts[paymentForm.dataset.paymentDraftKey]; if (draft) delete draft.idempotencyKey; }
+        if (input.dataset.familyDiscountSelect) {
+          const childId = input.dataset.familyDiscountSelect; const panel = state.familyDiscounts[childId]; const relatedChildId = input.value;
+          if (!panel?.detail || !relatedChildId || panel.previewing) return;
+          panel.previewing = true; panel.searchError = ""; panel.preview = null; render();
+          post({ action: "family-discount.preview", registrationDraftChildId: childId, relatedRegistrationDraftChildId: relatedChildId })
+            .then((preview) => { if (activePanel(childId) === "family") panel.preview = preview; })
+            .catch((error) => { if (activePanel(childId) === "family") panel.searchError = error.message || "Сонгосон хүүхдийн мэдээллийг шалгаж чадсангүй."; })
+            .finally(() => { if (state.familyDiscounts[childId]) { state.familyDiscounts[childId].previewing = false; render(); } });
+          return;
+        }
+        if (input.dataset.familyDiscountFilter) {
+          const panel = state.familyDiscounts[input.dataset.familyDiscountFilter];
+          if (!panel) return;
+          panel.query = input.value; render(); return;
+        }
+        if (input.name === "transferFilter") {
+          const form = input.closest("[data-child-credit-form=transfer]"); const childId = form?.dataset.creditChild;
+          if (!childId || !state.creditSubpanels[childId]) return;
+          state.creditSubpanels[childId].transferFilter = input.value; render(); return;
+        }
         const additionalForm = input.closest("[data-additional-class-preview]");
         if (additionalForm) {
           const childId = additionalForm.dataset.additionalClassPreview;
@@ -923,7 +1106,7 @@ import "../../styles/global.css";
           render();
           return;
         }
-        if (input.name === "reason") { const note = input.closest("form").querySelector("[data-cancellation-note]"); const field = note.querySelector("textarea"); note.hidden = input.value !== "other"; field.required = input.value === "other"; return; }
+        if (input.name === "reason") { const form = input.closest("form"); const note = form?.querySelector("[data-cancellation-note]"); const field = note?.querySelector("textarea"); if (!note || !field) return; note.hidden = input.value !== "other"; field.required = input.value === "other"; return; }
         if (input.name === "approveSeat" || input.name === "changeRemainingDueAt") updateRemainingDeadline(input.closest("form"));
       });
       q("#payment-refresh").addEventListener("click", () => refresh("", { preserve: true, userInitiated: true }).catch(() => {}));

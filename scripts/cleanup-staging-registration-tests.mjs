@@ -110,6 +110,7 @@ DELETE FROM child_credit_payment_review WHERE ${scoped("child_credit_payment_rev
 DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")} AND amount_mnt < 0;
 DELETE FROM child_credit_entry WHERE ${scoped("child_credit_entry")};
 DELETE FROM child_credit_operation WHERE ${scoped("child_credit_operation")};
+DELETE FROM family_group_confirmation WHERE ${scoped("family_group_confirmation")};
 -- Award-credit roots have a restrictive durable award link, so remove the
 -- scoped immutable ledger lineage before deleting its source award.
 DELETE FROM discount_award WHERE ${childScoped("discount_award", "registration_draft_child_id")};

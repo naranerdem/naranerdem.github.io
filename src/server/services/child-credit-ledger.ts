@@ -499,6 +499,81 @@ function debitAdmissionGuard(env: WorkerEnv, owner: ChildCreditOwner, rootIds: s
       owner.canonicalStudentId ?? owner.registrationDraftChildId, amountMnt);
 }
 
+// The receiver-side family shortcut is deliberately stricter than the
+// general transfer tool. The invalid zero-value insert is a transactional
+// guard: if the relationship, agreement, payment snapshot, or active award
+// state changed after the preview, the entire batch rolls back.
+function familyTransferApplicationGuard(env: WorkerEnv, source: ChildCreditOwner, target: ChildCreditOwner, installmentId: string,
+  expectedAllocatedMnt: number, expectedAwardMnt: number, isTest: number, testRunId: string | null, now: string): D1PreparedStatement {
+  return env.DB.prepare(`INSERT INTO child_credit_entry (
+    id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, reason, is_test, test_run_id, created_at
+  ) SELECT ?, ?, ?, 'credit_application', 0, 'Family transfer/application guard', ?, ?, ?
+    WHERE NOT (
+      ? IS NOT NULL AND ? IS NOT NULL AND ? <> ?
+      AND EXISTS (
+        SELECT 1 FROM family_group AS family
+        INNER JOIN family_group_member AS source_member ON source_member.family_group_id = family.id
+          AND source_member.student_id = ? AND source_member.status = 'active'
+        INNER JOIN family_group_member AS target_member ON target_member.family_group_id = family.id
+          AND target_member.student_id = ? AND target_member.status = 'active'
+        WHERE family.status = 'active'
+      )
+      AND EXISTS (
+        SELECT 1 FROM registration_draft_child AS source_child
+        INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = source_child.canonical_enrollment_id
+          AND source_enrollment.status = 'confirmed' AND source_enrollment.transferred_out_at IS NULL
+        INNER JOIN registration_draft_child AS target_child ON target_child.id = ?
+        INNER JOIN enrollment AS target_enrollment ON target_enrollment.id = target_child.canonical_enrollment_id
+          AND target_enrollment.status = 'confirmed' AND target_enrollment.transferred_out_at IS NULL
+        INNER JOIN class_session AS source_class ON source_class.id = source_child.selected_class_session_id
+        INNER JOIN class_session AS target_class ON target_class.id = target_child.selected_class_session_id
+        INNER JOIN payment_installment ON payment_installment.id = ?
+          AND payment_installment.registration_draft_child_id = target_child.id AND payment_installment.status != 'released'
+        WHERE source_child.id = ? AND source_child.status != 'cancelled' AND target_child.status != 'cancelled'
+          AND source_child.is_test = target_child.is_test AND source_class.academic_year_id = target_class.academic_year_id
+      )
+      AND COALESCE((
+        SELECT SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END)
+          FROM payment_allocation
+          LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
+          WHERE payment_allocation.payment_installment_id = ?
+      ), 0) + COALESCE((
+        SELECT SUM(-entry.amount_mnt) FROM child_credit_entry AS entry
+          WHERE entry.payment_installment_id = ? AND entry.entry_kind = 'credit_application'
+      ), 0) = ?
+      AND COALESCE((
+        SELECT SUM(award_amount_mnt) FROM discount_award
+          WHERE registration_draft_child_id = ? AND status = 'active'
+      ), 0) + COALESCE((
+        SELECT SUM(target_award_amount_mnt) FROM additional_class_admission
+          WHERE target_registration_draft_child_id = ? AND status = 'pending_confirmation'
+      ), 0) = ?
+    )`)
+    .bind(crypto.randomUUID(), target.canonicalStudentId, target.registrationDraftChildId, isTest, testRunId, now,
+      source.canonicalStudentId, target.canonicalStudentId, source.canonicalStudentId, target.canonicalStudentId,
+      source.canonicalStudentId, target.canonicalStudentId, target.registrationDraftChildId, installmentId, source.registrationDraftChildId,
+      installmentId, installmentId, expectedAllocatedMnt, target.registrationDraftChildId, target.registrationDraftChildId, expectedAwardMnt);
+}
+
+async function installmentAllocationAndAwardState(database: D1Database, registrationDraftChildId: string, installmentId: string) {
+  const [allocation, awards] = await Promise.all([
+    database.prepare(`SELECT COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
+        + COALESCE((SELECT SUM(-entry.amount_mnt) FROM child_credit_entry AS entry
+          WHERE entry.payment_installment_id = payment_installment.id AND entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt
+      FROM payment_installment
+      LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+      LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
+      WHERE payment_installment.id = ? AND payment_installment.registration_draft_child_id = ?
+      GROUP BY payment_installment.id`).bind(installmentId, registrationDraftChildId).first<{ allocatedAmountMnt: number }>(),
+    database.prepare(`SELECT COALESCE((SELECT SUM(award_amount_mnt) FROM discount_award
+        WHERE registration_draft_child_id = ? AND status = 'active'), 0)
+      + COALESCE((SELECT SUM(target_award_amount_mnt) FROM additional_class_admission
+        WHERE target_registration_draft_child_id = ? AND status = 'pending_confirmation'), 0) AS awardAmountMnt`)
+      .bind(registrationDraftChildId, registrationDraftChildId).first<{ awardAmountMnt: number }>(),
+  ]);
+  return { allocatedAmountMnt: Number(allocation?.allocatedAmountMnt ?? 0), awardAmountMnt: Number(awards?.awardAmountMnt ?? 0) };
+}
+
 export async function transferChildCredit(env: WorkerEnv, actor: StaffPrincipal, input: {
   sourceRegistrationDraftChildId: string; targetRegistrationDraftChildId: string; amountMnt: number; reason: string; operationId: string;
 }, nowDate = new Date()) {
@@ -518,6 +593,67 @@ export async function transferChildCredit(env: WorkerEnv, actor: StaffPrincipal,
     entryInsert(env, { owner: target, operationId: id, entryKind: "credit_transfer_credit", amountMnt, actor, reason, isTest: target.isTest, testRunId: target.testRunId, now }),
     audit(env, actor, "child_credit_transferred", id, { sourceRegistrationDraftChildId: input.sourceRegistrationDraftChildId, targetRegistrationDraftChildId: input.targetRegistrationDraftChildId, amountMnt }, source.isTest, source.testRunId, now)];
   const idempotent = await runOperationBatch(env, id, key, statements, true);
+  return { operationId: id, idempotent, source: await childCreditSummaryForOwner(env.DB, source), target: await childCreditSummaryForOwner(env.DB, target) };
+}
+
+// Applies an already-previewed family-member suggestion as one ledger
+// operation. The credit-transfer root exists only inside the same atomic batch
+// as its debit against the receiving installment, so it is never separately
+// spendable by the recipient.
+export async function transferAndApplyFamilyChildCredit(env: WorkerEnv, actor: StaffPrincipal, input: {
+  sourceRegistrationDraftChildId: string; targetRegistrationDraftChildId: string; paymentInstallmentId: string;
+  amountMnt: number; reason: string; operationId: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new ChildCreditError("forbidden");
+  const amountMnt = positive(input.amountMnt); const reason = text(input.reason, 500); const id = operationId(input.operationId);
+  if (!amountMnt || !reason || !id || !input.paymentInstallmentId) throw new ChildCreditError("invalid");
+  const [source, target] = await Promise.all([
+    creditOwnerForChild(env.DB, input.sourceRegistrationDraftChildId),
+    creditOwnerForChild(env.DB, input.targetRegistrationDraftChildId),
+  ]);
+  if (!source.canonicalStudentId || !target.canonicalStudentId || source.canonicalStudentId === target.canonicalStudentId || source.isTest !== target.isTest) {
+    throw new ChildCreditError("invalid");
+  }
+  const eligibility = await creditInstallmentEligibility(env.DB, target.registrationDraftChildId, input.paymentInstallmentId);
+  if (!eligibility.eligible) throw new ChildCreditError("invalid");
+  const key = fingerprint("transfer", source.registrationDraftChildId, target.registrationDraftChildId, amountMnt, reason,
+    "family_transfer_apply", input.paymentInstallmentId, null);
+  if (await assertNewOperation(env.DB, id, key)) {
+    return { operationId: id, idempotent: true, source: await childCreditSummaryForOwner(env.DB, source), target: await childCreditSummaryForOwner(env.DB, target) };
+  }
+  const [sourceSummary, outstandingMnt, targetState] = await Promise.all([
+    childCreditSummaryForOwner(env.DB, source),
+    installmentOutstanding(env.DB, target.registrationDraftChildId, input.paymentInstallmentId),
+    installmentAllocationAndAwardState(env.DB, target.registrationDraftChildId, input.paymentInstallmentId),
+  ]);
+  if (sourceSummary.availableAmountMnt < amountMnt) throw new ChildCreditError("insufficient");
+  if (outstandingMnt < amountMnt) throw new ChildCreditError("conflict");
+  const now = nowIso(nowDate);
+  const transferCreditEntryId = `child-credit:family-transfer:${id}`;
+  const statements: D1PreparedStatement[] = [
+    debitAdmissionGuard(env, source, sourceSummary.roots.map((root) => root.id), amountMnt, source.isTest, source.testRunId, now),
+    familyTransferApplicationGuard(env, source, target, input.paymentInstallmentId, targetState.allocatedAmountMnt,
+      targetState.awardAmountMnt, target.isTest, target.testRunId, now),
+    operationInsert(env, actor, id, "transfer", source, target, amountMnt, reason, null, key, source.isTest, source.testRunId, now),
+    ...debitEntries(env, actor, source, id, amountMnt, "credit_transfer_debit", sourceSummary.roots, reason, source.isTest, source.testRunId, now),
+    entryInsert(env, { id: transferCreditEntryId, owner: target, operationId: id, entryKind: "credit_transfer_credit", amountMnt,
+      actor, reason, isTest: target.isTest, testRunId: target.testRunId, now }),
+    entryInsert(env, { owner: target, operationId: id, entryKind: "credit_application", amountMnt: -amountMnt,
+      originEntryId: transferCreditEntryId, installmentId: input.paymentInstallmentId, actor, reason,
+      isTest: target.isTest, testRunId: target.testRunId, now }),
+    audit(env, actor, "child_credit_family_transferred_and_applied", id, {
+      sourceRegistrationDraftChildId: source.registrationDraftChildId, targetRegistrationDraftChildId: target.registrationDraftChildId,
+      paymentInstallmentId: input.paymentInstallmentId, amountMnt,
+    }, source.isTest, source.testRunId, now),
+  ];
+  const idempotent = await runOperationBatch(env, id, key, statements, true);
+  const { refreshInstallmentsAndDraft } = await import("../staff/payment-reconciliation");
+  const request = await env.DB.prepare(`SELECT id, registration_draft_id AS registrationDraftId,
+      payment_reference AS paymentReference, is_test AS isTest, test_run_id AS testRunId
+    FROM payment_request WHERE id = (SELECT payment_request_id FROM payment_installment WHERE id = ?)`)
+    .bind(input.paymentInstallmentId).first<{ id: string; registrationDraftId: string; paymentReference: string; isTest: number; testRunId: string | null }>();
+  if (!request) throw new ChildCreditError("not_found");
+  await refreshInstallmentsAndDraft(env, { ...request, isTest: Number(request.isTest) }, now);
   return { operationId: id, idempotent, source: await childCreditSummaryForOwner(env.DB, source), target: await childCreditSummaryForOwner(env.DB, target) };
 }
 

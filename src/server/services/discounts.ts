@@ -17,6 +17,7 @@ export interface DiscountAward {
   awardType: DiscountAwardType;
   sourceRegistrationDraftChildId: string | null;
   sourceReferralId: string | null;
+  familyGroupId?: string | null;
   basisPoints: number;
   baseAmountMnt: number;
   awardAmountMnt: number;
@@ -106,7 +107,7 @@ export async function updateDiscountPolicySetting(env: WorkerEnv, actor: StaffPr
 export async function discountAwardsForChildren(database: D1Database, childIds: string[], includeReversed = false): Promise<Map<string, DiscountAward[]>> {
   if (!childIds.length) return new Map();
   const rows = await database.prepare(`SELECT id, registration_draft_child_id AS registrationDraftChildId,
-    beneficiary_enrollment_id AS beneficiaryEnrollmentId, award_type AS awardType,
+    beneficiary_enrollment_id AS beneficiaryEnrollmentId, award_type AS awardType, family_group_id AS familyGroupId,
     source_registration_draft_child_id AS sourceRegistrationDraftChildId, source_referral_id AS sourceReferralId,
     basis_points AS basisPoints, base_amount_mnt AS baseAmountMnt, award_amount_mnt AS awardAmountMnt,
     applied_amount_mnt AS appliedAmountMnt, credit_amount_mnt AS creditAmountMnt, status, reason,
@@ -261,18 +262,18 @@ export async function reverseDiscountAward(env: WorkerEnv, actor: StaffPrincipal
 
 export function discountAwardInsert(database: D1Database, input: {
   id: string; childId: string; enrollmentId?: string | null; awardType: DiscountAwardType; sourceChildId?: string | null;
-  sourceReferralId?: string | null; basisPoints: number; baseAmountMnt: number; reason: string; isTest: number; testRunId: string | null; now: string;
+  sourceReferralId?: string | null; familyGroupId?: string | null; basisPoints: number; baseAmountMnt: number; reason: string; isTest: number; testRunId: string | null; now: string;
 }): D1PreparedStatement | null {
   if (input.basisPoints <= 0 || input.baseAmountMnt <= 0) return null;
   const awardAmountMnt = discountAmountMnt(input.baseAmountMnt, input.basisPoints);
   if (awardAmountMnt <= 0) return null;
   return database.prepare(`INSERT OR IGNORE INTO discount_award (
     id, registration_draft_child_id, beneficiary_enrollment_id, award_type,
-    source_registration_draft_child_id, source_referral_id, basis_points, base_amount_mnt,
+    source_registration_draft_child_id, source_referral_id, family_group_id, basis_points, base_amount_mnt,
     award_amount_mnt, status, reason, awarded_at, is_test, test_run_id, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`)
     .bind(input.id, input.childId, input.enrollmentId ?? null, input.awardType,
-      input.sourceChildId ?? null, input.sourceReferralId ?? null, input.basisPoints, input.baseAmountMnt,
+      input.sourceChildId ?? null, input.sourceReferralId ?? null, input.familyGroupId ?? null, input.basisPoints, input.baseAmountMnt,
       awardAmountMnt, input.reason, input.now, input.isTest, input.testRunId, input.now, input.now);
 }
 
@@ -291,7 +292,7 @@ export function discountAwardAudit(database: D1Database, input: {
 
 export async function awardDiscount(env: WorkerEnv, input: {
   id: string; childId: string; enrollmentId?: string | null; awardType: DiscountAwardType; sourceChildId?: string | null;
-  sourceReferralId?: string | null; basisPoints: number; baseAmountMnt: number; reason: string;
+  sourceReferralId?: string | null; familyGroupId?: string | null; basisPoints: number; baseAmountMnt: number; reason: string;
   isTest: number; testRunId: string | null; now?: string;
 }): Promise<boolean> {
   const now = input.now ?? new Date().toISOString();
@@ -304,35 +305,73 @@ export async function awardDiscount(env: WorkerEnv, input: {
   return true;
 }
 
-export async function awardFamilyDiscountsForGuardian(env: WorkerEnv, input: {
-  guardianId: string; policy: DiscountPolicySetting; now?: string;
-}): Promise<number> {
-  if (input.policy.familyMultiChildBasisPoints <= 0) return 0;
-  const rows = await env.DB.prepare(`SELECT registration_draft_child.id AS childId,
-    registration_draft_child.canonical_enrollment_id AS enrollmentId,
-    registration_draft_child.initial_payment_amount_mnt AS initialAmountMnt,
-    registration_draft_child.second_payment_amount_mnt AS secondAmountMnt,
+interface FamilyQualificationRow {
+  childId: string; studentId: string; classSessionId: string; academicYearId: string; enrollmentId: string;
+  initialAmountMnt: number | null; secondAmountMnt: number | null; isTest: number; testRunId: string | null;
+}
+
+async function confirmedRowsForStudentsInYear(database: D1Database, studentIds: string[], academicYearId: string): Promise<FamilyQualificationRow[]> {
+  if (!studentIds.length) return [];
+  const rows = await database.prepare(`SELECT registration_draft_child.id AS childId,
+    registration_draft_child.canonical_student_id AS studentId, registration_draft_child.selected_class_session_id AS classSessionId,
+    class_session.academic_year_id AS academicYearId, registration_draft_child.canonical_enrollment_id AS enrollmentId,
+    registration_draft_child.initial_payment_amount_mnt AS initialAmountMnt, registration_draft_child.second_payment_amount_mnt AS secondAmountMnt,
     registration_draft_child.is_test AS isTest, registration_draft_child.test_run_id AS testRunId
-    FROM guardian_student_relationship
-    INNER JOIN registration_draft_child ON registration_draft_child.canonical_student_id = guardian_student_relationship.student_id
-    INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id AND enrollment.status = 'confirmed'
-    WHERE guardian_student_relationship.guardian_id = ? AND guardian_student_relationship.status = 'active'
-      AND registration_draft_child.selected_class_session_id IS NOT NULL
-    ORDER BY registration_draft_child.id`).bind(input.guardianId).all<{
-      childId: string; enrollmentId: string; initialAmountMnt: number | null; secondAmountMnt: number | null; isTest: number; testRunId: string | null;
-    }>();
-  if (rows.results.length < 2) return 0;
-  const now = input.now ?? new Date().toISOString();
+    FROM registration_draft_child
+    INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+      AND enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL
+    INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    WHERE registration_draft_child.canonical_student_id IN (${studentIds.map(() => "?").join(", ")})
+      AND class_session.academic_year_id = ? AND registration_draft_child.status != 'cancelled'
+    ORDER BY registration_draft_child.id`).bind(...studentIds, academicYearId).all<FamilyQualificationRow>();
+  return rows.results;
+}
+
+async function familyTriggerYear(database: D1Database, childId: string): Promise<{ studentId: string; academicYearId: string } | null> {
+  return database.prepare(`SELECT registration_draft_child.canonical_student_id AS studentId, class_session.academic_year_id AS academicYearId
+    FROM registration_draft_child INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    WHERE registration_draft_child.id = ? AND registration_draft_child.canonical_student_id IS NOT NULL`).bind(childId)
+    .first<{ studentId: string; academicYearId: string }>();
+}
+
+async function awardQualifiedFamilyRows(env: WorkerEnv, rows: FamilyQualificationRow[], policy: DiscountPolicySetting,
+  reason: string, familyGroupId?: string | null, now = new Date().toISOString()): Promise<number> {
+  if (policy.familyMultiChildBasisPoints <= 0) return 0;
+  const distinctStudents = new Set(rows.map((row) => row.studentId));
+  const distinctClasses = new Set(rows.map((row) => `${row.studentId}:${row.classSessionId}`));
+  if (distinctStudents.size < 2 && distinctClasses.size < 2) return 0;
   let awarded = 0;
-  for (const row of rows.results) {
+  for (const row of rows) {
     const baseAmountMnt = Number(row.initialAmountMnt ?? 0) + Number(row.secondAmountMnt ?? 0);
     if (await awardDiscount(env, {
       id: `${row.childId}:discount:family`, childId: row.childId, enrollmentId: row.enrollmentId,
-      awardType: "family_multi_child", basisPoints: input.policy.familyMultiChildBasisPoints, baseAmountMnt,
-      reason: "canonical_guardian_multiple_children", isTest: Number(row.isTest), testRunId: row.testRunId, now,
+      awardType: "family_multi_child", familyGroupId, basisPoints: policy.familyMultiChildBasisPoints, baseAmountMnt,
+      reason, isTest: Number(row.isTest), testRunId: row.testRunId, now,
     })) awarded += 1;
   }
   return awarded;
+}
+
+export async function awardFamilyDiscountsForGuardian(env: WorkerEnv, input: {
+  guardianId: string; triggerChildId: string; policy: DiscountPolicySetting; now?: string;
+}): Promise<number> {
+  const trigger = await familyTriggerYear(env.DB, input.triggerChildId);
+  if (!trigger) return 0;
+  const students = await env.DB.prepare(`SELECT student_id AS studentId FROM guardian_student_relationship
+    WHERE guardian_id = ? AND status = 'active'`).bind(input.guardianId).all<{ studentId: string }>();
+  const rows = await confirmedRowsForStudentsInYear(env.DB, students.results.map((row) => row.studentId), trigger.academicYearId);
+  return awardQualifiedFamilyRows(env, rows, input.policy, "canonical_guardian_multiple_children", null, input.now);
+}
+
+export async function awardFamilyDiscountsForGroup(env: WorkerEnv, input: {
+  familyGroupId: string; triggerChildId: string; policy: DiscountPolicySetting; now?: string;
+}): Promise<number> {
+  const trigger = await familyTriggerYear(env.DB, input.triggerChildId);
+  if (!trigger) return 0;
+  const members = await env.DB.prepare(`SELECT student_id AS studentId FROM family_group_member
+    WHERE family_group_id = ? AND status = 'active'`).bind(input.familyGroupId).all<{ studentId: string }>();
+  const rows = await confirmedRowsForStudentsInYear(env.DB, members.results.map((row) => row.studentId), trigger.academicYearId);
+  return awardQualifiedFamilyRows(env, rows, input.policy, "staff_confirmed_family_group", input.familyGroupId, input.now);
 }
 
 export async function awardReferrerDiscountForReferral(env: WorkerEnv, input: {

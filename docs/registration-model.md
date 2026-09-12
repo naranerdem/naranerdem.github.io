@@ -471,7 +471,7 @@ Migration 0039 implements a typed advanced-admin policy for the family, referrer
 
 There is a normal, public family discount: if two or more eligible children from the same family are enrolled in the same academic year, each receives a 10% tuition reduction.
 
-This is not a teacher-only exceptional discount. It is an automatic business rule applied either to two selected children in one accepted registration or, later, to two confirmed children with the same canonical guardian relationship.
+This is not a teacher-only exceptional discount. It is an automatic business rule applied either to two selected children in one accepted registration, to distinct canonical children with the same canonical guardian relationship, or to distinct canonical children explicitly confirmed by staff as a family group. A single canonical child attending distinct classes also qualifies through its separate agreements; a repeated agreement for the same child and same class does not establish qualification.
 
 Recommended qualification semantics:
 
@@ -482,7 +482,7 @@ Recommended qualification semantics:
 
 The bounded automatic rule is now implemented; future discretionary award types remain separate from it.
 
-Approved family-discount scope: automatic same-guardian qualification and future explicit cross-guardian family membership both qualify within the same academic year. A recorded family membership may persist across academic years, but eligibility and any resulting award are evaluated independently for each year.
+Approved family-discount scope: automatic same-guardian qualification and explicit cross-guardian family membership both qualify within the same academic year. A recorded family membership may persist across academic years, but eligibility and any resulting award are evaluated independently for each year. Family membership never merges children or guardian accounts, grants parent access, pools sibling credit, or rewrites payments. Mistaken membership correction and any award reversal remain deliberate audited operations; there is no automatic unlink or clawback policy.
 
 ### Referral Discount
 

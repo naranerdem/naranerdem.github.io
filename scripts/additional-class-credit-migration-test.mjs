@@ -36,6 +36,7 @@ try {
 
   sql(readFileSync("migrations/0046_additional_class_award_credit_lineage.sql", "utf8"));
   sql(readFileSync("migrations/0047_additional_class_credit_reservations.sql", "utf8"));
+  sql(readFileSync("migrations/0048_family_discount_membership.sql", "utf8"));
 
   assert.deepEqual(JSON.parse(sql(`SELECT operation_type AS operationType, source_student_id AS studentId, amount_mnt AS amountMnt FROM child_credit_operation WHERE id = 'operation';`, true)), [
     { operationType: "manual_add", studentId: "student", amountMnt: 110000 },
@@ -46,9 +47,15 @@ try {
   const indexes = JSON.parse(sql(`SELECT name FROM pragma_index_list('additional_class_credit_reservation') ORDER BY name;`, true)).map((row) => row.name);
   assert.ok(indexes.includes("idx_additional_class_credit_reservation_admission"), "0047 creates the admission lookup index");
   assert.ok(indexes.includes("idx_additional_class_credit_reservation_target"), "0047 creates the target lookup index");
+  const awardColumns = JSON.parse(sql(`SELECT name FROM pragma_table_info('discount_award') ORDER BY cid;`, true)).map((row) => row.name);
+  assert.ok(awardColumns.includes("family_group_id"), "0048 adds family membership lineage without rebuilding existing awards");
+  const familyIndexes = JSON.parse(sql(`SELECT name FROM pragma_index_list('family_group_member') ORDER BY name;`, true)).map((row) => row.name);
+  assert.ok(familyIndexes.includes("idx_family_group_member_one_active_student"), "0048 prevents a student from holding two active family memberships");
+  const confirmationIndexes = JSON.parse(sql(`SELECT name FROM pragma_index_list('family_group_confirmation') ORDER BY name;`, true)).map((row) => row.name);
+  assert.ok(confirmationIndexes.includes("idx_family_group_confirmation_group"), "0048 creates the family-confirmation lookup index");
   assert.equal(sql("PRAGMA foreign_key_check;"), "", "the 0045 data remains foreign-key consistent after 0046 and 0047");
   assert.equal(sql("PRAGMA integrity_check;"), "ok", "the upgraded database remains structurally sound");
-  console.log("ok additional-class credit migrations preserve 0045 ledger rows and add reservation lineage");
+  console.log("ok additional-class, credit, and family migrations preserve 0045 ledger rows and add reservation/membership lineage");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

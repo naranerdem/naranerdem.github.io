@@ -115,7 +115,9 @@ async function dbJson(query) {
   return parsed[0]?.results ?? [];
 }
 
-async function fillIntake(page, childName, paymentPlanCode = "two_installment") {
+async function fillIntake(page, childName, paymentPlanCode = "two_installment", options = {}) {
+  const stage = options.stage ?? "stage_1";
+  const classSessionId = options.classSessionId ?? "browser-class-source";
   await page.goto(`${baseUrl}/staff/registration-intake/`);
   await page.locator("#intake-app").waitFor({ state: "visible" });
   await page.selectOption('select[name="intakeChannel"]', "paper_form");
@@ -130,8 +132,8 @@ async function fillIntake(page, childName, paymentPlanCode = "two_installment") 
   await page.fill('input[name="givenName"]', childName);
   await page.fill('input[name="dateOfBirth"]', "2015-05-10");
   await page.selectOption('select[name="currentGrade"]', "5");
-  await page.selectOption('select[name="stage"]', "stage_1");
-  await page.selectOption('select[name="classSessionId"]', "browser-class-source");
+  await page.selectOption('select[name="stage"]', stage);
+  await page.selectOption('select[name="classSessionId"]', classSessionId);
   await page.selectOption('select[name="paymentPlanCode"]', paymentPlanCode);
   await page.check('input[name="parentRulesAcknowledged"]');
   await page.check('input[name="studentRulesAcknowledged"]');
@@ -233,9 +235,10 @@ async function openCredit(page, childId) {
   const row = page.locator(`[data-registration-child="${childId}"]`);
   const creditOpen = row.locator('[data-credit-open]').last();
   if (!await creditOpen.isVisible()) {
-    const detail = row.locator('button[data-payment-detail][aria-expanded="false"]');
+    const detail = row.locator('button[data-payment-detail]').first();
     await detail.waitFor({ state: "visible" });
-    await detail.click();
+    if (await detail.getAttribute("aria-expanded") !== "true") await detail.click();
+    await creditOpen.waitFor({ state: "visible" });
   }
   await creditOpen.waitFor({ state: "visible" });
   await row.locator('[data-credit-open]').last().click();
@@ -258,7 +261,8 @@ async function applyCredit(page, childId, amount) {
   const row = page.locator(`[data-registration-child="${childId}"]`);
   const creditOpen = row.locator('[data-credit-open]').last();
   if (!await creditOpen.isVisible()) {
-    await row.locator('button[data-payment-detail][aria-expanded="false"]').click();
+    const detail = row.locator('button[data-payment-detail]').first();
+    if (await detail.getAttribute("aria-expanded") !== "true") await detail.click();
     await creditOpen.waitFor({ state: "visible" });
   }
   if (await row.locator('[data-child-credit-form="apply"]:visible').count() === 0) await creditOpen.click();
@@ -281,7 +285,8 @@ async function correctCredit(page, childId, adjustmentMnt) {
   const row = page.locator(`[data-registration-child="${childId}"]`);
   const creditOpen = row.locator('[data-credit-open]').last();
   if (!await creditOpen.isVisible()) {
-    await row.locator('button[data-payment-detail][aria-expanded="false"]').click();
+    const detail = row.locator('button[data-payment-detail]').first();
+    if (await detail.getAttribute("aria-expanded") !== "true") await detail.click();
     await creditOpen.waitFor({ state: "visible" });
   }
   if (await row.locator('[data-credit-subpanel-name="correct"]:visible').count() === 0) await creditOpen.click();
@@ -328,6 +333,94 @@ async function recordCashPayment(page, childId, amount) {
   const response = await request;
   if (!response.ok()) throw new Error(`cash payment failed: ${await response.text()}`);
   await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
+}
+
+async function confirmFamilyMembership(page, sourceChildId, relatedChildId, query, reason) {
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(sourceChildId)}`);
+  const row = page.locator(`[data-registration-child="${sourceChildId}"]`);
+  await row.locator("[data-family-discount-open]").click();
+  const picker = row.locator("[data-family-discount-select]");
+  await picker.waitFor({ state: "visible" });
+  const filter = row.locator("[data-family-discount-filter]");
+  await filter.fill(query);
+  await filter.press("Tab");
+  assert.equal(await picker.locator(`option[value="${relatedChildId}"]`).count(), 1,
+    "the immediate family picker contains one unambiguous eligible child option");
+  await picker.selectOption(relatedChildId);
+  const confirmation = row.locator("[data-family-discount-confirm]");
+  await confirmation.waitFor({ state: "visible" });
+  const financialPreview = confirmation.locator("ul");
+  await financialPreview.waitFor({ state: "visible" });
+  assert.match(await financialPreview.innerText(), /100 ₮/, "the compact rendered preview shows the proposed agreement discount before confirmation");
+  await confirmation.locator('textarea[name="reason"]').fill(reason);
+  const request = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("family-discount.confirm"));
+  await confirmation.locator('button[type="submit"]').click();
+  const response = await request;
+  if (!response.ok()) throw new Error(`family membership confirmation failed: ${await response.text()}`);
+  await page.getByText("Гэр бүлийн гишүүнчлэл болон тохирох хөнгөлөлтийг баталгаажууллаа.").waitFor({ state: "visible" });
+}
+
+async function useFamilySuggestionFromRecipient(page, recipientChildId, donorChildId, amount) {
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(recipientChildId)}`);
+  const recipient = page.locator(`[data-registration-child="${recipientChildId}"]`);
+  await recipient.waitFor({ state: "visible" });
+  const notice = recipient.locator("[data-family-credit-notice]");
+  await notice.waitFor({ state: "visible" });
+  assert.match(await notice.innerText(), /Энэ төлбөрт кредит хэрэглэх/, "recipient sees family credit guidance without opening the donor record");
+  await recipient.locator("[data-payment-open]").click();
+  const paymentForm = recipient.locator('[data-payment-form]');
+  await paymentForm.waitFor({ state: "visible" });
+  assert.equal(await paymentForm.locator('input[name="proceedWithoutFamilyCredit"]').count(), 1,
+    "cash collection requires an explicit family-credit decision before submission");
+  await paymentForm.locator("[data-payment-close]").click();
+  await notice.locator("[data-family-credit-suggestion]").click();
+  const confirmation = recipient.locator('[data-family-credit-apply]');
+  await confirmation.waitFor({ state: "visible" });
+  assert.equal(await page.locator(`[data-registration-child="${donorChildId}"] [data-child-credit-form="transfer"]:visible`).count(), 0,
+    "the receiver-scoped suggestion never opens the donor's general transfer panel");
+  assert.match(await confirmation.innerText(), new RegExp(`${amount} ₮`), "the fixed confirmation shows the capped transfer and resulting balances");
+  await confirmation.locator('[data-family-credit-apply-cancel]').click();
+  assert.equal(await recipient.locator('[data-family-credit-apply]').count(), 0,
+    "dismissing the confirmation performs no transfer or application");
+  const beforeFailure = await dbJson(`SELECT COUNT(*) AS value FROM child_credit_operation
+    WHERE source_registration_draft_child_id = ${sql(donorChildId)} AND target_registration_draft_child_id = ${sql(recipientChildId)}`);
+  execute(`CREATE TRIGGER browser_family_credit_application_failure BEFORE INSERT ON child_credit_entry
+    WHEN NEW.entry_kind = 'credit_application' AND NEW.reason = 'Browser forced family application failure'
+    BEGIN SELECT RAISE(ABORT, 'forced family application failure'); END;`);
+  await notice.locator("[data-family-credit-suggestion]").click();
+  const failedConfirmation = recipient.locator('[data-family-credit-apply]');
+  await failedConfirmation.waitFor({ state: "visible" });
+  await failedConfirmation.locator('textarea[name="reason"]').fill("Browser forced family application failure");
+  const failedRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments") && response.request().method() === "POST");
+  await failedConfirmation.locator('button[type="submit"]').click();
+  assert.equal((await failedRequest).ok(), false, "an application failure is surfaced without a successful settlement response");
+  const afterFailure = await dbJson(`SELECT COUNT(*) AS value FROM child_credit_operation
+    WHERE source_registration_draft_child_id = ${sql(donorChildId)} AND target_registration_draft_child_id = ${sql(recipientChildId)}`);
+  assert.equal(Number(afterFailure[0]?.value), Number(beforeFailure[0]?.value),
+    "a failed application rolls back the donor debit and intermediate transfer root");
+  execute("DROP TRIGGER browser_family_credit_application_failure;");
+  const retryConfirmation = recipient.locator('[data-family-credit-apply]');
+  await retryConfirmation.waitFor({ state: "visible" });
+  await retryConfirmation.locator('textarea[name="reason"]').fill("Browser family credit settlement");
+  const request = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments") && response.request().method() === "POST");
+  await retryConfirmation.locator('button[type="submit"]').click();
+  const response = await request;
+  if (!response.ok()) throw new Error(`suggested family credit settlement failed: ${await response.text()}`);
+  await recipient.getByText("кредитийг энэ төлбөрт тооцлоо.").waitFor({ state: "visible" });
+  const afterSuccess = await dbJson(`SELECT COUNT(*) AS value FROM child_credit_operation
+    WHERE source_registration_draft_child_id = ${sql(donorChildId)} AND target_registration_draft_child_id = ${sql(recipientChildId)}`);
+  assert.equal(Number(afterSuccess[0]?.value), Number(beforeFailure[0]?.value) + 1,
+    "the retry commits one durable combined transfer/application operation");
+}
+
+async function staffPaymentProjection(page, childId) {
+  return page.evaluate(async (targetChildId) => {
+    const response = await fetch("/api/staff/payments", { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw new Error("staff payment projection failed");
+    const body = await response.json();
+    return body.items.find((item) => item.registrationDraftChildId === targetChildId) ?? null;
+  }, childId);
 }
 
 async function recordPaymentSearchNote(page, childId) {
@@ -576,6 +669,53 @@ try {
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   page = await context.newPage();
 
+  if (process.env.FAMILY_DISCOUNT_BROWSER_ONLY === "1") {
+    execute(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1100, first_installment_amount_mnt = 550,
+      second_installment_amount_mnt = 550 WHERE activity_offering_id = 'browser-offering-high';`);
+    const familyAlpha = await fillIntake(page, "FamilyAlpha", "single");
+    const familyBeta = await fillIntake(page, "FamilyBeta", "two_installment", {
+      stage: "stage_2", classSessionId: "browser-class-high",
+    });
+    await recordCashPayment(page, familyAlpha, 1000);
+    await finalizeCashRegistration(page, familyAlpha);
+    await recordCashPayment(page, familyBeta, 550);
+    await finalizeCashRegistration(page, familyBeta);
+    await confirmFamilyMembership(page, familyAlpha, familyBeta, "FamilyBeta", "Browser cross-guardian family confirmation");
+    const firstResult = await dbJson(`SELECT
+        (SELECT COUNT(*) FROM family_group_member WHERE family_group_id = family_group_confirmation.family_group_id AND status = 'active') AS members,
+        (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)})
+          AND award_type = 'family_multi_child' AND status = 'active') AS awards,
+        (SELECT COALESCE(SUM(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit WHERE debit.origin_entry_id = root.id), 0) - root.reserved_amount_mnt), 0)
+          FROM child_credit_entry AS root WHERE root.registration_draft_child_id = ${sql(familyAlpha)} AND root.entry_kind = 'discount_award_credit') AS alphaAvailableCredit,
+        (SELECT amount_mnt FROM payment_installment WHERE registration_draft_child_id = ${sql(familyBeta)} AND installment_kind = 'later') AS betaRawLaterAmount
+      FROM family_group_confirmation ORDER BY created_at DESC LIMIT 1`);
+    const familyBetaProjection = await staffPaymentProjection(page, familyBeta);
+    assert.deepEqual({ members: Number(firstResult[0]?.members), awards: Number(firstResult[0]?.awards), alphaAvailableCredit: Number(firstResult[0]?.alphaAvailableCredit), betaRawLaterAmount: Number(firstResult[0]?.betaRawLaterAmount), betaRemaining: Number(familyBetaProjection?.totalRemainingMnt) },
+      { members: 2, awards: 2, alphaAvailableCredit: 100, betaRawLaterAmount: 550, betaRemaining: 440 },
+      "rendered family confirmation creates only the fully paid child's actual 100 MNT credit and reduces the other child's later obligation to 440 MNT");
+    await useFamilySuggestionFromRecipient(page, familyBeta, familyAlpha, 100);
+    const afterTransferAndApplication = await dbJson(`SELECT
+        (SELECT COALESCE(SUM(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit WHERE debit.origin_entry_id = root.id), 0) - root.reserved_amount_mnt), 0)
+          FROM child_credit_entry AS root WHERE root.registration_draft_child_id = ${sql(familyAlpha)} AND root.amount_mnt > 0) AS alphaAvailable,
+        (SELECT COALESCE(SUM(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit WHERE debit.origin_entry_id = root.id), 0) - root.reserved_amount_mnt), 0)
+          FROM child_credit_entry AS root WHERE root.registration_draft_child_id = ${sql(familyBeta)} AND root.amount_mnt > 0) AS betaAvailable,
+        (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id IN (
+          SELECT id FROM payment_request WHERE registration_draft_id IN (SELECT registration_draft_id FROM registration_draft_child WHERE id IN (${sql(familyAlpha)}, ${sql(familyBeta)})))) AS cashReceived`);
+    const afterApplicationProjection = await staffPaymentProjection(page, familyBeta);
+    assert.deepEqual({ alphaAvailable: Number(afterTransferAndApplication[0]?.alphaAvailable), betaAvailable: Number(afterTransferAndApplication[0]?.betaAvailable), betaRemaining: Number(afterApplicationProjection?.totalRemainingMnt), cashReceived: Number(afterTransferAndApplication[0]?.cashReceived) },
+      { alphaAvailable: 0, betaAvailable: 0, betaRemaining: 340, cashReceived: 1550 },
+      "a deliberate browser transfer and application consume exactly the family credit without changing cash receipts");
+    await confirmFamilyMembership(page, familyAlpha, familyBeta, "FamilyBeta", "Browser cross-guardian family confirmation");
+    const replayResult = await dbJson(`SELECT
+        (SELECT COUNT(*) FROM family_group_member WHERE family_group_id = family_group_confirmation.family_group_id AND status = 'active') AS members,
+        (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)})
+          AND award_type = 'family_multi_child' AND status = 'active') AS awards,
+        (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)})
+          AND entry_kind = 'discount_award_credit') AS creditRoots
+      FROM family_group_confirmation ORDER BY created_at DESC LIMIT 1`);
+    assert.deepEqual({ members: Number(replayResult[0]?.members), awards: Number(replayResult[0]?.awards), creditRoots: Number(replayResult[0]?.creditRoots) },
+      { members: 2, awards: 2, creditRoots: 1 }, "family confirmation replay cannot duplicate the award or fully paid child's credit root");
+  } else {
   const cashChildId = await fillIntake(page, "CashBrowser");
   await recordPartialCashPayment(page, cashChildId);
   const partialCash = await dbJson(`SELECT
@@ -961,6 +1101,49 @@ try {
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(onePaymentTargetId)}`);
   await page.locator(`[data-registration-child="${onePaymentTargetId}"]`).getByText(sharedReferral[0].code).waitFor({ state: "visible" });
 
+  // Cross-guardian family qualification is a rendered staff workflow. It
+  // retains separate students, cash receipts, and child-credit roots while
+  // awarding each fully-paid agreement from its own immutable price snapshot.
+  const familyAlpha = await fillIntake(page, "FamilyAlpha", "single");
+  const familyBeta = await fillIntake(page, "FamilyBeta", "single");
+  await recordCashPayment(page, familyAlpha, 1000);
+  await finalizeCashRegistration(page, familyAlpha);
+  await recordCashPayment(page, familyBeta, 1000);
+  await finalizeCashRegistration(page, familyBeta);
+  await confirmFamilyMembership(page, familyAlpha, familyBeta, "FamilyBeta", "Browser cross-guardian family confirmation");
+  const familyFirstResult = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM family_group_member WHERE family_group_id = family_group_confirmation.family_group_id AND status = 'active') AS members,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)})
+        AND award_type = 'family_multi_child' AND status = 'active') AS awards,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)})
+        AND entry_kind = 'discount_award_credit') AS residualCredit
+    FROM family_group_confirmation ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(Number(familyFirstResult[0]?.members), 2, "rendered family confirmation persists two separate active members");
+  assert.equal(Number(familyFirstResult[0]?.awards), 2, "each independently paid agreement receives one non-stacking family award");
+  assert.equal(Number(familyFirstResult[0]?.residualCredit), 200, "fully paid agreements retain two separate 10% residual credit roots");
+  const familyGamma = await fillIntake(page, "FamilyGamma", "single");
+  await recordCashPayment(page, familyGamma, 1000);
+  await finalizeCashRegistration(page, familyGamma);
+  await confirmFamilyMembership(page, familyAlpha, familyGamma, "FamilyGamma", "Browser third family member confirmation");
+  const familyThirdResult = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM family_group_member WHERE family_group_id = family_group_confirmation.family_group_id AND status = 'active') AS members,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)}, ${sql(familyGamma)})
+        AND award_type = 'family_multi_child' AND status = 'active') AS awards,
+      (SELECT COUNT(DISTINCT canonical_student_id) FROM child_credit_entry WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)}, ${sql(familyGamma)})
+        AND entry_kind = 'discount_award_credit') AS creditOwners
+    FROM family_group_confirmation ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(Number(familyThirdResult[0]?.members), 3, "adding a third child reuses the existing family group");
+  assert.equal(Number(familyThirdResult[0]?.awards), 3, "repeated group activation creates no duplicate family-award value");
+  assert.equal(Number(familyThirdResult[0]?.creditOwners), 3, "family membership never pools sibling credit ownership");
+  await confirmFamilyMembership(page, familyAlpha, familyGamma, "FamilyGamma", "Browser deliberate repeated family confirmation");
+  const familyReplayResult = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM family_group_member WHERE family_group_id = family_group_confirmation.family_group_id AND status = 'active') AS members,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)}, ${sql(familyGamma)})
+        AND award_type = 'family_multi_child' AND status = 'active') AS awards
+    FROM family_group_confirmation ORDER BY created_at DESC LIMIT 1`);
+  assert.equal(Number(familyReplayResult[0]?.members), 3, "a deliberate repeated confirmation does not duplicate active membership");
+  assert.equal(Number(familyReplayResult[0]?.awards), 3, "a deliberate repeated confirmation creates no additional discount value");
+
   const sourceCapacityBeforeTransfer = await dbJson(`SELECT COUNT(*) AS reserved FROM registration_capacity_hold
     WHERE class_session_id = 'browser-class-target' AND status = 'active'`);
   await openAndAbandonTransfer(page, childId);
@@ -1051,6 +1234,7 @@ try {
   assert.equal(declinedState[0]?.offerStatus, "declined", "public waitlist decline resolves the exact active offer");
   assert.equal(Number(declinedState[0]?.holds), 0, "declining a waitlist offer creates no hold or enrollment");
 
+  }
   passed = true;
   console.log(`ok child-credit browser workflow (${testRunId})`);
 } finally {

@@ -83,6 +83,11 @@ assert.ok(
   "ledger entries must be deleted before their operation parent",
 );
 assert.ok(
+  position('DELETE FROM family_group_confirmation WHERE ${scoped("family_group_confirmation")};')
+    < position('DELETE FROM family_group_member WHERE ${scoped("family_group_member")};'),
+  "family confirmation lineage must be removed before its scoped family members",
+);
+assert.ok(
   position('DELETE FROM enrollment_referral_code WHERE ${scoped("enrollment_referral_code")};')
     < position('DELETE FROM enrollment WHERE ${scoped("enrollment")};'),
   "canonical referral codes must be deleted before their promoted enrollment",

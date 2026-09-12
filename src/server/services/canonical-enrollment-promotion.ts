@@ -3,7 +3,7 @@ import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 import { sendEnrollmentConfirmationEmail } from "../email/registration-transactional";
 import { ensureEnrollmentReferralCode } from "./referral-codes";
-import { awardFamilyDiscountsForGuardian, awardReferrerDiscountForReferral, effectiveInstallmentsForRows, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
+import { awardFamilyDiscountsForGuardian, awardFamilyDiscountsForGroup, awardReferrerDiscountForReferral, effectiveInstallmentsForRows, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
 import { ensureDiscountAwardCredit, releaseAdditionalAdmissionCreditReservations } from "./child-credit-ledger";
 import { pendingAdditionalClassCashSettlement } from "./additional-class-credit-settlement";
 
@@ -894,7 +894,10 @@ export async function promotePaidDraftChild(
       { isTest: row.childIsTest, testRunId: row.childTestRunId }, new Date().toISOString());
     const policy = await getDiscountPolicySettingFromDatabase(env.DB);
     if (row.canonicalGuardianId) {
-      await awardFamilyDiscountsForGuardian(env, { guardianId: row.canonicalGuardianId, policy });
+      await awardFamilyDiscountsForGuardian(env, { guardianId: row.canonicalGuardianId, triggerChildId: row.childId, policy });
+      const familyGroup = await env.DB.prepare(`SELECT family_group_id AS familyGroupId FROM family_group_member
+        WHERE student_id = ? AND status = 'active' ORDER BY created_at LIMIT 1`).bind(row.canonicalStudentId).first<{ familyGroupId: string }>();
+      if (familyGroup?.familyGroupId) await awardFamilyDiscountsForGroup(env, { familyGroupId: familyGroup.familyGroupId, triggerChildId: row.childId, policy });
     }
     await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy });
     return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
@@ -1107,7 +1110,10 @@ export async function promotePaidDraftChild(
   await env.DB.prepare(`UPDATE discount_award SET beneficiary_enrollment_id = ?, updated_at = ?
     WHERE registration_draft_child_id = ? AND beneficiary_enrollment_id IS NULL`).bind(promoted.enrollmentId, now, row.childId).run();
   const discountPolicy = await getDiscountPolicySettingFromDatabase(env.DB);
-  await awardFamilyDiscountsForGuardian(env, { guardianId: guardian.guardianId, policy: discountPolicy, now });
+  await awardFamilyDiscountsForGuardian(env, { guardianId: guardian.guardianId, triggerChildId: row.childId, policy: discountPolicy, now });
+  const familyGroup = await env.DB.prepare(`SELECT family_group_id AS familyGroupId FROM family_group_member
+    WHERE student_id = ? AND status = 'active' ORDER BY created_at LIMIT 1`).bind(studentId).first<{ familyGroupId: string }>();
+  if (familyGroup?.familyGroupId) await awardFamilyDiscountsForGroup(env, { familyGroupId: familyGroup.familyGroupId, triggerChildId: row.childId, policy: discountPolicy, now });
   if (referral && sameFamilyReferral) {
     await reverseReferralAwardForSameFamily(env, row.childId, now);
   } else if (referral) {

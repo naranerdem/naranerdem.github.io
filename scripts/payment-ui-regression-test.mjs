@@ -77,6 +77,18 @@ assert.match(page, /Кредит ашиглахгүйг батлах/, "staff ca
 assert.match(page, /child-credit\.leave-unused/, "the UI submits the guarded leave-unused decision through its staff route");
 assert.match(page, /button\("credit", "Кредит", state\.data\?\.canManageCredits\)/, "credit shares the owning child's action strip with transfer, admission, and information");
 assert.match(page, /button\("info", "Мэдээлэл"[\s\S]*button\("payment", "Төлбөр"[\s\S]*button\("credit", "Кредит"[\s\S]*button\("transfer", "Шилжих"[\s\S]*button\("additional", "Анги нэмэх"/, "outer actions follow the requested staff workflow order");
+assert.match(page, /button\("family", "Гэр бүл", state\.data\?\.canManageFamilyDiscounts/, "teacher and admin receive a compact per-record family action");
+assert.match(page, /data-family-discount-select=/, "family candidates use an immediate accessible child selector");
+assert.match(page, /data-family-credit-notice/, "a receiving child sees transferable family credit before requesting cash");
+assert.match(page, /proceedWithoutFamilyCredit/, "cash collection requires an explicit choice when transferable family credit remains");
+assert.match(page, /data-family-credit-apply=/, "the receiver-side family-credit suggestion opens one fixed payment confirmation");
+assert.match(page, /Энэ төлбөрт кредит хэрэглэх/, "the suggestion describes the one explicit application operation");
+assert.match(page, /data-family-discount-confirm=/, "family membership requires a reasoned confirmation operation");
+assert.match(page, /Гишүүнчлэл нь хүүхэд, асран хамгаалагчийн хандалт, төлбөр, кредитийг нэгтгэхгүй/, "the compact details disclosure explains the non-merging boundary");
+assert.match(page, /Таних мэдээллийн зөрчил илэрвэл тусад нь шалгана/, "the family action does not become identity reconciliation");
+assert.match(router, /family-discount\.detail/, "the staff payment endpoint exposes a read-only family detail route");
+assert.match(router, /family-discount\.confirm/, "the staff payment endpoint exposes the explicit membership confirmation route");
+assert.match(router, /family-credit\.apply-suggestion/, "the staff payment endpoint exposes the protected receiver-side settlement route");
 assert.match(page, /data-credit-close=/, "the credit panel can close without selecting an inner credit operation");
 assert.match(page, /data-payment-detail=.*role="button" tabindex="0"/, "collapsed registration summaries are keyboard-accessible expand controls");
 assert.match(page, /addEventListener\("keydown"/, "summary disclosure supports Enter and Space without relying on a pointer");
