@@ -99,6 +99,7 @@ const stagingCatalogSql = `
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
   WHERE ${activeWindowForOfferingSql("offering.id")}
     AND class_session.status IN ('available', 'full', 'closed')
+    AND (class_session.is_publicly_visible = 1 OR ? = 1)
   ORDER BY academic_year.starts_on, academic_year.public_label,
     CASE class_session.stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
     CASE class_session.weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
@@ -167,6 +168,7 @@ const productionCatalogSql = `
     AND class_session.is_test = ?
     AND class_session.is_test_only = ?
     AND class_session.status IN ('available', 'full', 'closed')
+    AND (class_session.is_publicly_visible = 1 OR ? = 1)
   ORDER BY academic_year.starts_on, academic_year.public_label,
     CASE class_session.stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
     CASE class_session.weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
@@ -177,12 +179,14 @@ export async function getRegistrationCatalog(
   database: D1Database,
   environment: AppEnvironment,
   nowDate = new Date(),
+  options: { includeHidden?: boolean } = {},
 ): Promise<RegistrationCatalog> {
   const now = nowDate.toISOString();
   const localDate = mongoliaCivilDate(nowDate);
+  const includeHidden = options.includeHidden ? 1 : 0;
   const statement = environment === "staging"
-    ? database.prepare(stagingCatalogSql).bind(now, localDate, localDate, localDate, localDate)
-    : database.prepare(productionCatalogSql).bind(now, localDate, localDate, localDate, localDate, 0, 0, 0);
+    ? database.prepare(stagingCatalogSql).bind(now, localDate, localDate, localDate, localDate, includeHidden)
+    : database.prepare(productionCatalogSql).bind(now, localDate, localDate, localDate, localDate, 0, 0, 0, includeHidden);
   const result = await statement.all<CatalogRow>();
   const projectionByClassId = new Map((await getClassCapacityProjections(database, environment, nowDate))
     .map((projection) => [projection.classSessionId, projection]));

@@ -56,6 +56,17 @@ credits, and adjustments remain separate future layers.
 
 At launch, an optional received referral code is validated against an active confirmed referring enrollment and captured for each accepted child. The referring child receives its own opaque code only after initial payment confirmation. Canonical promotion preserves a pending relationship without changing the accepted pricing snapshot, payment request, installment, or capacity reservation. A same-child or same-guardian relationship is retained as disqualified audit history rather than qualifying for a future benefit. The eventual family 10%, referrer 5%, and referred-child 2% rules need a separate audited pricing-adjustment/credit implementation; early captured relationships can then be evaluated retroactively against their immutable base terms.
 
+### Public Class Visibility
+
+Class registration availability and public listing are separate controls. Closing
+registration keeps a class visible but unavailable; hiding a class removes it from
+new public catalog and registration choices while preserving staff operations,
+existing registrations, payment history, parent access, holds, waitlist entries,
+and issued offers. A public submission rechecks listing at the write boundary, so
+a stale form cannot create a new hold or waitlist entry for a newly hidden class.
+Hiding does not archive or delete a class and does not change capacity, pricing,
+or registration-window membership.
+
 ## Privacy Principle
 
 Collect only information genuinely needed for enrollment, communication, tuition tracking, and safety. Do not design around collecting government identifiers or unnecessary sensitive personal data.

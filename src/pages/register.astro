@@ -57,7 +57,7 @@ const formCopy = registrationFormCopy;
       </section>
 
       <form id="registration-form" class="registration-form" novalidate hidden>
-        <p id="information-error" class="form-error" role="alert" hidden>{formCopy.messages.requiredError}</p>
+        <p id="information-error" class="form-error" role="alert" hidden><span class="required-marker" aria-hidden="true">*</span> {formCopy.messages.requiredError.replace(/^\*\s*/, "")}</p>
 
         <section class="form-section" aria-labelledby="guardian-title">
           <h2 id="guardian-title">{formCopy.guardian.title}</h2>
@@ -137,29 +137,29 @@ const formCopy = registrationFormCopy;
     </main>
 
     <dialog id="guardian-rules-dialog" class="rules-dialog" aria-labelledby="guardian-rules-title">
-      <div class="dialog-content">
-        <div class="dialog-header">
-          <h2 id="guardian-rules-title">{rulesContent.parent.title}</h2>
-          <button class="icon-text-button" type="button" data-close-dialog="guardian-rules-dialog">{formCopy.buttons.close}</button>
-        </div>
-        <div id="guardian-rules-body"><p>{rulesContent.parent.acknowledgement}</p><ul>{rulesContent.parent.summary.map((item) => <li>{item}</li>)}</ul></div>
-        <div class="dialog-actions">
-          <button class="button secondary" type="button" data-close-dialog="guardian-rules-dialog">{formCopy.buttons.close}</button>
-          <button class="button primary" type="button" id="acknowledge-guardian">{formCopy.buttons.acknowledgeGuardian}</button>
+        <div class="dialog-content">
+          <div class="dialog-header">
+            <h2 id="guardian-rules-title">{rulesContent.parent.title}</h2>
+          </div>
+          <p class="rules-dialog-instruction">Журамтай танилцаад доорх зөвшөөрөх товчийг ашиглана уу.</p>
+          <div id="guardian-rules-body"><p>{rulesContent.parent.acknowledgement}</p><ul>{rulesContent.parent.summary.map((item) => <li>{item}</li>)}</ul></div>
+          <div class="dialog-actions">
+            <button class="button secondary" type="button" data-close-dialog="guardian-rules-dialog">Буцах</button>
+            <button class="button primary" type="button" id="acknowledge-guardian">{formCopy.buttons.acknowledgeGuardian}</button>
         </div>
       </div>
     </dialog>
 
     <dialog id="student-rules-dialog" class="rules-dialog" aria-labelledby="student-rules-title">
-      <div class="dialog-content">
-        <div class="dialog-header">
-          <h2 id="student-rules-title">{rulesContent.student.title}</h2>
-          <button class="icon-text-button" type="button" data-close-dialog="student-rules-dialog">{formCopy.buttons.close}</button>
-        </div>
-        <div id="student-rules-body"><p>{rulesContent.student.acknowledgement}</p><ul>{rulesContent.student.summary.map((item) => <li>{item}</li>)}</ul></div>
-        <div class="dialog-actions">
-          <button class="button secondary" type="button" data-close-dialog="student-rules-dialog">{formCopy.buttons.close}</button>
-          <button class="button primary" type="button" id="acknowledge-student">{formCopy.buttons.acknowledgeStudent}</button>
+        <div class="dialog-content">
+          <div class="dialog-header">
+            <h2 id="student-rules-title">{rulesContent.student.title}</h2>
+          </div>
+          <p class="rules-dialog-instruction">Журамтай танилцаад доорх зөвшөөрөх товчийг ашиглана уу.</p>
+          <div id="student-rules-body"><p>{rulesContent.student.acknowledgement}</p><ul>{rulesContent.student.summary.map((item) => <li>{item}</li>)}</ul></div>
+          <div class="dialog-actions">
+            <button class="button secondary" type="button" data-close-dialog="student-rules-dialog">Буцах</button>
+            <button class="button primary" type="button" id="acknowledge-student">{formCopy.buttons.acknowledgeStudent}</button>
         </div>
       </div>
     </dialog>
@@ -513,7 +513,7 @@ const formCopy = registrationFormCopy;
             <fieldset class="returning-field field-wide" data-returning-field>
               <legend>${formCopy.child.returning} ${requiredMarker()}</legend>
               <div class="segmented-choice">
-                ${formCopy.child.returningOptions.map((option) => `<label><input type="radio" name="child-${index}-returning" value="${escapeText(option.value)}" data-child-returning required><span>${escapeText(option.label)}</span></label>`).join("")}
+                ${formCopy.child.returningOptions.map((option) => `<label><input type="radio" name="child-${index}-returning" value="${escapeText(option.value)}" data-child-returning required ${option.value === "no" ? "checked" : ""}><span>${escapeText(option.label)}</span></label>`).join("")}
               </div>
             </fieldset>
             <div class="previous-registration-fields field-wide">
@@ -575,6 +575,89 @@ const formCopy = registrationFormCopy;
         control.scrollIntoView({ block: "center", behavior: "smooth" });
       }
 
+      function validationContainer(control) {
+        return control?.type === "radio" || control?.type === "checkbox"
+          ? control.closest("fieldset") || control.closest("label")
+          : control?.closest("label") || control;
+      }
+
+      function validationCaption(container) {
+        if (!container) return null;
+        if (container.matches("fieldset")) return container.querySelector(":scope > legend");
+        return container.querySelector(":scope > span") || container.querySelector("span");
+      }
+
+      function validationErrorId(control) {
+        return `error-${(control.id || control.name || "field").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      }
+
+      function inlineValidationMessage(message) {
+        return String(message || "").replace(/[.]$/, "");
+      }
+
+      function clearControlError(control) {
+        if (!control) return;
+        const container = validationContainer(control);
+        const node = container?.querySelector(`[data-field-error="${validationErrorId(control)}"]`);
+        node?.remove();
+        control.removeAttribute("aria-invalid");
+        const describedBy = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== validationErrorId(control));
+        if (describedBy.length) control.setAttribute("aria-describedby", describedBy.join(" "));
+        else control.removeAttribute("aria-describedby");
+      }
+
+      function clearValidationErrors() {
+        form.querySelectorAll("[aria-invalid=\"true\"]").forEach((control) => clearControlError(control));
+        form.querySelectorAll("[data-group-error]").forEach((node) => node.remove());
+      }
+
+      function setControlError(control, message) {
+        const container = validationContainer(control);
+        if (!container) return;
+        const errorId = validationErrorId(control);
+        let node = container.querySelector(`[data-field-error="${errorId}"]`);
+        if (!node) {
+          node = document.createElement("span");
+          node.className = "caption-validation-error";
+          node.id = errorId;
+          node.dataset.fieldError = errorId;
+          validationCaption(container)?.append(" ", node);
+        }
+        node.textContent = `(${inlineValidationMessage(message)})`;
+        control.setAttribute("aria-invalid", "true");
+        const describedBy = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+        describedBy.add(errorId);
+        control.setAttribute("aria-describedby", [...describedBy].join(" "));
+      }
+
+      function setGroupError(container, message) {
+        if (!container) return;
+        let node = container.querySelector("[data-group-error]");
+        if (!node) {
+          node = document.createElement("span");
+          node.className = "caption-validation-error";
+          node.dataset.groupError = "true";
+          validationCaption(container)?.append(" ", node);
+        }
+        node.textContent = `(${inlineValidationMessage(message)})`;
+      }
+
+      function birthDateError(control) {
+        if (!control?.value) return "";
+        const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ulaanbaatar", year: "numeric", month: "2-digit", day: "2-digit" })
+          .formatToParts(new Date()).reduce((result, part) => { if (part.type !== "literal") result[part.type] = part.value; return result; }, {});
+        const latest = `${today.year}-${today.month}-${today.day}`;
+        return control.value > latest ? "Төрсөн огноо өнөөдрөөс хойш байж болохгүй." : "";
+      }
+
+      function controlErrorMessage(control) {
+        if (control.matches("[data-child-dob]")) return birthDateError(control) || "Төрсөн огноог зөв оруулна уу.";
+        if (control.type === "email" && control.validity.typeMismatch) return "И-мэйл хаягаа зөв бичнэ үү.";
+        if (control.type === "radio" || control.type === "checkbox") return "Сонголтоо хийнэ үү.";
+        if (control.tagName === "SELECT") return "Энэ талбараас сонгоно уу.";
+        return "Энэ талбарыг бөглөнө үү.";
+      }
+
       function firstVisibleInvalidControl() {
         return Array.from(form.querySelectorAll(":invalid"))
           .find((control) => !control.disabled && !control.closest("[hidden]"));
@@ -589,17 +672,36 @@ const formCopy = registrationFormCopy;
       }
 
       function validateInformation() {
+        clearValidationErrors();
+        errorBox.replaceChildren();
+        const marker = document.createElement("span");
+        marker.className = "required-marker";
+        marker.setAttribute("aria-hidden", "true");
+        marker.textContent = "*";
+        errorBox.append(marker, ` ${formCopy.messages.requiredError.replace(/^\*\s*/, "")}`);
         errorBox.hidden = true;
+        childCards().forEach((card) => {
+          const control = card.querySelector("[data-child-dob]");
+          control.setCustomValidity(birthDateError(control));
+        });
         if (!form.checkValidity()) {
           errorBox.hidden = false;
+          const seenGroups = new Set();
+          Array.from(form.querySelectorAll(":invalid")).filter((control) => !control.disabled && !control.closest("[hidden]")).forEach((control) => {
+            const container = validationContainer(control);
+            if (control.type === "radio" && seenGroups.has(container)) return;
+            seenGroups.add(container);
+            setControlError(control, controlErrorMessage(control));
+          });
           const invalid = firstVisibleInvalidControl();
-          const card = invalid?.closest("[data-child-card]");
-          if (invalid?.matches("[data-child-class]") && card) {
-            setCatalogMessage(card, formCopy.classChoice.selectRequired, true);
+          if (invalid?.type === "radio") {
+            const group = validationContainer(invalid);
+            setGroupError(group, controlErrorMessage(invalid));
           }
           focusVisibleControl(invalid);
           return false;
         }
+        let firstIssueTarget = null;
         for (const card of childCards()) {
           const stage = card.querySelector("[data-child-stage]").value;
           const issue = classSelectionIssue({
@@ -617,11 +719,36 @@ const formCopy = registrationFormCopy;
               : issue.focusTarget === "class-options"
                 ? card.querySelector("[data-child-class]")
                 : card.querySelector("[data-catalog-message]");
-            focusVisibleControl(target);
-            return false;
+            setGroupError(card.querySelector("[data-class-choice]"), issueMessage(issue));
+            firstIssueTarget ||= target;
           }
         }
+        if (firstIssueTarget) {
+          focusVisibleControl(firstIssueTarget);
+          return false;
+        }
         return true;
+      }
+
+      function showServerValidationError(message) {
+        reviewPanel.hidden = true;
+        form.hidden = false;
+        errorBox.textContent = message || formCopy.messages.requiredError;
+        errorBox.hidden = false;
+        const firstChild = childCards()[0];
+        let target = document.getElementById("guardian-name");
+        if (/И-мэйл/.test(message)) {
+          target = document.getElementById("guardian-email");
+          setControlError(target, "И-мэйл хаягаа зөв бичнэ үү.");
+        } else if (/Төрсөн огноо/.test(message) && firstChild) {
+          target = firstChild.querySelector("[data-child-dob]");
+          setControlError(target, message);
+        } else if (/Анги|суудал/.test(message) && firstChild) {
+          setCatalogMessage(firstChild, message, true);
+          setGroupError(firstChild.querySelector("[data-class-choice]"), message);
+          target = firstChild.querySelector("[data-child-class]") || firstChild.querySelector("[data-child-stage]") || firstChild.querySelector("[data-catalog-message]");
+        }
+        focusVisibleControl(target);
       }
 
       function value(selector) {
@@ -967,7 +1094,14 @@ const formCopy = registrationFormCopy;
             body: JSON.stringify(registrationPayload()),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result?.error?.message || formCopy.messages.submitFailed);
+          if (!response.ok) {
+            const message = result?.error?.message || formCopy.messages.submitFailed;
+            if (response.status >= 400 && response.status < 500) {
+              showServerValidationError(message);
+              return;
+            }
+            throw new Error(message);
+          }
           acceptedSubmission = result;
           discardStoredDraft();
           await showVerifiedStatus(false, result.registrationStatus, result);
@@ -992,8 +1126,15 @@ const formCopy = registrationFormCopy;
           finishButton.textContent = formCopy.buttons.submitRegistration;
         }
       });
-      form.addEventListener("input", saveDraft);
-      form.addEventListener("change", saveDraft);
+      function clearResolvedValidation(event) {
+        const control = event.target;
+        if (!(control instanceof HTMLElement) || !control.matches("input, select, textarea")) return;
+        if (control.matches("[data-child-dob]")) control.setCustomValidity(birthDateError(control));
+        if (control.validity.valid) clearControlError(control);
+        validationContainer(control)?.querySelector("[data-group-error]")?.remove();
+      }
+      form.addEventListener("input", (event) => { clearResolvedValidation(event); saveDraft(); });
+      form.addEventListener("change", (event) => { clearResolvedValidation(event); saveDraft(); });
 
       function restoreDraft(draft) {
         const values = new Map(draft.fields);

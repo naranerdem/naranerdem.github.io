@@ -89,6 +89,7 @@ interface ClassRow {
   academicYearId: string;
   stageCode: StageCode;
   status: string;
+  publicVisibility: number;
   academicYearIsTest: number;
   offeringIsTest: number;
   classIsTest: number;
@@ -266,6 +267,7 @@ function validateSubmission(input: RegistrationSubmissionInput): RegistrationSub
     if (!child.surname || !child.givenName || !genders.has(child.gender) || !validDate(child.dateOfBirth)) {
       throw new RegistrationSubmissionError("invalid_child");
     }
+    if (child.dateOfBirth > mongoliaCivilDate()) throw new RegistrationSubmissionError("future_birth_date");
     if (!currentGradeOptions.some((option) => option.value === child.currentGrade) || !stages.has(child.selectedStageCode)) {
       throw new RegistrationSubmissionError("invalid_child");
     }
@@ -306,7 +308,12 @@ function sourceProvenance(classes: ClassRow[], environment: WorkerEnv["APP_ENV"]
   return { isTest, testRunId: null };
 }
 
-async function loadChosenClasses(env: WorkerEnv, ids: string[], localDate: string): Promise<ClassRow[]> {
+async function loadChosenClasses(
+  env: WorkerEnv,
+  ids: string[],
+  localDate: string,
+  allowHiddenClasses: boolean,
+): Promise<ClassRow[]> {
   const { DB: database } = env;
   const uniqueIds = [...new Set(ids.filter(Boolean))];
   if (!uniqueIds.length) return [];
@@ -316,6 +323,7 @@ async function loadChosenClasses(env: WorkerEnv, ids: string[], localDate: strin
       class_session.academic_year_id AS academicYearId,
       class_session.stage_code AS stageCode,
       class_session.status AS status,
+      class_session.is_publicly_visible AS publicVisibility,
       academic_year.is_test AS academicYearIsTest,
       offering.is_test AS offeringIsTest,
       class_session.is_test AS classIsTest,
@@ -333,16 +341,19 @@ async function loadChosenClasses(env: WorkerEnv, ids: string[], localDate: strin
       AND offering.kind IN ('annual_course', 'summer_course') AND offering.status = 'active'
     LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
     WHERE class_session.id IN (${placeholders})
+      AND (class_session.is_publicly_visible = 1 OR ? = 1)
       AND (? != 'production' OR (
         academic_year.is_test = 0 AND offering.is_test = 0
         AND class_session.is_test = 0 AND class_session.is_test_only = 0
       ))
-  `).bind(localDate, localDate, ...uniqueIds, env.APP_ENV).all<ClassRow>();
+  `).bind(localDate, localDate, ...uniqueIds, allowHiddenClasses ? 1 : 0, env.APP_ENV).all<ClassRow>();
   if (result.results.length !== uniqueIds.length) throw new RegistrationSubmissionError("invalid_class");
   return result.results;
 }
 
-export const acquireAllRequestedSeatsSql = `
+function requestedSeatsSql(requirePublicVisibility: boolean): string {
+  const publicVisibility = requirePublicVisibility ? " OR class_session.is_publicly_visible != 1" : "";
+  return `
   WITH requested AS MATERIALIZED (
     SELECT selected_class_session_id AS class_session_id, COUNT(*) AS requested_count
     FROM registration_draft_child
@@ -398,7 +409,7 @@ export const acquireAllRequestedSeatsSql = `
       LEFT JOIN draft_holds ON draft_holds.class_session_id = requested.class_session_id
       LEFT JOIN waitlist_offers ON waitlist_offers.class_session_id = requested.class_session_id
       LEFT JOIN transfer_reservations ON transfer_reservations.class_session_id = requested.class_session_id
-      WHERE class_session.status NOT IN ('available', 'full')
+      WHERE class_session.status NOT IN ('available', 'full')${publicVisibility}
         OR class_session.capacity - COALESCE(confirmed.count, 0)
           - COALESCE(legacy_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0)
           - COALESCE(transfer_reservations.count, 0)
@@ -418,6 +429,12 @@ export const acquireAllRequestedSeatsSql = `
     AND registration_draft_child.selected_class_session_id IS NOT NULL
     AND (SELECT ok FROM capacity_ok) = 1
 `;
+}
+
+// The public flow rechecks public listing in the same write batch as capacity.
+// Staff intake and staff-selected admissions retain normal operational eligibility.
+export const acquireAllRequestedSeatsSql = requestedSeatsSql(true);
+const acquireAllRequestedSeatsIncludingHiddenSql = requestedSeatsSql(false);
 
 export async function createRegistrationDraft(
   env: WorkerEnv,
@@ -439,10 +456,11 @@ export async function createRegistrationDraft(
     child.selectedClassSessionId ?? "",
     child.preferredWaitlistClassSessionId ?? "",
   ]);
-  const classes = await loadChosenClasses(env, classIds, mongoliaCivilDate(nowDate));
+  const classes = await loadChosenClasses(env, classIds, mongoliaCivilDate(nowDate), Boolean(staffIntake));
   const classById = new Map(classes.map((item) => [item.id, item]));
   const yearIds = new Set(classes.map((item) => item.academicYearId));
-  if (yearIds.size !== 1 || classes.some((item) => !["available", "full"].includes(item.status))) {
+  if (yearIds.size !== 1 || classes.some((item) => !["available", "full"].includes(item.status)
+    || !staffIntake && item.publicVisibility !== 1)) {
     throw new RegistrationSubmissionError("invalid_class");
   }
   if (!additionalAdmission && classes.some((item) => item.registrationWindowActive !== 1)) {
@@ -658,7 +676,7 @@ export async function createRegistrationDraft(
   });
 
   const seatHoldStatementIndex = statements.length;
-  statements.push(env.DB.prepare(acquireAllRequestedSeatsSql).bind(
+  statements.push(env.DB.prepare(staffIntake ? acquireAllRequestedSeatsIncludingHiddenSql : acquireAllRequestedSeatsSql).bind(
     draftId, now, paymentDeadlineAt, now, now, draftId,
   ));
   statements.push(env.DB.prepare(`
@@ -681,7 +699,7 @@ export async function createRegistrationDraft(
     INNER JOIN class_session ON class_session.id = registration_draft_child.preferred_waitlist_class_session_id
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.preferred_waitlist_class_session_id IS NOT NULL
-      AND class_session.status IN ('available', 'full')
+      AND class_session.status IN ('available', 'full')${staffIntake ? "" : "\n      AND class_session.is_publicly_visible = 1"}
   `).bind(now, now, draftId));
   statements.push(env.DB.prepare(`
     INSERT INTO payment_request (id, registration_draft_id, payment_reference, transfer_description, created_at, updated_at, is_test, test_run_id)

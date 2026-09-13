@@ -378,6 +378,20 @@ try {
     (error) => error.code === "invalid_class", "staging rejects a class whose academic-year, Offering, and class test provenance disagree");
   const legacyStatusDraft = await createRegistrationDraft(env(database), submission("class-legacy-status"), new Date(iso(-5)));
   assert.ok(legacyStatusDraft.hasPaymentHold, "legacy academic-year registration status does not override a valid active window");
+  const visibilityBefore = count(database, "registration_draft");
+  database.query("UPDATE class_session SET is_publicly_visible = 0 WHERE id = 'class-second-offering'");
+  const hiddenCatalog = await getRegistrationCatalog(database, "staging", new Date(iso(-4)));
+  assert.equal(hiddenCatalog.academicYears.flatMap((year) => year.classSessions).some((entry) => entry.id === "class-second-offering"), false,
+    "a hidden class is absent from the public catalog rather than shown as unavailable");
+  await assert.rejects(createRegistrationDraft(env(database), submission("class-second-offering"), new Date(iso(-4))),
+    (error) => error.code === "invalid_class", "a stale or crafted public submission cannot create a hold or waitlist entry for a hidden class");
+  await assert.rejects(createRegistrationDraft(env(database), submission("class-priced", "class-second-offering"), new Date(iso(-4))),
+    (error) => error.code === "invalid_class", "a crafted public waitlist preference cannot create a hidden-class waitlist entry");
+  assert.equal(count(database, "registration_draft"), visibilityBefore, "a rejected hidden-class submission creates no draft state");
+  const futureBirthDate = submission("class-priced");
+  futureBirthDate.children[0].dateOfBirth = "2099-05-10";
+  await assert.rejects(createRegistrationDraft(env(database), futureBirthDate, new Date(iso(-4))),
+    (error) => error.code === "future_birth_date", "the authoritative registration service rejects a future child birth date");
   await assert.rejects(createRegistrationDraft(env(database, {
     APP_ENV: "production",
     REGISTRATION_WRITE_ENABLED: "true",
@@ -392,6 +406,9 @@ try {
     staffAssisted: { staffAccountId: "staff-teacher", intakeChannel: "paper_form", parentAcknowledged: true, studentAcknowledged: true, receiptRequested: false },
   });
   assert.ok(staffIntake.hasPaymentHold, "staff-assisted intake uses the normal atomic initial-payment hold");
+  assert.equal(database.query("SELECT selected_class_session_id AS classId FROM registration_draft_child WHERE registration_draft_id = ?", [staffIntake.draftId])[0].classId,
+    "class-second-offering", "staff intake retains operational selection of a hidden class");
+  database.query("UPDATE class_session SET is_publicly_visible = 1 WHERE id = 'class-second-offering'");
   assert.equal(database.query("SELECT gender FROM registration_draft_child WHERE registration_draft_id = ?", [staffIntake.draftId])[0].gender, "not_specified", "the established unspecified gender response persists as a valid child value");
   assert.equal(count(database, "enrollment", `id IN (SELECT canonical_enrollment_id FROM registration_draft_child WHERE registration_draft_id = '${staffIntake.draftId}')`), 0, "staff-assisted intake does not create a canonical enrollment directly");
   const staffAudit = database.query(`SELECT actor_type AS actorType, actor_ref AS actorRef, metadata_json AS metadata FROM audit_event WHERE subject_id = ? AND action = 'registration.created_by_staff'`, [staffIntake.draftId])[0];

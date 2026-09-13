@@ -161,6 +161,7 @@ import {
   removeAcademicYearBreak,
   saveAcademicYearBreak,
   saveClassSession,
+  saveClassPublicVisibility,
   insertProgramDraftLesson,
   moveProgramDraftLesson,
   renameProgramDraft,
@@ -275,6 +276,9 @@ function registrationError(caught: unknown): Response {
     }
     if (caught.code === "invalid_email") {
       return error("invalid_request", "И-мэйл хаягаа зөв бичсэн эсэхээ шалгана уу.", 400);
+    }
+    if (caught.code === "future_birth_date") {
+      return error("invalid_request", "Төрсөн огноо өнөөдрөөс хойш байж болохгүй.", 400);
     }
     if (["invalid_child", "invalid_previous_stage"].includes(caught.code)) {
       return error("invalid_request", "Хүүхдийн мэдээлэл болон өмнөх сургалтын шатны мэдээллээ шалгана уу.", 400);
@@ -418,6 +422,7 @@ function programCalendarError(caught: unknown): Response {
   if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
   if (caught.code === "not_found") return error("invalid_request", "Сонгосон мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Энэ мэдээлэл өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд өөрчлөлтөө шалгана уу.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "program_context_required") return error("invalid_request", "Энэ сургалтад баталгаатай хөтөлбөр холбогдоогүй тул шинэ анги нэмж болохгүй. Эхлээд Хөтөлбөр хэсгээс тухайн сургалтын хөтөлбөрийг бэлтгэж, баталгаажуулна уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "immutable") return error("invalid_request", "Хэвлэгдсэн эсвэл ашиглагдаж буй мэдээллийг шууд өөрчилж болохгүй. Шинэ ноорог үүсгэнэ үү.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "referenced") return error("invalid_request", "Энэ анги бүртгэл эсвэл хуваарьт ашиглагдсан тул устгаж болохгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "capacity_below_consumed") return error("invalid_request", `Одоогоор ${caught.minimumCapacity ?? 0} суудал эзлэгдсэн эсвэл хадгалагдсан тул суудлын тоог түүнээс бага болгох боломжгүй.`, 409, { "Cache-Control": "no-store" });
@@ -1162,7 +1167,7 @@ export async function handleApiRequest(
       if (denied) return denied;
       try {
         return json({
-          catalog: await getRegistrationCatalog(env.DB, env.APP_ENV),
+          catalog: await getRegistrationCatalog(env.DB, env.APP_ENV, new Date(), { includeHidden: true }),
           courseRules: await getCourseRules(env),
         }, 200, { "Cache-Control": "no-store" });
       } catch {
@@ -1850,6 +1855,14 @@ export async function handleApiRequest(
             firstDate: typeof payload.firstDate === "string" ? payload.firstDate : undefined,
             lastDate: typeof payload.lastDate === "string" ? payload.lastDate : null,
             weeklyWeekday: typeof payload.weeklyWeekday === "string" ? payload.weeklyWeekday : null,
+          });
+          break;
+        case "class.public-visibility.save":
+          if (typeof payload.publicVisibility !== "boolean") throw new ProgramCalendarError("invalid");
+          await saveClassPublicVisibility(env, principal, {
+            classSessionId: String(payload.classSessionId ?? ""),
+            expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            publicVisibility: payload.publicVisibility,
           });
           break;
         case "class.delete":

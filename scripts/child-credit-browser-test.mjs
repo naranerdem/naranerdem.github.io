@@ -64,12 +64,16 @@ function fixtureSql() {
     PRAGMA foreign_keys = ON;
     INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at)
       VALUES ('browser-year', 'Browser credit test year', 'open', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
-    INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
-      VALUES ('browser-offering', 'annual_course', 'Browser credit offering', 'browser-year', 'stage_1', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, starts_on, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-offering', 'annual_course', 'Browser credit offering', 'browser-year', 'stage_1', '2026-09-08', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
       VALUES
-      ('browser-class-source', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit source class', 'Tuesday', '09:00', '10:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
-      ('browser-class-target', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit target class', 'Tuesday', '15:00', '16:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+      ('browser-class-source', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit source class', 'Мягмар', '09:00', '10:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+      ('browser-class-target', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit target class', 'Мягмар', '15:00', '16:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, last_date, weekly_weekday, start_time, end_time, created_at, updated_at)
+      VALUES
+      ('browser-class-source', 'weekly', '2026-09-08', NULL, 'Мягмар', '09:00', '10:20', ${sql(now)}, ${sql(now)}),
+      ('browser-class-target', 'weekly', '2026-09-08', NULL, 'Мягмар', '15:00', '16:20', ${sql(now)}, ${sql(now)});
     INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
       VALUES
       ('browser-offering-high', 'annual_course', 'Browser higher transfer offering', 'browser-year', 'stage_2', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
@@ -99,7 +103,8 @@ function fixtureSql() {
     INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('browser-credit-teacher', 'browser-credit-teacher@example.test', 'Browser Credit Teacher', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO staff_account_role (staff_account_id, role_code, assigned_at)
-      VALUES ('browser-credit-teacher', 'teacher', ${sql(now)});
+      VALUES ('browser-credit-teacher', 'teacher', ${sql(now)}),
+        ('browser-credit-teacher', 'admin', ${sql(now)});
     INSERT INTO staff_session (id, staff_account_id, session_token_hash, created_at, expires_at, last_seen_at, is_test, test_run_id)
       VALUES ('browser-credit-session', 'browser-credit-teacher', ${sql(sessionHash)}, ${sql(now)}, '2027-12-31T00:00:00.000Z', ${sql(now)}, 1, ${sql(testRunId)});
     UPDATE discount_policy_setting SET family_multi_child_basis_points = 1000, updated_at = ${sql(now)} WHERE singleton = 1;
@@ -669,7 +674,167 @@ try {
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   page = await context.newPage();
 
-  if (process.env.FAMILY_DISCOUNT_BROWSER_ONLY === "1") {
+  if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
+    const uxContext = await browser.newContext({ viewport: { width: 1200, height: 900 } });
+    const uxPage = await uxContext.newPage();
+    await installTurnstileTestWidget(uxPage);
+    await uxPage.goto(`${baseUrl}/register/?new=1`);
+    await uxPage.locator("#registration-form").waitFor({ state: "visible" });
+    assert.equal(await uxPage.locator('[data-child-returning][value="no"]').isChecked(), true,
+      "a new child visibly defaults to not having studied at the centre before");
+    await uxPage.locator('[data-child-returning][value="yes"]').check();
+    await uxPage.locator("[data-child-previous-stage]").selectOption("stage_1");
+    await uxPage.reload();
+    await uxPage.locator("#restore-registration-draft").click();
+    assert.equal(await uxPage.locator('[data-child-returning][value="yes"]').isChecked(), true,
+      "an explicitly chosen returning answer survives draft restoration");
+    await uxPage.locator('[data-child-returning][value="no"]').check();
+    await uxPage.locator("#registration-form button[type=submit]").click();
+    await uxPage.getByText("* тэмдэгтэй заавал бөглөх талбаруудыг зөв, бүрэн бөглөнө үү.").waitFor({ state: "visible" });
+    assert.equal(await uxPage.locator("#information-error .required-marker").count(), 1,
+      "the required-field summary uses the same styled marker as form captions");
+    assert.equal(await uxPage.evaluate(() => document.activeElement?.id), "guardian-name",
+      "invalid continuation focuses the first actionable field");
+    assert.equal(await uxPage.locator("#guardian-name").getAttribute("aria-invalid"), "true",
+      "the focused required field retains accessible invalid state");
+    assert.match(await uxPage.locator("#guardian-name").locator("xpath=..").textContent() || "", /\*\s+\(Энэ талбарыг бөглөнө үү\)/,
+      "the focused field keeps its specific visible explanation inline with the required marker");
+    assert.equal(await uxPage.locator("#guardian-name").locator("xpath=..//small").count(), 0,
+      "the input has no duplicate validation message beneath its caption");
+
+    await uxPage.fill("#guardian-name", "UX guardian");
+    await uxPage.selectOption("#guardian-relationship", { label: "Ээж" });
+    await uxPage.fill("#guardian-email", "ux-parent@example.test");
+    await uxPage.fill("#guardian-phone", "99112234");
+    await uxPage.fill("#guardian-facebook", "UX guardian");
+    await uxPage.fill("#guardian-address", "UX district");
+    const uxCard = uxPage.locator("[data-child-card]").first();
+    await uxCard.locator("[data-child-surname]").fill("UX");
+    await uxCard.locator("[data-child-name]").fill("Child");
+    await uxCard.locator("[data-child-grade]").selectOption("5");
+    await uxCard.locator("[data-child-gender]").selectOption({ label: "Эмэгтэй" });
+    await uxCard.locator("[data-child-dob]").fill("2099-05-10");
+    await uxPage.locator("#registration-form button[type=submit]").click();
+    await uxPage.getByText("Төрсөн огноо өнөөдрөөс хойш байж болохгүй.").waitFor({ state: "visible" });
+    assert.equal(await uxPage.evaluate(() => document.activeElement?.matches("[data-child-dob]") || false), true,
+      "a future birth date focuses the child date field with a specific explanation");
+    assert.match(await uxCard.locator("[data-child-dob]").locator("xpath=..").textContent() || "", /\*\s+\(Төрсөн огноо өнөөдрөөс хойш байж болохгүй\)/,
+      "a long field-specific date error appears beside its caption instead of beneath the control");
+    await uxCard.locator("[data-child-dob]").fill("2015-05-10");
+    assert.equal(await uxCard.locator("[data-child-dob]").locator("xpath=..").locator(".caption-validation-error").count(), 0,
+      "correcting a field removes only its inline error while retaining its required marker");
+    await uxCard.locator("[data-child-stage]").selectOption("stage_1");
+    await uxPage.locator("#registration-form button[type=submit]").click();
+    await uxPage.getByText("Анги, цагаа сонгоно уу.").last().waitFor({ state: "visible" });
+    assert.equal(await uxPage.evaluate(() => document.activeElement?.matches("[data-child-class]") || false), true,
+      "a missing class choice focuses its actionable radio group");
+    await uxCard.locator('[data-child-class][value="browser-class-source"]').check();
+    await uxCard.locator('[data-child-payment-plan][value="single"]').check();
+    await uxPage.locator("[data-add-child]").click();
+    await uxPage.locator("#registration-form button[type=submit]").click();
+    const secondCard = uxPage.locator("[data-child-card]").nth(1);
+    assert.match(await uxPage.evaluate(() => document.activeElement?.getAttribute("name") || ""), /child-1-name/,
+      "a multiple-child form focuses the first invalid control in the second child section");
+    await secondCard.locator("[data-child-surname]").fill("UX");
+    await secondCard.locator("[data-child-name]").fill("Sibling");
+    await secondCard.locator("[data-child-grade]").selectOption("4");
+    await secondCard.locator("[data-child-gender]").selectOption({ label: "Эрэгтэй" });
+    await secondCard.locator("[data-child-dob]").fill("2016-05-10");
+    await secondCard.locator("[data-child-stage]").selectOption("stage_1");
+    await secondCard.locator('[data-child-class][value="browser-class-target"]').check();
+    await secondCard.locator('[data-child-payment-plan][value="single"]').check();
+    await uxPage.locator("#registration-form button[type=submit]").click();
+    await uxPage.locator("#guardian-rules-dialog").waitFor({ state: "visible" });
+    assert.equal(await uxPage.locator('#guardian-rules-dialog [data-close-dialog]').count(), 1,
+      "the rules dialog keeps only its bottom return action");
+    await uxPage.keyboard.press("Escape");
+    assert.equal(await uxPage.locator("#review-panel").isHidden(), true,
+      "escaping a rules dialog never records acceptance");
+    await uxPage.locator("#registration-form button[type=submit]").click();
+    await uxPage.locator("#acknowledge-guardian").click();
+    await uxPage.locator("#student-rules-dialog").waitFor({ state: "visible" });
+    await uxPage.setViewportSize({ width: 390, height: 844 });
+    const studentActions = uxPage.locator("#student-rules-dialog .dialog-actions");
+    assert.ok((await studentActions.boundingBox())?.y < 844, "mobile rules actions remain reachable in the viewport");
+    await uxPage.getByRole("button", { name: "Буцах" }).click();
+    assert.equal(await uxPage.locator("#review-panel").isHidden(), true,
+      "returning from student rules never records acceptance");
+    await uxPage.locator("#registration-form button[type=submit]").click();
+    await uxPage.locator("#acknowledge-guardian").click();
+    await uxPage.locator("#acknowledge-student").click();
+    await uxPage.locator("#review-panel").waitFor({ state: "visible" });
+    await uxContext.close();
+  } else if (process.env.CLASS_PUBLIC_VISIBILITY_BROWSER_ONLY === "1") {
+    await page.goto(`${baseUrl}/staff/offerings/`);
+    await page.locator("#tool-app").waitFor({ state: "visible" });
+    await page.locator('[data-edit-offering="browser-offering"]').click();
+    await page.locator("[data-add-class]").click();
+    await page.locator("#class-form").getByRole("button", { name: "Хадгалах" }).click();
+    await page.locator("#class-form .form-error").getByText("Энэ сургалтад баталгаатай хөтөлбөр холбогдоогүй тул шинэ анги нэмж болохгүй.").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#class-form").count(), 1,
+      "an unsupported new class keeps its form open beside the actionable program-context explanation");
+    await page.locator("[data-class-cancel]").click();
+    const publicCatalog = async () => page.evaluate(async () => (await fetch("/api/registration/catalog")).json());
+    const catalogClassIds = async () => (await publicCatalog()).academicYears.flatMap((year) => year.classSessions).map((entry) => entry.id);
+    assert.deepEqual((await catalogClassIds()).filter((id) => id === "browser-class-source" || id === "browser-class-target").sort(),
+      ["browser-class-source", "browser-class-target"], "both sibling classes begin in the public catalog");
+    const hide = page.locator('[data-class-public-visibility="browser-class-source"]');
+    await hide.waitFor({ state: "visible" });
+    assert.equal(await hide.textContent(), "Нийтээс нуух", "the rendered staff control starts in the visible state");
+    await hide.click();
+    await page.getByText("Ангийг нийтээс нуусан.").waitFor({ state: "visible" });
+    assert.equal((await catalogClassIds()).includes("browser-class-source"), false,
+      "the rendered hide action removes the class from the public catalog");
+    assert.equal((await catalogClassIds()).includes("browser-class-target"), true,
+      "hiding one class leaves its sibling and Offering available publicly");
+    const staffCatalog = await page.evaluate(async () => (await fetch("/api/staff/registration-intake", { credentials: "same-origin" })).json());
+    assert.equal(staffCatalog.catalog.academicYears.flatMap((year) => year.classSessions).some((entry) => entry.id === "browser-class-source"), true,
+      "staff intake retains the operationally eligible hidden class");
+    const show = page.locator('[data-class-public-visibility="browser-class-source"]');
+    await show.click();
+    await page.getByText("Ангийг нийтэд харууллаа.").waitFor({ state: "visible" });
+    assert.equal((await catalogClassIds()).includes("browser-class-source"), true,
+      "the rendered show action restores the class without changing its operational state");
+    await page.locator('[data-class-edit="browser-class-source"]').click();
+    const availabilityForm = page.locator("#class-form");
+    await availabilityForm.waitFor({ state: "visible" });
+    await availabilityForm.locator("#class-open").uncheck();
+    await availabilityForm.getByRole("button", { name: "Хадгалах" }).click();
+    await page.getByText("Ангийг хадгаллаа.").waitFor({ state: "visible" });
+    const closedCatalog = await publicCatalog();
+    const closedSource = closedCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "browser-class-source");
+    const openSibling = closedCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "browser-class-target");
+    assert.equal(closedSource?.availability, "unavailable", "a legacy-dated class can close registration while remaining publicly listed");
+    assert.equal(openSibling?.availability, "available", "closing one class does not close its sibling");
+    await page.locator('[data-class-edit="browser-class-source"]').click();
+    await page.locator("#class-form #class-open").check();
+    await page.locator("#class-form").getByRole("button", { name: "Хадгалах" }).click();
+    await page.getByText("Ангийг хадгаллаа.").waitFor({ state: "visible" });
+    await page.locator('[data-class-public-visibility="browser-class-source"]').click();
+    await page.getByText("Ангийг нийтээс нуусан.").waitFor({ state: "visible" });
+    await page.locator('[data-class-public-visibility="browser-class-target"]').click();
+    await page.getByText("Ангийг нийтээс нуусан.").waitFor({ state: "visible" });
+    assert.equal((await catalogClassIds()).includes("browser-class-source"), false, "hiding both siblings removes the empty Offering from public choices");
+    assert.equal((await catalogClassIds()).includes("browser-class-target"), false, "the second hidden sibling is also absent publicly");
+    await page.locator('[data-class-public-visibility="browser-class-target"]').click();
+    await page.getByText("Ангийг нийтэд харууллаа.").waitFor({ state: "visible" });
+    assert.equal((await catalogClassIds()).includes("browser-class-target"), true, "showing one sibling restores the Offering's public choice");
+    await page.goto(`${baseUrl}/staff/registration-windows/`);
+    await page.locator("#tool-app").waitFor({ state: "visible" });
+    await page.locator('[data-window-edit="browser-window"]').click();
+    const windowForm = page.locator("#window-form");
+    await windowForm.locator('input[name="offering"][value="browser-offering"]').uncheck();
+    await windowForm.getByRole("button", { name: "Хадгалах" }).click();
+    await page.getByText("Бүртгэлийг хадгаллаа.").waitFor({ state: "visible" });
+    assert.equal((await catalogClassIds()).includes("browser-class-target"), false,
+      "the existing Offering-level window exclusion still hides every class in that Offering");
+    await page.locator('[data-window-edit="browser-window"]').click();
+    await page.locator('#window-form input[name="offering"][value="browser-offering"]').check();
+    await page.locator("#window-form").getByRole("button", { name: "Хадгалах" }).click();
+    await page.getByText("Бүртгэлийг хадгаллаа.").waitFor({ state: "visible" });
+    assert.equal((await catalogClassIds()).includes("browser-class-target"), true,
+      "restoring Offering membership restores its individually visible sibling");
+  } else if (process.env.FAMILY_DISCOUNT_BROWSER_ONLY === "1") {
     execute(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1100, first_installment_amount_mnt = 550,
       second_installment_amount_mnt = 550 WHERE activity_offering_id = 'browser-offering-high';`);
     const familyAlpha = await fillIntake(page, "FamilyAlpha", "single");

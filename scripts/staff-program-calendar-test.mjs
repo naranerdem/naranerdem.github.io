@@ -222,6 +222,10 @@ try {
   const infoPage = readFileSync("src/pages/staff/info.astro", "utf8");
   const legacyPage = readFileSync("src/pages/staff/program-calendar.astro", "utf8");
   const routerSource = readFileSync("src/server/api/router.ts", "utf8");
+  assert.match(offeringsPage, /Нийтэд харагдана/, "class administration identifies public listing state");
+  assert.match(offeringsPage, /Нийтээс нуух/, "class administration offers public hiding without reusing registration closure");
+  assert.match(offeringsPage, /class\.public-visibility\.save/, "class administration uses the dedicated visibility action");
+  assert.match(routerSource, /case "class\.public-visibility\.save"/, "the API routes the dedicated visibility action");
   assert.match(programsPage, />Хадгалах</, "program tool presents ordinary save wording");
   assert.match(programsPage, /params\.get\("program"\) \|\| params\.get\("family"\)/, "Program selection is carried explicitly in the URL");
   assert.doesNotMatch(programsPage, /families\(\)\[0\]/, "Program list does not arbitrarily select its first entry");
@@ -289,7 +293,7 @@ try {
   assert.match(staffDashboardPage, /staff-information-link/, "information card has an independent presentation target");
   assert.match(offeringsPage, /annualCourseStartDefault/, "new annual Offerings use the configured start-date default");
   assert.match(offeringsPage, /Facebook бүлгийн холбоос/, "Offering creation and editing own the Facebook-group value");
-  assert.match(offeringsPage, /async function runClass[\s\S]*state\.editingClass = "";[\s\S]*await refresh\(\);[\s\S]*Ангийн мэдээлэл хадгалагдсангүй/, "a failed class save discards the typed local value and reloads the authoritative class list");
+  assert.match(offeringsPage, /classError[\s\S]*form-error[\s\S]*renderEditor\(\)/, "a failed class creation keeps an actionable explanation beside the class controls");
   const staffSetupSource = readFileSync("src/scripts/staff-setup.js", "utf8");
   assert.match(staffSetupSource, /program-calendar[\s\S]*cache: "no-store"/, "program and class reads explicitly bypass browser cache");
   assert.match(offeringsPage, /Хоосон орхиж болно\./, "an Offering Facebook group is explicitly optional");
@@ -443,6 +447,8 @@ try {
   const newClass = database.query("SELECT id, display_label AS displayLabel, status, updated_at AS updatedAt FROM class_session WHERE weekday = 'Мягмар' AND start_time = '16:00'")[0];
   assert.equal(newClass.displayLabel, "1-р шат · Мягмар 16:00–17:20", "class labels are generated from normal teaching details without ambiguous duplicates");
   assert.equal(newClass.status, "closed", "a new class starts with registration safely closed");
+  assert.equal(database.query(`SELECT is_publicly_visible AS publicVisibility FROM class_session WHERE id = ${quote(newClass.id)}`)[0].publicVisibility, 1,
+    "the public-listing migration and newly created classes preserve visible-by-default behavior");
   assert.equal(count(database, "class_meeting_rule", `class_session_id = ${quote(newClass.id)} AND recurrence_kind = 'weekly'`), 1, "new classes receive a typed meeting rule");
   assert.equal(database.query(`SELECT offering.curriculum_program_id AS programId FROM class_session AS class INNER JOIN activity_offering AS offering ON offering.id = class.activity_offering_id WHERE class.id = ${quote(newClass.id)}`)[0].programId, "current-program", "multiple annual classes inherit the same Offering program");
   await assert.rejects(() => service.saveClassSession(runtime, actor("teacher"), { id: newClass.id, expectedUpdatedAt: newClass.updatedAt, offeringId: "offering-annual-stage-1", recurrenceKind: "weekly", firstDate: "2026-09-08", weeklyWeekday: "Мягмар", academicYearId: "", stageCode: "", weekday: "", startTime: "16:00", endTime: "17:20", capacity: 8, registrationOpen: true }), /Course pricing operation/, "registration cannot open before payment terms are configured");
@@ -462,8 +468,18 @@ try {
   sqlite(`UPDATE payment_collection_settings SET bank_name = 'Тест банк', account_holder_name = 'Тест эзэмшигч', account_number = '0000000000', updated_at = '${now}' WHERE singleton = 1;`);
   await service.saveClassSession(runtime, actor("teacher"), { id: newClass.id, expectedUpdatedAt: newClass.updatedAt, offeringId: "offering-annual-stage-1", recurrenceKind: "weekly", firstDate: "2026-09-08", weeklyWeekday: "Мягмар", academicYearId: "", stageCode: "", weekday: "", startTime: "16:00", endTime: "17:20", capacity: 8, registrationOpen: true });
   assert.equal(database.query(`SELECT status FROM class_session WHERE id = ${quote(newClass.id)}`)[0].status, "available", "teacher-facing open registration maps to the available catalog state");
-  const openedClass = database.query(`SELECT updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
-  await service.deleteClassSession(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: openedClass.updatedAt });
+  const visibilityClass = database.query(`SELECT updated_at AS updatedAt, status FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
+  await service.saveClassPublicVisibility(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: visibilityClass.updatedAt, publicVisibility: false });
+  const hiddenClass = database.query(`SELECT is_publicly_visible AS publicVisibility, status, updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
+  assert.deepEqual([hiddenClass.publicVisibility, hiddenClass.status], [0, "available"], "public hiding changes neither registration availability nor operational class status");
+  assert.equal(count(database, "audit_event", `action = 'class_public_visibility_changed' AND subject_id = ${quote(newClass.id)}`), 1, "visibility changes retain an actor-bound audit event");
+  await assert.rejects(() => service.saveClassPublicVisibility(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: visibilityClass.updatedAt, publicVisibility: true }), /Program and calendar/, "a stale visibility request is rejected");
+  assert.equal(count(database, "audit_event", `action = 'class_public_visibility_changed' AND subject_id = ${quote(newClass.id)}`), 1, "a stale visibility request creates no misleading audit event");
+  await assert.rejects(() => service.saveClassPublicVisibility(runtime, actor("accountant"), { classSessionId: newClass.id, expectedUpdatedAt: hiddenClass.updatedAt, publicVisibility: true }), /Program and calendar/, "accountants cannot change public class visibility");
+  await service.saveClassPublicVisibility(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: hiddenClass.updatedAt, publicVisibility: true });
+  const restoredClass = database.query(`SELECT is_publicly_visible AS publicVisibility, status, updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
+  assert.deepEqual([restoredClass.publicVisibility, restoredClass.status], [1, "available"], "showing a class leaves registration status unchanged");
+  await service.deleteClassSession(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: restoredClass.updatedAt });
   assert.equal(count(database, "class_session", `id = ${quote(newClass.id)}`), 0, "an unused class can be deleted");
   sqlite(`INSERT INTO curriculum_program (
     id, program_family_id, academic_year_id, stage_code, revision_number, display_name,
@@ -613,6 +629,24 @@ try {
     academicYearId: "", stageCode: "", weekday: "", startTime: "11:00", endTime: "12:20",
     capacity: 3, registrationOpen: false,
   }), /Program and calendar/, "a legacy Offering without a program pin cannot use capacity editing to alter its schedule");
+  await assert.rejects(() => service.saveClassSession(runtime, actor("teacher"), {
+    offeringId: "legacy-capacity-offering", recurrenceKind: "weekly", firstDate: "2026-09-05", weeklyWeekday: "Бямба",
+    academicYearId: "", stageCode: "", weekday: "", startTime: "12:00", endTime: "13:20", capacity: 8,
+  }), /Program and calendar/, "an active legacy Offering without a pinned program still rejects new classes with a distinct supported restriction");
+  sqlite(`INSERT INTO offering_course_pricing (
+    activity_offering_id, one_time_amount_mnt, two_installment_enabled,
+    first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on,
+    created_at, updated_at
+  ) VALUES ('legacy-capacity-offering', 850000, 0, NULL, NULL, NULL, '${now}', '${now}');`);
+  const legacyAvailabilityUpdatedAt = database.query("SELECT updated_at AS updatedAt FROM class_session WHERE id = 'legacy-capacity-class'")[0].updatedAt;
+  await service.saveClassSession(runtime, actor("teacher"), {
+    id: "legacy-capacity-class", expectedUpdatedAt: legacyAvailabilityUpdatedAt, offeringId: "legacy-capacity-offering",
+    recurrenceKind: "weekly", firstDate: "2026-09-05", weeklyWeekday: "Бямба",
+    academicYearId: "", stageCode: "", weekday: "", startTime: "10:00", endTime: "11:20",
+    capacity: 3, registrationOpen: true,
+  });
+  assert.equal(database.query("SELECT status FROM class_session WHERE id = 'legacy-capacity-class'")[0].status, "available",
+    "an unchanged legacy schedule can reopen registration after the normal payment-readiness check");
   const usedOffering = database.query("SELECT updated_at AS updatedAt, starts_on AS startsOn, ends_on AS endsOn, curriculum_program_id AS programId FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0];
   await offeringService.saveActivityOffering(runtime, actor("teacher"), { id: "offering-annual-stage-1", expectedUpdatedAt: usedOffering.updatedAt, kind: "annual_course", startsOn: usedOffering.startsOn, endsOn: usedOffering.endsOn, curriculumProgramId: usedOffering.programId, useAcademicYearBreaks: true, chargeMode: "paid", facebookGroupUrl: "https://facebook.com/groups/after-publication" });
   assert.equal(database.query("SELECT facebook_group_url AS url FROM activity_offering WHERE id = 'offering-annual-stage-1'")[0].url, "https://facebook.com/groups/after-publication", "a harmless Offering communication edit remains possible after calendar publication");

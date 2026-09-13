@@ -37,7 +37,7 @@ type StageCode = typeof STAGES[number];
 const WEEKDAYS = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"] as const;
 
 export class ProgramCalendarError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced" | "insufficient_slots" | "capacity_below_consumed", public readonly minimumCapacity?: number) {
+  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced" | "program_context_required" | "insufficient_slots" | "capacity_below_consumed", public readonly minimumCapacity?: number) {
     super("Program and calendar operation failed.");
     this.name = "ProgramCalendarError";
   }
@@ -106,6 +106,7 @@ interface ClassRow {
   endTime: string;
   capacity: number;
   status: "draft" | "available" | "full" | "closed" | "cancelled";
+  publicVisibility: number;
   isTest: number;
   testRunId: string | null;
   updatedAt: string;
@@ -236,6 +237,11 @@ export interface ClassSaveInput {
   firstDate?: string;
   lastDate?: string | null;
   weeklyWeekday?: string | null;
+}
+export interface ClassPublicVisibilityInput {
+  classSessionId: string;
+  expectedUpdatedAt: string;
+  publicVisibility: boolean;
 }
 export interface BreakSaveInput {
   id?: string;
@@ -416,6 +422,7 @@ const CLASS_SELECT = `SELECT class_session.id, class_session.academic_year_id AS
   COALESCE(class_meeting_rule.start_time, class_session.start_time) AS startTime,
   COALESCE(class_meeting_rule.end_time, class_session.end_time) AS endTime,
   class_session.capacity, class_session.status,
+  class_session.is_publicly_visible AS publicVisibility,
   class_session.is_test AS isTest, class_session.test_run_id AS testRunId,
   class_session.updated_at AS updatedAt, class_calendar.id AS calendarId,
   class_session.activity_offering_id AS offeringId, activity_offering.kind AS offeringKind,
@@ -1419,9 +1426,8 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
   if (!requestedOfferingId) throw new ProgramCalendarError("invalid");
   const offering = await offeringContext(env, requestedOfferingId);
   const hasProgramContext = Boolean(offering.programId && offering.programAcademicYearId && offering.programStageCode);
-  if (offering.kind === "event" || (!input.id && !hasProgramContext)) {
-    throw new ProgramCalendarError("invalid");
-  }
+  if (offering.kind === "event") throw new ProgramCalendarError("invalid");
+  if (!input.id && !hasProgramContext) throw new ProgramCalendarError("program_context_required");
   const academicYearId = offering.academicYearId ?? offering.programAcademicYearId;
   const stage = offering.stageCode ?? offering.programStageCode;
   if (!academicYearId || !stage || !validStage(stage)) throw new ProgramCalendarError("invalid");
@@ -1472,10 +1478,11 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
     || current.firstDate !== firstDate || current.lastDate !== lastDate
     || current.weeklyWeekday !== weeklyWeekday || current.startTime !== input.startTime
     || current.endTime !== endTime;
-  // Older, already-referenced Offerings may predate the program pin. Allow only
-  // their safe capacity correction; creating, opening, or rescheduling remains
-  // dependent on a complete Program context.
-  if (!hasProgramContext && (structuralChange || input.registrationOpen !== undefined && registrationOpen(current.status) !== input.registrationOpen)) {
+  // Older, already-referenced Offerings may predate the program pin. Their
+  // schedule remains immutable here, but registration availability is a
+  // separate operational state and can still be changed after normal pricing
+  // and payment-readiness checks below.
+  if (!hasProgramContext && structuralChange) {
     throw new ProgramCalendarError("invalid");
   }
   if (referenced && structuralChange) throw new ProgramCalendarError("immutable");
@@ -1524,6 +1531,36 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
     throw new ProgramCalendarError("conflict");
   }
   if (preparedOffers) await preparedOffers.dispatch();
+}
+
+export async function saveClassPublicVisibility(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: ClassPublicVisibilityInput,
+): Promise<void> {
+  if (!hasStaffCapability(actor, "calendar.manage")) throw new ProgramCalendarError("forbidden");
+  if (!input.classSessionId || !input.expectedUpdatedAt || typeof input.publicVisibility !== "boolean") {
+    throw new ProgramCalendarError("invalid");
+  }
+  const current = await classById(env, input.classSessionId);
+  if (current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  const time = new Date().toISOString();
+  const flags = operationFlags(env, current);
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE class_session
+      SET is_publicly_visible = ?, updated_at = ?
+      WHERE id = ? AND updated_at = ?`).bind(input.publicVisibility ? 1 : 0, time, current.id, current.updatedAt),
+    env.DB.prepare(`INSERT INTO audit_event (
+      id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at
+    ) SELECT ?, ?, 'staff', ?, 'class_public_visibility_changed', 'class_session', ?,
+      ?, ?, ?, ?, ?
+    WHERE EXISTS (SELECT 1 FROM class_session WHERE id = ? AND updated_at = ?)`)
+      .bind(id(), time, actor.staffAccountId, current.id,
+        JSON.stringify({ previousPublicVisibility: Boolean(current.publicVisibility), publicVisibility: input.publicVisibility }),
+        env.APP_ENV, flags.isTest, flags.testRunId, time, current.id, time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
 export async function deleteClassSession(env: WorkerEnv, actor: StaffPrincipal, input: { classSessionId: string; expectedUpdatedAt: string }): Promise<void> {
