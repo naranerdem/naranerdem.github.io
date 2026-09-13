@@ -3,6 +3,11 @@ import type { EmailMessage } from "./provider";
 
 export type EmailSensitivity = "archive_bcc_safe" | "sensitive_capability";
 
+// These are durable Outbox event types, rather than translated subject lines.
+// The final enrollment email carries a parent-access capability, so it remains
+// excluded from raw internal copies despite being a teacher-relevant event.
+const teacherCopyEventTypes = new Set(["registration_received"]);
+
 const archiveSafeTemplateKeys = new Set([
   "registration_receipt_v1",
   "payment_confirmed_v1",
@@ -42,6 +47,16 @@ export function parseArchiveRecipients(value: unknown): string[] {
   return recipients;
 }
 
+function distinctRecipients(recipients: string[], primaryRecipient: string): string[] {
+  const primary = normalizedEmail(primaryRecipient);
+  const seen = new Set<string>();
+  return recipients.filter((recipient) => {
+    if (recipient === primary || seen.has(recipient)) return false;
+    seen.add(recipient);
+    return true;
+  });
+}
+
 function redactCapabilityUrls(value: string): string {
   return value.replace(/https?:\/\/[^\s<>'"`]+/giu, "[аюулгүй холбоос нуусан]");
 }
@@ -53,14 +68,47 @@ export function sanitizedOutboxSnapshot(message: EmailMessage, sensitivity: Emai
   };
 }
 
-export async function archiveBccRecipients(env: WorkerEnv, sensitivity: EmailSensitivity): Promise<string[]> {
-  if (sensitivity !== "archive_bcc_safe") return [];
+export async function archiveBccRecipients(env: WorkerEnv, input: {
+  eventType: string;
+  sensitivity: EmailSensitivity;
+  primaryRecipient: string;
+}): Promise<string[]> {
+  if (input.sensitivity !== "archive_bcc_safe") return [];
   if (env.APP_ENV === "staging") {
     if (!env.STAGING_EMAIL_ARCHIVE_BCC_TO) return [];
-    return parseArchiveRecipients(env.STAGING_EMAIL_ARCHIVE_BCC_TO.split(","));
+    return distinctRecipients(parseArchiveRecipients(env.STAGING_EMAIL_ARCHIVE_BCC_TO.split(",")), input.primaryRecipient);
   }
-  const row = await env.DB.prepare("SELECT recipients_json AS recipientsJson FROM email_archive_bcc_setting WHERE singleton = 1")
-    .first<{ recipientsJson: string }>();
+  const row = await env.DB.prepare(`SELECT recipients_json AS adminRecipientsJson,
+    teacher_recipients_json AS teacherRecipientsJson FROM email_archive_bcc_setting WHERE singleton = 1`)
+    .first<{ adminRecipientsJson: string; teacherRecipientsJson: string }>();
   if (!row) return [];
-  try { return parseArchiveRecipients(JSON.parse(row.recipientsJson)); } catch { return []; }
+  try {
+    const adminRecipients = parseArchiveRecipients(JSON.parse(row.adminRecipientsJson));
+    const teacherRecipients = teacherCopyEventTypes.has(input.eventType)
+      ? parseArchiveRecipients(JSON.parse(row.teacherRecipientsJson))
+      : [];
+    return distinctRecipients([...adminRecipients, ...teacherRecipients], input.primaryRecipient);
+  } catch {
+    return [];
+  }
+}
+
+// The final parent confirmation contains a short-lived parent capability. Its
+// internal counterpart therefore resolves recipient lists as a separate email.
+export async function internalEnrollmentNoticeRecipients(env: WorkerEnv): Promise<string[]> {
+  if (env.APP_ENV === "staging") {
+    return env.STAGING_EMAIL_OVERRIDE_TO ? parseArchiveRecipients(env.STAGING_EMAIL_OVERRIDE_TO) : [];
+  }
+  const row = await env.DB.prepare(`SELECT recipients_json AS adminRecipientsJson,
+    teacher_recipients_json AS teacherRecipientsJson FROM email_archive_bcc_setting WHERE singleton = 1`)
+    .first<{ adminRecipientsJson: string; teacherRecipientsJson: string }>();
+  if (!row) return [];
+  try {
+    return distinctRecipients([
+      ...parseArchiveRecipients(JSON.parse(row.adminRecipientsJson)),
+      ...parseArchiveRecipients(JSON.parse(row.teacherRecipientsJson)),
+    ], "");
+  } catch {
+    return [];
+  }
 }

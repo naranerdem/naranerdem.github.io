@@ -1,4 +1,4 @@
-import type { D1Result, WorkerEnv } from "../env";
+import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { resolveDeliveryAddress } from "../email/delivery-policy";
 import { createResendProvider } from "../email/resend";
 import { EmailConfigurationError, deliverQueuedEmail } from "../email/service";
@@ -55,6 +55,9 @@ export interface ParentAccessEmail {
   templateKey: "enrollment_confirmation_v1" | "parent_enrollment_resend_v1";
   context: Record<string, unknown>;
   template(accessUrl: string): { subject: string; html: string; text: string };
+  // These statements join the durable parent-email/challenge batch. They are
+  // used only for capability-free operational notices.
+  additionalOutboundStatements?: D1PreparedStatement[];
 }
 
 async function issueEmailChallenge(
@@ -67,6 +70,7 @@ async function issueEmailChallenge(
     templateKey: string;
     context: Record<string, unknown>;
     template(accessUrl: string): { subject: string; html: string; text: string };
+    additionalOutboundStatements?: D1PreparedStatement[];
   },
 ) {
   if (env.EMAIL_ENABLED !== "true") throw new EmailConfigurationError("email_disabled");
@@ -120,7 +124,7 @@ async function issueEmailChallenge(
       SET status = 'invalidated', invalidated_at = ?, updated_at = ?
       WHERE registration_draft_id = ? AND status = 'pending'`).bind(now, now, input.registrationDraftId));
   }
-  statements.push(outboundInsert, challengeInsert);
+  statements.push(...(input.additionalOutboundStatements ?? []), outboundInsert, challengeInsert);
   const queued = await env.DB.batch(statements);
   if (changeCount(queued[queued.length - 2]) !== 1 || changeCount(queued[queued.length - 1]) !== 1) {
     throw new EmailVerificationError("queue_failed");
@@ -162,6 +166,7 @@ export async function sendParentAccessEmail(env: WorkerEnv, email: string, regis
     templateKey: message.templateKey,
     context: message.context,
     template: message.template,
+    additionalOutboundStatements: message.additionalOutboundStatements,
   });
 }
 

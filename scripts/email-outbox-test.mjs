@@ -11,6 +11,7 @@ const bundle = path.join(dir, "outbox.mjs");
 const policyBundle = path.join(dir, "archive-policy.mjs");
 const resendBundle = path.join(dir, "resend.mjs");
 const settingBundle = path.join(dir, "archive-setting.mjs");
+const serviceBundle = path.join(dir, "service.mjs");
 const outboxPage = readFileSync("src/pages/staff/outbox/index.astro", "utf8");
 const staffStyles = readFileSync("src/styles/global.css", "utf8");
 function sql(source, json = false) {
@@ -35,16 +36,22 @@ try {
   if (resendBuilt.status !== 0) throw new Error(resendBuilt.stderr);
   const settingBuilt = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/staff/email-archive-bcc.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${settingBundle}`], { encoding: "utf8" });
   if (settingBuilt.status !== 0) throw new Error(settingBuilt.stderr);
+  const serviceBuilt = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/email/service.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${serviceBundle}`], { encoding: "utf8" });
+  if (serviceBuilt.status !== 0) throw new Error(serviceBuilt.stderr);
   const { listEmailOutbox, getEmailOutboxEntry, EmailOutboxError } = await import(pathToFileURL(bundle).href);
-  const { emailSensitivityForTemplate, parseArchiveRecipients, sanitizedOutboxSnapshot } = await import(pathToFileURL(policyBundle).href);
+  const { emailSensitivityForTemplate, parseArchiveRecipients, sanitizedOutboxSnapshot, archiveBccRecipients, internalEnrollmentNoticeRecipients } = await import(pathToFileURL(policyBundle).href);
   const { createResendProvider } = await import(pathToFileURL(resendBundle).href);
+  const { deliverQueuedEmail } = await import(pathToFileURL(serviceBundle).href);
   const { getEmailArchiveBccSetting, updateEmailArchiveBccSetting, EmailArchiveBccError } = await import(pathToFileURL(settingBundle).href);
   const database = new Database(); const env = { APP_ENV: "staging", DB: database };
-  const archiveDefault = await getEmailArchiveBccSetting(env); assert.deepEqual(archiveDefault.recipients, []);
-  const archiveUpdated = await updateEmailArchiveBccSetting(env, actor, { recipients: [" Archive@Example.test "], expectedUpdatedAt: archiveDefault.updatedAt });
-  assert.deepEqual(archiveUpdated.recipients, ["archive@example.test"]);
+  const archiveDefault = await getEmailArchiveBccSetting(env); assert.deepEqual(archiveDefault.adminRecipients, []); assert.deepEqual(archiveDefault.teacherRecipients, []);
+  const archiveUpdated = await updateEmailArchiveBccSetting(env, actor, {
+    adminRecipients: [" Archive@Example.test "], teacherRecipients: ["Teacher+copy@example.test"], expectedUpdatedAt: archiveDefault.updatedAt,
+  });
+  assert.deepEqual(archiveUpdated.adminRecipients, ["archive@example.test"]);
+  assert.deepEqual(archiveUpdated.teacherRecipients, ["teacher+copy@example.test"]);
   assert.equal(sql("SELECT COUNT(*) AS count FROM audit_event WHERE action = 'email_archive_bcc_changed'", true), '[{"count":1}]');
-  await assert.rejects(() => updateEmailArchiveBccSetting(env, nonAdmin, { recipients: [], expectedUpdatedAt: archiveUpdated.updatedAt }), (error) => error instanceof EmailArchiveBccError && error.code === "forbidden");
+  await assert.rejects(() => updateEmailArchiveBccSetting(env, nonAdmin, { adminRecipients: [], teacherRecipients: [], expectedUpdatedAt: archiveUpdated.updatedAt }), (error) => error instanceof EmailArchiveBccError && error.code === "forbidden");
   sql(`INSERT INTO outbound_email (id,event_type,template_key,intended_to_email,actual_delivery_email,delivery_mode,status,attempt_count,queued_at,created_at,updated_at,email_sensitivity,outbox_subject,outbox_text,bcc_recipients_json) VALUES
     ('safe-old','payment_reminder','payment_reminder_v1','parent@example.test','safe@example.test','staging_override','sent',1,'2026-09-02T00:00:00.000Z','2026-09-02T00:00:00.000Z','2026-09-02T00:00:00.000Z','archive_bcc_safe','Төлбөрийн сануулга','Аюулгүй мэдэгдэл','["archive@example.test"]'),
     ('sensitive-new','login','staff_login_v2','admin@example.test',NULL,'staging_override','queued',0,'2026-09-03T00:00:00.000Z','2026-09-03T00:00:00.000Z','2026-09-03T00:00:00.000Z','sensitive_capability','Нэвтрэх','Нэвтрэх холбоос: [аюулгүй холбоос нуусан]','[]'),
@@ -71,11 +78,50 @@ try {
   assert.throws(() => parseArchiveRecipients(["a@b.test", "A@b.test"]), /invalid_archive_recipients/);
   assert.throws(() => parseArchiveRecipients(["a@b.test", "b@b.test", "c@b.test", "d@b.test", "e@b.test", "f@b.test"]), /invalid_archive_recipients/);
   const beforeRejectedArchiveUpdate = await getEmailArchiveBccSetting(env);
-  await assert.rejects(() => updateEmailArchiveBccSetting(env, actor, { recipients: "kept@example.test, not-an-email", expectedUpdatedAt: beforeRejectedArchiveUpdate.updatedAt }), (error) => error instanceof EmailArchiveBccError && error.code === "invalid" && error.invalidRecipient === "not-an-email");
-  assert.deepEqual((await getEmailArchiveBccSetting(env)).recipients, beforeRejectedArchiveUpdate.recipients, "a rejected archive entry leaves the saved setting unchanged");
+  await assert.rejects(() => updateEmailArchiveBccSetting(env, actor, { adminRecipients: "kept@example.test, not-an-email", teacherRecipients: [], expectedUpdatedAt: beforeRejectedArchiveUpdate.updatedAt }), (error) => error instanceof EmailArchiveBccError && error.code === "invalid" && error.invalidRecipient === "not-an-email");
+  assert.deepEqual((await getEmailArchiveBccSetting(env)).adminRecipients, beforeRejectedArchiveUpdate.adminRecipients, "a rejected archive entry leaves the saved setting unchanged");
+  await assert.rejects(() => updateEmailArchiveBccSetting(env, actor, {
+    adminRecipients: ["a@example.test", "b@example.test", "c@example.test"],
+    teacherRecipients: ["d@example.test", "e@example.test", "f@example.test"],
+    expectedUpdatedAt: beforeRejectedArchiveUpdate.updatedAt,
+  }), (error) => error instanceof EmailArchiveBccError && error.code === "invalid", "the two lists retain the established five-recipient limit together");
   assert.equal(emailSensitivityForTemplate("payment_reminder_v1"), "archive_bcc_safe");
   assert.equal(emailSensitivityForTemplate("waitlist_offer_v1"), "sensitive_capability");
   assert.equal(emailSensitivityForTemplate("future_unknown_template"), "sensitive_capability");
+  const productionEnv = { APP_ENV: "production", DB: database };
+  const routingSetting = await updateEmailArchiveBccSetting(productionEnv, actor, {
+    adminRecipients: ["admin@example.test", "overlap@example.test", "parent@example.test"],
+    teacherRecipients: ["teacher@example.test", "overlap@example.test"],
+    expectedUpdatedAt: (await getEmailArchiveBccSetting(productionEnv)).updatedAt,
+  });
+  assert.deepEqual(routingSetting.adminRecipients, ["admin@example.test", "overlap@example.test", "parent@example.test"]);
+  assert.deepEqual(await archiveBccRecipients(productionEnv, {
+    eventType: "registration_received", sensitivity: "archive_bcc_safe", primaryRecipient: "parent@example.test",
+  }), ["admin@example.test", "overlap@example.test", "teacher@example.test"], "registration notice combines both lists once and excludes the parent recipient");
+  assert.deepEqual(await archiveBccRecipients(productionEnv, {
+    eventType: "payment_initial_reminder", sensitivity: "archive_bcc_safe", primaryRecipient: "parent@example.test",
+  }), ["admin@example.test", "overlap@example.test"], "reminders go only to admins");
+  assert.deepEqual(await archiveBccRecipients(productionEnv, {
+    eventType: "enrollment_confirmed", sensitivity: "sensitive_capability", primaryRecipient: "parent@example.test",
+  }), [], "capability-bearing enrollment confirmation never receives a raw internal copy");
+  assert.deepEqual(await internalEnrollmentNoticeRecipients({ APP_ENV: "staging", DB: database, STAGING_EMAIL_OVERRIDE_TO: "safe-internal@example.test" }), ["safe-internal@example.test"],
+    "the separate internal confirmation uses the staging safe-recipient override rather than configured operational addresses");
+  sql(`INSERT INTO outbound_email (id,event_type,template_key,intended_to_email,actual_delivery_email,delivery_mode,status,attempt_count,queued_at,created_at,updated_at)
+    VALUES ('route-registration','registration_received','registration_receipt_v1','parent@example.test','parent@example.test','production','queued',0,'2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z'),
+      ('route-reminder','payment_initial_reminder','payment_reminder_v1','parent@example.test','parent@example.test','production','queued',0,'2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z'),
+      ('route-sensitive','enrollment_confirmed','enrollment_confirmation_v1','parent@example.test','parent@example.test','production','queued',0,'2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z','2026-09-04T00:00:00.000Z');`);
+  const delivered = [];
+  const routingProvider = { async send(message) { delivered.push(message); return { providerMessageId: `route-${delivered.length}` }; } };
+  for (const [id, key] of [["route-registration", "registration_receipt_v1"], ["route-reminder", "payment_reminder_v1"], ["route-sensitive", "enrollment_confirmation_v1"]]) {
+    await deliverQueuedEmail(productionEnv, routingProvider, { id, idempotencyKey: id, templateKey: key, message: { from: "x", to: "parent@example.test", subject: id, html: "x", text: "x" } });
+  }
+  assert.deepEqual(delivered.map((message) => message.bcc ?? []), [
+    ["admin@example.test", "overlap@example.test", "teacher@example.test"],
+    ["admin@example.test", "overlap@example.test"],
+    [],
+  ], "Outbox delivery uses the durable event mapping rather than a subject match");
+  const snapshots = JSON.parse(sql("SELECT json_group_array(bcc_recipients_json) AS snapshots FROM outbound_email WHERE id LIKE 'route-%'", true))[0].snapshots;
+  assert.ok(snapshots.includes("teacher@example.test"), "the resolved recipient list is snapshotted for retry stability");
   const snapshot = sanitizedOutboxSnapshot({ from: "x", to: "x", subject: "x", html: "x", text: "Холбоос https://example.test/?token=secret-token" }, "sensitive_capability");
   assert.doesNotMatch(snapshot.text, /secret-token/);
   let requestBody = null;

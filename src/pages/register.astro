@@ -408,7 +408,7 @@ const formCopy = registrationFormCopy;
             option.innerHTML = `
               <label>
                 <input type="radio" name="child-${card.dataset.childIndex}-class" value="${escapeText(session.id)}" data-child-class ${selected === session.id ? "checked" : ""}>
-                <span class="class-option-copy"><strong>${escapeText(classText(session))}</strong><small>${escapeText(formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats))}</small></span>
+                <span class="class-option-copy"><strong>${escapeText(classText(session))}</strong>${session.remainingSeats != null ? `<small>${escapeText(formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats))}</small>` : ""}</span>
               </label>
             `;
           } else if (session.availability === "full") {
@@ -757,7 +757,9 @@ const formCopy = registrationFormCopy;
 
       function availabilityText(session) {
         if (!session) return formCopy.classChoice.unavailable;
-        if (session.availability === "available") return formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats);
+        if (session.availability === "available") return session.remainingSeats != null
+          ? formCopy.classChoice.remainingSeats.replace("{count}", session.remainingSeats)
+          : formCopy.classChoice.available;
         if (session.availability === "full") return formCopy.classChoice.full;
         return formCopy.classChoice.unavailableSession;
       }

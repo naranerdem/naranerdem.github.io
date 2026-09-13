@@ -65,7 +65,7 @@ try {
   if (build.status !== 0) throw new Error(build.stderr);
   const verificationBuild = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/auth/email-verification.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${verificationBundle}`], { encoding: "utf8" });
   if (verificationBuild.status !== 0) throw new Error(verificationBuild.stderr);
-  const { sendRegistrationReceipt, sendPaymentConfirmedEmail } = await import(pathToFileURL(bundle).href);
+  const { sendRegistrationReceipt, sendPaymentConfirmedEmail, sendInternalEnrollmentConfirmationNotice } = await import(pathToFileURL(bundle).href);
   const { startEmailVerification, EmailVerificationError } = await import(pathToFileURL(verificationBundle).href);
   const database = new Database();
   database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at) VALUES ('year', 'Тест', 'open', 1, 1, 'email-test', ?, ?);
@@ -119,6 +119,39 @@ try {
   assert.doesNotMatch(messages[1].message.text, /эхний төлбөр/i, "payment confirmation is plan-neutral");
   assert.deepEqual(messages[1].message.bcc, ["archive@example.test"], "ordinary payment receipts remain archive-BCC safe");
   assert.equal(database.query("SELECT status FROM outbound_email WHERE event_type = 'registration_initial_payment_confirmed'")[0].status, "sent");
+  seedDraft(database, "internal-notice");
+  database.query(`UPDATE email_archive_bcc_setting SET recipients_json = '["admin@example.test","overlap@example.test"]',
+    teacher_recipients_json = '["teacher@example.test","overlap@example.test"]' WHERE singleton = 1`);
+  const internalMessages = [];
+  const internalProvider = { async send(message, options) { internalMessages.push({ message, options }); return { providerMessageId: "internal-provider" }; } };
+  const internalChildren = [{
+    childName: "Тест Хүүхэд", academicYearLabel: "2026-2027", offeringLabel: "1-р шат", stageLabel: "1-р шат", classLabel: "Мягмар 09:00-10:20",
+    paidAmountMnt: 1200000, remainingAmountMnt: 0, remainingPaymentDueAt: null, referralCode: null,
+  }];
+  assert.equal(await sendInternalEnrollmentConfirmationNotice({ ...env(database), APP_ENV: "production" }, "internal-notice", internalChildren, { referrerBasisPoints: 0, referredChildBasisPoints: 0 }, internalProvider), true,
+    "a confirmed enrollment can queue one capability-free internal notice");
+  assert.equal(internalMessages.length, 1);
+  assert.equal(internalMessages[0].message.to, "admin@example.test");
+  assert.deepEqual(internalMessages[0].message.bcc, ["overlap@example.test", "teacher@example.test"], "admin and teacher lists receive one deduplicated internal notice");
+  assert.doesNotMatch(internalMessages[0].message.text, /verify-email|token=|Бүртгэлээ харах/i, "the internal notice contains no parent capability");
+  assert.equal(database.query("SELECT COUNT(*) AS count FROM email_verification_challenge WHERE registration_draft_id = 'internal-notice'")[0].count, 0, "the internal notice issues no challenge");
+  await sendInternalEnrollmentConfirmationNotice({ ...env(database), APP_ENV: "production" }, "internal-notice", internalChildren, { referrerBasisPoints: 0, referredChildBasisPoints: 0 }, internalProvider);
+  assert.equal(internalMessages.length, 1, "a replay does not create or deliver a duplicate internal notice");
+  assert.equal(database.query("SELECT COUNT(*) AS count FROM outbound_email WHERE id = 'internal-notice:internal-enrollment-confirmation'")[0].count, 1, "the final internal confirmation has one durable Outbox identity");
+  seedDraft(database, "internal-retry");
+  const failedInternalProvider = { async send() { throw new Error("provider unavailable"); } };
+  await assert.rejects(
+    sendInternalEnrollmentConfirmationNotice({ ...env(database), APP_ENV: "production" }, "internal-retry", internalChildren, { referrerBasisPoints: 0, referredChildBasisPoints: 0 }, failedInternalProvider),
+    /Transactional email delivery failed/,
+    "a failed internal delivery leaves its durable notice available for reconciliation",
+  );
+  assert.equal(database.query("SELECT status FROM outbound_email WHERE id = 'internal-retry:internal-enrollment-confirmation'")[0].status, "failed");
+  assert.equal(database.query("SELECT COUNT(*) AS count FROM email_verification_challenge WHERE registration_draft_id = 'internal-retry'")[0].count, 0,
+    "a failed internal notice still cannot issue a parent-access challenge");
+  assert.equal(await sendInternalEnrollmentConfirmationNotice({ ...env(database), APP_ENV: "production" }, "internal-retry", internalChildren, { referrerBasisPoints: 0, referredChildBasisPoints: 0 }, internalProvider), true,
+    "the same durable internal notice can be retried without creating another event");
+  assert.equal(database.query("SELECT COUNT(*) AS count FROM outbound_email WHERE id = 'internal-retry:internal-enrollment-confirmation'")[0].count, 1);
+  assert.equal(database.query("SELECT status FROM outbound_email WHERE id = 'internal-retry:internal-enrollment-confirmation'")[0].status, "sent");
   seedDraft(database, "cancelled");
   database.query("UPDATE registration_draft SET status = 'cancelled' WHERE id = 'cancelled'");
   assert.equal(await sendPaymentConfirmedEmail(env(database), "cancelled", provider), false, "a cancelled registration cannot receive a late confirmation email");

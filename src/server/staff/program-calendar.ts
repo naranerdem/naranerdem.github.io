@@ -22,6 +22,7 @@ import { assertOfferingRegistrationReady, getPaymentCollectionSettings } from ".
 import { getPublicQrRedirectSettings } from "../public-qr-redirects";
 import { getCourseRules, getPublicCenterInformation } from "./public-content";
 import { getPublicSiteFontForPresentation } from "./public-site-font";
+import { getPublicSeatCountThreshold } from "./public-seat-count-threshold";
 import { getTeacherDashboardPreferences } from "./teacher-dashboard-preferences";
 import { getPaymentConfirmationGraceSetting } from "./payment-reconciliation";
 import { getInitialPaymentDeadlineSetting } from "./initial-payment-deadline";
@@ -602,7 +603,7 @@ async function replaceDraftSlots(
 }
 
 export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record<string, unknown>> {
-  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, paymentConfirmationGrace, initialPaymentDeadline, paymentReminderSetting, waitlistOfferResponseSetting, publicQrRedirectSettings, publicCenterInformation, publicSiteFont, courseRules, teacherDashboardPreferences, discountPolicySetting] = await Promise.all([
+  const [years, families, programs, lessons, classes, breaks, revisions, overrides, slots, stageSettings, offeringSetup, annualCourseStartDefault, paymentCollectionSettings, paymentConfirmationGrace, initialPaymentDeadline, paymentReminderSetting, waitlistOfferResponseSetting, publicQrRedirectSettings, publicCenterInformation, publicSiteFont, publicSeatCountThreshold, courseRules, teacherDashboardPreferences, discountPolicySetting] = await Promise.all([
     env.DB.prepare(`SELECT id, public_label AS label, starts_on AS startsOn, ends_on AS endsOn,
       is_current AS isCurrent, is_test AS isTest, test_run_id AS testRunId
       FROM academic_year ORDER BY is_current DESC, starts_on DESC, public_label`).all<YearRow>(),
@@ -672,6 +673,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     getPublicQrRedirectSettings(env),
     getPublicCenterInformation(env),
     getPublicSiteFontForPresentation(env),
+    getPublicSeatCountThreshold(env),
     getCourseRules(env),
     getTeacherDashboardPreferences(env),
     getDiscountPolicySetting(env),
@@ -833,6 +835,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     courseRules,
     teacherDashboardPreferences,
     publicSiteFont,
+    publicSeatCountThreshold,
     holidayLabelReconciliation,
   };
 }

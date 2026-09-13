@@ -1,6 +1,7 @@
 import type { AppEnvironment, D1Database } from "../env";
 import { activeWindowForOfferingSql, mongoliaCivilDate } from "./registration-windows";
 import { getClassCapacityProjections } from "./class-capacity";
+import { getPublicSeatCountThresholdFromDatabase } from "../staff/public-seat-count-threshold";
 
 interface CatalogRow {
   academicYearId: string;
@@ -32,7 +33,7 @@ export interface RegistrationCatalog {
       startTime: string;
       endTime: string;
       activeHoldCount: number;
-      remainingSeats: number;
+      remainingSeats: number | null;
       availability: "available" | "full" | "unavailable";
       paymentOptions: Array<{
         code: "single" | "two_installment";
@@ -179,7 +180,7 @@ export async function getRegistrationCatalog(
   database: D1Database,
   environment: AppEnvironment,
   nowDate = new Date(),
-  options: { includeHidden?: boolean } = {},
+  options: { includeHidden?: boolean; includeSeatCounts?: boolean } = {},
 ): Promise<RegistrationCatalog> {
   const now = nowDate.toISOString();
   const localDate = mongoliaCivilDate(nowDate);
@@ -187,8 +188,12 @@ export async function getRegistrationCatalog(
   const statement = environment === "staging"
     ? database.prepare(stagingCatalogSql).bind(now, localDate, localDate, localDate, localDate, includeHidden)
     : database.prepare(productionCatalogSql).bind(now, localDate, localDate, localDate, localDate, 0, 0, 0, includeHidden);
-  const result = await statement.all<CatalogRow>();
-  const projectionByClassId = new Map((await getClassCapacityProjections(database, environment, nowDate))
+  const [result, threshold, projections] = await Promise.all([
+    statement.all<CatalogRow>(),
+    getPublicSeatCountThresholdFromDatabase(database),
+    getClassCapacityProjections(database, environment, nowDate),
+  ]);
+  const projectionByClassId = new Map(projections
     .map((projection) => [projection.classSessionId, projection]));
   const years = new Map<string, RegistrationCatalog["academicYears"][number]>();
 
@@ -222,7 +227,9 @@ export async function getRegistrationCatalog(
       activeHoldCount: projection
         ? projection.reservedInitialPaymentCount + projection.legacyReservationCount
         : 0,
-      remainingSeats,
+      remainingSeats: options.includeSeatCounts || threshold.remainingSeatThreshold == null
+        || (threshold.remainingSeatThreshold > 0 && remainingSeats <= threshold.remainingSeatThreshold)
+        ? remainingSeats : null,
       availability,
       paymentOptions,
     });

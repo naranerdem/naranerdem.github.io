@@ -764,6 +764,48 @@ try {
     await uxPage.locator("#acknowledge-student").click();
     await uxPage.locator("#review-panel").waitFor({ state: "visible" });
     await uxContext.close();
+  } else if (process.env.SEAT_COUNT_THRESHOLD_BROWSER_ONLY === "1") {
+    const saveThreshold = async (value) => {
+      await page.goto(`${baseUrl}/staff/settings/`);
+      await page.locator("#tool-app").waitFor({ state: "visible" });
+      const details = page.locator("#public-seat-count-threshold-setting details");
+      if (!await details.evaluate((node) => node.open)) await details.locator("summary").click();
+      const form = page.locator("#public-seat-count-threshold-form");
+      await form.locator("#public-seat-count-threshold").fill(value);
+      const response = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/program-calendar")
+        && candidate.request().method() === "POST");
+      await form.getByRole("button", { name: "Хадгалах" }).click();
+      assert.equal((await response).status(), 200, `threshold ${value || "NULL"} saves through the authorized settings form`);
+    };
+    const publicClassText = async () => {
+      const publicPage = await browser.newPage();
+      await publicPage.goto(`${baseUrl}/register/?new=1`);
+      await publicPage.locator("#registration-form").waitFor({ state: "visible" });
+      await publicPage.locator("[data-child-stage]").selectOption("stage_1");
+      await publicPage.locator("[data-child-class]").first().waitFor({ state: "visible" });
+      const text = await publicPage.locator("[data-child-card]").first().textContent();
+      await publicPage.close();
+      return text || "";
+    };
+    await saveThreshold("0");
+    assert.doesNotMatch(await publicClassText(), /Сул суудал:\s*\d+/, "threshold zero hides numeric seats in the rendered public registration choices");
+    await saveThreshold("2");
+    assert.doesNotMatch(await publicClassText(), /Сул суудал:\s*\d+/, "a count above the threshold remains absent from public text");
+    await saveThreshold("1000");
+    assert.match(await publicClassText(), /Сул суудал:\s*\d+/, "a threshold above capacity restores the public numeric count");
+    await page.goto(`${baseUrl}/staff/settings/`);
+    await page.locator("#tool-app").waitFor({ state: "visible" });
+    const invalidDetails = page.locator("#public-seat-count-threshold-setting details");
+    if (!await invalidDetails.evaluate((node) => node.open)) await invalidDetails.locator("summary").click();
+    const invalidForm = page.locator("#public-seat-count-threshold-form");
+    await invalidForm.locator("#public-seat-count-threshold").fill("-1");
+    const invalidResponse = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/program-calendar")
+      && candidate.request().method() === "POST");
+    await invalidForm.getByRole("button", { name: "Хадгалах" }).click();
+    assert.equal((await invalidResponse).status(), 400, "invalid threshold values are rejected by the authorized server route");
+    assert.equal(await invalidForm.locator("#public-seat-count-threshold").inputValue(), "-1", "a rejected save preserves the entered value for correction");
+    await saveThreshold("");
+    assert.match(await publicClassText(), /Сул суудал:\s*\d+/, "the blank compatibility setting preserves the legacy public count display");
   } else if (process.env.CLASS_PUBLIC_VISIBILITY_BROWSER_ONLY === "1") {
     await page.goto(`${baseUrl}/staff/offerings/`);
     await page.locator("#tool-app").waitFor({ state: "visible" });

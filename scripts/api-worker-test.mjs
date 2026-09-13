@@ -70,6 +70,9 @@ function createDatabase(rows, options = {}) {
           return statement;
         },
         async first() {
+          if (sql.includes("FROM public_seat_count_threshold_setting")) {
+            return { remainingSeatThreshold: options.remainingSeatThreshold ?? null, updatedAt: "2026-09-13T00:00:00.000Z" };
+          }
           if (options.healthError) throw new Error("SQLITE_ERROR: health failure");
           assert.equal(sql.trim(), "SELECT 1 AS ok");
           assert.deepEqual(bindings, []);
@@ -118,7 +121,7 @@ function createDatabase(rows, options = {}) {
 
           assert.match(bindings[0], /^\d{4}-\d{2}-\d{2}T/);
           assert.equal(bindings.slice(1, 5).every((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)), true, "catalog checks active Mongolia-local registration-window dates");
-          assert.deepEqual(bindings.slice(5), productionQuery ? [0, 0, 0] : []);
+          assert.deepEqual(bindings.slice(5), productionQuery ? [0, 0, 0, 0] : [0]);
           return { success: true, results: filtered };
         },
       };
@@ -215,6 +218,19 @@ try {
     [{ code: "single", totalAmountMnt: 850000, initialAmountMnt: 850000 }, { code: "two_installment", totalAmountMnt: 900000, initialAmountMnt: 450000, secondAmountMnt: 450000, secondDueOn: "2026-11-01" }],
     "public catalog exposes only the configured course payment terms");
   assert.doesNotMatch(JSON.stringify(stagingCatalog.body), /account_number|accountNumber|bankName/i, "public catalog never exposes bank-transfer instructions");
+  const thresholdCatalog = await jsonResponse(stagingWorker, "/api/registration/catalog", {
+    ...stagingEnv,
+    DB: createDatabase([
+      catalogRow("threshold-many", { isTest: 1, isTestOnly: 1, capacity: 10, confirmedCount: 2 }),
+      catalogRow("threshold-two", { isTest: 1, isTestOnly: 1, capacity: 10, confirmedCount: 8 }),
+      catalogRow("threshold-full", { isTest: 1, isTestOnly: 1, capacity: 10, confirmedCount: 10 }),
+    ], { remainingSeatThreshold: 2 }),
+  });
+  assert.deepEqual(thresholdCatalog.body.academicYears[0].classSessions.map((session) => [session.id, session.remainingSeats, session.availability]), [
+    ["threshold-many", null, "available"],
+    ["threshold-two", 2, "available"],
+    ["threshold-full", 0, "full"],
+  ], "the public API preserves nonnumeric availability while omitting counts above the configured threshold");
 
   const stagingCalendar = await jsonResponse(stagingWorker, "/api/calendar/published", stagingEnv);
   assert.equal(stagingCalendar.response.status, 200);

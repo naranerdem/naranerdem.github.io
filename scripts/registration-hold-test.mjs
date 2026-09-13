@@ -32,6 +32,7 @@ const registrationCorrectionBundle = path.join(tempDir, "registration-correction
 const initialPaymentDeadlineBundle = path.join(tempDir, "initial-payment-deadline.mjs");
 const childCreditBundle = path.join(tempDir, "child-credit-ledger.mjs");
 const paymentRemindersBundle = path.join(tempDir, "payment-reminders.mjs");
+const publicSeatCountThresholdBundle = path.join(tempDir, "public-seat-count-threshold.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
 bundle("src/server/services/registration-catalog.ts", catalogBundle);
 bundle("src/server/services/public-site.ts", publicSiteBundle);
@@ -49,6 +50,7 @@ bundle("src/server/staff/registration-corrections.ts", registrationCorrectionBun
 bundle("src/server/staff/initial-payment-deadline.ts", initialPaymentDeadlineBundle);
 bundle("src/server/services/child-credit-ledger.ts", childCreditBundle);
 bundle("src/server/staff/payment-reminders.ts", paymentRemindersBundle);
+bundle("src/server/staff/public-seat-count-threshold.ts", publicSeatCountThresholdBundle);
 const {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -62,6 +64,7 @@ const {
   RegistrationSubmissionError,
 } = await import(pathToFileURL(registrationBundle).href);
 const { getRegistrationCatalog } = await import(pathToFileURL(catalogBundle).href);
+const { getPublicSeatCountThreshold, updatePublicSeatCountThreshold, PublicSeatCountThresholdError } = await import(pathToFileURL(publicSeatCountThresholdBundle).href);
 const { getAdditionalClassPreview, AdditionalClassPreviewError } = await import(pathToFileURL(additionalClassPreviewBundle).href);
 const { createAdditionalClassAdmission: createAdditionalClassAdmissionService, AdditionalClassAdmissionError } = await import(pathToFileURL(additionalClassAdmissionBundle).href);
 const { claimAdditionalAdmissionConfirmation, finalizeAdditionalAdmissionClaim, promotePaidDraftChild } = await import(pathToFileURL(canonicalPromotionBundle).href);
@@ -362,6 +365,34 @@ try {
   assert.ok(catalogSessions.some((entry) => entry.id === "class-last-seat" && entry.stageCode === "stage_1"), "an active Stage 1 window exposes its concrete classes even when the legacy academic-year status is closed");
   assert.deepEqual(new Set(catalogSessions.map((entry) => entry.stageCode)), new Set(["stage_1"]), "Stage 2 and 3 Offerings outside every active window are absent from the public catalog");
   assert.equal(catalogSessions.find((entry) => entry.id === "class-closed")?.availability, "unavailable", "a closed concrete class remains unavailable despite an active window");
+  const thresholdDefault = await getPublicSeatCountThreshold(env(database));
+  assert.equal(thresholdDefault.remainingSeatThreshold, null, "the nullable default preserves legacy public seat-count presentation");
+  await updatePublicSeatCountThreshold(env(database), adminStaff, { remainingSeatThreshold: 0, expectedUpdatedAt: thresholdDefault.updatedAt });
+  const noCountCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
+  assert.equal(noCountCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-priced")?.remainingSeats, null,
+    "threshold zero retains public availability but never exposes a remaining-seat number");
+  const noCountSetting = await getPublicSeatCountThreshold(env(database));
+  await updatePublicSeatCountThreshold(env(database), adminStaff, { remainingSeatThreshold: 2, expectedUpdatedAt: noCountSetting.updatedAt });
+  const thresholdTwoCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
+  assert.equal(thresholdTwoCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-priced")?.remainingSeats, null,
+    "a class above the configured threshold remains public but does not reveal its count");
+  assert.equal(thresholdTwoCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-last-seat")?.remainingSeats, 1,
+    "the actual count appears when a class crosses into the configured threshold");
+  const thresholdTwoSetting = await getPublicSeatCountThreshold(env(database));
+  await updatePublicSeatCountThreshold(env(database), adminStaff, { remainingSeatThreshold: 1000, expectedUpdatedAt: thresholdTwoSetting.updatedAt });
+  const allVisibleCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
+  assert.equal(typeof allVisibleCatalog.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-priced")?.remainingSeats, "number",
+    "a threshold at least as large as capacity makes the actual count visible");
+  const hiddenPublicCount = await getPublicSeatCountThreshold(env(database));
+  await updatePublicSeatCountThreshold(env(database), adminStaff, { remainingSeatThreshold: 0, expectedUpdatedAt: hiddenPublicCount.updatedAt });
+  const staffCatalogWithCounts = await getRegistrationCatalog(database, "staging", new Date(iso()), { includeSeatCounts: true });
+  assert.equal(typeof staffCatalogWithCounts.academicYears.flatMap((year) => year.classSessions).find((entry) => entry.id === "class-priced")?.remainingSeats, "number",
+    "staff catalog projections retain authoritative counts independently of public presentation");
+  await assert.rejects(() => updatePublicSeatCountThreshold(env(database), paymentStaff, { remainingSeatThreshold: 2, expectedUpdatedAt: (new Date()).toISOString() }),
+    (error) => error instanceof PublicSeatCountThresholdError && error.code === "forbidden", "only settings administrators can change the public threshold");
+  const validThresholdBeforeInvalidUpdate = await getPublicSeatCountThreshold(env(database));
+  await assert.rejects(() => updatePublicSeatCountThreshold(env(database), adminStaff, { remainingSeatThreshold: 2.5, expectedUpdatedAt: validThresholdBeforeInvalidUpdate.updatedAt }),
+    (error) => error instanceof PublicSeatCountThresholdError && error.code === "invalid", "fractional public thresholds are rejected");
   database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, created_at, updated_at)
     VALUES ('year-provenance-mismatch', 'Холимог тест жил', 'draft', 0, 0, ?, ?);
     INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
@@ -1302,6 +1333,22 @@ try {
   }, new Date(iso(-2)));
   assert.equal(count(database, "payment_allocation", `received_payment_id = (SELECT id FROM received_payment WHERE idempotency_key = 'multi-child-transfer')`), 2, "one received payment can allocate across two children's initial obligations");
   assert.equal(database.query(`SELECT received_amount_mnt AS amountMnt FROM received_payment WHERE idempotency_key = 'multi-child-transfer'`)[0].amountMnt, 1201000, "unallocated overpayment remains representable without inventing a credit");
+  const familyLifecycle = submission("class-priced", undefined, 1, "two_installment");
+  familyLifecycle.children.push(
+    { ...familyLifecycle.children[0], givenName: "Амьдрал 2", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" },
+    { ...familyLifecycle.children[0], givenName: "Амьдрал 3", selectedClassSessionId: "class-legacy-status", paymentPlanCode: "single" },
+  );
+  const familyLifecycleDraft = await createRegistrationDraft(env(database), familyLifecycle, new Date(iso(-3)));
+  const familyLifecycleChildren = database.query(`SELECT id, given_name AS givenName FROM registration_draft_child
+    WHERE registration_draft_id = ? ORDER BY position`, [familyLifecycleDraft.draftId]);
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${familyLifecycleDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 3,
+  "three accepted siblings receive their family awards before payment or canonical promotion");
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: familyLifecycleChildren[1].id, reason: "guardian_request" });
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${familyLifecycleDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 3,
+    "three-to-two cancellation keeps the historical awards active without automatic recalculation");
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: familyLifecycleChildren[2].id, reason: "guardian_request" });
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${familyLifecycleDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 3,
+    "three-to-one cancellation also leaves award reversal to the audited admin path");
   const manipulated = submission("class-priced");
   manipulated.children[0].initialPaymentAmountMnt = 1;
   const manipulatedDraft = await createRegistrationDraft(env(database), manipulated, new Date(iso(-1)));

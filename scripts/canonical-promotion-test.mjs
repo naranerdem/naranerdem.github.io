@@ -344,6 +344,8 @@ try {
   assert.equal((await promotePaidDraftChild(env(database), actor, review.childId)).state, "promoted");
   assert.equal(count(database, "enrollment", `id = '${review.childId}:enrollment' AND status = 'confirmed'`), 1, "a returning child with zero plausible matches gets a new canonical record automatically");
   assert.equal(count(database, "outbound_email", `registration_draft_id = '${review.id}' AND event_type = 'enrollment_confirmed'`), 1, "automatic zero-match promotion queues one enrollment confirmation email");
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${review.id}' AND event_type = 'internal_enrollment_confirmed'`), 1,
+    "the canonical confirmation atomically queues its capability-free internal counterpart");
 
   const elsewhere = seedDraft(database, "different-guardian", { email: "other@example.test", surname: "Бат", givenName: "Сараа", returning: "returning" });
   assert.equal((await promotePaidDraftChild(env(database), actor, elsewhere.childId)).state, "needs_identity_review", "global exact match is never automatic for another verified guardian");
@@ -354,6 +356,8 @@ try {
   assert.equal(count(database, "outbound_email", `registration_draft_id = '${elsewhere.id}' AND event_type = 'enrollment_confirmed'`), 1, "manual existing-child resolution queues exactly one enrollment confirmation email");
   await resolvePromotionIdentity(env(database), actor, elsewhere.childId, { kind: "existing", studentId: "student-returning" });
   assert.equal(count(database, "outbound_email", `registration_draft_id = '${elsewhere.id}' AND event_type = 'enrollment_confirmed'`), 1, "manual existing-child replay does not duplicate the logical confirmation email");
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${elsewhere.id}' AND event_type = 'internal_enrollment_confirmed'`), 1,
+    "canonical replay keeps one internal confirmation event per registration confirmation");
 
   const newElsewhere = seedDraft(database, "new-different-guardian", { email: "new-other@example.test", surname: "Бат", givenName: "Сараа", returning: "new" });
   assert.equal((await promotePaidDraftChild(env(database), actor, newElsewhere.childId)).state, "needs_identity_review",

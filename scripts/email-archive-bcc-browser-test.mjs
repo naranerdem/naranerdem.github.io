@@ -50,9 +50,10 @@ async function openArchiveForm(page) {
   return page.locator("#email-archive-bcc-form");
 }
 
-async function save(page, value) {
+async function save(page, adminValue, teacherValue = "") {
   const form = await openArchiveForm(page);
-  await form.locator("#email-archive-bcc-recipients").fill(value);
+  await form.locator("#email-archive-bcc-admin-recipients").fill(adminValue);
+  await form.locator("#email-archive-bcc-teacher-recipients").fill(teacherValue);
   const request = page.waitForRequest((candidate) => candidate.url().endsWith("/api/staff/program-calendar") && candidate.method() === "POST");
   const response = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/program-calendar") && candidate.request().method() === "POST");
   await form.getByRole("button", { name: "Хадгалах" }).click();
@@ -67,8 +68,19 @@ async function save(page, value) {
 async function savedRecipients(page) {
   return page.evaluate(async () => {
     const response = await fetch("/api/staff/settings/email-archive-bcc", { credentials: "same-origin" });
-    return (await response.json()).setting.recipients;
+    return (await response.json()).setting;
   });
+}
+
+async function saveSeatCountThreshold(page, value) {
+  const details = page.locator("#public-seat-count-threshold-setting details");
+  if (!await details.evaluate((node) => node.open)) await details.locator("summary").click();
+  const form = page.locator("#public-seat-count-threshold-form");
+  await form.locator("#public-seat-count-threshold").fill(value);
+  const request = page.waitForRequest((candidate) => candidate.url().endsWith("/api/staff/program-calendar") && candidate.method() === "POST");
+  const response = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/program-calendar") && candidate.request().method() === "POST");
+  await form.getByRole("button", { name: "Хадгалах" }).click();
+  return { request: await request, response: await response };
 }
 
 try {
@@ -94,46 +106,56 @@ try {
   assert.match(await page.locator("#email-archive-bcc-setting").textContent(), /таслал эсвэл шинэ мөрөөр/, "form explains supported separators");
 
   const dotted = "dotted.name+tag@example.test";
-  let saved = await save(page, dotted);
+  let saved = await save(page, dotted, "teacher.one@example.test");
   assert.equal(saved.response.status(), 200, "a dotted plus-address saves through the rendered form");
-  assert.deepEqual(JSON.parse(saved.request.postData() ?? "{}").recipients, [dotted], "the client preserves dots and plus tags");
-  assert.deepEqual(await savedRecipients(page), [dotted], "single address persists");
+  assert.deepEqual(JSON.parse(saved.request.postData() ?? "{}").adminRecipients, [dotted], "the client preserves admin dots and plus tags");
+  assert.deepEqual(JSON.parse(saved.request.postData() ?? "{}").teacherRecipients, ["teacher.one@example.test"], "the client keeps the teacher list separate");
+  let setting = await savedRecipients(page);
+  assert.deepEqual(setting.adminRecipients, [dotted], "admin recipients persist");
+  assert.deepEqual(setting.teacherRecipients, ["teacher.one@example.test"], "teacher recipients persist");
   await page.reload(); await page.locator("#tool-app").waitFor({ state: "visible" });
-  assert.equal(await (await openArchiveForm(page)).locator("#email-archive-bcc-recipients").inputValue(), dotted, "saved address reloads in the real form");
+  assert.equal(await (await openArchiveForm(page)).locator("#email-archive-bcc-admin-recipients").inputValue(), dotted, "saved admin address reloads in the real form");
+  assert.equal(await (await openArchiveForm(page)).locator("#email-archive-bcc-teacher-recipients").inputValue(), "teacher.one@example.test", "saved teacher address reloads in the real form");
 
-  saved = await save(page, "comma.one@example.test, comma.two+tag@example.test");
+  saved = await save(page, "comma.one@example.test, comma.two+tag@example.test", "teacher.two@example.test");
   assert.equal(saved.response.status(), 200, "comma-separated addresses save");
-  assert.deepEqual(await savedRecipients(page), ["comma.one@example.test", "comma.two+tag@example.test"]);
+  assert.deepEqual((await savedRecipients(page)).adminRecipients, ["comma.one@example.test", "comma.two+tag@example.test"]);
 
-  saved = await save(page, "lf.one@example.test\nlf.two@example.test");
+  saved = await save(page, "lf.one@example.test\nlf.two@example.test", "teacher.lf@example.test");
   assert.equal(saved.response.status(), 200, "LF-separated addresses save");
-  assert.deepEqual(await savedRecipients(page), ["lf.one@example.test", "lf.two@example.test"]);
+  assert.deepEqual((await savedRecipients(page)).adminRecipients, ["lf.one@example.test", "lf.two@example.test"]);
 
-  saved = await save(page, "crlf.one@example.test\r\ncrlf.two@example.test");
+  saved = await save(page, "crlf.one@example.test\r\ncrlf.two@example.test", "teacher.crlf@example.test");
   assert.equal(saved.response.status(), 200, "CRLF-separated addresses save");
-  assert.deepEqual(await savedRecipients(page), ["crlf.one@example.test", "crlf.two@example.test"]);
+  assert.deepEqual((await savedRecipients(page)).adminRecipients, ["crlf.one@example.test", "crlf.two@example.test"]);
 
   const retained = ["trim.one@example.test", "trim.two+tag@example.test"];
-  saved = await save(page, " \n trim.one@example.test ,\r\n trim.two+tag@example.test,\n\n");
+  saved = await save(page, " \n trim.one@example.test ,\r\n trim.two+tag@example.test,\n\n", " teacher.trim@example.test ");
   assert.equal(saved.response.status(), 200, "whitespace and trailing separators are ignored");
-  assert.deepEqual(await savedRecipients(page), retained);
+  assert.deepEqual((await savedRecipients(page)).adminRecipients, retained);
 
   const invalidValue = "valid@example.test, invalid-address";
   const form = await openArchiveForm(page);
-  await form.locator("#email-archive-bcc-recipients").fill(invalidValue);
+  await form.locator("#email-archive-bcc-admin-recipients").fill(invalidValue);
   const rejected = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/program-calendar") && candidate.request().method() === "POST");
   await form.getByRole("button", { name: "Хадгалах" }).click();
   assert.equal((await rejected).status(), 400, "one invalid address rejects the save");
   assert.match(await page.locator("#tool-message").textContent(), /invalid-address/, "the authenticated admin sees the invalid entry");
-  assert.equal(await form.locator("#email-archive-bcc-recipients").inputValue(), invalidValue, "a rejected save retains the entered values");
-  assert.deepEqual(await savedRecipients(page), retained, "a rejected save keeps the prior persisted setting");
+  assert.equal(await form.locator("#email-archive-bcc-admin-recipients").inputValue(), invalidValue, "a rejected save retains the entered values");
+  assert.deepEqual((await savedRecipients(page)).adminRecipients, retained, "a rejected save keeps the prior persisted setting");
+  assert.deepEqual((await savedRecipients(page)).teacherRecipients, ["teacher.trim@example.test"], "a rejected save leaves the other internal-recipient list unchanged");
 
   const literalBackslashN = "literal.one@example.test\\nliteral.two@example.test";
-  await form.locator("#email-archive-bcc-recipients").fill(literalBackslashN);
+  await form.locator("#email-archive-bcc-admin-recipients").fill(literalBackslashN);
   const literalRejected = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/program-calendar") && candidate.request().method() === "POST");
   await form.getByRole("button", { name: "Хадгалах" }).click();
   assert.equal((await literalRejected).status(), 400, "literal backslash-n is not treated as a newline separator");
-  assert.deepEqual(await savedRecipients(page), retained, "literal backslash-n rejection also preserves the saved setting");
+  assert.deepEqual((await savedRecipients(page)).adminRecipients, retained, "literal backslash-n rejection also preserves the saved setting");
+  const thresholdSave = await saveSeatCountThreshold(page, "2");
+  assert.equal(thresholdSave.response.status(), 200, "the rendered threshold setting accepts a nonnegative integer");
+  assert.equal(JSON.parse(thresholdSave.request.postData() ?? "{}").remainingSeatThreshold, 2, "the setting form sends the numeric threshold without changing capacity state");
+  const overview = await page.evaluate(async () => (await fetch("/api/staff/program-calendar", { credentials: "same-origin" })).json());
+  assert.equal(overview.publicSeatCountThreshold.remainingSeatThreshold, 2, "the saved public threshold reloads through the authorized staff overview");
   console.log("ok browser archive BCC entry formats, feedback, and persistence");
 } finally {
   if (context) await context.close().catch(() => undefined);

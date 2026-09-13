@@ -108,6 +108,7 @@ export const registrationFormCopy = {
     noAvailableClass: "Энэ шатанд одоогоор сул суудалтай анги алга байна.",
     selectRequired: "Анги, цагаа сонгоно уу.",
     remainingSeats: "Сул суудал: {count}",
+    available: "Боломжтой",
     full: "Анги дүүрсэн",
     activeHolds: "Төлбөр баталгаажихыг хүлээж буй: {count}",
     unavailableSession: "Одоогоор сонгох боломжгүй",

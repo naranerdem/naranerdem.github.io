@@ -111,6 +111,7 @@ import { PublicSiteFontError, updatePublicSiteFont } from "../staff/public-site-
 import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updateTeacherDashboardPreferences } from "../staff/teacher-dashboard-preferences";
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import { EmailArchiveBccError, getEmailArchiveBccSetting, updateEmailArchiveBccSetting } from "../staff/email-archive-bcc";
+import { PublicSeatCountThresholdError, updatePublicSeatCountThreshold } from "../staff/public-seat-count-threshold";
 import { DiscountPolicyError, reverseDiscountAward, updateDiscountPolicySetting } from "../services/discounts";
 import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
 import { RegistrationCorrectionError, registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } from "../staff/registration-corrections";
@@ -1167,7 +1168,7 @@ export async function handleApiRequest(
       if (denied) return denied;
       try {
         return json({
-          catalog: await getRegistrationCatalog(env.DB, env.APP_ENV, new Date(), { includeHidden: true }),
+          catalog: await getRegistrationCatalog(env.DB, env.APP_ENV, new Date(), { includeHidden: true, includeSeatCounts: true }),
           courseRules: await getCourseRules(env),
         }, 200, { "Cache-Control": "no-store" });
       } catch {
@@ -1995,7 +1996,14 @@ export async function handleApiRequest(
           break;
         case "email-archive-bcc.save":
           await updateEmailArchiveBccSetting(env, principal, {
-            recipients: payload.recipients,
+            adminRecipients: payload.adminRecipients,
+            teacherRecipients: payload.teacherRecipients,
+            expectedUpdatedAt: payload.expectedUpdatedAt,
+          });
+          break;
+        case "public-seat-count-threshold.save":
+          await updatePublicSeatCountThreshold(env, principal, {
+            remainingSeatThreshold: payload.remainingSeatThreshold,
             expectedUpdatedAt: payload.expectedUpdatedAt,
           });
           break;
@@ -2058,6 +2066,13 @@ export async function handleApiRequest(
           caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
             : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
               : caught.invalidRecipient ? `И-мэйлийн хаяг буруу байна: ${caught.invalidRecipient}` : "И-мэйлийн хаягуудыг шалгана уу.", status, { "Cache-Control": "no-store" });
+      }
+      if (caught instanceof PublicSeatCountThresholdError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+            : caught.code === "conflict" ? "Тохиргоо өөрчлөгдсөн байна. Хуудсыг шинэчлээд шалгана уу."
+              : "Үлдсэн суудлын босгыг 0-1000 бүхэл тоогоор оруулна уу.", status, { "Cache-Control": "no-store" });
       }
       if (caught instanceof PublicQrRedirectSettingsError) {
         const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;

@@ -44,6 +44,7 @@
     "test:credit-browser": "npm run build && node scripts/child-credit-browser-test.mjs",
     "test:class-public-visibility-browser": "npm run build && CLASS_PUBLIC_VISIBILITY_BROWSER_ONLY=1 node scripts/child-credit-browser-test.mjs",
     "test:class-public-visibility": "npm run test:class-public-visibility-browser",
+    "test:public-seat-count-threshold-browser": "npm run build && SEAT_COUNT_THRESHOLD_BROWSER_ONLY=1 node scripts/child-credit-browser-test.mjs",
     "test:parent-registration-ux-browser": "npm run build && PARENT_REGISTRATION_UX_BROWSER_ONLY=1 node scripts/child-credit-browser-test.mjs",
     "test:email-archive-bcc-browser": "npm run build && node scripts/email-archive-bcc-browser-test.mjs",
     "test:browser-uuid-compatibility": "node scripts/browser-uuid-compatibility-test.mjs",

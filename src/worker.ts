@@ -4,6 +4,7 @@ import { handlePublicQrRedirect } from "./server/public-qr-redirects";
 import { finalizeDuePaymentConfirmations } from "./server/staff/payment-reconciliation";
 import { processDuePaymentReminders } from "./server/staff/payment-reminders";
 import { reconcileWaitlistOffers } from "./server/services/waitlist-offers";
+import { reconcileInternalEnrollmentConfirmationNotices } from "./server/email/registration-transactional";
 
 export default {
   async fetch(request: Request, env: WorkerEnv, context: WorkerExecutionContext): Promise<Response> {
@@ -17,6 +18,7 @@ export default {
       finalizeDuePaymentConfirmations(env, now),
       processDuePaymentReminders(env, now),
       reconcileWaitlistOffers(env, now),
+      reconcileInternalEnrollmentConfirmationNotices(env, now),
     ]));
   },
 };

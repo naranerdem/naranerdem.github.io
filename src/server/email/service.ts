@@ -24,9 +24,9 @@ interface QueuedEmail {
 }
 
 async function messageForDelivery(env: WorkerEnv, email: QueuedEmail): Promise<EmailMessage> {
-  const existing = await env.DB.prepare(`SELECT email_sensitivity AS sensitivity, bcc_recipients_json AS bccRecipientsJson,
-    outbox_subject AS outboxSubject FROM outbound_email WHERE id = ?`).bind(email.id)
-    .first<{ sensitivity: "archive_bcc_safe" | "sensitive_capability" | null; bccRecipientsJson: string | null; outboxSubject: string | null }>();
+  const existing = await env.DB.prepare(`SELECT event_type AS eventType, email_sensitivity AS sensitivity,
+    bcc_recipients_json AS bccRecipientsJson, outbox_subject AS outboxSubject FROM outbound_email WHERE id = ?`).bind(email.id)
+    .first<{ eventType: string; sensitivity: "archive_bcc_safe" | "sensitive_capability" | null; bccRecipientsJson: string | null; outboxSubject: string | null }>();
   const sensitivity = existing?.sensitivity ?? emailSensitivityForTemplate(email.templateKey);
   let bcc: string[] = [];
   if (existing?.bccRecipientsJson) {
@@ -34,7 +34,13 @@ async function messageForDelivery(env: WorkerEnv, email: QueuedEmail): Promise<E
   } else {
     // Archival is supplementary; an unavailable archive setting must not block
     // the parent-facing message or any operational state transition.
-    try { bcc = await archiveBccRecipients(env, sensitivity); } catch { bcc = []; }
+    try {
+      bcc = await archiveBccRecipients(env, {
+        eventType: existing?.eventType ?? "",
+        sensitivity,
+        primaryRecipient: email.message.to,
+      });
+    } catch { bcc = []; }
   }
   if (!existing?.outboxSubject) {
     const snapshot = sanitizedOutboxSnapshot(email.message, sensitivity);

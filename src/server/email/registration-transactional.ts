@@ -8,6 +8,8 @@ import { registrationReceiptTemplate, type RegistrationReceiptItem } from "./tem
 import { effectiveInstallmentsForRows, getDiscountPolicySetting } from "../services/discounts";
 import { sendParentAccessEmail } from "../auth/email-verification";
 import { enrollmentConfirmationTemplate, type EnrollmentConfirmationChild } from "./templates/enrollment-confirmation";
+import { internalEnrollmentConfirmationTemplate } from "./templates/internal-enrollment-confirmation";
+import { internalEnrollmentNoticeRecipients } from "./archive-policy";
 
 interface ReceiptRow {
   email: string; normalizedEmail: string; transferDescription: string | null;
@@ -187,11 +189,18 @@ export async function sendPaymentConfirmedEmail(
 
 export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrationDraftId: string, options: { resend?: boolean } = {}): Promise<boolean> {
   if (!enabled(env)) return false;
+  let existingParent: { status: string } | null = null;
+  let existingInternal: { status: string } | null = null;
   if (!options.resend) {
-    const existing = await env.DB.prepare(`SELECT status FROM outbound_email
+    existingParent = await env.DB.prepare(`SELECT status FROM outbound_email
       WHERE registration_draft_id = ? AND event_type = 'enrollment_confirmed' ORDER BY created_at DESC LIMIT 1`)
       .bind(registrationDraftId).first<{ status: string }>();
-    if (existing) return existing.status === "sent";
+    existingInternal = await env.DB.prepare(`SELECT status FROM outbound_email
+      WHERE id = ? AND event_type = 'internal_enrollment_confirmed'`)
+      .bind(internalEnrollmentNoticeId(registrationDraftId)).first<{ status: string }>();
+    // Do not backfill historical confirmations. A pre-release parent event
+    // without its paired internal event remains untouched.
+    if (existingParent && !existingInternal) return existingParent.status === "sent";
   }
   const rows = await env.DB.prepare(`SELECT registration_draft.email,
     registration_draft_child.id AS childId,
@@ -255,17 +264,113 @@ export async function sendEnrollmentConfirmationEmail(env: WorkerEnv, registrati
   }
   const children = [...byChild.values()];
   const referralPolicy = await getDiscountPolicySetting(env);
-  try {
-    await sendParentAccessEmail(env, rows.results[0].email, registrationDraftId, {
-      eventType: options.resend ? "parent_enrollment_resend" : "enrollment_confirmed",
-      templateKey: options.resend ? "parent_enrollment_resend_v1" : "enrollment_confirmation_v1",
-      context: { childCount: children.length, enrollmentConfirmation: true },
-      template: (accessUrl) => enrollmentConfirmationTemplate({ children, accessUrl, referralPolicy }),
-    });
-    return true;
-  } catch {
-    // Canonical promotion is already durable. The failed outbox row is retained
-    // for staff visibility and a deliberate resend can issue a fresh link.
-    return false;
+  const preparedInternal = !options.resend && !existingInternal
+    ? await prepareInternalEnrollmentConfirmationNotice(env, registrationDraftId, children)
+    : null;
+  let parentSent = existingParent?.status === "sent";
+  if (!existingParent) {
+    try {
+      await sendParentAccessEmail(env, rows.results[0].email, registrationDraftId, {
+        eventType: options.resend ? "parent_enrollment_resend" : "enrollment_confirmed",
+        templateKey: options.resend ? "parent_enrollment_resend_v1" : "enrollment_confirmation_v1",
+        context: { childCount: children.length, enrollmentConfirmation: true },
+        template: (accessUrl) => enrollmentConfirmationTemplate({ children, accessUrl, referralPolicy }),
+        additionalOutboundStatements: preparedInternal ? [preparedInternal.statement] : undefined,
+      });
+      parentSent = true;
+    } catch {
+      // Canonical promotion is already durable. The parent outbox row is retained
+      // for staff visibility and a deliberate resend can issue a fresh link.
+    }
   }
+  if (!options.resend && (preparedInternal || existingInternal)) {
+    try { await deliverInternalEnrollmentConfirmationNotice(env, registrationDraftId, children, referralPolicy); } catch { /* durable retry */ }
+  }
+  return parentSent;
+}
+
+function internalEnrollmentNoticeId(registrationDraftId: string): string {
+  return `${registrationDraftId}:internal-enrollment-confirmation`;
+}
+
+async function prepareInternalEnrollmentConfirmationNotice(
+  env: WorkerEnv,
+  registrationDraftId: string,
+  children: EnrollmentConfirmationChild[],
+): Promise<{ statement: ReturnType<WorkerEnv["DB"]["prepare"]> } | null> {
+  const recipients = await internalEnrollmentNoticeRecipients(env);
+  if (!recipients.length) return null;
+  const provenance = await env.DB.prepare(`SELECT is_test AS isTest, test_run_id AS testRunId
+    FROM registration_draft WHERE id = ?`).bind(registrationDraftId)
+    .first<{ isTest: number; testRunId: string | null }>();
+  if (!provenance) return null;
+  const now = new Date().toISOString();
+  const id = internalEnrollmentNoticeId(registrationDraftId);
+  return {
+    statement: env.DB.prepare(`INSERT OR IGNORE INTO outbound_email (
+      id, event_type, template_key, intended_to_email, actual_delivery_email, delivery_mode,
+      status, attempt_count, queued_at, context_json, idempotency_key, is_test, test_run_id,
+      created_at, updated_at, registration_draft_id, email_sensitivity, bcc_recipients_json
+    ) VALUES (?, 'internal_enrollment_confirmed', 'internal_enrollment_confirmation_v1', ?, ?, ?,
+      'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?, 'archive_bcc_safe', ?)`)
+      .bind(id, recipients[0], recipients[0], env.APP_ENV === "staging" ? "staging_override" : "production",
+        now, JSON.stringify({ registrationDraftId, childCount: children.length, internalNotice: true }),
+        `internal-enrollment-confirmation/${registrationDraftId}`, provenance.isTest, provenance.testRunId,
+        now, now, registrationDraftId, JSON.stringify(recipients.slice(1))),
+  };
+}
+
+export async function sendInternalEnrollmentConfirmationNotice(
+  env: WorkerEnv,
+  registrationDraftId: string,
+  children: EnrollmentConfirmationChild[],
+  referralPolicy: { referrerBasisPoints: number; referredChildBasisPoints: number },
+  provider?: EmailProvider,
+): Promise<boolean> {
+  const prepared = await prepareInternalEnrollmentConfirmationNotice(env, registrationDraftId, children);
+  if (prepared) await prepared.statement.run();
+  return deliverInternalEnrollmentConfirmationNotice(env, registrationDraftId, children, referralPolicy, provider);
+}
+
+async function deliverInternalEnrollmentConfirmationNotice(
+  env: WorkerEnv,
+  registrationDraftId: string,
+  children: EnrollmentConfirmationChild[],
+  referralPolicy: { referrerBasisPoints: number; referredChildBasisPoints: number },
+  provider?: EmailProvider,
+): Promise<boolean> {
+  const id = internalEnrollmentNoticeId(registrationDraftId);
+  const queued = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail,
+    bcc_recipients_json AS bccRecipientsJson FROM outbound_email WHERE id = ?`).bind(id)
+    .first<{ status: string; actualDeliveryEmail: string | null; bccRecipientsJson: string | null }>();
+  if (!queued || queued.status === "sent" || !queued.actualDeliveryEmail) return Boolean(queued);
+  let bcc: string[] = [];
+  try { bcc = queued.bccRecipientsJson ? JSON.parse(queued.bccRecipientsJson) as string[] : []; } catch { bcc = []; }
+  const template = internalEnrollmentConfirmationTemplate({ children, referralPolicy });
+  await deliverQueuedEmail(env, emailProvider(env, provider), {
+    id, idempotencyKey: `internal-enrollment-confirmation/${registrationDraftId}`,
+    templateKey: "internal_enrollment_confirmation_v1",
+    message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text, bcc },
+  });
+  return true;
+}
+
+export async function reconcileInternalEnrollmentConfirmationNotices(env: WorkerEnv, nowDate = new Date()): Promise<number> {
+  if (!enabled(env)) return 0;
+  const candidates = await env.DB.prepare(`SELECT internal.registration_draft_id AS registrationDraftId
+    FROM outbound_email AS internal
+    WHERE internal.event_type = 'internal_enrollment_confirmed' AND internal.status IN ('queued', 'failed')
+      AND internal.created_at <= ?
+      AND EXISTS (SELECT 1 FROM outbound_email AS parent
+        WHERE parent.registration_draft_id = internal.registration_draft_id AND parent.event_type = 'enrollment_confirmed')
+    ORDER BY internal.created_at ASC LIMIT 20`).bind(nowDate.toISOString())
+    .all<{ registrationDraftId: string }>();
+  let recovered = 0;
+  for (const candidate of candidates.results) {
+    try {
+      await sendEnrollmentConfirmationEmail(env, candidate.registrationDraftId);
+      recovered += 1;
+    } catch { /* retain the failed durable outbox event for the next run */ }
+  }
+  return recovered;
 }
