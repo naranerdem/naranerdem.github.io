@@ -55,7 +55,9 @@ export async function registrationCorrectionDetail(env: WorkerEnv, actor: StaffP
     registration_draft_child.gender, registration_draft_child.date_of_birth AS dateOfBirth,
     registration_draft_child.current_grade AS currentGrade, registration_draft_child.current_school AS currentSchool,
     registration_draft_child.facebook_name AS childFacebookName, registration_draft_child.returning_status AS returningStatus,
-    registration_draft_child.previous_stage_code AS previousStageCode, registration_draft_child.selected_stage_code AS selectedStageCode,
+    registration_draft_child.previous_stage_code AS previousStageCode,
+    registration_draft_child.selected_stage_code AS originalSelectedStageCode,
+    COALESCE(class_session.stage_code, registration_draft_child.selected_stage_code) AS selectedStageCode,
     registration_draft_child.status AS childStatus, registration_draft_child.payment_plan_code AS paymentPlanCode,
     registration_draft_child.initial_payment_amount_mnt AS initialPaymentAmountMnt,
     registration_draft_child.second_payment_amount_mnt AS secondPaymentAmountMnt,
@@ -86,7 +88,9 @@ export async function registrationCorrectionDetail(env: WorkerEnv, actor: StaffP
     FROM registration_draft_child INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     LEFT JOIN guardian_account ON guardian_account.id = registration_draft.canonical_guardian_account_id
     LEFT JOIN academic_year ON academic_year.id = registration_draft.academic_year_id
-    LEFT JOIN class_session ON class_session.id = COALESCE(registration_draft_child.selected_class_session_id, registration_draft_child.preferred_waitlist_class_session_id)
+    LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+    LEFT JOIN class_session ON class_session.id = COALESCE(enrollment.class_session_id,
+      registration_draft_child.selected_class_session_id, registration_draft_child.preferred_waitlist_class_session_id)
     LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
     WHERE registration_draft_child.id = ?`).bind(childId).first<Detail>();
   if (!row) throw new RegistrationCorrectionError("not_found");

@@ -2297,6 +2297,45 @@ try {
   assert.equal(Number(lowerTransfer[0]?.currentTarget), 1, "lower-price completion leaves exactly one current target enrollment");
   assert.equal(Number(lowerTransfer[0]?.credits), 1, "lower-price completion records one durable available credit");
 
+  const stageShiftChildId = await fillIntake(page, "StageShiftBrowser", "single", {
+    stage: "stage_3", classSessionId: "browser-class-low",
+  });
+  await addCredit(page, stageShiftChildId, 800);
+  await applyCredit(page, stageShiftChildId, 800);
+  await finalizeCreditOnlyRegistration(page, stageShiftChildId);
+  await completeTransfer(page, stageShiftChildId, "browser-class-high", 400);
+  await page.goto(`${baseUrl}/staff/payments/`);
+  await page.locator('[data-group-toggle="Төлбөр баталгаажсан"]').click();
+  const stageShiftRow = page.locator(`[data-registration-child="${stageShiftChildId}"]`);
+  await stageShiftRow.locator('[data-payment-detail][role="button"]:visible').click();
+  await stageShiftRow.locator('[data-registration-view]').waitFor({ state: "visible" });
+  await stageShiftRow.locator("[data-registration-view]").click();
+  const stageShiftDetail = stageShiftRow.locator(".staff-registration-view");
+  await stageShiftDetail.waitFor({ state: "visible" });
+  const stageShiftText = await stageShiftDetail.innerText();
+  assert.match(await stageShiftRow.locator(".staff-payment-detail-identity").innerText(), /Browser higher transfer class/, "the rendered record header uses the Stage 2 transfer target class");
+  assert.match(stageShiftText, /Сургалтын шат:\s*2-р шат/, "the rendered information panel uses the current Stage 2 enrollment context after a Stage 3 transfer");
+  assert.match(stageShiftText, /Сургалт:\s*Browser higher transfer offering/, "the rendered information panel uses the target course");
+  assert.match(stageShiftText, /Анги, цаг:\s*Wednesday 09:00–10:20/, "the rendered information panel uses the target class schedule");
+  assert.match(stageShiftText, /Төлөв:\s*Баталгаажсан/, "the rendered information panel retains the confirmed target enrollment status");
+  const stageShiftHistory = await dbJson(`SELECT class_transfer.status, source.stage_code AS sourceStage, target.stage_code AS targetStage,
+      source_enrollment.transferred_out_at AS sourceTransferredOut, target_enrollment.status AS targetEnrollmentStatus
+    FROM class_transfer
+    INNER JOIN class_session AS source ON source.id = class_transfer.source_class_session_id
+    INNER JOIN class_session AS target ON target.id = class_transfer.target_class_session_id
+    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = class_transfer.source_enrollment_id
+    INNER JOIN enrollment AS target_enrollment ON target_enrollment.id = class_transfer.target_enrollment_id
+    WHERE class_transfer.source_enrollment_id = (SELECT id FROM enrollment WHERE student_id =
+      (SELECT canonical_student_id FROM registration_draft_child WHERE id = ${sql(stageShiftChildId)})
+      AND class_session_id = 'browser-class-low' ORDER BY created_at DESC LIMIT 1)
+    ORDER BY class_transfer.created_at DESC LIMIT 1`);
+  assert.deepEqual(stageShiftHistory[0] && {
+    status: stageShiftHistory[0].status, sourceStage: stageShiftHistory[0].sourceStage,
+    targetStage: stageShiftHistory[0].targetStage, sourceTransferredOut: Boolean(stageShiftHistory[0].sourceTransferredOut),
+    targetEnrollmentStatus: stageShiftHistory[0].targetEnrollmentStatus,
+  }, { status: "completed", sourceStage: "stage_3", targetStage: "stage_2", sourceTransferredOut: true, targetEnrollmentStatus: "confirmed" },
+  "the prior Stage 3 enrollment remains explicit transfer history while the current enrollment is Stage 2");
+
   const acceptedOffer = await exerciseWaitlistResponse(browser, "BrowserWaitlistAccept", "accept");
   const acceptedState = await dbJson(`SELECT waitlist_seat_offer.status AS offerStatus,
       registration_draft_waitlist_entry.status AS entryStatus,
