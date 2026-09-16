@@ -59,13 +59,47 @@ function seedDraft(database, id, email = `${id}@example.test`) {
     VALUES (?, ?, ?, 1, 'initial', 1200000, '2026-09-03T03:00:00.000Z', '2026-09-03T03:00:00.000Z', 'pending', 1, 'email-test', ?, ?)`, [`${id}-installment`, `${id}-request`, `${id}-child`, now(), now()]);
 }
 
+function seedCanonicalEnrollment(database, draftId, childId, position, givenName) {
+  const nowValue = now();
+  if (position > 0) {
+    database.query(`INSERT INTO registration_draft_child (
+      id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status,
+      selected_stage_code, selected_class_session_id, status, initial_payment_amount_mnt, payment_plan_code, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, 'Тест', ?, 'not_specified', '2015-01-01', '5', 'new', 'stage_1', 'class',
+      'awaiting_initial_payment', 1200000, 'single', 1, 'email-test', ?, ?)`, [childId, draftId, position, givenName, nowValue, nowValue]);
+    database.query(`INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
+      amount_mnt, original_due_at, effective_due_at, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 'initial', 1200000, '2026-09-03T03:00:00.000Z', '2026-09-03T03:00:00.000Z', 'paid', 1, 'email-test', ?, ?)`,
+    [`${childId}-installment`, `${draftId}-request`, childId, nowValue, nowValue]);
+  }
+  const guardianId = `${draftId}-guardian`;
+  const preRegistrationId = `${draftId}-pre-registration`;
+  if (position === 0) {
+    database.query(`INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
+      SELECT ?, guardian_full_name, primary_phone, primary_phone, email, normalized_email, home_address, 'active', 1, 'email-test', ?, ?
+      FROM registration_draft WHERE id = ?`, [guardianId, nowValue, nowValue, draftId]);
+    database.query(`INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, 'year', 'completed', 1, 'email-test', ?, ?)`, [preRegistrationId, guardianId, nowValue, nowValue]);
+  }
+  database.query(`INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+    SELECT ?, surname, given_name, gender, date_of_birth, 'active', 1, 'email-test', ?, ? FROM registration_draft_child WHERE id = ?;
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, ?, 5, 'new', 'enrolled', 1, 'email-test', ?, ?);
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'year', 'class', 'confirmed', ?, 1, 'email-test', ?, ?);
+    UPDATE registration_draft_child SET canonical_student_id = ?, canonical_application_child_id = ?, canonical_enrollment_id = ? WHERE id = ?`,
+  [`${childId}-student`, nowValue, nowValue, childId, `${childId}-application`, preRegistrationId, `${childId}-student`, nowValue, nowValue,
+    `${childId}-enrollment`, `${childId}-application`, `${childId}-student`, nowValue, nowValue, nowValue,
+    `${childId}-student`, `${childId}-application`, `${childId}-enrollment`, childId]);
+}
+
 try {
   sql(readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort().map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
   const build = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/email/registration-transactional.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${bundle}`], { encoding: "utf8" });
   if (build.status !== 0) throw new Error(build.stderr);
   const verificationBuild = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), ["src/server/auth/email-verification.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${verificationBundle}`], { encoding: "utf8" });
   if (verificationBuild.status !== 0) throw new Error(verificationBuild.stderr);
-  const { sendRegistrationReceipt, sendPaymentConfirmedEmail, sendInternalEnrollmentConfirmationNotice } = await import(pathToFileURL(bundle).href);
+  const { sendEnrollmentConfirmationEmail, sendRegistrationReceipt, sendPaymentConfirmedEmail, sendConditionalSeatConfirmationEmail, sendInternalEnrollmentConfirmationNotice, reconcileInternalEnrollmentConfirmationNotices } = await import(pathToFileURL(bundle).href);
   const { startEmailVerification, EmailVerificationError } = await import(pathToFileURL(verificationBundle).href);
   const database = new Database();
   database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at) VALUES ('year', 'Тест', 'open', 1, 1, 'email-test', ?, ?);
@@ -119,6 +153,147 @@ try {
   assert.doesNotMatch(messages[1].message.text, /эхний төлбөр/i, "payment confirmation is plan-neutral");
   assert.deepEqual(messages[1].message.bcc, ["archive@example.test"], "ordinary payment receipts remain archive-BCC safe");
   assert.equal(database.query("SELECT status FROM outbound_email WHERE event_type = 'registration_initial_payment_confirmed'")[0].status, "sent");
+  database.query(`UPDATE email_archive_bcc_setting SET recipients_json = '["admin@example.test"]', teacher_recipients_json = '[]' WHERE singleton = 1`);
+  seedDraft(database, "sequential-confirmation", "sequential@example.test");
+  seedCanonicalEnrollment(database, "sequential-confirmation", "sequential-confirmation-child", 0, "A");
+  seedCanonicalEnrollment(database, "sequential-confirmation", "sequential-confirmation-child-b", 1, "B");
+  const originalFetch = globalThis.fetch;
+  const enrollmentMessages = [];
+  globalThis.fetch = async (_url, request) => {
+    const body = JSON.parse(request.body);
+    enrollmentMessages.push(body);
+    return new Response(JSON.stringify({ id: `sequential-${enrollmentMessages.length}` }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    assert.equal(await sendEnrollmentConfirmationEmail({ ...env(database), APP_ENV: "production" }, "sequential-confirmation", { registrationDraftChildId: "sequential-confirmation-child" }), true,
+      "the first confirmed child creates its own parent and internal enrollment notices");
+    assert.equal(await sendEnrollmentConfirmationEmail({ ...env(database), APP_ENV: "production" }, "sequential-confirmation", { registrationDraftChildId: "sequential-confirmation-child-b" }), true,
+      "the later confirmed child is not suppressed by the first child's registration-scoped history");
+    await sendEnrollmentConfirmationEmail({ ...env(database), APP_ENV: "production" }, "sequential-confirmation", { registrationDraftChildId: "sequential-confirmation-child-b" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(database.query(`SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id = 'sequential-confirmation' AND event_type = 'enrollment_confirmed'`)[0].count, 2,
+    "each child has one durable parent enrollment-confirmation unit");
+  assert.equal(database.query(`SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id = 'sequential-confirmation' AND event_type = 'internal_enrollment_confirmed'`)[0].count, 2,
+    "each child has one durable token-free internal enrollment notice");
+  assert.equal(database.query(`SELECT COUNT(*) AS count FROM email_verification_challenge WHERE registration_draft_id = 'sequential-confirmation' AND status = 'pending'`)[0].count, 2,
+    "the later child notice preserves the earlier pending parent-access challenge");
+  assert.equal(enrollmentMessages.length, 4, "two logical confirmations produce one parent and one internal message each, with replay suppressed");
+  assert.ok(enrollmentMessages.some((entry) => entry.text?.includes('Тест Хүүхэд') && !entry.text?.includes('Тест B')),
+    "A's parent confirmation names A without asserting B is already confirmed");
+  assert.ok(enrollmentMessages.some((entry) => entry.text?.includes('Тест B') && !entry.text?.includes('Тест A')),
+    "B's later confirmation names B without replaying or broadening A's event");
+  seedDraft(database, "legacy-confirmation", "legacy@example.test");
+  seedCanonicalEnrollment(database, "legacy-confirmation", "legacy-confirmation-child", 0, "Өмнөх");
+  const legacyMessages = [];
+  globalThis.fetch = async (_url, request) => {
+    legacyMessages.push(JSON.parse(request.body));
+    return new Response(JSON.stringify({ id: `legacy-${legacyMessages.length}` }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    assert.equal(await sendEnrollmentConfirmationEmail({ ...env(database), APP_ENV: "production" }, "legacy-confirmation"), true,
+      "a released registration-scoped confirmation remains deliverable by the new runtime");
+    assert.equal(await sendEnrollmentConfirmationEmail({ ...env(database), APP_ENV: "production" }, "legacy-confirmation", {
+      registrationDraftChildId: "legacy-confirmation-child",
+    }), true, "a delivered legacy registration event remains the durable confirmation for an already-confirmed child");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(database.query(`SELECT COUNT(*) AS count FROM outbound_email
+    WHERE registration_draft_id = 'legacy-confirmation' AND event_type = 'enrollment_confirmed'`)[0].count, 1,
+  "deploying child-scoped notifications does not backfill a delivered legacy parent confirmation");
+  assert.equal(database.query(`SELECT COUNT(*) AS count FROM outbound_email
+    WHERE registration_draft_id = 'legacy-confirmation' AND event_type = 'internal_enrollment_confirmed'`)[0].count, 1,
+  "deploying child-scoped notifications does not backfill a delivered legacy internal notice");
+  database.query(`UPDATE outbound_email SET status = 'queued', sent_at = NULL
+    WHERE id = 'legacy-confirmation:internal-enrollment-confirmation'`);
+  const legacyRetryMessages = [];
+  globalThis.fetch = async (_url, request) => {
+    legacyRetryMessages.push(JSON.parse(request.body));
+    return new Response(JSON.stringify({ id: `legacy-retry-${legacyRetryMessages.length}` }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    assert.equal(await reconcileInternalEnrollmentConfirmationNotices({ ...env(database), APP_ENV: "production" }, new Date("2099-01-01T00:00:00.000Z")), 1,
+      "scheduled recovery retries the existing legacy internal event by its original identity");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(database.query(`SELECT COUNT(*) AS count FROM outbound_email
+    WHERE registration_draft_id = 'legacy-confirmation' AND event_type = 'internal_enrollment_confirmed'`)[0].count, 1,
+  "legacy internal retries do not create a child-scoped duplicate");
+  seedDraft(database, "legacy-later-sibling", "legacy-later@example.test");
+  seedCanonicalEnrollment(database, "legacy-later-sibling", "legacy-later-sibling-child", 0, "Эхний");
+  const laterMessages = [];
+  globalThis.fetch = async (_url, request) => {
+    laterMessages.push(JSON.parse(request.body));
+    return new Response(JSON.stringify({ id: `later-${laterMessages.length}` }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    assert.equal(await sendEnrollmentConfirmationEmail({ ...env(database), APP_ENV: "production" }, "legacy-later-sibling"), true,
+      "the released registration-scoped event is retained for the first child");
+    seedCanonicalEnrollment(database, "legacy-later-sibling", "legacy-later-sibling-child-b", 1, "Дараах");
+    database.query(`UPDATE enrollment SET confirmed_at = '2099-01-01T00:00:00.000Z'
+      WHERE id = 'legacy-later-sibling-child-b-enrollment'`);
+    assert.equal(await sendEnrollmentConfirmationEmail({ ...env(database), APP_ENV: "production" }, "legacy-later-sibling", {
+      registrationDraftChildId: "legacy-later-sibling-child-b",
+    }), true, "a sibling confirmed after the legacy event still receives its own child-scoped confirmation");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(database.query(`SELECT COUNT(*) AS count FROM outbound_email
+    WHERE registration_draft_id = 'legacy-later-sibling' AND event_type = 'enrollment_confirmed'`)[0].count, 2,
+  "legacy compatibility does not suppress a later sibling's independent confirmation");
+  seedDraft(database, "conditional-seat");
+  database.query(`INSERT INTO conditional_family_discount_quote (
+    id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+    basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state,
+    created_at, updated_at, is_test, test_run_id
+  ) VALUES ('conditional-seat-quote', 'conditional-seat-child', 'year', 'same_submission', 'conditional-seat-draft',
+    1000, 1200000, 120000, 'one_payment', 'quoted_pending', ?, ?, 1, 'email-test')`, [now(), now()]);
+  database.query(`UPDATE email_archive_bcc_setting SET recipients_json = '["admin@example.test","overlap@example.test"]',
+    teacher_recipients_json = '["teacher@example.test","overlap@example.test"]' WHERE singleton = 1`);
+  const conditionalMessages = [];
+  const conditionalProvider = { async send(message, options) { conditionalMessages.push({ message, options }); return { providerMessageId: `conditional-${conditionalMessages.length}` }; } };
+  assert.equal(await sendConditionalSeatConfirmationEmail({ ...env(database), APP_ENV: "production" }, "conditional-seat-child", "conditional-seat-quote", conditionalProvider), true,
+    "conditional seat approval queues truthful parent and capability-free internal notices");
+  assert.equal(conditionalMessages.length, 2, "conditional approval delivers one parent and one internal notice");
+  assert.match(conditionalMessages[0].message.text, /гэр бүлийн хөнгөлөлтийн нөхцөл шийдэгдээгүй/,
+    "the parent notice does not claim full financial settlement");
+  assert.doesNotMatch(conditionalMessages[1].message.text, /verify-email|token=|Бүртгэлээ харах/i,
+    "the internal conditional notice has no parent capability");
+  assert.equal(database.query("SELECT COUNT(*) AS count FROM email_verification_challenge WHERE registration_draft_id = 'conditional-seat'")[0].count, 0,
+    "conditional notices issue no parent-access challenge");
+  assert.deepEqual(database.query(`SELECT event_type AS eventType, status FROM outbound_email
+    WHERE id IN ('conditional-seat-quote:conditional-seat-parent', 'conditional-seat-quote:conditional-seat-internal') ORDER BY id`), [
+    { eventType: 'internal_conditional_seat_confirmed', status: 'sent' },
+    { eventType: 'conditional_seat_confirmed', status: 'sent' },
+  ], "each conditional notice has one durable, replay-safe Outbox identity");
+  await sendConditionalSeatConfirmationEmail({ ...env(database), APP_ENV: "production" }, "conditional-seat-child", "conditional-seat-quote", conditionalProvider);
+  assert.equal(conditionalMessages.length, 2, "conditional approval replay does not deliver duplicate notices");
+  seedDraft(database, "conditional-retry");
+  database.query(`INSERT INTO conditional_family_discount_quote (
+    id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+    basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state,
+    created_at, updated_at, is_test, test_run_id
+  ) VALUES ('conditional-retry-quote', 'conditional-retry-child', 'year', 'same_submission', 'conditional-retry-draft',
+    1000, 1200000, 120000, 'one_payment', 'quoted_pending', ?, ?, 1, 'email-test')`, [now(), now()]);
+  let conditionalAttempt = 0;
+  const internalFailureProvider = { async send() {
+    conditionalAttempt += 1;
+    if (conditionalAttempt === 2) throw new Error("internal provider unavailable");
+    return { providerMessageId: `conditional-retry-${conditionalAttempt}` };
+  } };
+  await assert.rejects(sendConditionalSeatConfirmationEmail({ ...env(database), APP_ENV: "production" }, "conditional-retry-child", "conditional-retry-quote", internalFailureProvider),
+    /Transactional email delivery failed/, "an internal conditional-notice failure remains visible after the parent notice succeeds");
+  assert.equal(database.query("SELECT status FROM outbound_email WHERE id = 'conditional-retry-quote:conditional-seat-parent'")[0].status, "sent");
+  assert.equal(database.query("SELECT status FROM outbound_email WHERE id = 'conditional-retry-quote:conditional-seat-internal'")[0].status, "failed");
+  const recoveredConditionalInternal = [];
+  const recoveredConditionalProvider = { async send(message) { recoveredConditionalInternal.push(message); return { providerMessageId: "conditional-retry-recovered" }; } };
+  assert.equal(await sendConditionalSeatConfirmationEmail({ ...env(database), APP_ENV: "production" }, "conditional-retry-child", "conditional-retry-quote", recoveredConditionalProvider), true,
+    "a replay recovers the durable internal conditional notice without re-sending the parent notice");
+  assert.equal(recoveredConditionalInternal.length, 1);
+  assert.equal(database.query("SELECT status FROM outbound_email WHERE id = 'conditional-retry-quote:conditional-seat-internal'")[0].status, "sent");
   seedDraft(database, "internal-notice");
   database.query(`UPDATE email_archive_bcc_setting SET recipients_json = '["admin@example.test","overlap@example.test"]',
     teacher_recipients_json = '["teacher@example.test","overlap@example.test"]' WHERE singleton = 1`);

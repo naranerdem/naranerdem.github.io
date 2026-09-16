@@ -1,6 +1,7 @@
 import type { WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
-import { awardFamilyDiscountsForGroup, discountAmountMnt, discountAwardsForChildren, getDiscountPolicySettingFromDatabase } from "../services/discounts";
+import { discountAmountMnt, discountAwardsForChildren, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances } from "../services/discounts";
+import { quoteConditionalFamilyDiscountsForGroup } from "../services/conditional-family-discounts";
 import { ChildCreditError, childCreditSummaryForChild, creditPaymentReviewState, transferAndApplyFamilyChildCredit } from "../services/child-credit-ledger";
 
 type FamilyDiscountErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "processing";
@@ -132,12 +133,16 @@ async function familyAwardCreditStates(env: WorkerEnv, familyGroupId: string): P
       registration_draft_child.is_test AS isTest, registration_draft_child.test_run_id AS testRunId
     FROM discount_award
     INNER JOIN registration_draft_child ON registration_draft_child.id = discount_award.registration_draft_child_id
+    LEFT JOIN conditional_family_discount_quote ON conditional_family_discount_quote.id = discount_award.conditional_quote_id
     LEFT JOIN child_credit_entry AS root ON root.source_discount_award_id = discount_award.id
     LEFT JOIN child_credit_entry AS debit ON debit.origin_entry_id = root.id
-    WHERE discount_award.family_group_id = ? AND discount_award.award_type = 'family_multi_child'
+    WHERE (discount_award.family_group_id = ?
+        OR (conditional_family_discount_quote.relationship_basis = 'family_group'
+          AND conditional_family_discount_quote.relationship_key LIKE ?))
+      AND discount_award.award_type = 'family_multi_child'
       AND discount_award.status = 'active'
     GROUP BY discount_award.id, root.id
-    ORDER BY discount_award.awarded_at, discount_award.id`).bind(familyGroupId).all<FamilyAwardCreditState>();
+    ORDER BY discount_award.awarded_at, discount_award.id`).bind(familyGroupId, `family:${familyGroupId}:%`).all<FamilyAwardCreditState>();
   return rows.results.map((row) => ({
     ...row,
     creditAmountMnt: Number(row.creditAmountMnt),
@@ -195,9 +200,42 @@ async function materializeFamilyAwardResidualCredits(env: WorkerEnv, familyGroup
   return familyAwardCreditStates(env, familyGroupId);
 }
 
+// A qualified conditional quote is the durable authority for its deterministic
+// award. Recover a missing award before looking for its residual-credit root;
+// this covers an interrupted historical/operational repair without guessing a
+// new rate, recipient, or relationship.
+async function recoverQualifiedConditionalFamilyAwards(env: WorkerEnv, familyGroupId: string, now = new Date().toISOString()) {
+  const relationshipKey = `family:${familyGroupId}:%`;
+  const rows = await env.DB.prepare(`SELECT id AS quoteId, registration_draft_child_id AS childId,
+      basis_points AS basisPoints, base_amount_mnt AS baseAmountMnt, award_amount_mnt AS awardAmountMnt,
+      is_test AS isTest, test_run_id AS testRunId, COALESCE(resolved_at, ?) AS awardedAt
+    FROM conditional_family_discount_quote
+    WHERE relationship_basis = 'family_group' AND relationship_key LIKE ? AND state = 'qualified'`)
+    .bind(now, relationshipKey).all<{
+      quoteId: string; childId: string; basisPoints: number; baseAmountMnt: number; awardAmountMnt: number;
+      isTest: number; testRunId: string | null; awardedAt: string;
+    }>();
+  for (const row of rows.results) {
+    const awardId = `${row.childId}:discount:family`;
+    await env.DB.batch([
+      env.DB.prepare(`INSERT OR IGNORE INTO discount_award (
+        id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+        status, qualification_state, conditional_quote_id, reason, awarded_at, is_test, test_run_id, created_at, updated_at
+      ) VALUES (?, ?, 'family_multi_child', ?, ?, ?, 'active', 'earned', ?,
+        'conditional_family_discount_quote', ?, ?, ?, ?, ?)`)
+        .bind(awardId, row.childId, Number(row.basisPoints), Number(row.baseAmountMnt), Number(row.awardAmountMnt),
+          row.quoteId, row.awardedAt, Number(row.isTest), row.testRunId, now, now),
+      env.DB.prepare(`UPDATE conditional_family_discount_quote SET linked_discount_award_id = ?, updated_at = ?
+        WHERE id = ? AND state = 'qualified'`).bind(awardId, now, row.quoteId),
+    ]);
+  }
+  return rows.results.map((row) => row.childId);
+}
+
 async function recoverFamilyDiscountProcessing(env: WorkerEnv, familyGroupId: string, triggerChildId: string, now = new Date().toISOString()) {
-  const policy = await getDiscountPolicySettingFromDatabase(env.DB);
-  await awardFamilyDiscountsForGroup(env, { familyGroupId, triggerChildId, policy, now });
+  await quoteConditionalFamilyDiscountsForGroup(env, familyGroupId, triggerChildId, now);
+  const recoveredAwardChildIds = await recoverQualifiedConditionalFamilyAwards(env, familyGroupId, now);
+  await Promise.all(recoveredAwardChildIds.map((childId) => recalculateDiscountAwardBalances(env.DB, childId, now)));
   const states = await materializeFamilyAwardResidualCredits(env, familyGroupId, now);
   if (states.some((state) => state.creditAmountMnt > 0 && state.rootAmountMnt == null)) throw new FamilyDiscountError("processing");
   return states;

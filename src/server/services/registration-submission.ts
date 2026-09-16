@@ -12,6 +12,7 @@ import { getInitialPaymentDeadlineSettingFromDatabase } from "../staff/initial-p
 import { getPaymentReminderSetting } from "../staff/payment-reminders";
 import { activeReferralCodes, normalizeReferralCode, type RegistrationProvenance } from "./referral-codes";
 import { activeDiscountAwardsForChildren, discountAwardAudit, discountAwardInsert, effectiveInstallments, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances } from "./discounts";
+import { quoteConditionalFamilyDiscountsForPendingGuardianDraft } from "./conditional-family-discounts";
 
 export const REGISTRATION_DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const REGISTRATION_RESEND_COOLDOWN_SECONDS = 60;
@@ -520,10 +521,8 @@ export async function createRegistrationDraft(
     if (!snapshot) return [];
     const baseAmountMnt = snapshot.initial + Number(snapshot.second ?? 0);
     const awards: Array<{ id: string; childId: string; awardType: "family_multi_child" | "referral_referred"; basisPoints: number; reason: string }> = [];
-    if (!additionalAdmission && selectedFamilyChildren.length >= 2 && discountPolicy.familyMultiChildBasisPoints > 0) {
-      awards.push({ id: `${childIds[index]}:discount:family`, childId: childIds[index], awardType: "family_multi_child",
-        basisPoints: discountPolicy.familyMultiChildBasisPoints, reason: "same_registration_guardian_multiple_children" });
-    }
+    // Family value is now a conditional quote. It becomes an active award only
+    // after a protected funded-subset evaluation; referral behavior is unchanged.
     if (referrals[index] && discountPolicy.referredChildBasisPoints > 0) {
       awards.push({ id: `${childIds[index]}:discount:referred`, childId: childIds[index], awardType: "referral_referred",
         basisPoints: discountPolicy.referredChildBasisPoints, reason: "active_referral_code_captured" });
@@ -531,6 +530,14 @@ export async function createRegistrationDraft(
     return awards.map((award) => ({ ...award, baseAmountMnt }));
   });
   const selectedSeatCount = input.children.filter((child) => child.selectedClassSessionId).length;
+  const conditionalFamilyQuotes = !additionalAdmission && selectedFamilyChildren.length >= 2 && discountPolicy.familyMultiChildBasisPoints > 0
+    ? selectedFamilyChildren.map(({ index }) => {
+      const snapshot = paymentSnapshots[index]!;
+      const baseAmountMnt = snapshot.initial + Number(snapshot.second ?? 0);
+      return { id: `${childIds[index]}:conditional-family-quote`, childId: childIds[index], baseAmountMnt,
+        awardAmountMnt: Math.floor((baseAmountMnt * discountPolicy.familyMultiChildBasisPoints) / 10_000),
+        strategy: snapshot.code === "two_installment" ? "final_installment_first" : "one_payment" };
+    }) : [];
   const paymentRequestId = crypto.randomUUID();
   const reference = await unusedPaymentReference(env.DB);
   const description = await transferDescription(env.DB, input.children[0]?.givenName || "Хүүхэд", input.guardian.primaryPhone);
@@ -606,6 +613,15 @@ export async function createRegistrationDraft(
       provenance.isTest, testRunId, now, now,
     ));
   });
+
+  for (const quote of conditionalFamilyQuotes) {
+    statements.push(env.DB.prepare(`INSERT INTO conditional_family_discount_quote (
+      id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+      basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state, created_at, updated_at, is_test, test_run_id
+    ) VALUES (?, ?, ?, 'same_submission', ?, ?, ?, ?, ?, 'quoted_pending', ?, ?, ?, ?)`)
+      .bind(quote.id, quote.childId, [...yearIds][0], draftId, discountPolicy.familyMultiChildBasisPoints,
+        quote.baseAmountMnt, quote.awardAmountMnt, quote.strategy, now, now, provenance.isTest, testRunId));
+  }
 
   if (additionalAdmission) {
     if (input.children.length !== 1 || selectedSeatCount !== 1 || !idempotencyKey
@@ -848,6 +864,11 @@ export async function createRegistrationDraft(
       await Promise.all([...new Set(discountAwards.map((award) => award.childId))]
         .map((childId) => recalculateDiscountAwardBalances(env.DB, childId, now)));
     }
+  }
+  // A matching verified guardian is relationship evidence only. The new child
+  // remains an independent draft; no access or identity is merged here.
+  if (heldSeatCount > 0 && conditionalFamilyQuotes.length === 0 && !additionalAdmission) {
+    await quoteConditionalFamilyDiscountsForPendingGuardianDraft(env, draftId, now);
   }
 
   return {

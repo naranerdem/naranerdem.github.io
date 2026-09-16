@@ -346,6 +346,8 @@ try {
   assert.equal(count(database, "outbound_email", `registration_draft_id = '${review.id}' AND event_type = 'enrollment_confirmed'`), 1, "automatic zero-match promotion queues one enrollment confirmation email");
   assert.equal(count(database, "outbound_email", `registration_draft_id = '${review.id}' AND event_type = 'internal_enrollment_confirmed'`), 1,
     "the canonical confirmation atomically queues its capability-free internal counterpart");
+  assert.equal(count(database, "outbound_email", `registration_draft_id = '${review.id}' AND event_type = 'conditional_seat_confirmed'`), 0,
+    "an ordinary raw-paid promotion is not relabelled as a conditional-seat confirmation merely because a family quote exists");
 
   const elsewhere = seedDraft(database, "different-guardian", { email: "other@example.test", surname: "Бат", givenName: "Сараа", returning: "returning" });
   assert.equal((await promotePaidDraftChild(env(database), actor, elsewhere.childId)).state, "needs_identity_review", "global exact match is never automatic for another verified guardian");
@@ -424,6 +426,22 @@ try {
     VALUES ('siblings-hold-two', 'siblings-child-two', 'class-1', 'initial_payment', 'active', '2026-08-16T04:00:00.000Z', 1, 'promotion-test', ?, ?)`, [now, now]);
   database.query(`INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, status, paid_at, is_test, test_run_id, created_at, updated_at)
     VALUES ('siblings-initial-two', 'siblings-request', 'siblings-child-two', 1, 'initial', 100000, '2026-08-16T04:00:00.000Z', '2026-08-16T04:00:00.000Z', 'paid', ?, 1, 'promotion-test', ?, ?)`, [now, now, now]);
+  // Promotion status alone is intentionally insufficient for a conditional
+  // family award. These immutable receipts make both sibling agreements
+  // genuinely funded before the protected qualification pass runs.
+  database.query(`INSERT INTO received_payment (
+    id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
+    confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id
+  ) VALUES
+    ('siblings-payment-one', 'siblings-request', 100000, ?, 'staff_manual_bank', 'confirmed', ?, 'siblings-payment-one', ?, ?, 1, 'promotion-test'),
+    ('siblings-payment-two', 'siblings-request', 100000, ?, 'staff_manual_bank', 'confirmed', ?, 'siblings-payment-two', ?, ?, 1, 'promotion-test')`,
+  [now, now, now, now, now, now, now, now]);
+  database.query(`INSERT INTO payment_allocation (
+    id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id
+  ) VALUES
+    ('siblings-allocation-one', 'siblings-payment-one', 'siblings-initial', 100000, ?, ?, 1, 'promotion-test'),
+    ('siblings-allocation-two', 'siblings-payment-two', 'siblings-initial-two', 100000, ?, ?, 1, 'promotion-test')`,
+  [now, now, now, now]);
   await promotePaidDraftChild(env(database), actor, siblings.childId);
   await promotePaidDraftChild(env(database), actor, "siblings-child-two");
   assert.equal(count(database, "pre_registration", "id = 'siblings:pre-registration'"), 1, "siblings share one canonical registration container");
@@ -435,6 +453,14 @@ try {
     "family award snapshots the default ten percent of the selected plan");
   const siblingStudentId = database.query(`SELECT canonical_student_id AS studentId FROM registration_draft_child WHERE id = 'siblings-child'`)[0].studentId;
   const sameChildSecondClass = seedDraft(database, "same-child-second-class", { email: "siblings@example.test", classId: "class-2", surname: "Ах", givenName: "Нэг" });
+  database.query(`INSERT INTO received_payment (
+    id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
+    confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id
+  ) VALUES ('same-child-second-class-payment', 'same-child-second-class-request', 100000, ?, 'staff_manual_bank', 'confirmed',
+    ?, 'same-child-second-class-payment', ?, ?, 1, 'promotion-test')`, [now, now, now, now]);
+  database.query(`INSERT INTO payment_allocation (
+    id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id
+  ) VALUES ('same-child-second-class-allocation', 'same-child-second-class-payment', 'same-child-second-class-initial', 100000, ?, ?, 1, 'promotion-test')`, [now, now]);
   await promotePaidDraftChild(env(database), actor, sameChildSecondClass.childId, { kind: "existing", studentId: siblingStudentId });
   assert.equal(count(database, "discount_award", `registration_draft_child_id = '${sameChildSecondClass.childId}' AND award_type = 'family_multi_child' AND status = 'active'`), 1,
     "one canonical child in two distinct classes qualifies once per agreement without creating a second identity");
@@ -485,6 +511,8 @@ try {
   assert.equal(count(database, "child_credit_entry", `source_discount_award_id = '${crossGuardianAward.id}'`), 1,
     "a recovery retry cannot mint a second family-award credit root");
   database.query(`DELETE FROM child_credit_entry WHERE source_discount_award_id = ?`, [crossGuardianAward.id]);
+  database.query(`UPDATE conditional_family_discount_quote SET linked_discount_award_id = NULL
+    WHERE registration_draft_child_id = ? AND relationship_basis = 'family_group'`, [crossGuardian.childId]);
   database.query(`DELETE FROM discount_award WHERE id = ?`, [crossGuardianAward.id]);
   assert.equal((await familyDiscountDetail(env(database), actor, crossGuardian.childId)).needsCreditRecovery, true,
     "an interruption before the family award itself is written is also visibly recoverable");

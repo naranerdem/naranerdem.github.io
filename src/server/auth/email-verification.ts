@@ -54,6 +54,9 @@ export interface ParentAccessEmail {
   eventType: "enrollment_confirmed" | "parent_enrollment_resend";
   templateKey: "enrollment_confirmation_v1" | "parent_enrollment_resend_v1";
   context: Record<string, unknown>;
+  // A later child confirmation for the same registration must not invalidate
+  // the parent's still-valid access link for an earlier child.
+  invalidatePrevious?: boolean;
   template(accessUrl: string): { subject: string; html: string; text: string };
   // These statements join the durable parent-email/challenge batch. They are
   // used only for capability-free operational notices.
@@ -161,7 +164,7 @@ export async function startEmailVerification(
 export async function sendParentAccessEmail(env: WorkerEnv, email: string, registrationDraftId: string, message: ParentAccessEmail) {
   return issueEmailChallenge(env, email, {
     registrationDraftId,
-    invalidatePrevious: true,
+    invalidatePrevious: message.invalidatePrevious ?? true,
     eventType: message.eventType,
     templateKey: message.templateKey,
     context: message.context,

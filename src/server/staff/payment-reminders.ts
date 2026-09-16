@@ -27,9 +27,9 @@ interface MilestoneRow {
 }
 interface ReminderContext {
   email: string; normalizedEmail: string; childName: string; classLabel: string | null;
-  installmentId: string; registrationDraftChildId: string; installmentNumber: number; rawAmountMnt: number; allocatedAmountMnt: number; amountMnt: number; dueAt: string; installmentStatus: string; holdStatus: string | null;
+  installmentId: string; registrationDraftChildId: string; installmentNumber: number; rawAmountMnt: number; allocatedAmountMnt: number; amountMnt: number; dueAt: string | null; installmentStatus: string; holdStatus: string | null;
   enrollmentStatus: string | null; confirmationStatus: string | null; seatConfirmationApproved: number | null;
-  availableCreditMnt: number;
+  availableCreditMnt: number; conditionalFailureAwaitingDeadline: number;
   parentClaimed: number; bankName: string | null; accountHolderName: string | null; accountNumber: string | null;
   iban: string | null; transferInstruction: string | null;
 }
@@ -135,7 +135,22 @@ async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Pro
     payment_installment.installment_number AS installmentNumber, registration_draft.email, registration_draft.normalized_email AS normalizedEmail,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     class_session.display_label AS classLabel,
-    COALESCE(payment_confirmation.remaining_payment_due_at, payment_installment.effective_due_at) AS dueAt,
+    CASE WHEN EXISTS(SELECT 1 FROM conditional_family_discount_quote
+      WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
+        AND conditional_family_discount_quote.state = 'qualification_failed'
+        AND conditional_family_discount_quote.conditional_failure_due_at IS NULL)
+      THEN NULL
+      ELSE COALESCE(
+        (SELECT conditional_failure_due_at FROM conditional_family_discount_quote
+          WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
+            AND conditional_family_discount_quote.state = 'qualification_failed'
+            AND conditional_failure_due_at IS NOT NULL ORDER BY updated_at DESC LIMIT 1),
+        payment_confirmation.remaining_payment_due_at, payment_installment.effective_due_at)
+    END AS dueAt,
+    EXISTS(SELECT 1 FROM conditional_family_discount_quote
+      WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
+        AND conditional_family_discount_quote.state = 'qualification_failed'
+        AND conditional_family_discount_quote.conditional_failure_due_at IS NULL) AS conditionalFailureAwaitingDeadline,
     payment_installment.amount_mnt AS rawAmountMnt,
     COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
       + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
@@ -176,7 +191,7 @@ async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Pro
 }
 
 function eligible(milestone: MilestoneRow, context: ReminderContext | null): boolean {
-  if (!context || !context.email || !context.amountMnt || context.amountMnt <= 0) return false;
+  if (!context || !context.email || !context.amountMnt || context.amountMnt <= 0 || !context.dueAt) return false;
   if (milestone.milestoneType === "initial_reminder" || milestone.milestoneType === "initial_overdue") {
     return context.holdStatus === "active" && ["pending", "partially_paid"].includes(context.installmentStatus);
   }
@@ -255,6 +270,14 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
         continue;
       }
     }
+    if (context?.conditionalFailureAwaitingDeadline) {
+      // A quote that definitively failed is a staff-review state, not a
+      // reason to deliver an old full-price overdue reminder. Keep the
+      // milestone recoverable until staff records the new deadline.
+      await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'pending', processing_started_at = NULL, updated_at = ? WHERE id = ?`)
+        .bind(now, milestone.id).run();
+      continue;
+    }
     if (!eligible(milestone, context)) {
       await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ? WHERE id = ?`).bind(now, milestone.id).run();
       continue;
@@ -282,7 +305,7 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
       }
       const template = paymentReminderTemplate({
         milestoneType: milestone.milestoneType, childName: reminderContext.childName, classLabel: reminderContext.classLabel || "Сонгосон анги",
-        amountMnt: Number(reminderContext.amountMnt), dueAt: reminderContext.dueAt, parentClaimed: Boolean(reminderContext.parentClaimed),
+        amountMnt: Number(reminderContext.amountMnt), dueAt: reminderContext.dueAt!, parentClaimed: Boolean(reminderContext.parentClaimed),
         bankName: reminderContext.bankName, accountHolderName: reminderContext.accountHolderName, accountNumber: reminderContext.accountNumber,
         iban: reminderContext.iban, transferInstruction: reminderContext.transferInstruction,
       });

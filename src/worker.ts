@@ -19,6 +19,10 @@ export default {
       processDuePaymentReminders(env, now),
       reconcileWaitlistOffers(env, now),
       reconcileInternalEnrollmentConfirmationNotices(env, now),
-    ]));
+    ]).then((results) => {
+      for (const result of results) {
+        if (result.status === "rejected") console.error("Scheduled task failed", result.reason);
+      }
+    }));
   },
 };

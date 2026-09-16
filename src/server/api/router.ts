@@ -36,6 +36,9 @@ import {
   confirmSeatForSufficientPayment,
   getRegistrationExportRows,
   getInitialPaymentQueue,
+  previewHistoricalSettlementIncidentReconciliation,
+  reconcileHistoricalSettlementIncident,
+  reviewHistoricalQualifiedPayment,
   markPaymentCreditRefunded,
   PaymentReconciliationError,
   recordCheckedNotFound,
@@ -50,6 +53,7 @@ import { AdditionalClassPreviewError, getAdditionalClassPreview } from "../staff
 import { AdditionalClassAdmissionError, createAdditionalClassAdmission } from "../staff/additional-class-admission";
 import { applyFamilyCreditSuggestion, confirmFamilyDiscountMembership, FamilyDiscountError, familyDiscountDetail, findFamilyDiscountCandidates, previewFamilyDiscountMembership, recoverFamilyDiscountCredits } from "../staff/family-discounts";
 import { addManualChildCredit, applyChildCredit, ChildCreditError, correctChildCredit, leaveChildCreditUnused, transferChildCredit } from "../services/child-credit-ledger";
+import { adoptHistoricalConditionalFamilyAwards, authorizeContingentFamilyCredit, ConditionalFamilyDiscountError, historicalAdoptionChildIdsForDraft, previewHistoricalConditionalFamilyAdoption, setConditionalFamilyFailureDeadline } from "../services/conditional-family-discounts";
 import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
 import {
   acceptWaitlistOffer,
@@ -1403,7 +1407,58 @@ export async function handleApiRequest(
         case "payment.confirm-seat":
           return json({ ok: true, ...await confirmSeatForSufficientPayment(
             env, principal, String(payload.paymentRequestId ?? ""),
+            payload.conditionalQuote && typeof payload.conditionalQuote === "object" ? {
+              quoteId: String((payload.conditionalQuote as Record<string, unknown>).quoteId ?? ""),
+              quoteRevision: Number((payload.conditionalQuote as Record<string, unknown>).quoteRevision),
+              reason: String((payload.conditionalQuote as Record<string, unknown>).reason ?? ""),
+            } : undefined,
           ) }, 200, { "Cache-Control": "no-store" });
+        case "payment.review-historical-settlement":
+          return json({ ok: true, ...await reviewHistoricalQualifiedPayment(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""),
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            quoteId: String(payload.quoteId ?? ""),
+            quoteRevision: Number(payload.quoteRevision),
+            reason: String(payload.reason ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "conditional-family.failure-deadline":
+          return json({ ok: true, ...await setConditionalFamilyFailureDeadline(env, principal, {
+            quoteId: String(payload.quoteId ?? ""), quoteRevision: Number(payload.quoteRevision),
+            dueAt: String(payload.dueAt ?? ""), reason: String(payload.reason ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "conditional-family.authorize-contingent-credit":
+          return json({ ok: true, ...await authorizeContingentFamilyCredit(env, principal, {
+            donorQuoteId: String(payload.donorQuoteId ?? ""), recipientQuoteId: String(payload.recipientQuoteId ?? ""),
+            recipientQuoteRevision: Number(payload.recipientQuoteRevision), paymentInstallmentId: String(payload.paymentInstallmentId ?? ""),
+            amountMnt: Number(payload.amountMnt), reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "conditional-family.historical-adoption-preview":
+          {
+            const registrationDraftId = String(payload.registrationDraftId ?? "");
+            const childIds = await historicalAdoptionChildIdsForDraft(env, principal, registrationDraftId);
+            return json({ ok: true, registrationDraftId, ...await previewHistoricalConditionalFamilyAdoption(env, principal, childIds) }, 200, { "Cache-Control": "no-store" });
+          }
+        case "conditional-family.adopt-historical-awards":
+          {
+            const registrationDraftId = String(payload.registrationDraftId ?? "");
+            const childIds = await historicalAdoptionChildIdsForDraft(env, principal, registrationDraftId);
+            return json({ ok: true, registrationDraftId, ...await adoptHistoricalConditionalFamilyAwards(env, principal, {
+              operationId: String(payload.operationId ?? ""), childIds,
+              reason: String(payload.reason ?? ""), reviewFingerprint: String(payload.reviewFingerprint ?? ""),
+            }) }, 200, { "Cache-Control": "no-store" });
+          }
+        case "conditional-family.historical-incident-reconciliation-preview":
+          return json({ ok: true, ...await previewHistoricalSettlementIncidentReconciliation(env, principal, {
+            registrationDraftId: String(payload.registrationDraftId ?? ""),
+            childIds: Array.isArray(payload.childIds) ? payload.childIds.map(String) : [],
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "conditional-family.reconcile-historical-incident":
+          return json({ ok: true, ...await reconcileHistoricalSettlementIncident(env, principal, {
+            registrationDraftId: String(payload.registrationDraftId ?? ""),
+            childIds: Array.isArray(payload.childIds) ? payload.childIds.map(String) : [],
+            reviewFingerprint: String(payload.reviewFingerprint ?? ""), operationId: String(payload.operationId ?? ""),
+            reason: String(payload.reason ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
         case "payment.undo-tentative":
           return json({ ok: true, ...await undoTentativePaymentConfirmation(env, principal, String(payload.receivedPaymentId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "payment-credit.refund":
@@ -1478,6 +1533,9 @@ export async function handleApiRequest(
         : caught instanceof FamilyDiscountError ? error(caught.code === "forbidden" ? "forbidden" : caught.code === "not_found" ? "not_found" : "invalid_request",
           caught.code === "forbidden" ? "Энэ үйлдлийг хийх эрх алга." : caught.code === "not_found" ? "Энэ бүртгэлд гэр бүлийн хөнгөлөлт тохируулах боломжгүй." : caught.code === "conflict" ? "Эдгээр хүүхэд өөр өөр баталгаажсан гэр бүлийн бүлэгт байна. Эхлээд админ шалгана уу." : caught.code === "processing" ? "Гэр бүлийн гишүүнчлэл хадгалагдсан боловч хөнгөлөлтийн кредитийн бүртгэл дутуу байна. Кредитийн бүртгэлийг сэргээнэ үү." : "Гэр бүлийн гишүүний мэдээлэл эсвэл шалтгааныг шалгана уу.",
           caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : caught.code === "conflict" || caught.code === "processing" ? 409 : 400, { "Cache-Control": "no-store" })
+        : caught instanceof ConditionalFamilyDiscountError ? error(caught.code === "forbidden" ? "forbidden" : caught.code === "not_found" ? "not_found" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ үйлдлийг хийх эрх алга." : caught.code === "not_found" ? "Нөхцөлт хөнгөлөлтийн одоогийн төлөв олдсонгүй. Хуудсыг шинэчлээд дахин шалгана уу." : caught.code === "conflict" ? "Нөхцөлт хөнгөлөлтийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу." : "Нөхцөлт хөнгөлөлтийн мэдээлэл болон шалтгааныг шалгана уу.",
+          caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : caught.code === "conflict" ? 409 : 400, { "Cache-Control": "no-store" })
         : caught instanceof RegistrationCancellationError ? registrationCancellationError(caught)
         : caught instanceof DiscountPolicyError ? discountPolicyError(caught)
         : caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)

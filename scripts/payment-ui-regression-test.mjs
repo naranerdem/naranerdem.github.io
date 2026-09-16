@@ -21,9 +21,16 @@ assert.match(page, /item\.seatConfirmationApproved \? "Хэсэгчлэн төл
 assert.match(page, /const seatApprovalControl = approvedSeat/, "already-approved seats use a separate form projection");
 assert.match(page, /!item\.seatConfirmationApproved/, "the payment form does not re-offer seat approval after it is durable");
 assert.match(page, /data-seat-approval/, "the complete seat-confirmation label is a tappable control");
-assert.match(page, /Дутуу төлбөртэй ч суудлыг баталгаажуулах\./, "an exceptional below-threshold payment offers explicit manual seat approval");
-assert.match(page, /Шаардлагатай төлбөр бүрэн орсон\./, "a sufficient required installment shows its stable completion state");
-assert.match(page, /seatInput\.disabled = sufficient; seatInput\.checked = sufficient/, "the fixed confirmation-control space updates in place as amount changes");
+assert.match(page, /Суудлыг баталгаажуулах/, "the seat-confirmation control keeps a concise action label");
+assert.match(page, /Төлбөрийг бүртгэсний дараа баталгаажуулна/, "a sufficient required installment shows its separate muted completion explanation");
+assert.match(page, /seatInput\.disabled = sufficient; if \(sufficient\) seatInput\.checked = true/, "the fixed confirmation-control space updates in place as amount changes");
+assert.match(page, /data-seat-required="\$\{escape\(cashRequired\)\}"/, "seat-control sufficiency uses the effective cash requirement rather than the raw receipt ceiling");
+assert.match(page, /seat\?\.dataset\.seatRequired \|\| form\.elements\.amount\.max/, "the client re-evaluates the seat control against its rendered effective requirement");
+assert.match(page, /seatExplanation\.hidden = !sufficient/, "the completion explanation appears only at the effective sufficient amount");
+assert.match(page, /else if \(wasAutoConfirmed\) seatInput\.checked = false/, "reducing an automatic full-payment state clears the checkbox without undoing a later explicit partial approval");
+assert.match(page, /collectionMaximum > cashRequired && !familyQualificationEstablished/, "established family qualification does not show an obsolete conditional collection proposal");
+assert.match(page, /return entries \? `<details class="staff-payment-financial-details"/, "financial details render only when there is actual allocation, award, or reference content");
+assert.match(page, /item\.historicalSettlementReview \|\| \(remaining <= 0 && !item\.canonicalEnrollmentId && item\.identityResolutionStatus === "needs_identity_review"\)/, "a settled record awaiting either historical settlement review or identity resolution is classified by its real next step");
 assert.match(page, /Төлбөр бүртгэгдлээ\. Суудал удахгүй баталгаажна\./, "a sufficient initial payment explains the short finalization grace without calling it incomplete");
 assert.match(page, /function reconcileActionFeedback\(\)/, "the payment detail reconciles interim feedback with the authoritative finalization result");
 assert.match(page, /item\.canonicalEnrollmentId && feedback\.text === "Төлбөр бүртгэгдлээ\. Суудал удахгүй баталгаажна\."/, "a completed canonical enrollment replaces only the stale grace-period status");
@@ -62,6 +69,8 @@ assert.match(paymentService, /suppliedRemainingDueAt \?\? priorConfirmation\?\.r
 assert.match(paymentService, /ownReferralCode/, "payment queue projects an active confirmed-enrollment referral code");
 assert.match(paymentService, /creditApplicationInstallmentId/, "the payment queue identifies the actual outstanding obligation for a credit decision");
 assert.match(paymentService, /totalCreditAppliedMnt/, "applied credit is projected separately from received cash");
+assert.match(paymentService, /totalCashReceivedMnt/, "the queue returns actual receipt cash separately from allocation");
+assert.match(paymentService, /cashReceiptProjectionsForChildren/, "the queue uses the shared safe receipt-attribution projection");
 assert.match(paymentService, /COALESCE\(guardian_account\.secondary_phone, registration_draft\.secondary_phone\) AS secondaryPhone/,
   "the expanded payment record receives the authoritative guardian secondary phone");
 assert.match(paymentService, /COALESCE\(guardian_account\.facebook_name, registration_draft\.facebook_name\) AS guardianFacebookName/,
@@ -181,8 +190,20 @@ assert.doesNotMatch(page, /Хүүхдийн бүртгэлийг эхлээд б
 assert.match(page, /Энэ бүртгэлийн холбоо барих үйлдэл одоогоор нээгдээгүй байна\./, "unavailable contact actions use a neutral lifecycle-specific explanation");
 assert.match(page, /createPaymentDetailSelectionState/, "a return URL anchor is consumed once instead of reopening a source record after every refresh");
 assert.match(page, /previewCurrent \? "" :/, "a valid additional-class preview removes the redundant preview action until a selection changes");
-assert.match(page, /Төлсөн дүн: .*totalPaidMnt/, "confirmed details label the actual allocated amount as paid rather than a required installment");
-assert.match(page, /Үлдэгдэл: .*totalRemainingMnt/, "confirmed details pair paid money with the authoritative remaining balance");
+assert.match(page, /Бодитоор төлсөн дүн:.*totalCashReceivedMnt/, "confirmed details label the actual receipt rather than its obligation allocation");
+assert.match(page, /Төлбөрт хуваарилсан дүн:.*totalCashAllocatedMnt/, "staff can distinguish an immutable allocation from the actual receipt when they differ");
+assert.match(page, /Илүү төлсөн дүн:/, "an attributable receipt excess is named separately before it becomes credit");
+assert.match(page, /Төлөх үлдэгдэл:.*mnt\(remaining\)/, "the main financial summary pairs the effective payable balance with the authoritative current installment remaining amount");
+assert.match(page, /Хөнгөлөлтгүй төлбөр: \$\{escape\(mnt\(rawAmount\)\)\}/, "staff see the frozen original agreement amount distinctly when it differs from the effective amount");
+assert.match(page, /line\("Хөнгөлөлтийн дараах төлбөр"/, "staff see the current effective agreement amount distinctly when it differs from the original amount");
+assert.match(page, /Гэр бүлийн хөнгөлөлт ·/, "an established family qualification identifies the configured discount once in the price calculation");
+assert.match(page, /Гэр бүлийн хөнгөлөлтийн нөхцөл хангагдсан\./, "an established family qualification uses a concise non-warning explanation");
+assert.match(page, /staff-payment-financial-summary/, "the payment detail uses one responsive two-column financial summary");
+assert.match(page, /Тооцооллын дэлгэрэнгүй/, "allocation and historical reference details stay out of the main collection summary");
+assert.match(page, /Бүртгэл баталгаажсаны дараа кредитэд тооцогдоно\./, "an attributable excess is shown as pending credit rather than spendable value before canonical ownership");
+assert.doesNotMatch(page, /Илүү төлсөн дүн \$\{escape\(mnt\(attributableCashExcess\)\)\}\. Бүртгэл баталгаажсаны дараа кредитэд тооцогдоно/, "the pending-credit explanation does not repeat the excess amount");
+assert.match(page, /data-historical-settlement-form=/, "a qualified historical receipt without a confirmation exposes its guarded staff review action");
+assert.match(paymentService, /reviewHistoricalQualifiedPayment/, "historical settlement review binds an existing receipt to the guarded ordinary promotion path");
 assert.match(page, /Энэ сонголт суудал нөөцлөхгүй, бүртгэл үүсгэхгүй./, "the preview explicitly states that it creates no reservation or admission");
 assert.match(page, /additional-class\.preview/, "the staff panel uses the protected read-only preview action");
 assert.match(page, /additional-class\.create/, "the reviewed staff additional-class form uses its guarded admission endpoint");

@@ -11,6 +11,7 @@ const teacherCopyEventTypes = new Set(["registration_received"]);
 const archiveSafeTemplateKeys = new Set([
   "registration_receipt_v1",
   "payment_confirmed_v1",
+  "conditional_seat_confirmation_v1",
   "payment_reminder_v1",
   "waitlist_payment_instructions_v1",
 ]);

@@ -1979,6 +1979,65 @@ textarea:focus {
   grid-column: 1 / -1;
 }
 
+.staff-payment-financial-summary {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.staff-payment-financial-summary section {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+}
+
+.staff-payment-financial-summary p,
+.staff-payment-financial-details p,
+.staff-payment-reference {
+  margin: 0;
+}
+
+.staff-payment-financial-summary .staff-payment-remaining {
+  margin-top: 0.1rem;
+}
+
+.staff-payment-financial-details {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.staff-payment-financial-details summary {
+  cursor: pointer;
+}
+
+.staff-payment-financial-details[open] {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.staff-payment-reference {
+  display: grid;
+  gap: 0.15rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.staff-payment-reference strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+@media (max-width: 680px) {
+  .staff-payment-financial-summary {
+    grid-template-columns: 1fr;
+    gap: 0.7rem;
+  }
+}
+
 .staff-payment-release {
   color: #7a3218;
   font-size: 0.9rem;
@@ -2303,6 +2362,10 @@ textarea:focus {
   gap: 0.55rem;
   min-height: 44px;
   color: var(--ink) !important;
+}
+
+.staff-payment-form .staff-check {
+  font-weight: 400;
 }
 
 .staff-check input {

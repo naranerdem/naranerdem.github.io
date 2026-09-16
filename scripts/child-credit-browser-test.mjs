@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -23,6 +23,14 @@ let context;
 let page;
 let publicContext;
 let passed = false;
+let failureDetails = "";
+const paymentPanelScreenshotDir = process.env.PAYMENT_PANEL_SCREENSHOT_DIR || "";
+
+async function capturePaymentPanel(page, name) {
+  if (!paymentPanelScreenshotDir) return;
+  mkdirSync(paymentPanelScreenshotDir, { recursive: true });
+  await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name), fullPage: true });
+}
 
 function runWrangler(args, label) {
   const result = spawnSync(process.execPath, [wranglerCli, ...args], { encoding: "utf8" });
@@ -68,8 +76,8 @@ function fixtureSql() {
       VALUES ('browser-offering', 'annual_course', 'Browser credit offering', 'browser-year', 'stage_1', '2026-09-08', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
       VALUES
-      ('browser-class-source', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit source class', 'Мягмар', '09:00', '10:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
-      ('browser-class-target', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit target class', 'Мягмар', '15:00', '16:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+      ('browser-class-source', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit source class', 'Мягмар', '09:00', '10:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+      ('browser-class-target', 'browser-offering', 'browser-year', 'stage_1', 'Browser credit target class', 'Мягмар', '15:00', '16:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, last_date, weekly_weekday, start_time, end_time, created_at, updated_at)
       VALUES
       ('browser-class-source', 'weekly', '2026-09-08', NULL, 'Мягмар', '09:00', '10:20', ${sql(now)}, ${sql(now)}),
@@ -80,9 +88,9 @@ function fixtureSql() {
       ('browser-offering-low', 'annual_course', 'Browser lower transfer offering', 'browser-year', 'stage_3', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
       VALUES
-      ('browser-class-high', 'browser-offering-high', 'browser-year', 'stage_2', 'Browser higher transfer class', 'Wednesday', '09:00', '10:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
-      ('browser-class-low', 'browser-offering-low', 'browser-year', 'stage_3', 'Browser lower transfer class', 'Thursday', '09:00', '10:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
-      ('browser-class-waitlist', 'browser-offering', 'browser-year', 'stage_1', 'Browser waitlist class', 'Friday', '09:00', '10:20', 10, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+      ('browser-class-high', 'browser-offering-high', 'browser-year', 'stage_2', 'Browser higher transfer class', 'Wednesday', '09:00', '10:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+      ('browser-class-low', 'browser-offering-low', 'browser-year', 'stage_3', 'Browser lower transfer class', 'Thursday', '09:00', '10:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+      ('browser-class-waitlist', 'browser-offering', 'browser-year', 'stage_1', 'Browser waitlist class', 'Friday', '09:00', '10:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO offering_course_pricing (activity_offering_id, one_time_amount_mnt, two_installment_enabled, first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at)
       VALUES
       ('browser-offering', 1000, 1, 500, 500, '2027-06-01', ${sql(now)}, ${sql(now)});
@@ -118,6 +126,17 @@ async function dbJson(query) {
   ], "local D1 assertion");
   const parsed = JSON.parse(result.stdout);
   return parsed[0]?.results ?? [];
+}
+
+async function waitForDb(query, predicate, label) {
+  const deadline = Date.now() + 8_000;
+  let rows = [];
+  while (Date.now() < deadline) {
+    rows = await dbJson(query);
+    if (predicate(rows)) return rows;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`${label}: ${JSON.stringify(rows)}\nLocal Worker output:\n${workerOutput.slice(-4_000)}`);
 }
 
 async function fillIntake(page, childName, paymentPlanCode = "two_installment", options = {}) {
@@ -165,7 +184,7 @@ async function installTurnstileTestWidget(page) {
   });
 }
 
-async function submitPublicRegistration(browser, { childName, email, paymentPlanCode, expectedInitialAmount }) {
+async function submitPublicRegistration(browser, { childName, email, paymentPlanCode, expectedInitialAmount, siblings = [] }) {
   publicContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const publicPage = await publicContext.newPage();
   await installTurnstileTestWidget(publicPage);
@@ -189,6 +208,19 @@ async function submitPublicRegistration(browser, { childName, email, paymentPlan
   await card.locator("[data-child-stage]").selectOption("stage_1");
   await card.locator('[data-child-class][value="browser-class-source"]').check();
   await card.locator(`[data-child-payment-plan][value="${paymentPlanCode}"]`).check();
+  for (const [index, sibling] of siblings.entries()) {
+    await publicPage.locator("[data-add-child]").click();
+    const siblingCard = publicPage.locator("[data-child-card]").nth(index + 1);
+    await siblingCard.locator("[data-child-surname]").fill("Browser");
+    await siblingCard.locator("[data-child-name]").fill(sibling.childName);
+    await siblingCard.locator("[data-child-grade]").selectOption("5");
+    await siblingCard.locator("[data-child-gender]").selectOption({ label: "Эрэгтэй" });
+    await siblingCard.locator("[data-child-dob]").fill("2016-05-10");
+    await siblingCard.locator('[data-child-returning][value="no"]').check();
+    await siblingCard.locator("[data-child-stage]").selectOption("stage_1");
+    await siblingCard.locator(`[data-child-class][value="${sibling.classSessionId}"]`).check();
+    await siblingCard.locator(`[data-child-payment-plan][value="${sibling.paymentPlanCode}"]`).check();
+  }
 
   await publicPage.locator("#registration-form button[type=submit]").click();
   await publicPage.locator("#guardian-rules-dialog").waitFor({ state: "visible" });
@@ -212,6 +244,7 @@ async function submitPublicRegistration(browser, { childName, email, paymentPlan
     "a committed public registration shows the result, never a resubmission prompt");
 
   const rows = await dbJson(`SELECT registration_draft_child.id AS childId,
+      registration_draft_child.given_name AS givenName,
       registration_draft.id AS registrationDraftId,
       registration_capacity_hold.status AS holdStatus,
       payment_request.id AS paymentRequestId,
@@ -221,10 +254,10 @@ async function submitPublicRegistration(browser, { childName, email, paymentPlan
     LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.status = 'active'
     LEFT JOIN payment_request ON payment_request.registration_draft_id = registration_draft_child.registration_draft_id
-    WHERE registration_draft.normalized_email = ${sql(email)}`);
-  assert.equal(rows.length, 1, "the rendered public flow creates exactly one registration child");
-  assert.equal(rows[0].holdStatus, "active", "public registration creates one active capacity hold");
-  assert.equal(Number(rows[0].paymentAmount), expectedInitialAmount,
+    WHERE registration_draft.normalized_email = ${sql(email)} ORDER BY registration_draft_child.position`);
+  assert.equal(rows.length, 1 + siblings.length, "the rendered public flow creates every requested registration child");
+  assert.ok(rows.every((row) => row.holdStatus === "active"), "public registration creates one active capacity hold per child");
+  assert.equal(Number(rows.find((row) => row.childId)?.paymentAmount), expectedInitialAmount,
     "public plan selection uses the authoritative initial installment rather than a browser price");
   const receipts = await dbJson(`SELECT COUNT(*) AS count FROM outbound_email
     WHERE registration_draft_id = ${sql(rows[0].registrationDraftId)}
@@ -233,7 +266,12 @@ async function submitPublicRegistration(browser, { childName, email, paymentPlan
     "without a configured local provider, public submission does not fabricate an Outbox receipt");
   await publicContext.close();
   publicContext = undefined;
-  return rows[0].childId;
+  if (!siblings.length) return rows[0].childId;
+  return [childName, ...siblings.map((sibling) => sibling.childName)].map((name) => {
+    const row = rows.find((entry) => entry.givenName === name);
+    assert.ok(row?.childId, `the rendered public flow returns the durable child identity for ${name}`);
+    return row.childId;
+  });
 }
 
 async function openCredit(page, childId) {
@@ -323,21 +361,137 @@ async function recordPartialCashPayment(page, childId) {
   await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
 }
 
-async function recordCashPayment(page, childId, amount) {
+async function recordCashPayment(page, childId, amount, { expectedAmount = amount } = {}) {
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
   const row = page.locator(`[data-registration-child="${childId}"]`);
   await row.waitFor({ state: "visible" });
   const form = row.locator("[data-payment-form]");
   await form.waitFor({ state: "visible" });
-  assert.equal(Number(await form.locator('input[name="amount"]').inputValue()), amount,
+  assert.equal(Number(await form.locator('input[name="amount"]').inputValue()), expectedAmount,
     "the rendered staff payment form requests the authoritative effective amount");
+  await form.locator('input[name="amount"]').fill(String(amount));
   await form.locator('select[name="source"]').selectOption("staff_manual_cash");
   const request = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
     && response.request().method() === "POST");
   await form.locator('button[type="submit"]').click();
   const response = await request;
-  if (!response.ok()) throw new Error(`cash payment failed: ${await response.text()}`);
+  const submitted = JSON.parse(response.request().postData() ?? "{}");
+  if (!response.ok()) {
+    const diagnostic = await dbJson(`SELECT payment_installment.amount_mnt AS rawAmountMnt,
+        (SELECT COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) FROM payment_allocation
+          WHERE payment_allocation.payment_installment_id = payment_installment.id) AS allocatedMnt,
+        conditional_family_discount_quote.state AS quoteState,
+        conditional_family_discount_quote.contingent_credit_amount_mnt AS contingentCreditMnt
+      FROM payment_installment
+      LEFT JOIN conditional_family_discount_quote
+        ON conditional_family_discount_quote.registration_draft_child_id = payment_installment.registration_draft_child_id
+      WHERE payment_installment.registration_draft_child_id = ${sql(childId)} AND payment_installment.installment_kind = 'initial'`);
+    throw new Error(`cash payment failed: ${await response.text()}\n${JSON.stringify(diagnostic)}`);
+  }
   await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
+  return submitted;
+}
+
+async function recordApprovedPartialCashPayment(page, childId, amount) {
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  await row.waitFor({ state: "visible" });
+  const form = row.locator("[data-payment-form]");
+  await form.waitFor({ state: "visible" });
+  const seat = form.locator('[data-seat-approval] input');
+  await form.locator('input[name="amount"]').fill(String(amount));
+  assert.equal(await seat.isDisabled(), false, "an ordinary reduced amount restores the explicit partial-seat approval control");
+  await seat.check();
+  await form.locator('input[name="remainingDueAt"]').fill("2027-01-01T10:00");
+  const request = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST");
+  await form.locator('button[type="submit"]').click();
+  const response = await request;
+  const submitted = JSON.parse(response.request().postData() ?? "{}");
+  assert.equal(submitted.approveSeatConfirmation, true,
+    "an explicitly checked reduced amount submits the ordinary partial-seat approval request");
+  if (!response.ok()) throw new Error(`ordinary partial cash payment failed: ${await response.text()}`);
+  await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
+}
+
+async function approveConditionalSeat(page, childId, reason) {
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  await row.waitFor({ state: "visible" });
+  const form = row.locator("[data-conditional-seat-form]");
+  await form.waitFor({ state: "visible" });
+  await form.locator('[name="conditionalReason"]').fill(reason);
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("payment.confirm-seat"));
+  await form.locator('button[type="submit"]').click();
+  const response = await responsePromise;
+  const submittedQuoteId = JSON.parse(response.request().postData() ?? "{}").conditionalQuote?.quoteId;
+  const submittedQuote = await dbJson(`SELECT registration_draft_child_id AS childId
+    FROM conditional_family_discount_quote WHERE id = ${sql(submittedQuoteId ?? "")}`);
+  assert.equal(submittedQuote[0]?.childId, childId,
+    "a conditional-seat form binds its exact child quote even when siblings share a payment request");
+  if (!response.ok()) {
+    const diagnostic = await dbJson(`SELECT conditional_family_discount_quote.id AS quoteId,
+        conditional_family_discount_quote.state AS quoteState,
+        conditional_family_discount_quote.revision AS quoteRevision,
+        payment_installment.amount_mnt AS rawAmountMnt,
+        (SELECT COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) FROM payment_allocation
+          WHERE payment_allocation.payment_installment_id = payment_installment.id) AS allocatedMnt,
+        (SELECT GROUP_CONCAT(payment_confirmation.id || ':' || payment_confirmation.status || ':' || payment_confirmation.seat_confirmation_approved)
+          FROM payment_confirmation INNER JOIN payment_allocation
+            ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+          WHERE payment_confirmation.payment_request_id = payment_installment.payment_request_id
+            AND payment_allocation.payment_installment_id = payment_installment.id) AS confirmations
+      FROM conditional_family_discount_quote
+      INNER JOIN payment_installment ON payment_installment.registration_draft_child_id = conditional_family_discount_quote.registration_draft_child_id
+        AND payment_installment.installment_kind = 'initial'
+      WHERE conditional_family_discount_quote.registration_draft_child_id = ${sql(childId)}
+      ORDER BY conditional_family_discount_quote.id`);
+    throw new Error(`conditional seat approval failed: ${await response.text()}\nrequest=${response.request().postData() ?? ""}\n${JSON.stringify(diagnostic)}`);
+  }
+  await row.getByText("Суудал баталгаажлаа").waitFor({ state: "visible" });
+}
+
+async function openContingentCreditAuthorization(page, childId) {
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  await row.waitFor({ state: "visible" });
+  const form = row.locator("[data-conditional-contingent-credit]");
+  await form.waitFor({ state: "visible" });
+  return { row, form };
+}
+
+async function authorizeContingentCredit(page, childId, reason) {
+  const { row, form } = await openContingentCreditAuthorization(page, childId);
+  assert.equal(Number(await form.locator('[name="amountMnt"]').inputValue()), 120,
+    "the rendered contingent authorization proposes the exact donor residual, not a fabricated cash reduction");
+  await form.locator('[name="reason"]').fill(reason);
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("conditional-family.authorize-contingent-credit"));
+  await form.locator('button[type="submit"]').click();
+  const response = await responsePromise;
+  if (!response.ok()) throw new Error(`conditional contingent authorization failed: ${await response.text()}`);
+  await row.getByText("Нөхцөлт кредитийг хамгаалж зөвшөөрлөө.").waitFor({ state: "visible" });
+}
+
+async function prepareConditionalSequentialPair(browser, page, marker) {
+  const pair = await submitPublicRegistration(browser, {
+    childName: `${marker}Donor`, email: `${marker.toLowerCase()}@example.test`, paymentPlanCode: "single", expectedInitialAmount: 1200,
+    siblings: [{ childName: `${marker}Recipient`, classSessionId: "browser-class-target", paymentPlanCode: "single" }],
+  });
+  const [donor, recipient] = pair;
+  await recordCashPayment(page, donor, 1200, { expectedAmount: 1080 });
+  execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+    WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+      SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(donor)}));`);
+  assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, `${marker} donor reaches conditional-seat review through the normal scheduler`);
+  await approveConditionalSeat(page, donor, `${marker} conditional donor seat`);
+  await recordCashPayment(page, recipient, 960, { expectedAmount: 1080 });
+  await authorizeContingentCredit(page, recipient, `${marker} contingent settlement`);
+  execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+    WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+      SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(recipient)}));`);
+  return { donor, recipient };
 }
 
 async function confirmFamilyMembership(page, sourceChildId, relatedChildId, query, reason) {
@@ -603,10 +757,35 @@ async function finalizeCashRegistration(page, childId) {
   return row;
 }
 
-async function cancelAndRestoreRegistration(page, childId) {
+async function cancelAndRestoreRegistration(page, childId, { restore: shouldRestore = true } = {}) {
   let row = page.locator(`[data-registration-child="${childId}"]`);
+  const group = row.locator('xpath=ancestor::div[starts-with(@id, "group-")][1]');
+  if (await group.isHidden()) await group.locator('xpath=preceding-sibling::h2[1]//button[@data-group-toggle]').click();
   await row.waitFor({ state: "visible" });
+  const detailToggle = row.locator("button[data-payment-detail]");
+  if (await detailToggle.getAttribute("aria-expanded") !== "true") {
+    await detailToggle.click();
+  }
   const cancellation = row.locator("[data-registration-cancel-form]");
+  if (await cancellation.count() !== 1) {
+    const permissions = await page.evaluate(async (targetChildId) => {
+      const [session, queue] = await Promise.all([
+        fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.json()),
+        fetch("/api/staff/payments", { credentials: "same-origin" }).then((response) => response.json()),
+      ]);
+      return {
+        capabilities: session.capabilities,
+        canCancelRegistrations: queue.canCancelRegistrations,
+        itemPresent: Boolean(queue.items?.some((item) => item.registrationDraftChildId === targetChildId)),
+      };
+    }, childId);
+    const fragment = await row.evaluate((element) => element.innerHTML.slice(-4_000));
+    throw new Error(`rendered cancellation control is unavailable: ${JSON.stringify(permissions)}\n${fragment}`);
+  }
+  const cancellationDisclosure = cancellation.locator("xpath=ancestor::details[1]");
+  if (!(await cancellationDisclosure.evaluate((element) => element.open))) {
+    await cancellationDisclosure.locator("summary").click();
+  }
   await cancellation.waitFor({ state: "visible" });
   await cancellation.locator('select[name="reason"]').selectOption("guardian_request");
   await cancellation.locator('button[type="submit"]').click();
@@ -626,10 +805,13 @@ async function cancelAndRestoreRegistration(page, childId) {
   const afterCancel = await dbJson(`SELECT status, canonical_enrollment_id AS enrollmentId FROM registration_draft_child
     WHERE id = ${sql(childId)}`);
   assert.equal(afterCancel[0]?.status, "cancelled", "explicit dialog confirmation cancels the exact displayed registration");
+  if (!shouldRestore) return afterCancel[0];
 
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
   row = page.locator(`[data-registration-child="${childId}"]`);
   await row.waitFor({ state: "visible" });
+  const cancelledToggle = row.locator(`[data-cancelled-detail="${childId}"]`).last();
+  await cancelledToggle.click();
   const restore = row.locator("[data-registration-reinstate]");
   await restore.waitFor({ state: "visible" });
   page.once("dialog", (dialog) => dialog.accept());
@@ -876,6 +1058,637 @@ try {
     await page.getByText("Бүртгэлийг хадгаллаа.").waitFor({ state: "visible" });
     assert.equal((await catalogClassIds()).includes("browser-class-target"), true,
       "restoring Offering membership restores its individually visible sibling");
+  } else if (process.env.HISTORICAL_SETTLEMENT_BROWSER_ONLY === "1") {
+    execute(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1200 WHERE activity_offering_id = 'browser-offering';`);
+    const historical = await submitPublicRegistration(browser, {
+      childName: "HistoricalSettlementA", email: "historical-settlement@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+      siblings: [
+        { childName: "HistoricalSettlementB", classSessionId: "browser-class-target", paymentPlanCode: "single" },
+        { childName: "HistoricalSettlementC", classSessionId: "browser-class-target", paymentPlanCode: "single" },
+      ],
+    });
+    const [historicalA, historicalB, historicalC] = historical;
+    await recordCashPayment(page, historicalA, 1200, { expectedAmount: 1080 });
+    await recordCashPayment(page, historicalB, 1080, { expectedAmount: 1080 });
+    const legacyRows = await dbJson(`SELECT registration_draft_child.id AS childId, registration_draft_child.registration_draft_id AS draftId
+      FROM registration_draft_child WHERE id IN (${sql(historicalA)}, ${sql(historicalB)}, ${sql(historicalC)}) ORDER BY id`);
+    const historicalDraftId = legacyRows[0].draftId;
+    // Fixture setup models released submission-time awards and receipts that
+    // predate 0052's quote/confirmation linkage. The operation under test is
+    // the rendered review action, never a canned response.
+    execute(`DELETE FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (${sql(historicalA)}, ${sql(historicalB)}, ${sql(historicalC)});
+      INSERT INTO discount_award (id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+        status, qualification_state, reason, awarded_at, is_test, test_run_id, created_at, updated_at)
+      SELECT 'browser-history-award-' || id, id, 'family_multi_child', 1000, 1200, 120, 'active', 'earned',
+        'same_registration_guardian_multiple_children', datetime('now'), 1, ${sql(testRunId)}, datetime('now'), datetime('now')
+      FROM registration_draft_child WHERE id IN (${sql(historicalA)}, ${sql(historicalB)});
+      INSERT INTO discount_award (id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+        status, qualification_state, reason, awarded_at, is_test, test_run_id, created_at, updated_at)
+      SELECT 'browser-history-award-' || id, id, 'family_multi_child', 1000, 1200, 120, 'active', 'provisional',
+        'same_registration_guardian_multiple_children', datetime('now'), 1, ${sql(testRunId)}, datetime('now'), datetime('now')
+      FROM registration_draft_child WHERE id = ${sql(historicalC)};
+      INSERT INTO conditional_family_discount_quote (id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+        basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state, linked_discount_award_id, resolution_reason,
+        created_at, updated_at, is_test, test_run_id)
+      SELECT 'browser-history-quote-' || id, id, 'browser-year', 'same_submission', ${sql(`historical:${historicalDraftId}:browser-year`)},
+        1000, 1200, 120, 'one_payment', CASE WHEN id = ${sql(historicalC)} THEN 'quoted_pending' ELSE 'qualified' END,
+        'browser-history-award-' || id, 'historical_adoption', datetime('now'), datetime('now'), 1, ${sql(testRunId)}
+      FROM registration_draft_child WHERE id IN (${sql(historicalA)}, ${sql(historicalB)}, ${sql(historicalC)});
+      UPDATE discount_award SET conditional_quote_id = 'browser-history-quote-' || registration_draft_child_id
+        WHERE registration_draft_child_id IN (${sql(historicalA)}, ${sql(historicalB)}, ${sql(historicalC)});
+      DELETE FROM payment_confirmation WHERE received_payment_id IN (
+        SELECT payment_allocation.received_payment_id FROM payment_allocation
+        INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_installment.registration_draft_child_id IN (${sql(historicalA)}, ${sql(historicalB)})
+      );
+      UPDATE payment_allocation SET allocated_amount_mnt = 1080
+      WHERE payment_installment_id IN (
+        SELECT id FROM payment_installment
+        WHERE registration_draft_child_id = ${sql(historicalA)} AND installment_kind = 'initial'
+      );`);
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(historicalA)}`);
+    const historicalRow = page.locator(`[data-registration-child="${historicalA}"]`);
+    await historicalRow.waitFor({ state: "visible" });
+    const historicalForm = historicalRow.locator("[data-historical-settlement-form]");
+    await historicalForm.waitFor({ state: "visible" });
+    assert.match(await historicalForm.innerText(), /Түүхэн төлбөрийг хянаж баталгаажуулах/,
+      "the rendered review form identifies the explicit historical settlement action");
+    assert.match(await historicalRow.innerText(), /Төлөх үлдэгдэл: 0 ₮/,
+      "the historical review retains the effective zero payable balance without pretending the receipt is still unpaid");
+    assert.match(await historicalRow.innerText(), /Илүү төлсөн дүн: 120 ₮[\s\S]*Бүртгэл баталгаажсаны дараа кредитэд тооцогдоно\./,
+      "the rendered historical receipt states the excess once, then explains its deferred credit treatment");
+    await page.setViewportSize({ width: 1200, height: 900 });
+    await capturePaymentPanel(page, "historical-settlement-desktop.png");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await capturePaymentPanel(page, "historical-settlement-mobile.png");
+    await historicalForm.locator('[name="historicalSettlementReason"]').fill("Browser legacy receipt review");
+    const reviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.review-historical-settlement"));
+    await historicalForm.getByRole("button", { name: "Төлбөрийг хянаж баталгаажуулах" }).click();
+    assert.equal((await reviewResponse).status(), 200, "the rendered historical-review action binds the existing receipt without recording another payment");
+    const reviewed = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM payment_confirmation WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = ${sql(historicalDraftId)})) AS confirmations,
+      (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = ${sql(historicalDraftId)})) AS cash,
+      (SELECT COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) FROM payment_allocation
+        INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_installment.registration_draft_child_id = ${sql(historicalA)}) AS allocated`,
+      (rows) => Number(rows[0]?.confirmations) === 1, "the reviewed historical receipt receives exactly one durable payment confirmation");
+    assert.deepEqual({ confirmations: Number(reviewed[0].confirmations), cash: Number(reviewed[0].cash), allocated: Number(reviewed[0].allocated) },
+      { confirmations: 1, cash: 2280, allocated: 1080 },
+      "reviewing A preserves both actual receipts and A's original effective allocation");
+    const reviewScope = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM registration_draft_child WHERE id = ${sql(historicalA)} AND canonical_enrollment_id IS NOT NULL) AS aCanonical,
+      (SELECT COUNT(*) FROM registration_draft_child WHERE id = ${sql(historicalB)} AND canonical_enrollment_id IS NOT NULL) AS bCanonical,
+      (SELECT COUNT(*) FROM registration_draft_child WHERE id = ${sql(historicalC)} AND canonical_enrollment_id IS NOT NULL) AS cCanonical,
+      (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(historicalA)}
+        AND source_discount_award_id = ${sql(`browser-history-award-${historicalA}`)} AND amount_mnt = 120) AS aRoot,
+      (SELECT COUNT(*) FROM payment_confirmation WHERE payment_request_id IN (SELECT id FROM payment_request
+        WHERE registration_draft_id = ${sql(historicalDraftId)}) AND conditional_quote_id IS NOT NULL
+        AND received_payment_id IN (SELECT payment_allocation.received_payment_id FROM payment_allocation
+          INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+          WHERE payment_installment.registration_draft_child_id = ${sql(historicalB)})) AS bConfirmations`,
+      (rows) => Number(rows[0]?.aCanonical) === 1 && Number(rows[0]?.aRoot) === 1,
+      "the selected A review reaches only A's ordinary promotion and residual-credit recovery");
+    assert.deepEqual({ aCanonical: Number(reviewScope[0].aCanonical), bCanonical: Number(reviewScope[0].bCanonical),
+      cCanonical: Number(reviewScope[0].cCanonical), aRoot: Number(reviewScope[0].aRoot), bConfirmations: Number(reviewScope[0].bConfirmations) },
+    { aCanonical: 1, bCanonical: 0, cCanonical: 0, aRoot: 1, bConfirmations: 0 },
+    "one rendered A review cannot promote B/C, create B confirmation, or duplicate A's 120 MNT residual root");
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(historicalB)}`);
+    const historicalBRow = page.locator(`[data-registration-child="${historicalB}"]`);
+    await historicalBRow.waitFor({ state: "visible" });
+    const historicalBForm = historicalBRow.locator("[data-historical-settlement-form]");
+    await historicalBForm.waitFor({ state: "visible" });
+    assert.match(await historicalBForm.innerText(), /Түүхэн төлбөрийг хянаж баталгаажуулах/,
+      "reviewing A through the rendered action leaves B in its own explicit historical-review state");
+    await historicalBForm.locator('[name="historicalSettlementReason"]').fill("Browser B legacy receipt review");
+    const bReviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.review-historical-settlement"));
+    await historicalBForm.getByRole("button", { name: "Төлбөрийг хянаж баталгаажуулах" }).click();
+    assert.equal((await bReviewResponse).status(), 200,
+      "B's later rendered review creates its own quote-bound confirmation rather than reusing A's registration-wide result");
+    const sequentialReview = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM payment_confirmation WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = ${sql(historicalDraftId)})) AS confirmations,
+      (SELECT COUNT(*) FROM registration_draft_child WHERE id = ${sql(historicalA)} AND canonical_enrollment_id IS NOT NULL) AS aCanonical,
+      (SELECT COUNT(*) FROM registration_draft_child WHERE id = ${sql(historicalB)} AND canonical_enrollment_id IS NOT NULL) AS bCanonical,
+      (SELECT COUNT(*) FROM registration_draft_child WHERE id = ${sql(historicalC)} AND canonical_enrollment_id IS NOT NULL) AS cCanonical,
+      (SELECT COUNT(*) FROM child_credit_entry WHERE source_discount_award_id = ${sql(`browser-history-award-${historicalA}`)}) AS aRoots,
+      (SELECT COUNT(*) FROM child_credit_entry WHERE source_discount_award_id = ${sql(`browser-history-award-${historicalB}`)}) AS bRoots`,
+      (rows) => Number(rows[0]?.confirmations) === 2 && Number(rows[0]?.bCanonical) === 1,
+      "B's independent rendered review reaches its own canonical confirmation");
+    assert.deepEqual({ confirmations: Number(sequentialReview[0].confirmations), aCanonical: Number(sequentialReview[0].aCanonical),
+      bCanonical: Number(sequentialReview[0].bCanonical), cCanonical: Number(sequentialReview[0].cCanonical),
+      aRoots: Number(sequentialReview[0].aRoots), bRoots: Number(sequentialReview[0].bRoots) },
+    { confirmations: 2, aCanonical: 1, bCanonical: 1, cCanonical: 0, aRoots: 1, bRoots: 0 },
+    "sequential reviews retain separate A/B confirmations, one A residual root, no B residual, and C pending");
+  } else if (process.env.CONDITIONAL_FAMILY_BROWSER_ONLY === "1") {
+    execute(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1200, first_installment_amount_mnt = 600,
+      second_installment_amount_mnt = 600 WHERE activity_offering_id = 'browser-offering';`);
+    const ordinary = await submitPublicRegistration(browser, {
+      childName: "ConditionalOrdinaryRawPaid", email: "conditional-ordinary@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+    });
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(ordinary)}`);
+    const ordinarySeat = page.locator(`[data-registration-child="${ordinary}"] [data-seat-approval] input`);
+    await ordinarySeat.waitFor({ state: "visible" });
+    assert.equal(await ordinarySeat.isChecked(), true, "an ordinary full payment keeps the existing checked sufficient state");
+    assert.equal(await ordinarySeat.isDisabled(), true, "an ordinary full payment keeps the existing disabled sufficient state");
+    const ordinarySubmission = await recordCashPayment(page, ordinary, 1200);
+    assert.equal(ordinarySubmission.approveSeatConfirmation, false,
+      "the ordinary disabled sufficient state never submits a partial-seat approval flag");
+    const ordinaryPartial = await submitPublicRegistration(browser, {
+      childName: "ConditionalOrdinaryPartial", email: "conditional-ordinary-partial@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+    });
+    await recordApprovedPartialCashPayment(page, ordinaryPartial, 1199);
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(ordinary)}));`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok,
+      "the rendered ordinary raw-paid payment reaches the same latest finalizer");
+    const ordinaryPromotion = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM enrollment WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id = ${sql(ordinary)}) AND status = 'confirmed') AS enrollments,
+      (SELECT COUNT(*) FROM conditional_family_discount_quote WHERE registration_draft_child_id = ${sql(ordinary)}) AS quotes`,
+      (rows) => Number(rows[0]?.enrollments) === 1,
+      "ordinary raw-paid promotion remains eligible without a conditional-seat workflow");
+    assert.deepEqual({ enrollments: Number(ordinaryPromotion[0]?.enrollments), quotes: Number(ordinaryPromotion[0]?.quotes) },
+      { enrollments: 1, quotes: 0 },
+      "the conditional finalizer changes neither ordinary raw-paid enrollment nor its communication classification");
+
+    const joint = await submitPublicRegistration(browser, {
+      childName: "ConditionalJointA", email: "conditional-joint@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+      siblings: [{ childName: "ConditionalJointB", classSessionId: "browser-class-target", paymentPlanCode: "single" }],
+    });
+    const [jointA, jointB] = joint;
+    await recordCashPayment(page, jointA, 1080);
+    const beforeSecond = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(jointA)}, ${sql(jointB)})
+        AND award_type = 'family_multi_child') AS awards,
+      (SELECT COUNT(*) FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (${sql(jointA)}, ${sql(jointB)})
+        AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')) AS pendingQuotes`);
+    assert.equal(Number(beforeSecond[0]?.awards), 0, "one conditional receipt alone does not earn a family award");
+    assert.equal(Number(beforeSecond[0]?.pendingQuotes), 2,
+      "the first 1,080 MNT receipt leaves both agreements in the durable conditional state until their qualifying subset completes");
+    await recordCashPayment(page, jointB, 1080);
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(jointA)}));`);
+    const scheduled = await fetch(`${baseUrl}/__scheduled`);
+    assert.ok(scheduled.ok, "the local scheduled Worker accepts the joint conditional settlement trigger");
+    const jointResult = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(jointA)}, ${sql(jointB)})
+        AND award_type = 'family_multi_child' AND qualification_state = 'earned') AS awards,
+      (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id IN (
+        SELECT id FROM payment_request WHERE registration_draft_id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(jointA)}))) AS cash,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM payment_installment WHERE registration_draft_child_id IN (${sql(jointA)}, ${sql(jointB)})) AS raw
+      `, (rows) => Number(rows[0]?.awards) === 2, "both joint conditional quotes become earned once both receipts finalize");
+    assert.deepEqual({ awards: Number(jointResult[0]?.awards), cash: Number(jointResult[0]?.cash) }, { awards: 2, cash: 2160 },
+      "joint 1,080 + 1,080 settlement preserves exactly 2,160 MNT cash and two earned awards");
+    const [jointAProjection, jointBProjection] = await Promise.all([
+      staffPaymentProjection(page, jointA),
+      staffPaymentProjection(page, jointB),
+    ]);
+    assert.deepEqual([Number(jointAProjection?.totalRemainingMnt), Number(jointBProjection?.totalRemainingMnt)], [0, 0],
+      "once both conditional receipts qualify, both rendered payment projections have no payable balance");
+
+    const qualifiedThird = await submitPublicRegistration(browser, {
+      childName: "ConditionalQualifiedThirdA", email: "conditional-qualified-third@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+      siblings: [
+        { childName: "ConditionalQualifiedThirdB", classSessionId: "browser-class-target", paymentPlanCode: "single" },
+        { childName: "ConditionalQualifiedThirdC", classSessionId: "browser-class-target", paymentPlanCode: "single" },
+      ],
+    });
+    const [qualifiedThirdA, qualifiedThirdB, qualifiedThirdC] = qualifiedThird;
+    await recordCashPayment(page, qualifiedThirdA, 1080);
+    await recordCashPayment(page, qualifiedThirdB, 1080);
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(qualifiedThirdA)}));`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok,
+      "the two funded members establish the family qualification before the third payment is collected");
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(qualifiedThirdC)}`);
+    const qualifiedThirdRow = page.locator(`[data-registration-child="${qualifiedThirdC}"]`);
+    const qualifiedThirdForm = qualifiedThirdRow.locator('[data-payment-form]');
+    await qualifiedThirdForm.waitFor({ state: "visible" });
+    await page.setViewportSize({ width: 1200, height: 900 });
+    const desktopColumns = await qualifiedThirdForm.locator(".staff-payment-financial-summary")
+      .evaluate((node) => getComputedStyle(node).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length);
+    assert.equal(desktopColumns, 2, "the staff payment calculation has two independent columns on desktop");
+    await capturePaymentPanel(page, "conditional-payment-desktop.png");
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileColumns = await qualifiedThirdForm.locator(".staff-payment-financial-summary")
+      .evaluate((node) => getComputedStyle(node).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length);
+    assert.equal(mobileColumns, 1, "the staff payment calculation stacks price before collection on a narrow viewport");
+    await capturePaymentPanel(page, "conditional-payment-mobile.png");
+    assert.equal(Number(await qualifiedThirdForm.locator('input[name="amount"]').inputValue()), 1080,
+      "a third child with an already-qualified family is collected at the established 1,080 MNT effective amount without an override");
+    assert.match(await qualifiedThirdForm.innerText(), /Гэр бүлийн хөнгөлөлт · 10%: 120 ₮/,
+      "the rendered collection form shows the configured discount once in its price calculation");
+    assert.match(await qualifiedThirdForm.innerText(), /Гэр бүлийн хөнгөлөлтийн нөхцөл хангагдсан\./,
+      "the established qualification uses a concise factual explanation rather than a pending warning");
+    const qualifiedThirdSeat = qualifiedThirdForm.locator('[data-seat-approval] input');
+    assert.equal(await qualifiedThirdSeat.isDisabled(), true,
+      "the normal effective amount is sufficient and does not require an insufficient-payment seat override");
+    assert.equal(await qualifiedThirdSeat.isChecked(), true,
+      "the sufficient control is visibly checked while remaining excluded from the partial-approval request");
+    assert.equal(await qualifiedThirdForm.locator("[data-seat-approval-copy]").innerText(), "Суудлыг баталгаажуулах",
+      "the sufficient seat control keeps the concise action label instead of replacing it with status prose");
+    assert.equal(await qualifiedThirdForm.locator("[data-seat-approval-explanation]").isVisible(), true,
+      "the sufficient conditional amount has a separate muted explanation");
+    assert.doesNotMatch(await qualifiedThirdForm.innerText(), /Нөхцөлт тооцооллоор авах санал/,
+      "an established family qualification does not retain the obsolete conditional collection proposal");
+    assert.equal(await qualifiedThirdForm.locator(".staff-payment-financial-details").count(), 0,
+      "an otherwise empty financial details disclosure is not rendered for the qualified payment");
+    await qualifiedThirdForm.locator('input[name="amount"]').fill("1079");
+    assert.equal(await qualifiedThirdSeat.isDisabled(), false,
+      "reducing the amount restores the explicit incomplete-payment approval control");
+    assert.equal(await qualifiedThirdSeat.isChecked(), false,
+      "the incomplete-payment control is no longer presented as automatically approved");
+    assert.equal(await qualifiedThirdForm.locator("[data-seat-approval-explanation]").isVisible(), false,
+      "the completion explanation disappears when the entered amount is no longer sufficient");
+    await qualifiedThirdForm.locator('input[name="amount"]').fill("1080");
+    assert.equal(await qualifiedThirdSeat.isDisabled(), true,
+      "returning to the effective conditional amount restores the protected sufficient state");
+    const qualifiedThirdSubmission = await recordCashPayment(page, qualifiedThirdC, 1080);
+    assert.equal(qualifiedThirdSubmission.approveSeatConfirmation, false,
+      "the disabled sufficient control cannot submit a stale incomplete-payment approval");
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(qualifiedThirdC)}));`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok,
+      "the third child's normal discounted payment reaches the protected family finalizer");
+    const qualifiedThirdResult = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(qualifiedThirdA)}, ${sql(qualifiedThirdB)}, ${sql(qualifiedThirdC)})
+        AND qualification_state = 'earned') AS awards,
+      (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id IN (
+        SELECT id FROM payment_request WHERE registration_draft_id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(qualifiedThirdA)}))) AS cash`,
+      (rows) => Number(rows[0]?.awards) === 3,
+      "the third agreement earns exactly one award through normal finalization after its own cash payment");
+    assert.deepEqual({ awards: Number(qualifiedThirdResult[0]?.awards), cash: Number(qualifiedThirdResult[0]?.cash) }, { awards: 3, cash: 3240 },
+      "three independently recorded discounted receipts retain 3,240 MNT actual cash and three earned awards");
+    const qualifiedThirdProjection = await staffPaymentProjection(page, qualifiedThirdC);
+    assert.equal(Number(qualifiedThirdProjection?.totalRemainingMnt), 0,
+      "the third child's protected finalizer leaves no payable balance after its normal 1,080 MNT receipt");
+
+    if (process.env.PAYMENT_PANEL_BROWSER_ONLY !== "1") {
+    const sequential = await submitPublicRegistration(browser, {
+      childName: "ConditionalSequentialDonor", email: "conditional-sequential@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+      siblings: [{ childName: "ConditionalSequentialRecipient", classSessionId: "browser-class-target", paymentPlanCode: "single" }],
+    });
+    const [sequentialDonor, sequentialRecipient] = sequential;
+    await recordCashPayment(page, sequentialDonor, 1200, { expectedAmount: 1080 });
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(sequentialDonor)}));`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the donor's ordinary receipt reaches the conditional-seat decision point");
+    await approveConditionalSeat(page, sequentialDonor, "Browser conditional donor seat");
+    const donorBeforeRecipient = await dbJson(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child
+      WHERE id = ${sql(sequentialDonor)}`);
+    assert.ok(donorBeforeRecipient[0]?.enrollmentId, "the explicit conditional-seat workflow confirms only the funded donor seat");
+
+    await recordCashPayment(page, sequentialRecipient, 960, { expectedAmount: 1080 });
+    const beforeDismiss = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM audit_event WHERE action = 'conditional_family_contingent_credit_authorized'
+        AND subject_id IN (SELECT id FROM conditional_family_discount_quote WHERE registration_draft_child_id = ${sql(sequentialRecipient)})) AS authorizations,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)})
+        OR target_registration_draft_child_id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)})) AS creditOperations,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)})) AS awards,
+      (SELECT COUNT(*) FROM registration_draft_child INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+        WHERE registration_draft_child.id = ${sql(sequentialRecipient)} AND enrollment.status = 'confirmed') AS recipientEnrollments,
+      (SELECT COUNT(*) FROM outbound_email WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(sequentialRecipient)})) AS notifications`);
+    const dismissed = await openContingentCreditAuthorization(page, sequentialRecipient);
+    await dismissed.form.locator('[data-conditional-contingent-credit-cancel]').click();
+    const dismissedToggle = dismissed.row.locator(`[data-payment-detail]`).first();
+    await dismissedToggle.waitFor({ state: "visible" });
+    assert.equal(await dismissedToggle.getAttribute("aria-expanded"), "false",
+      "dismissing the contingent proposal closes only its record without submitting any operation");
+    const afterDismiss = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM audit_event WHERE action = 'conditional_family_contingent_credit_authorized'
+        AND subject_id IN (SELECT id FROM conditional_family_discount_quote WHERE registration_draft_child_id = ${sql(sequentialRecipient)})) AS authorizations,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)})
+        OR target_registration_draft_child_id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)})) AS creditOperations,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)})) AS awards,
+      (SELECT COUNT(*) FROM registration_draft_child INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+        WHERE registration_draft_child.id = ${sql(sequentialRecipient)} AND enrollment.status = 'confirmed') AS recipientEnrollments,
+      (SELECT COUNT(*) FROM outbound_email WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(sequentialRecipient)})) AS notifications`);
+    assert.deepEqual(afterDismiss[0], beforeDismiss[0], "opening and dismissing contingent credit leaves authorization, value, awards, and enrollment untouched");
+
+    await authorizeContingentCredit(page, sequentialRecipient, "Browser donor residual for recipient settlement");
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(sequentialRecipient)}));`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the recipient's authorized conditional settlement reaches the protected finalizer");
+    const sequentialResult = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)})
+        AND award_type = 'family_multi_child' AND qualification_state = 'earned') AS awards,
+      (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id IN (
+        SELECT id FROM payment_request WHERE registration_draft_id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(sequentialDonor)}))) AS cash,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE operation_type = 'transfer'
+        AND source_registration_draft_child_id = ${sql(sequentialDonor)} AND target_registration_draft_child_id = ${sql(sequentialRecipient)}
+        AND amount_mnt = 120) AS transfers,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(sequentialDonor)}
+        AND entry_kind = 'discount_award_credit') AS donorRoot,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(sequentialDonor)}
+        AND entry_kind = 'credit_transfer_debit') AS donorDebit,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(sequentialRecipient)}
+        AND entry_kind = 'credit_transfer_credit') AS recipientTransfer,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(sequentialRecipient)}
+        AND entry_kind = 'credit_application') AS recipientApplication,
+      (SELECT COUNT(*) FROM registration_draft_child INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+        WHERE registration_draft_child.id IN (${sql(sequentialDonor)}, ${sql(sequentialRecipient)}) AND enrollment.status = 'confirmed') AS enrollments`,
+      (rows) => Number(rows[0]?.awards) === 2 && Number(rows[0]?.recipientApplication) === -120,
+      "the protected sequential settlement creates and consumes the contingent value exactly once");
+    assert.deepEqual({ awards: Number(sequentialResult[0]?.awards), cash: Number(sequentialResult[0]?.cash),
+      transfers: Number(sequentialResult[0]?.transfers), donorRoot: Number(sequentialResult[0]?.donorRoot),
+      donorDebit: Number(sequentialResult[0]?.donorDebit), recipientTransfer: Number(sequentialResult[0]?.recipientTransfer),
+      recipientApplication: Number(sequentialResult[0]?.recipientApplication), enrollments: Number(sequentialResult[0]?.enrollments) },
+    { awards: 2, cash: 2160, transfers: 1, donorRoot: 120, donorDebit: -120, recipientTransfer: 120, recipientApplication: -120, enrollments: 2 },
+    "sequential 1,200 + 960 retains 2,160 MNT cash while one protected 120 MNT contingent credit has no spendable intermediate copy");
+    const [sequentialDonorProjection, sequentialRecipientProjection] = await Promise.all([
+      staffPaymentProjection(page, sequentialDonor),
+      staffPaymentProjection(page, sequentialRecipient),
+    ]);
+    assert.deepEqual([Number(sequentialDonorProjection?.totalRemainingMnt), Number(sequentialRecipientProjection?.totalRemainingMnt)], [0, 0],
+      "the rendered projections show both sequential agreements fully settled after the protected finalizer");
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "a finalizer replay is accepted");
+    const replay = await dbJson(`SELECT COUNT(*) AS transfers FROM child_credit_operation WHERE operation_type = 'transfer'
+      AND source_registration_draft_child_id = ${sql(sequentialDonor)} AND target_registration_draft_child_id = ${sql(sequentialRecipient)}`);
+    assert.equal(Number(replay[0]?.transfers), 1, "a finalizer replay cannot duplicate the contingent transfer/application operation");
+
+    const concurrentFinalizers = await prepareConditionalSequentialPair(browser, page, "ConditionalConcurrentFinalizers");
+    const concurrentResponses = await Promise.all([
+      fetch(`${baseUrl}/__scheduled`),
+      fetch(`${baseUrl}/__scheduled`),
+    ]);
+    assert.ok(concurrentResponses.every((response) => response.ok),
+      "two scheduler/finalizer attempts accept the same ready conditional settlement without an API failure");
+    const concurrentResult = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(concurrentFinalizers.donor)}, ${sql(concurrentFinalizers.recipient)})
+        AND qualification_state = 'earned') AS awards,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(concurrentFinalizers.donor)}
+        AND target_registration_draft_child_id = ${sql(concurrentFinalizers.recipient)}) AS transfers,
+      (SELECT COUNT(*) FROM enrollment WHERE id IN (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id IN (${sql(concurrentFinalizers.donor)}, ${sql(concurrentFinalizers.recipient)}))) AS enrollments`,
+      (rows) => Number(rows[0]?.awards) === 2 && Number(rows[0]?.enrollments) === 2,
+      "one of two simultaneous scheduler attempts claims and completes the ready settlement");
+    assert.deepEqual({ awards: Number(concurrentResult[0]?.awards), transfers: Number(concurrentResult[0]?.transfers),
+      enrollments: Number(concurrentResult[0]?.enrollments) }, { awards: 2, transfers: 1, enrollments: 2 },
+    "concurrent finalizer attempts create exactly one contingent transfer and one enrollment per agreement");
+
+    const failure = await submitPublicRegistration(browser, {
+      childName: "ConditionalFailureDonor", email: "conditional-failure@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+      siblings: [{ childName: "ConditionalFailureRecipient", classSessionId: "browser-class-target", paymentPlanCode: "single" }],
+    });
+    const [failureDonor, failureRecipient] = failure;
+    await recordCashPayment(page, failureDonor, 1200, { expectedAmount: 1080 });
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(failureDonor)}));`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the failure fixture donor reaches conditional-seat review through the normal scheduler");
+    await approveConditionalSeat(page, failureDonor, "Browser failure-retry donor seat");
+    await recordCashPayment(page, failureRecipient, 960, { expectedAmount: 1080 });
+    await authorizeContingentCredit(page, failureRecipient, "Browser injected-failure settlement");
+    execute(`CREATE TRIGGER browser_conditional_family_settlement_failure
+      BEFORE INSERT ON child_credit_entry
+      WHEN NEW.entry_kind = 'credit_application' AND NEW.reason = 'Conditional family contingent settlement'
+      BEGIN SELECT RAISE(ABORT, 'browser conditional settlement failure'); END;`);
+    execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+      WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (
+        SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(failureRecipient)}));`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the injected local settlement failure is observable through the normal scheduled finalizer");
+    const failed = await waitForDb(`SELECT
+      (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id IN (
+        SELECT id FROM payment_request WHERE registration_draft_id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(failureDonor)}))) AS cash,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(failureDonor)}, ${sql(failureRecipient)})
+        AND qualification_state = 'earned') AS earnedAwards,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(failureDonor)}, ${sql(failureRecipient)})
+        AND qualification_state = 'provisional') AS provisionalAwards,
+      (SELECT COALESCE(SUM(reserved_amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(failureDonor)}
+        AND entry_kind = 'discount_award_credit') AS reservedCredit,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(failureDonor)}
+        AND target_registration_draft_child_id = ${sql(failureRecipient)}) AS transfers,
+      (SELECT COUNT(*) FROM registration_draft_child INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+        WHERE registration_draft_child.id = ${sql(failureRecipient)} AND enrollment.status = 'confirmed') AS recipientEnrollments,
+      (SELECT COUNT(*) FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (${sql(failureDonor)}, ${sql(failureRecipient)})
+        AND last_error_code = 'settlement_retryable') AS retryableQuotes`,
+      (rows) => Number(rows[0]?.retryableQuotes) === 2,
+      "the injected financial-write failure leaves a durable retryable quote state");
+    assert.deepEqual({ cash: Number(failed[0]?.cash), earnedAwards: Number(failed[0]?.earnedAwards),
+      provisionalAwards: Number(failed[0]?.provisionalAwards), reservedCredit: Number(failed[0]?.reservedCredit),
+      transfers: Number(failed[0]?.transfers), recipientEnrollments: Number(failed[0]?.recipientEnrollments) },
+    { cash: 2160, earnedAwards: 0, provisionalAwards: 2, reservedCredit: 120, transfers: 0, recipientEnrollments: 0 },
+    "a failure after reserved-root creation preserves cash but leaves no earned award, transfer, application, or recipient enrollment");
+    const failedDonorProjection = await staffPaymentProjection(page, failureDonor);
+    assert.equal(Number(failedDonorProjection?.availableCreditMnt), 0,
+      "a provisional reserved award root is excluded from the real staff credit projection and ordinary credit controls");
+    execute("DROP TRIGGER browser_conditional_family_settlement_failure;");
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the normal scheduler retries the released conditional settlement claim");
+    const recovered = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(failureDonor)}, ${sql(failureRecipient)})
+        AND qualification_state = 'earned') AS awards,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(failureDonor)}
+        AND target_registration_draft_child_id = ${sql(failureRecipient)} AND operation_type = 'transfer') AS transfers,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(failureRecipient)}
+        AND entry_kind = 'credit_application') AS application,
+      (SELECT COALESCE(SUM(reserved_amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(failureDonor)}
+        AND entry_kind = 'discount_award_credit') AS reservedCredit,
+      (SELECT COUNT(*) FROM registration_draft_child INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+        WHERE registration_draft_child.id IN (${sql(failureDonor)}, ${sql(failureRecipient)}) AND enrollment.status = 'confirmed') AS enrollments`,
+      (rows) => Number(rows[0]?.awards) === 2 && Number(rows[0]?.application) === -120 && Number(rows[0]?.enrollments) === 2,
+      "retry resolves the protected settlement and promotes both eligible seats exactly once");
+    assert.deepEqual({ awards: Number(recovered[0]?.awards), transfers: Number(recovered[0]?.transfers),
+      application: Number(recovered[0]?.application), reservedCredit: Number(recovered[0]?.reservedCredit),
+      enrollments: Number(recovered[0]?.enrollments) }, { awards: 2, transfers: 1, application: -120,
+      reservedCredit: 0, enrollments: 2 },
+    "retry/replay produces one complete settlement with no reserved or intermediate credit left behind");
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "a completed recovery is safe to replay through the normal scheduler");
+    const recoveryReplay = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(failureDonor)}
+        AND target_registration_draft_child_id = ${sql(failureRecipient)} AND operation_type = 'transfer') AS transfers,
+      (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(failureRecipient)}
+        AND entry_kind = 'credit_application') AS applications,
+      (SELECT COUNT(*) FROM enrollment WHERE id IN (
+        SELECT canonical_enrollment_id FROM registration_draft_child WHERE id IN (${sql(failureDonor)}, ${sql(failureRecipient)}))) AS enrollments`);
+    assert.deepEqual({ transfers: Number(recoveryReplay[0]?.transfers), applications: Number(recoveryReplay[0]?.applications),
+      enrollments: Number(recoveryReplay[0]?.enrollments) }, { transfers: 1, applications: 1, enrollments: 2 },
+    "a retry replay cannot duplicate the recovered transfer, application, or enrollment");
+
+    const beforeReservation = await prepareConditionalSequentialPair(browser, page, "ConditionalBeforeReservation");
+    execute(`CREATE TRIGGER browser_conditional_before_reservation_failure
+      BEFORE INSERT ON child_credit_operation
+      WHEN NEW.operation_type = 'discount_award_credit' AND NEW.source_registration_draft_child_id = ${sql(beforeReservation.donor)}
+      BEGIN SELECT RAISE(ABORT, 'browser provisional award interruption'); END;`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the provisional-award interruption reaches the normal finalizer");
+    const beforeReservationState = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(beforeReservation.donor)}, ${sql(beforeReservation.recipient)})
+        AND qualification_state = 'provisional') AS provisionalAwards,
+      (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(beforeReservation.donor)}
+        AND entry_kind = 'discount_award_credit') AS donorRoots,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(beforeReservation.donor)}
+        AND target_registration_draft_child_id = ${sql(beforeReservation.recipient)}) AS transfers,
+      (SELECT COUNT(*) FROM enrollment WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id = ${sql(beforeReservation.recipient)})) AS recipientEnrollments`,
+      (rows) => Number(rows[0]?.provisionalAwards) === 2,
+      "an interruption before donor reservation leaves durable provisional awards only");
+    assert.deepEqual({ provisionalAwards: Number(beforeReservationState[0]?.provisionalAwards), donorRoots: Number(beforeReservationState[0]?.donorRoots),
+      transfers: Number(beforeReservationState[0]?.transfers), recipientEnrollments: Number(beforeReservationState[0]?.recipientEnrollments) },
+    { provisionalAwards: 2, donorRoots: 0, transfers: 0, recipientEnrollments: 0 },
+    "provisional awards create neither a root nor an independently spendable transfer before reservation");
+    execute("DROP TRIGGER browser_conditional_before_reservation_failure;");
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "scheduler recovery retries after the pre-reservation interruption");
+    const beforeReservationRecovered = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(beforeReservation.donor)}, ${sql(beforeReservation.recipient)})
+        AND qualification_state = 'earned') AS awards,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(beforeReservation.donor)}
+        AND target_registration_draft_child_id = ${sql(beforeReservation.recipient)}) AS transfers,
+      (SELECT COUNT(*) FROM enrollment WHERE id IN (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id IN (${sql(beforeReservation.donor)}, ${sql(beforeReservation.recipient)}))) AS enrollments`,
+      (rows) => Number(rows[0]?.awards) === 2 && Number(rows[0]?.enrollments) === 2,
+      "pre-reservation recovery converges through the ordinary finalizer");
+    assert.deepEqual({ awards: Number(beforeReservationRecovered[0]?.awards), transfers: Number(beforeReservationRecovered[0]?.transfers),
+      enrollments: Number(beforeReservationRecovered[0]?.enrollments) }, { awards: 2, transfers: 1, enrollments: 2 },
+    "recovery after provisional creation produces one settlement without extra value");
+
+    const afterFinancial = await prepareConditionalSequentialPair(browser, page, "ConditionalAfterFinancial");
+    execute(`CREATE TRIGGER browser_conditional_before_resolution_failure
+      BEFORE UPDATE OF state ON conditional_family_discount_quote
+      WHEN NEW.state = 'qualified' AND NEW.registration_draft_child_id IN (${sql(afterFinancial.donor)}, ${sql(afterFinancial.recipient)})
+      BEGIN SELECT RAISE(ABORT, 'browser financial settlement interruption'); END;`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the post-financial interruption reaches the normal finalizer");
+    const afterFinancialState = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(afterFinancial.donor)}, ${sql(afterFinancial.recipient)})
+        AND qualification_state = 'provisional') AS provisionalAwards,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(afterFinancial.donor)}
+        AND target_registration_draft_child_id = ${sql(afterFinancial.recipient)}) AS transfers,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(afterFinancial.recipient)}
+        AND entry_kind = 'credit_application') AS application,
+      (SELECT COALESCE(SUM(reserved_amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(afterFinancial.donor)}
+        AND entry_kind = 'discount_award_credit') AS reservedCredit,
+      (SELECT COUNT(*) FROM enrollment WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id = ${sql(afterFinancial.recipient)})) AS recipientEnrollments`,
+      (rows) => Number(rows[0]?.transfers) === 1,
+      "the fault after financial application leaves a durable fenced settlement for recovery");
+    assert.deepEqual({ provisionalAwards: Number(afterFinancialState[0]?.provisionalAwards), transfers: Number(afterFinancialState[0]?.transfers),
+      application: Number(afterFinancialState[0]?.application), reservedCredit: Number(afterFinancialState[0]?.reservedCredit),
+      recipientEnrollments: Number(afterFinancialState[0]?.recipientEnrollments) },
+    { provisionalAwards: 2, transfers: 1, application: -120, reservedCredit: 0, recipientEnrollments: 0 },
+    "after financial commit, the operation has no spendable residue and does not promote before qualification resolves");
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(afterFinancial.recipient)}`);
+    await page.getByText("Бэлэн мөнгөний төлбөр бүртгэгдсэн. Нөөцөлсөн кредитийг хамгаалсан баталгаажуулалт хүлээгдэж байна.")
+      .waitFor({ state: "visible" });
+    execute("DROP TRIGGER browser_conditional_before_resolution_failure;");
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "scheduler recovery finalizes the already-committed contingent settlement");
+    const afterFinancialRecovered = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(afterFinancial.donor)}, ${sql(afterFinancial.recipient)})
+        AND qualification_state = 'earned') AS awards,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(afterFinancial.donor)}
+        AND target_registration_draft_child_id = ${sql(afterFinancial.recipient)}) AS transfers,
+      (SELECT COUNT(*) FROM enrollment WHERE id IN (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id IN (${sql(afterFinancial.donor)}, ${sql(afterFinancial.recipient)}))) AS enrollments`,
+      (rows) => Number(rows[0]?.awards) === 2 && Number(rows[0]?.enrollments) === 2,
+      "post-financial recovery completes qualification and promotion");
+    assert.deepEqual({ awards: Number(afterFinancialRecovered[0]?.awards), transfers: Number(afterFinancialRecovered[0]?.transfers),
+      enrollments: Number(afterFinancialRecovered[0]?.enrollments) }, { awards: 2, transfers: 1, enrollments: 2 },
+    "post-financial recovery cannot create a second transfer or enrollment");
+
+    const afterQualification = await prepareConditionalSequentialPair(browser, page, "ConditionalAfterQualification");
+    execute(`CREATE TRIGGER browser_conditional_before_enrollment_failure
+      BEFORE INSERT ON enrollment
+      BEGIN SELECT RAISE(ABORT, 'browser enrollment interruption'); END;`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the post-qualification enrollment interruption reaches the normal finalizer");
+    const afterQualificationState = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(afterQualification.donor)}, ${sql(afterQualification.recipient)})
+        AND qualification_state = 'earned') AS awards,
+      (SELECT COUNT(*) FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (${sql(afterQualification.donor)}, ${sql(afterQualification.recipient)})
+        AND state = 'qualified') AS qualifiedQuotes,
+      (SELECT COUNT(*) FROM enrollment WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id = ${sql(afterQualification.recipient)})) AS recipientEnrollments`,
+      (rows) => Number(rows[0]?.qualifiedQuotes) === 2,
+      "qualification is durable even when promotion itself fails");
+    assert.deepEqual({ awards: Number(afterQualificationState[0]?.awards), qualifiedQuotes: Number(afterQualificationState[0]?.qualifiedQuotes),
+      recipientEnrollments: Number(afterQualificationState[0]?.recipientEnrollments) }, { awards: 2, qualifiedQuotes: 2, recipientEnrollments: 0 },
+    "post-qualification interruption does not roll back earned settlement or invent a recipient enrollment");
+    execute("DROP TRIGGER browser_conditional_before_enrollment_failure;");
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok, "the normal stranded-promotion recovery retries the qualified recipient");
+    const afterQualificationRecovered = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(afterQualification.donor)}
+        AND target_registration_draft_child_id = ${sql(afterQualification.recipient)}) AS transfers,
+      (SELECT COUNT(*) FROM enrollment WHERE id IN (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id IN (${sql(afterQualification.donor)}, ${sql(afterQualification.recipient)}))) AS enrollments`,
+      (rows) => Number(rows[0]?.enrollments) === 2,
+      "promotion recovery completes after the transient enrollment failure");
+    assert.deepEqual({ transfers: Number(afterQualificationRecovered[0]?.transfers), enrollments: Number(afterQualificationRecovered[0]?.enrollments) },
+      { transfers: 1, enrollments: 2 }, "post-qualification recovery preserves the single settled operation");
+
+    const cancellationRace = await prepareConditionalSequentialPair(browser, page, "ConditionalCancellationRace");
+    execute(`CREATE TRIGGER browser_conditional_cancellation_race_failure
+      BEFORE INSERT ON child_credit_entry
+      WHEN NEW.entry_kind = 'credit_application' AND NEW.reason = 'Conditional family contingent settlement'
+      BEGIN SELECT RAISE(ABORT, 'browser cancellation race interruption'); END;`);
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok,
+      "the cancellation-race fixture reaches the protected finalizer before the conflicting cancellation");
+    const cancellationInterrupted = await waitForDb(`SELECT
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(cancellationRace.donor)}, ${sql(cancellationRace.recipient)})
+        AND qualification_state = 'provisional') AS provisionalAwards,
+      (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(cancellationRace.donor)}
+        AND entry_kind = 'discount_award_credit') AS donorRoots,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(cancellationRace.donor)}
+        AND target_registration_draft_child_id = ${sql(cancellationRace.recipient)}) AS transfers`,
+      (rows) => Number(rows[0]?.provisionalAwards) === 2 && Number(rows[0]?.donorRoots) === 1,
+      "the interrupted cancellation fixture has durable provisional recovery evidence only");
+    assert.deepEqual({ provisionalAwards: Number(cancellationInterrupted[0]?.provisionalAwards), donorRoots: Number(cancellationInterrupted[0]?.donorRoots),
+      transfers: Number(cancellationInterrupted[0]?.transfers) }, { provisionalAwards: 2, donorRoots: 1, transfers: 0 },
+    "the conflicting cancellation begins before any contingent transfer/application commits");
+    await cancelAndRestoreRegistration(page, cancellationRace.donor, { restore: false });
+    execute("DROP TRIGGER browser_conditional_cancellation_race_failure;");
+    assert.ok((await fetch(`${baseUrl}/__scheduled`)).ok,
+      "a stale scheduler recovery runs after the source cancellation wins");
+    const cancellationResolved = await waitForDb(`SELECT
+      (SELECT state FROM conditional_family_discount_quote WHERE registration_draft_child_id = ${sql(cancellationRace.donor)}) AS donorState,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(cancellationRace.donor)}, ${sql(cancellationRace.recipient)})
+        AND qualification_state = 'earned') AS earnedAwards,
+      (SELECT COUNT(*) FROM child_credit_operation WHERE source_registration_draft_child_id = ${sql(cancellationRace.donor)}
+        AND target_registration_draft_child_id = ${sql(cancellationRace.recipient)}) AS transfers,
+      (SELECT COUNT(*) FROM enrollment WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child
+        WHERE id = ${sql(cancellationRace.recipient)})) AS recipientEnrollments,
+      (SELECT COALESCE(SUM(reserved_amount_mnt), 0) FROM child_credit_entry WHERE registration_draft_child_id = ${sql(cancellationRace.donor)}
+        AND entry_kind = 'discount_award_credit') AS reservedCredit`,
+      (rows) => rows[0]?.donorState === 'cancelled',
+      "cancellation durably invalidates its pending conditional quote before recovery can complete it");
+    assert.deepEqual({ donorState: cancellationResolved[0]?.donorState, earnedAwards: Number(cancellationResolved[0]?.earnedAwards),
+      transfers: Number(cancellationResolved[0]?.transfers), recipientEnrollments: Number(cancellationResolved[0]?.recipientEnrollments),
+      reservedCredit: Number(cancellationResolved[0]?.reservedCredit) },
+    { donorState: 'cancelled', earnedAwards: 0, transfers: 0, recipientEnrollments: 0, reservedCredit: 0 },
+    "a source cancellation winning before financial settlement leaves no earned award, transfer, target enrollment, or stranded reservation");
+
+    const failureReview = await submitPublicRegistration(browser, {
+      childName: "ConditionalFailureReviewFunded", email: "conditional-failure-review@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
+      siblings: [
+        { childName: "ConditionalFailureReviewCancelA", classSessionId: "browser-class-target", paymentPlanCode: "single" },
+        { childName: "ConditionalFailureReviewCancelB", classSessionId: "browser-class-target", paymentPlanCode: "single" },
+      ],
+    });
+    const [failureReviewFunded, failureReviewCancelA, failureReviewCancelB] = failureReview;
+    await recordCashPayment(page, failureReviewFunded, 1080);
+    await cancelAndRestoreRegistration(page, failureReviewCancelA, { restore: false });
+    await cancelAndRestoreRegistration(page, failureReviewCancelB, { restore: false });
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(failureReviewFunded)}`);
+    const failureReviewRow = page.locator(`[data-registration-child="${failureReviewFunded}"]`);
+    const failureReviewForm = failureReviewRow.locator("[data-conditional-failure-deadline]");
+    await failureReviewForm.waitFor({ state: "visible" });
+    const failureDueInput = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16);
+    await failureReviewForm.locator('[name="dueAt"]').fill(failureDueInput);
+    await failureReviewForm.locator('[name="reason"]').fill("Browser conditional qualification review");
+    const deadlineRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("conditional-family.failure-deadline"));
+    await failureReviewForm.locator('button[type="submit"]').click();
+    const deadlineResponse = await deadlineRequest;
+    if (!deadlineResponse.ok()) throw new Error(`conditional failure deadline failed: ${await deadlineResponse.text()}`);
+    await page.locator("#tool-message").getByText("Шинэ төлбөрийн хугацааг тогтоолоо.").waitFor({ state: "visible" });
+    const failureReviewState = await dbJson(`SELECT state, conditional_failure_due_at AS dueAt FROM conditional_family_discount_quote
+      WHERE registration_draft_child_id = ${sql(failureReviewFunded)}`);
+    assert.deepEqual(failureReviewState[0], { state: "qualification_failed", dueAt: `${failureDueInput}:00.000Z` },
+      "the rendered failure-review form keeps the conditional difference out of ordinary overdue flow until staff records a specific replacement deadline");
   } else if (process.env.FAMILY_DISCOUNT_BROWSER_ONLY === "1") {
     execute(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1100, first_installment_amount_mnt = 550,
       second_installment_amount_mnt = 550 WHERE activity_offering_id = 'browser-offering-high';`);
@@ -922,6 +1735,7 @@ try {
       FROM family_group_confirmation ORDER BY created_at DESC LIMIT 1`);
     assert.deepEqual({ members: Number(replayResult[0]?.members), awards: Number(replayResult[0]?.awards), creditRoots: Number(replayResult[0]?.creditRoots) },
       { members: 2, awards: 2, creditRoots: 1 }, "family confirmation replay cannot duplicate the award or fully paid child's credit root");
+    }
   } else {
   const cashChildId = await fillIntake(page, "CashBrowser");
   await recordPartialCashPayment(page, cashChildId);
@@ -1046,7 +1860,7 @@ try {
     FROM additional_class_admission WHERE source_registration_draft_child_id = ${sql(laterCashChildId)}
       AND status = 'pending_confirmation' ORDER BY created_at DESC LIMIT 1`);
   assert.equal(laterCashAdmission.length, 1, "the fully cash-settled source can create a pending discounted one-payment target");
-  await recordCashPayment(page, laterCashAdmission[0].targetChildId, 900);
+  await recordCashPayment(page, laterCashAdmission[0].targetChildId, 800);
   await finalizeCashRegistration(page, laterCashAdmission[0].targetChildId);
   const laterCashAward = await dbJson(`SELECT
     additional_class_admission.status AS admissionStatus,
@@ -1064,7 +1878,10 @@ try {
   assert.equal(Number(laterCashAward[0]?.sourceAwardCreditEntries), 1, "the fully paid cash source receives one linked award credit");
   assert.equal(Number(laterCashAward[0]?.sourceAwardCreditMnt), 100, "the source award credit uses the configured 10% policy");
 
-  const childId = await fillIntake(page, "CreditBrowser");
+  // A released two-installment agreement's first installment is deliberately
+  // cash-only. Use a one-payment agreement here to exercise the separate,
+  // supported credit-only initial-settlement path.
+  const childId = await fillIntake(page, "CreditBrowser", "single");
   assert.ok(childId, "staff intake returns a normal registration anchor");
   const freshRow = page.locator(`[data-registration-child="${childId}"]`);
   await freshRow.waitFor({ state: "visible" });
@@ -1087,18 +1904,21 @@ try {
   await freshRow.locator('[data-credit-subpanel-name="add"]').click();
   assert.equal(await freshRow.locator('[data-child-credit-form]:visible').count(), 0, "direct credit actions close their own shared inner panel");
 
-  await addCredit(page, childId, 500);
-  await applyCredit(page, childId, 500);
+  await addCredit(page, childId, 1000);
+  await applyCredit(page, childId, 1000);
   const prePromotion = await dbJson(`SELECT canonical_student_id AS canonicalStudentId FROM registration_draft_child WHERE id = ${sql(childId)}`);
   assert.equal(prePromotion[0].canonicalStudentId, null, "credit-only initial settlement remains a normal pending draft until finalization");
   const cash = await dbJson(`SELECT COUNT(*) AS count FROM received_payment WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(childId)}))`);
   assert.equal(Number(cash[0].count), 0, "credit application does not fabricate a received cash payment");
 
   execute(`UPDATE credit_application_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z' WHERE registration_draft_child_id = ${sql(childId)};`);
+  const beforeScheduled = await dbJson(`SELECT status, finalize_after AS finalizeAfter FROM credit_application_confirmation WHERE registration_draft_child_id = ${sql(childId)}`);
+  assert.equal(beforeScheduled[0]?.status, "tentative", `the credit confirmation exists in the same disposable D1 before scheduling: ${JSON.stringify(beforeScheduled)}`);
   const scheduled = await fetch(`${baseUrl}/__scheduled`);
-  assert.ok(scheduled.ok, "the actual local scheduled Worker accepts the deterministic fixture trigger");
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  const creditConfirmation = await dbJson(`SELECT status, finalize_after AS finalizeAfter FROM credit_application_confirmation WHERE registration_draft_child_id = ${sql(childId)}`);
+  const scheduledBody = await scheduled.text();
+  assert.ok(scheduled.ok, `the actual local scheduled Worker accepts the deterministic fixture trigger: ${scheduledBody}`);
+  const creditConfirmation = await waitForDb(`SELECT status, finalize_after AS finalizeAfter FROM credit_application_confirmation WHERE registration_draft_child_id = ${sql(childId)}`,
+    (rows) => rows[0]?.status === "finalized", "the actual local scheduled Worker finalizes the credit confirmation");
   assert.equal(creditConfirmation[0]?.status, "finalized", `the actual local scheduled Worker finalizes the credit confirmation: ${JSON.stringify(creditConfirmation)}`);
   await page.reload();
   const afterFinalizer = await dbJson(`SELECT canonical_student_id AS canonicalStudentId, canonical_enrollment_id AS enrollmentId, status, promotion_status AS promotionStatus, identity_resolution_status AS identityStatus FROM registration_draft_child WHERE id = ${sql(childId)}`);
@@ -1110,13 +1930,13 @@ try {
   }
   assert.ok(afterFinalizer[0]?.enrollmentId, `credit finalization must produce a canonical enrollment: ${JSON.stringify(afterFinalizer)}`);
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
-  await page.getByText("Төлбөр баталгаажсан (1)").waitFor({ state: "visible", timeout: 5_000 });
-  await page.getByText("Кредитээр тооцсон: 500 ₮").waitFor({ state: "visible", timeout: 5_000 });
+  await page.getByRole("button", { name: /Төлбөр баталгаажсан/ }).waitFor({ state: "visible", timeout: 5_000 });
+  await page.locator(`[data-registration-child="${childId}"]`).getByText("Кредитээр тооцсон: 1,000 ₮").waitFor({ state: "visible", timeout: 5_000 });
   const actionOrder = await page.locator(`[data-registration-child="${childId}"] .staff-panel-actions[aria-label="Бүртгэлийн үйлдэл"]`).textContent();
-  assert.ok(actionOrder.indexOf("Мэдээлэл") < actionOrder.indexOf("Төлбөр")
-    && actionOrder.indexOf("Төлбөр") < actionOrder.indexOf("Кредит")
-    && actionOrder.indexOf("Кредит") < actionOrder.indexOf("Шилжих")
-    && actionOrder.indexOf("Шилжих") < actionOrder.indexOf("Анги нэмэх"), "outer actions use the staff workflow order");
+  const availableActions = ["Мэдээлэл", "Төлбөр", "Кредит", "Шилжих", "Анги нэмэх"]
+    .filter((label) => actionOrder.includes(label));
+  assert.deepEqual(availableActions, [...availableActions].sort((left, right) => actionOrder.indexOf(left) - actionOrder.indexOf(right)),
+    "available outer actions use the staff workflow order");
   const promoted = await dbJson(`SELECT canonical_student_id AS canonicalStudentId, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ${sql(childId)}`);
   assert.ok(promoted[0].canonicalStudentId && promoted[0].enrollmentId, "normal finalization promotes the credit-settled draft");
   const ledger = await dbJson(`SELECT COUNT(*) AS entries, COUNT(DISTINCT operation_id) AS operations FROM child_credit_entry WHERE registration_draft_child_id = ${sql(childId)} AND canonical_student_id = ${sql(promoted[0].canonicalStudentId)}`);
@@ -1219,7 +2039,7 @@ try {
   await onePaymentPreview.locator('select[name="targetClassSessionId"]').selectOption("browser-class-target");
   await onePaymentPreview.locator('select[name="paymentPlanCode"]').selectOption("single");
   await onePaymentPreview.locator('button[type="submit"]').click();
-  await onePaymentPreview.getByText("Нэг удаа төлөх").waitFor({ state: "visible" });
+  await onePaymentPreview.locator("strong").getByText("Нэг удаа төлөх", { exact: true }).waitFor({ state: "visible" });
   await onePaymentPreview.locator('input[name="parentAcknowledged"]').check();
   await onePaymentPreview.locator('input[name="childAcknowledged"]').check();
   await onePaymentPreview.locator('[data-additional-class-create]').click();
@@ -1230,6 +2050,12 @@ try {
     ORDER BY created_at DESC LIMIT 1`);
   assert.equal(onePaymentAdmission.length, 1, "the rendered one-payment target creates one pending admission");
   const onePaymentTargetId = onePaymentAdmission[0].targetChildId;
+  const onePaymentReservation = await dbJson(`SELECT proposed_source_award_credit_mnt AS proposedSourceAwardCreditMnt,
+      (SELECT COALESCE(SUM(amount_mnt), 0) FROM additional_class_credit_reservation
+        WHERE admission_id = additional_class_admission.id AND status = 'pending') AS reservedCreditMnt
+    FROM additional_class_admission WHERE target_registration_draft_child_id = ${sql(onePaymentTargetId)}`);
+  assert.deepEqual({ proposed: Number(onePaymentReservation[0]?.proposedSourceAwardCreditMnt), reserved: Number(onePaymentReservation[0]?.reservedCreditMnt) },
+    { proposed: 100, reserved: 100 }, "the explicit add-class proposal persists its contingent source-award reservation before cash collection");
   await recordCashPayment(page, onePaymentTargetId, 800);
   const beforeReservedSettlement = await dbJson(`SELECT
       registration_draft_child.canonical_enrollment_id AS targetEnrollmentId,
@@ -1342,14 +2168,20 @@ try {
   assert.equal(Number(familyThirdResult[0]?.members), 3, "adding a third child reuses the existing family group");
   assert.equal(Number(familyThirdResult[0]?.awards), 3, "repeated group activation creates no duplicate family-award value");
   assert.equal(Number(familyThirdResult[0]?.creditOwners), 3, "family membership never pools sibling credit ownership");
-  await confirmFamilyMembership(page, familyAlpha, familyGamma, "FamilyGamma", "Browser deliberate repeated family confirmation");
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(familyAlpha)}`);
+  const replayRow = page.locator(`[data-registration-child="${familyAlpha}"]`);
+  await replayRow.locator("[data-family-discount-open]").click();
+  const replayPicker = replayRow.locator("[data-family-discount-select]");
+  await replayPicker.waitFor({ state: "visible" });
+  assert.equal(await replayPicker.locator(`option[value="${familyGamma}"]`).count(), 0,
+    "an existing family member is not offered again for a duplicate rendered confirmation");
   const familyReplayResult = await dbJson(`SELECT
       (SELECT COUNT(*) FROM family_group_member WHERE family_group_id = family_group_confirmation.family_group_id AND status = 'active') AS members,
       (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id IN (${sql(familyAlpha)}, ${sql(familyBeta)}, ${sql(familyGamma)})
         AND award_type = 'family_multi_child' AND status = 'active') AS awards
     FROM family_group_confirmation ORDER BY created_at DESC LIMIT 1`);
   assert.equal(Number(familyReplayResult[0]?.members), 3, "a deliberate repeated confirmation does not duplicate active membership");
-  assert.equal(Number(familyReplayResult[0]?.awards), 3, "a deliberate repeated confirmation creates no additional discount value");
+  assert.equal(Number(familyReplayResult[0]?.awards), 3, "reopening the family picker creates no additional discount value");
 
   const sourceCapacityBeforeTransfer = await dbJson(`SELECT COUNT(*) AS reserved FROM registration_capacity_hold
     WHERE class_session_id = 'browser-class-target' AND status = 'active'`);
@@ -1377,16 +2209,19 @@ try {
   await row.locator('[data-credit-open]').last().click();
   await expectSingleVisiblePanel(row);
 
-  const restoreChildId = await fillIntake(page, "RestoreBrowser");
-  await addCredit(page, restoreChildId, 500);
-  await applyCredit(page, restoreChildId, 500);
+  const restoreChildId = await fillIntake(page, "RestoreBrowser", "single");
+  await addCredit(page, restoreChildId, 1000);
+  await applyCredit(page, restoreChildId, 1000);
   await finalizeCreditOnlyRegistration(page, restoreChildId);
   await cancelAndRestoreRegistration(page, restoreChildId);
 
-  const higherTransferChildId = await fillIntake(page, "HigherTransferBrowser");
-  await addCredit(page, higherTransferChildId, 500);
-  await applyCredit(page, higherTransferChildId, 500);
+  const higherTransferChildId = await fillIntake(page, "HigherTransferBrowser", "single");
+  await addCredit(page, higherTransferChildId, 1000);
+  await applyCredit(page, higherTransferChildId, 1000);
   await finalizeCreditOnlyRegistration(page, higherTransferChildId);
+  const higherSourceEnrollmentId = (await dbJson(`SELECT canonical_enrollment_id AS enrollmentId
+    FROM registration_draft_child WHERE id = ${sql(higherTransferChildId)}`))[0]?.enrollmentId;
+  assert.ok(higherSourceEnrollmentId, "the higher-price source has a canonical enrollment before transfer");
   await completeTransfer(page, higherTransferChildId, "browser-class-high", 200);
   const higherTransfer = await dbJson(`SELECT class_transfer.status, class_transfer.required_difference_mnt AS differenceMnt,
       (SELECT COUNT(*) FROM enrollment WHERE class_session_id = 'browser-class-source' AND transferred_out_at IS NOT NULL) AS sourceSuperseded,
@@ -1394,23 +2229,26 @@ try {
       (SELECT COUNT(*) FROM class_transfer_payment WHERE class_transfer_payment_obligation_id IN (
         SELECT id FROM class_transfer_payment_obligation WHERE class_transfer_id = class_transfer.id
       )) AS differencePayments
-    FROM class_transfer WHERE source_registration_draft_child_id = ${sql(higherTransferChildId)} ORDER BY created_at DESC LIMIT 1`);
+    FROM class_transfer WHERE source_enrollment_id = ${sql(higherSourceEnrollmentId)} ORDER BY created_at DESC LIMIT 1`);
   assert.equal(higherTransfer[0]?.status, "completed", "higher-price transfer completes through the rendered staff flow");
   assert.equal(Number(higherTransfer[0]?.differenceMnt), 200, "higher-price transfer preserves its authoritative price difference");
   assert.equal(Number(higherTransfer[0]?.sourceSuperseded), 1, "higher-price completion supersedes exactly one source enrollment");
   assert.equal(Number(higherTransfer[0]?.currentTarget), 1, "higher-price completion leaves exactly one current target enrollment");
   assert.equal(Number(higherTransfer[0]?.differencePayments), 1, "higher-price settlement records one immutable difference payment");
 
-  const lowerTransferChildId = await fillIntake(page, "LowerTransferBrowser");
-  await addCredit(page, lowerTransferChildId, 500);
-  await applyCredit(page, lowerTransferChildId, 500);
+  const lowerTransferChildId = await fillIntake(page, "LowerTransferBrowser", "single");
+  await addCredit(page, lowerTransferChildId, 1000);
+  await applyCredit(page, lowerTransferChildId, 1000);
   await finalizeCreditOnlyRegistration(page, lowerTransferChildId);
+  const lowerSourceEnrollmentId = (await dbJson(`SELECT canonical_enrollment_id AS enrollmentId
+    FROM registration_draft_child WHERE id = ${sql(lowerTransferChildId)}`))[0]?.enrollmentId;
+  assert.ok(lowerSourceEnrollmentId, "the lower-price source has a canonical enrollment before transfer");
   await completeTransfer(page, lowerTransferChildId, "browser-class-low", 0);
   const lowerTransfer = await dbJson(`SELECT class_transfer.status, class_transfer.resulting_credit_mnt AS creditMnt,
       (SELECT COUNT(*) FROM enrollment WHERE class_session_id = 'browser-class-source' AND transferred_out_at IS NOT NULL) AS sourceSuperseded,
       (SELECT COUNT(*) FROM enrollment WHERE class_session_id = 'browser-class-low' AND status = 'confirmed' AND transferred_out_at IS NULL) AS currentTarget,
       (SELECT COUNT(*) FROM class_transfer_credit WHERE class_transfer_id = class_transfer.id AND available_amount_mnt = class_transfer.resulting_credit_mnt) AS credits
-    FROM class_transfer WHERE source_registration_draft_child_id = ${sql(lowerTransferChildId)} ORDER BY created_at DESC LIMIT 1`);
+    FROM class_transfer WHERE source_enrollment_id = ${sql(lowerSourceEnrollmentId)} ORDER BY created_at DESC LIMIT 1`);
   assert.equal(lowerTransfer[0]?.status, "completed", "lower-price transfer completes through the rendered staff flow");
   assert.equal(Number(lowerTransfer[0]?.creditMnt), 200, "lower-price transfer creates its authoritative credit difference");
   assert.equal(Number(lowerTransfer[0]?.sourceSuperseded), 2, "each completed transfer supersedes only its own source enrollment");
@@ -1444,6 +2282,9 @@ try {
   }
   passed = true;
   console.log(`ok child-credit browser workflow (${testRunId})`);
+} catch (error) {
+  failureDetails = error instanceof Error ? (error.stack || error.message) : String(error);
+  throw error;
 } finally {
   if (context) {
     if (passed) {
@@ -1453,6 +2294,7 @@ try {
       mkdirSync(artifactDir, { recursive: true });
       if (page) await page.screenshot({ path: path.join(artifactDir, "failure.png"), fullPage: true }).catch(() => undefined);
       await context.tracing.stop({ path: path.join(artifactDir, "trace.zip") }).catch(() => undefined);
+      writeFileSync(path.join(artifactDir, "diagnostic.txt"), `${failureDetails}\n\nLocal Worker output:\n${workerOutput}`);
       console.error(`credit browser failure artifacts: ${artifactDir}`);
     }
     await context.close().catch(() => undefined);

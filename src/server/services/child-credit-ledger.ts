@@ -155,6 +155,14 @@ export async function childCreditSummary(database: D1Database, canonicalStudentI
     FROM child_credit_entry AS root
     LEFT JOIN child_credit_entry AS debit ON debit.origin_entry_id = root.id
     WHERE root.canonical_student_id = ? AND root.amount_mnt > 0
+      -- A provisional conditional-family award is evidence for recovery, not
+      -- an earned credit root. It must remain invisible to every general
+      -- credit projection until its quote finalizer marks the award earned.
+      AND (root.source_discount_award_id IS NULL OR EXISTS (
+        SELECT 1 FROM discount_award AS award
+        WHERE award.id = root.source_discount_award_id AND award.status = 'active'
+          AND award.qualification_state = 'earned'
+      ))
     GROUP BY root.id HAVING root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) > 0
     ORDER BY root.created_at, root.id`).bind(canonicalStudentId).all<ChildCreditRoot>();
   const roots = result.results.map((row) => ({ ...row, amountMnt: Number(row.amountMnt), availableAmountMnt: Number(row.availableAmountMnt) }));
@@ -170,6 +178,11 @@ async function childCreditSummaryForOwner(database: D1Database, owner: ChildCred
     FROM child_credit_entry AS root
     LEFT JOIN child_credit_entry AS debit ON debit.origin_entry_id = root.id
     WHERE root.registration_draft_child_id = ? AND root.amount_mnt > 0
+      AND (root.source_discount_award_id IS NULL OR EXISTS (
+        SELECT 1 FROM discount_award AS award
+        WHERE award.id = root.source_discount_award_id AND award.status = 'active'
+          AND award.qualification_state = 'earned'
+      ))
     GROUP BY root.id HAVING root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) > 0
     ORDER BY root.created_at, root.id`).bind(owner.registrationDraftChildId).all<ChildCreditRoot>();
   const roots = result.results.map((row) => ({ ...row, amountMnt: Number(row.amountMnt), availableAmountMnt: Number(row.availableAmountMnt) }));

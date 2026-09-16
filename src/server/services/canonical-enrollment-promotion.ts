@@ -3,9 +3,10 @@ import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 import { sendEnrollmentConfirmationEmail } from "../email/registration-transactional";
 import { ensureEnrollmentReferralCode } from "./referral-codes";
-import { awardFamilyDiscountsForGuardian, awardFamilyDiscountsForGroup, awardReferrerDiscountForReferral, effectiveInstallmentsForRows, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
+import { awardReferrerDiscountForReferral, effectiveInstallmentsForRows, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
 import { ensureDiscountAwardCredit, releaseAdditionalAdmissionCreditReservations } from "./child-credit-ledger";
 import { pendingAdditionalClassCashSettlement } from "./additional-class-credit-settlement";
+import { materializeConditionalFamilyAwardCredit, quoteConditionalFamilyDiscountsForGuardian, quoteConditionalFamilyDiscountsForGroup, quoteConditionalFamilyDiscountsForSameStudent } from "./conditional-family-discounts";
 
 type ResolutionStatus = "promoted" | "needs_identity_review" | "needs_guardian_review" | "not_eligible" | "failed";
 
@@ -54,6 +55,8 @@ interface PromotionRow {
   initialInstallmentPaid: number;
   laterInstallmentOutstanding: number;
   partialSeatApproved: number;
+  conditionalQuotePending: number;
+  conditionalSeatApproved: number;
   activeInitialHold: number;
   draftStatus: string;
   childStatus: string;
@@ -202,7 +205,10 @@ function additionalAdmissionFenceBindings(claim: Extract<AdditionalAdmissionClai
 // are finalized, or after a teacher has finalized an explicit seat approval.
 // A later scheduled installment remains financial work after that approval.
 function promotionPaymentEligibleSql(childIdExpression: string): string {
-  return `((EXISTS (SELECT 1 FROM payment_installment
+  return `((NOT EXISTS (SELECT 1 FROM conditional_family_discount_quote
+      WHERE registration_draft_child_id = ${childIdExpression}
+        AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed'))
+    AND ((EXISTS (SELECT 1 FROM payment_installment
       WHERE payment_installment.registration_draft_child_id = ${childIdExpression}
         AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'paid')
     AND NOT EXISTS (SELECT 1 FROM payment_installment
@@ -217,10 +223,16 @@ function promotionPaymentEligibleSql(childIdExpression: string): string {
     OR EXISTS (SELECT 1 FROM credit_application_confirmation
       WHERE credit_application_confirmation.registration_draft_child_id = ${childIdExpression}
         AND credit_application_confirmation.status = 'finalized'
-        AND credit_application_confirmation.seat_confirmation_approved = 1))`;
+        AND credit_application_confirmation.seat_confirmation_approved = 1)))
+    OR EXISTS (SELECT 1 FROM payment_confirmation
+      INNER JOIN conditional_family_discount_quote ON conditional_family_discount_quote.id = payment_confirmation.conditional_quote_id
+      WHERE conditional_family_discount_quote.registration_draft_child_id = ${childIdExpression}
+        AND payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
+        AND payment_confirmation.conditional_quote_revision = conditional_family_discount_quote.revision))`;
 }
 
 function promotionPaymentEligible(row: PromotionRow): boolean {
+  if (row.conditionalQuotePending) return Boolean(row.conditionalSeatApproved);
   return Boolean(row.partialSeatApproved || (row.initialInstallmentPaid && !row.laterInstallmentOutstanding));
 }
 
@@ -784,6 +796,14 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
         WHERE credit_application_confirmation.registration_draft_child_id = registration_draft_child.id
           AND credit_application_confirmation.status = 'finalized'
           AND credit_application_confirmation.seat_confirmation_approved = 1)) AS partialSeatApproved,
+    EXISTS(SELECT 1 FROM conditional_family_discount_quote
+      WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
+        AND conditional_family_discount_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')) AS conditionalQuotePending,
+    EXISTS(SELECT 1 FROM payment_confirmation
+      INNER JOIN conditional_family_discount_quote ON conditional_family_discount_quote.id = payment_confirmation.conditional_quote_id
+      WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
+        AND payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
+        AND payment_confirmation.conditional_quote_revision = conditional_family_discount_quote.revision) AS conditionalSeatApproved,
     EXISTS(SELECT 1 FROM registration_capacity_hold WHERE registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active') AS activeInitialHold
     FROM registration_draft_child
@@ -894,10 +914,11 @@ export async function promotePaidDraftChild(
       { isTest: row.childIsTest, testRunId: row.childTestRunId }, new Date().toISOString());
     const policy = await getDiscountPolicySettingFromDatabase(env.DB);
     if (row.canonicalGuardianId) {
-      await awardFamilyDiscountsForGuardian(env, { guardianId: row.canonicalGuardianId, triggerChildId: row.childId, policy });
+      await quoteConditionalFamilyDiscountsForGuardian(env, row.canonicalGuardianId, row.childId);
       const familyGroup = await env.DB.prepare(`SELECT family_group_id AS familyGroupId FROM family_group_member
         WHERE student_id = ? AND status = 'active' ORDER BY created_at LIMIT 1`).bind(row.canonicalStudentId).first<{ familyGroupId: string }>();
-      if (familyGroup?.familyGroupId) await awardFamilyDiscountsForGroup(env, { familyGroupId: familyGroup.familyGroupId, triggerChildId: row.childId, policy });
+      if (familyGroup?.familyGroupId) await quoteConditionalFamilyDiscountsForGroup(env, familyGroup.familyGroupId, row.childId);
+      if (row.canonicalStudentId) await quoteConditionalFamilyDiscountsForSameStudent(env, row.canonicalStudentId, row.childId);
     }
     await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy });
     return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
@@ -922,7 +943,7 @@ export async function promotePaidDraftChild(
     await ensureEnrollmentReferralCode(env.DB, finalized.enrollmentId, additionalClaim.admission.canonicalStudentId,
       { isTest: row.childIsTest, testRunId: row.childTestRunId }, now);
     if (finalized.createdEnrollment) {
-      try { await sendEnrollmentConfirmationEmail(env, row.draftId); } catch { /* delivery is advisory */ }
+      try { await sendEnrollmentConfirmationEmail(env, row.draftId, { registrationDraftChildId: row.childId }); } catch { /* delivery is advisory */ }
     }
     return { state: "promoted", enrollmentId: finalized.enrollmentId };
   }
@@ -1110,22 +1131,31 @@ export async function promotePaidDraftChild(
   await env.DB.prepare(`UPDATE discount_award SET beneficiary_enrollment_id = ?, updated_at = ?
     WHERE registration_draft_child_id = ? AND beneficiary_enrollment_id IS NULL`).bind(promoted.enrollmentId, now, row.childId).run();
   const discountPolicy = await getDiscountPolicySettingFromDatabase(env.DB);
-  await awardFamilyDiscountsForGuardian(env, { guardianId: guardian.guardianId, triggerChildId: row.childId, policy: discountPolicy, now });
+  await quoteConditionalFamilyDiscountsForGuardian(env, guardian.guardianId, row.childId, now);
   const familyGroup = await env.DB.prepare(`SELECT family_group_id AS familyGroupId FROM family_group_member
     WHERE student_id = ? AND status = 'active' ORDER BY created_at LIMIT 1`).bind(studentId).first<{ familyGroupId: string }>();
-  if (familyGroup?.familyGroupId) await awardFamilyDiscountsForGroup(env, { familyGroupId: familyGroup.familyGroupId, triggerChildId: row.childId, policy: discountPolicy, now });
+  if (familyGroup?.familyGroupId) await quoteConditionalFamilyDiscountsForGroup(env, familyGroup.familyGroupId, row.childId, now);
+  await quoteConditionalFamilyDiscountsForSameStudent(env, studentId, row.childId, now);
   if (referral && sameFamilyReferral) {
     await reverseReferralAwardForSameFamily(env, row.childId, now);
   } else if (referral) {
     await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy: discountPolicy, now });
   }
+  await materializeConditionalFamilyAwardCredit(env, row.childId, now);
+  const conditionalSeatApproval = await env.DB.prepare(`SELECT 1 AS value FROM conditional_family_discount_quote
+    WHERE registration_draft_child_id = ? AND state = 'conditionally_confirmed' LIMIT 1`)
+    .bind(row.childId).first();
   // The promotion service is the single place where a newly confirmed
   // enrollment becomes eligible for its one idempotent parent-access email.
-  // Delivery is advisory and must never undo the durable enrollment.
-  try {
-    await sendEnrollmentConfirmationEmail(env, row.draftId);
-  } catch {
-    // The outbox retains delivery failure for a teacher's explicit resend.
+  // A quoted discount alone does not change an ordinary raw-paid promotion:
+  // only the explicit conditional-seat path sends its separate token-free
+  // notice instead. Delivery is advisory and must never undo enrollment.
+  if (!conditionalSeatApproval) {
+    try {
+      await sendEnrollmentConfirmationEmail(env, row.draftId, { registrationDraftChildId: row.childId });
+    } catch {
+      // The outbox retains delivery failure for a teacher's explicit resend.
+    }
   }
   return { state: "promoted", enrollmentId: promoted.enrollmentId };
 }

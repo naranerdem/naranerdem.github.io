@@ -8,7 +8,10 @@ import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { discountAwardsForChildren, effectiveInstallmentsForRows, recalculateDiscountAwardBalances } from "../services/discounts";
 import { childCreditSummaryForChildren, creditPaymentReviewState } from "../services/child-credit-ledger";
 import { pendingAdditionalClassCashSettlement } from "../services/additional-class-credit-settlement";
+import { finalizeFundedSameSubmissionQuotes, materializeConditionalFamilyAwardCredit, recoverFundedConditionalFamilyQuotes } from "../services/conditional-family-discounts";
+import { cashReceiptProjectionsForChildren } from "../services/cash-receipt-projection";
 import { familyCreditSuggestionsForChild } from "./family-discounts";
+import { sendConditionalSeatConfirmationEmail, sendPaymentConfirmedEmail } from "../email/registration-transactional";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
 type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid" | "family_credit_review_required";
@@ -34,6 +37,7 @@ interface InstallmentRow {
   installmentKind: "initial" | "later";
   installmentNumber: number;
   amountMnt: number;
+  rawAmountMnt: number;
   effectiveDueAt: string;
   status: "pending" | "partially_paid" | "paid" | "released";
   allocatedAmountMnt: number;
@@ -78,7 +82,8 @@ async function requestForId(env: WorkerEnv, requestId: string): Promise<PaymentR
 async function installmentsForRequest(env: WorkerEnv, paymentRequestId: string): Promise<InstallmentRow[]> {
   const result = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.payment_request_id AS paymentRequestId,
     payment_installment.registration_draft_child_id AS registrationDraftChildId,
-    payment_installment.installment_kind AS installmentKind, payment_installment.installment_number AS installmentNumber, payment_installment.amount_mnt AS amountMnt,
+    payment_installment.installment_kind AS installmentKind, payment_installment.installment_number AS installmentNumber,
+    payment_installment.amount_mnt AS amountMnt, payment_installment.amount_mnt AS rawAmountMnt,
     payment_installment.effective_due_at AS effectiveDueAt, payment_installment.status,
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
       + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
@@ -90,7 +95,8 @@ async function installmentsForRequest(env: WorkerEnv, paymentRequestId: string):
     WHERE payment_installment.payment_request_id = ?
     GROUP BY payment_installment.id
     ORDER BY payment_installment.registration_draft_child_id, payment_installment.installment_number`).bind(paymentRequestId).all<InstallmentRow>();
-  const raw = result.results.map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) }));
+  const raw = result.results.map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt),
+    rawAmountMnt: Number(row.rawAmountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) }));
   const effective = new Map((await effectiveInstallmentsForRows(env.DB, raw.map((row) => ({
     id: row.id, registrationDraftChildId: row.registrationDraftChildId, installmentNumber: row.installmentNumber, amountMnt: row.amountMnt, allocatedAmountMnt: row.allocatedAmountMnt,
   })))).map((row) => [row.id, row]));
@@ -155,6 +161,29 @@ export async function refreshInstallmentsAndDraft(env: WorkerEnv, request: Payme
   }
   if (statements.length) await env.DB.batch(statements);
   return { installments, allInitialPaid };
+}
+
+async function refreshInstallmentsForChild(env: WorkerEnv, request: PaymentRequestRow, childId: string, now: string) {
+  const installments = (await installmentsForRequest(env, request.id)).filter((item) => item.registrationDraftChildId === childId);
+  if (!installments.length) throw new PaymentReconciliationError("not_found");
+  const statements: D1PreparedStatement[] = [];
+  for (const installment of installments) {
+    if (installment.status === "released") continue;
+    const next = installment.allocatedAmountMnt >= installment.amountMnt ? "paid"
+      : installment.allocatedAmountMnt > 0 ? "partially_paid" : "pending";
+    if (next !== installment.status) {
+      statements.push(env.DB.prepare(`UPDATE payment_installment SET status = ?, paid_at = ?, updated_at = ?
+        WHERE id = ? AND status != 'released'`).bind(next, next === "paid" ? now : null, now, installment.id));
+    }
+  }
+  const initialPaid = installments.some((item) => item.installmentKind === "initial" && item.status !== "released"
+    && item.allocatedAmountMnt >= item.amountMnt);
+  if (initialPaid) {
+    statements.push(env.DB.prepare(`UPDATE registration_draft_child SET initial_payment_reconciled_at = ?, updated_at = ?
+      WHERE id = ? AND status != 'cancelled' AND initial_payment_reconciled_at IS NULL`).bind(now, now, childId));
+  }
+  if (statements.length) await env.DB.batch(statements);
+  return { installments, initialPaid };
 }
 
 export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincipal, nowDate = new Date()) {
@@ -348,6 +377,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     laterAllocatedAmountMnt: Number(item.laterAllocatedAmountMnt ?? 0),
     laterCashAllocatedAmountMnt: Number(item.laterCashAllocatedAmountMnt ?? 0),
   })) as Array<Record<string, unknown> & { installmentId: string; registrationDraftChildId: string; expectedAmountMnt: number; allocatedAmountMnt: number; cashAllocatedAmountMnt: number; parentClaimed: boolean; laterInstallmentId: string | null; laterAmountMnt: number | null; laterAllocatedAmountMnt: number; laterCashAllocatedAmountMnt: number }>;
+  const childIds = [...new Set(rawItems.map((item) => String(item.registrationDraftChildId)))];
+  const cashReceiptByChild = await cashReceiptProjectionsForChildren(env.DB, childIds);
   const effectiveById = new Map((await effectiveInstallmentsForRows(env.DB, rawItems.flatMap((item) => [
     {
     id: String(item.installmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 1,
@@ -389,6 +420,63 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     try { return [installmentId, await creditPaymentReviewState(env.DB, childId, installmentId)] as const; }
     catch { return [installmentId, null] as const; }
   })));
+  const conditionalQuotes = childIds.length ? await env.DB.prepare(`SELECT id, registration_draft_child_id AS childId,
+      relationship_basis AS relationshipBasis, relationship_key AS relationshipKey, revision, state, base_amount_mnt AS baseAmountMnt, award_amount_mnt AS awardAmountMnt,
+      conditional_failure_due_at AS conditionalFailureDueAt,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM conditional_family_discount_quote AS qualified_quote
+        WHERE qualified_quote.relationship_basis = conditional_family_discount_quote.relationship_basis
+          AND qualified_quote.relationship_key = conditional_family_discount_quote.relationship_key
+          AND qualified_quote.state = 'qualified'
+      ) THEN 1 ELSE 0 END AS familyQualificationEstablished,
+      CASE WHEN contingent_operation_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM child_credit_entry AS application
+        WHERE application.operation_id = conditional_family_discount_quote.contingent_operation_id
+          AND application.entry_kind = 'credit_application'
+      ) THEN 1 ELSE 0 END AS protectedSettlementPending
+    FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (${childIds.map(() => "?").join(", ")})
+      AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed', 'qualification_failed', 'reconciliation_review')
+    ORDER BY created_at DESC`).bind(...childIds).all<{
+      id: string; childId: string; relationshipBasis: string; relationshipKey: string; revision: number; state: string; baseAmountMnt: number; awardAmountMnt: number; conditionalFailureDueAt: string | null; familyQualificationEstablished: number; protectedSettlementPending: number;
+    }>() : { results: [] as Array<{ id: string; childId: string; relationshipBasis: string; relationshipKey: string; revision: number; state: string; baseAmountMnt: number; awardAmountMnt: number; conditionalFailureDueAt: string | null; familyQualificationEstablished: number; protectedSettlementPending: number }> };
+  const conditionalQuoteByChild = new Map(conditionalQuotes.results.map((quote) => [quote.childId, {
+    ...quote, revision: Number(quote.revision), baseAmountMnt: Number(quote.baseAmountMnt), awardAmountMnt: Number(quote.awardAmountMnt),
+    familyQualificationEstablished: Boolean(quote.familyQualificationEstablished),
+    protectedSettlementPending: Boolean(quote.protectedSettlementPending),
+  }]));
+  const historicalReviewRows = childIds.length ? await env.DB.prepare(`SELECT quote.id AS quoteId,
+      quote.registration_draft_child_id AS childId, quote.revision
+    FROM conditional_family_discount_quote AS quote
+    INNER JOIN registration_draft_child AS child ON child.id = quote.registration_draft_child_id
+    WHERE quote.registration_draft_child_id IN (${childIds.map(() => "?").join(", ")})
+      AND quote.state = 'qualified' AND quote.resolution_reason = 'historical_adoption'
+      AND child.canonical_enrollment_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM payment_confirmation
+        INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+        INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_installment.registration_draft_child_id = child.id
+          AND payment_installment.installment_kind = 'initial'
+      )`).bind(...childIds).all<{ quoteId: string; childId: string; revision: number }>() : { results: [] as Array<{ quoteId: string; childId: string; revision: number }> };
+  const historicalReviewByChild = new Map(historicalReviewRows.results.map((row) => [row.childId, {
+    quoteId: row.quoteId, quoteRevision: Number(row.revision),
+  }]));
+  const conditionalDonors = conditionalQuotes.results.length && hasStaffCapability(actor, "payment.manage")
+    ? await env.DB.prepare(`SELECT quote.id AS quoteId, quote.relationship_basis AS relationshipBasis, quote.relationship_key AS relationshipKey,
+        quote.revision, quote.award_amount_mnt AS awardAmountMnt, child.id AS childId,
+        child.surname || ' ' || child.given_name AS childName
+      FROM conditional_family_discount_quote AS quote
+      INNER JOIN registration_draft_child AS child ON child.id = quote.registration_draft_child_id
+      WHERE quote.state = 'quoted_pending' AND child.canonical_student_id IS NOT NULL
+        AND child.payment_plan_code != 'two_installment'
+        AND COALESCE((SELECT SUM(payment_allocation.allocated_amount_mnt) FROM payment_allocation
+          INNER JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
+          LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
+          INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+          WHERE payment_installment.registration_draft_child_id = child.id
+            AND (payment_confirmation.status IS NULL OR payment_confirmation.status != 'undone')), 0) >= quote.base_amount_mnt`)
+      .all<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }>()
+    : { results: [] as Array<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }> };
   const familySuggestionByChild = new Map(await Promise.all(
     hasStaffCapability(actor, "payment.manage") ? rawItems.map(async (item) => {
       const childId = String(item.registrationDraftChildId);
@@ -418,9 +506,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       creditState: awardCreditById.get(award.id) ?? null,
     }));
     const expectedAmountMnt = effective?.effectiveAmountMnt ?? item.expectedAmountMnt;
-    const totalExpectedMnt = expectedAmountMnt + Number(later?.effectiveAmountMnt ?? 0);
+    const rawLaterAmountMnt = item.laterAmountMnt == null ? null : Number(item.laterAmountMnt);
+    const effectiveLaterAmountMnt = later?.effectiveAmountMnt ?? rawLaterAmountMnt;
+    const totalExpectedMnt = expectedAmountMnt + Number(effectiveLaterAmountMnt ?? 0);
     const totalPaidMnt = item.cashAllocatedAmountMnt + item.laterCashAllocatedAmountMnt;
     const totalCreditAppliedMnt = item.allocatedAmountMnt + item.laterAllocatedAmountMnt - totalPaidMnt;
+    const cashReceipt = cashReceiptByChild.get(String(item.registrationDraftChildId));
     const credit = creditByChild.get(String(item.registrationDraftChildId));
     const initialOutstandingMnt = Math.max(0, expectedAmountMnt - item.allocatedAmountMnt);
     const settlement = settlementByInstallment.get(String(item.installmentId)) ?? null;
@@ -436,9 +527,18 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       : laterOutstandingMnt > 0 ? String(item.laterInstallmentId) : null;
     const creditApplicationOutstandingMnt = creditMaySettleInitial && initialOutstandingMnt > 0 ? initialOutstandingMnt : laterOutstandingMnt;
     const creditReview = creditApplicationInstallmentId ? creditReviewByInstallment.get(creditApplicationInstallmentId) : null;
-    return { ...item, expectedAmountMnt,
-      laterAmountMnt: later?.effectiveAmountMnt ?? item.laterAmountMnt,
+    const historicalSettlementReview = historicalReviewByChild.get(String(item.registrationDraftChildId));
+    const historicalReviewReady = Boolean(historicalSettlementReview && initialOutstandingMnt === 0
+      && !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved));
+    return { ...item, rawExpectedAmountMnt: Number(item.expectedAmountMnt), expectedAmountMnt,
+      rawLaterAmountMnt,
+      laterAmountMnt: effectiveLaterAmountMnt,
+      rawTotalAmountMnt: Number(item.expectedAmountMnt) + Number(rawLaterAmountMnt ?? 0),
+      effectiveTotalAmountMnt: totalExpectedMnt,
       totalPaidMnt,
+      totalCashAllocatedMnt: cashReceipt?.cashAllocatedMnt ?? totalPaidMnt,
+      totalCashReceivedMnt: cashReceipt?.cashReceivedMnt ?? totalPaidMnt,
+      attributableCashExcessMnt: cashReceipt?.attributableExcessMnt ?? 0,
       totalCreditAppliedMnt,
       reservedCreditMnt,
       cashRequiredMnt,
@@ -450,8 +550,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       creditReviewNeeded: Boolean(creditReview && creditReview.availableCreditMnt > 0 && creditReview.outstandingAmountMnt > 0 && !creditReview.reviewed),
       creditReviewResolved: Boolean(creditReview?.reviewed),
       familyCreditSuggestion: familySuggestionByChild.get(String(item.registrationDraftChildId)) ?? null,
+      conditionalFamilyQuote: conditionalQuoteByChild.get(String(item.registrationDraftChildId)) ?? null,
+      historicalSettlementReview: historicalReviewReady ? historicalSettlementReview : null,
+      conditionalContingentDonors: (conditionalQuoteByChild.get(String(item.registrationDraftChildId)) && creditApplicationInstallmentId
+        ? conditionalDonors.results.filter((donor) => donor.childId !== item.registrationDraftChildId
+          && donor.relationshipBasis === conditionalQuoteByChild.get(String(item.registrationDraftChildId))?.relationshipBasis
+          && donor.relationshipKey === conditionalQuoteByChild.get(String(item.registrationDraftChildId))?.relationshipKey)
+        : []),
       discountAmountMnt: effective?.discountAmountMnt ?? 0, discounts: awards,
-      canConfirmSeat: !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved)
+      canConfirmSeat: !historicalReviewReady && !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved)
         && Boolean(item.hasUnapprovedInitialConfirmation) && item.allocatedAmountMnt >= expectedAmountMnt };
   }), credits: [
     ...credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "payment" })),
@@ -628,6 +735,12 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   const allocations = input.allocations.map((item) => ({ installmentId: String(item.installmentId ?? ""), amountMnt: positive(item.amountMnt) }));
   if (!allocations.length || allocations.some((item) => !item.installmentId || !item.amountMnt)) throw new PaymentReconciliationError("invalid");
   const installments = await installmentsForRequest(env, request.id);
+  const conditionalInitials = new Set((await env.DB.prepare(`SELECT payment_installment.id AS installmentId
+      FROM payment_installment INNER JOIN conditional_family_discount_quote
+        ON conditional_family_discount_quote.registration_draft_child_id = payment_installment.registration_draft_child_id
+      WHERE payment_installment.payment_request_id = ? AND payment_installment.installment_kind = 'initial'
+        AND conditional_family_discount_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')`)
+    .bind(request.id).all<{ installmentId: string }>()).results.map((row) => row.installmentId));
   let total = 0;
   const allocatedByInstallment = new Map<string, number>();
   for (const allocation of allocations) {
@@ -635,7 +748,11 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   }
   for (const [installmentId, allocatedAmount] of allocatedByInstallment) {
     const installment = installments.find((item) => item.id === installmentId);
-    if (!installment || installment.status === "released" || installment.allocatedAmountMnt + allocatedAmount > installment.amountMnt) {
+    if (!installment || installment.status === "released") {
+      throw new PaymentReconciliationError("invalid");
+    }
+    const allowedAmountMnt = conditionalInitials.has(installmentId) ? installment.rawAmountMnt : installment.amountMnt;
+    if (installment.allocatedAmountMnt + allocatedAmount > allowedAmountMnt) {
       throw new PaymentReconciliationError("invalid");
     }
     total += allocatedAmount;
@@ -652,21 +769,40 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   const receivedAmount = input.receivedAmountMnt == null ? total : positive(input.receivedAmountMnt);
   if (!receivedAmount || total > receivedAmount) throw new PaymentReconciliationError("invalid");
   const initialAllocated = [...allocatedByInstallment.entries()].some(([id]) => installments.find((item) => item.id === id)?.installmentKind === "initial");
+  const hasConditionalInitial = [...allocatedByInstallment.keys()].some((id) => conditionalInitials.has(id));
   const allInitialSatisfied = installments.filter((item) => item.installmentKind === "initial")
     .every((item) => item.allocatedAmountMnt + (allocatedByInstallment.get(item.id) ?? 0) >= item.amountMnt);
+  const allocatedChildIds = [...new Set([...allocatedByInstallment.keys()]
+    .map((id) => installments.find((item) => item.id === id))
+    .filter((item): item is InstallmentRow => Boolean(item))
+    .map((item) => item.registrationDraftChildId))];
+  const confirmationChildFilter = allocatedChildIds.map(() => "?").join(", ");
   const priorConfirmation = await env.DB.prepare(`SELECT
     MAX(CASE WHEN status IN ('tentative', 'finalized') THEN seat_confirmation_approved ELSE 0 END) AS seatApproved,
     (SELECT remaining_payment_due_at FROM payment_confirmation
       WHERE payment_request_id = ? AND status IN ('tentative', 'finalized') AND remaining_payment_due_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM payment_allocation INNER JOIN payment_installment
+          ON payment_installment.id = payment_allocation.payment_installment_id
+          WHERE payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+            AND payment_installment.registration_draft_child_id IN (${confirmationChildFilter}))
       ORDER BY created_at DESC, id DESC LIMIT 1) AS remainingDueAt
-    FROM payment_confirmation WHERE payment_request_id = ?`).bind(request.id, request.id)
+    FROM payment_confirmation WHERE payment_request_id = ?
+      AND EXISTS (SELECT 1 FROM payment_allocation INNER JOIN payment_installment
+        ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+          AND payment_installment.registration_draft_child_id IN (${confirmationChildFilter}))`)
+    .bind(request.id, ...allocatedChildIds, request.id, ...allocatedChildIds)
     .first<{ seatApproved: number; remainingDueAt: string | null }>();
   const priorSeatApproved = Boolean(priorConfirmation?.seatApproved);
   // Meeting the effective initial-installment obligation is the normal seat
   // confirmation threshold for either payment plan. Staff can still make the
   // exceptional, auditable choice to approve a genuinely incomplete first
   // installment, but that path requires its own remaining-payment deadline.
-  const seatApprovalRequested = initialAllocated && (allInitialSatisfied || Boolean(input.approveSeatConfirmation));
+  // A conditional-family receipt can meet its temporary cash quote, but it
+  // must be bound to that exact quote revision by the explicit conditional
+  // seat action. An ordinary payment confirmation cannot bypass that guard.
+  const seatApprovalRequested = initialAllocated && !hasConditionalInitial
+    && (allInitialSatisfied || Boolean(input.approveSeatConfirmation));
   const approvedPartial = seatApprovalRequested && !allInitialSatisfied;
   if (input.approveSeatConfirmation && priorSeatApproved) throw new PaymentReconciliationError("invalid");
   const needsRemainingDeadline = initialAllocated && !allInitialSatisfied && (seatApprovalRequested || priorSeatApproved);
@@ -722,13 +858,33 @@ export async function confirmSeatForSufficientPayment(
   env: WorkerEnv,
   actor: StaffPrincipal,
   paymentRequestId: string,
+  conditionalOrNow?: { quoteId: string; quoteRevision: number; reason: string } | Date,
   nowDate = new Date(),
 ) {
+  const conditional = conditionalOrNow instanceof Date ? undefined : conditionalOrNow;
+  if (conditionalOrNow instanceof Date) nowDate = conditionalOrNow;
   if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
   const request = await requestForId(env, paymentRequestId);
   const installments = await installmentsForRequest(env, request.id);
   const initial = installments.filter((item) => item.installmentKind === "initial" && item.status !== "released");
-  if (!initial.length || !initial.every((item) => item.allocatedAmountMnt >= item.amountMnt)) {
+  const quotes = await env.DB.prepare(`SELECT conditional_family_discount_quote.id, conditional_family_discount_quote.revision,
+      conditional_family_discount_quote.registration_draft_child_id AS childId
+    FROM conditional_family_discount_quote
+    INNER JOIN payment_installment ON payment_installment.registration_draft_child_id = conditional_family_discount_quote.registration_draft_child_id
+    WHERE payment_installment.payment_request_id = ? AND payment_installment.installment_kind = 'initial'
+      AND conditional_family_discount_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
+    GROUP BY conditional_family_discount_quote.id`).bind(paymentRequestId)
+    .all<{ id: string; revision: number; childId: string }>();
+  if (!conditional && quotes.results.length > 1) throw new PaymentReconciliationError("invalid");
+  const quote = conditional ? quotes.results.find((item) => item.id === conditional.quoteId) ?? null : quotes.results[0] ?? null;
+  const conditionalReason = conditional?.reason?.normalize("NFKC").trim() ?? "";
+  if (quote && (!conditional || conditional.quoteId !== quote.id || !Number.isInteger(conditional.quoteRevision)
+    || conditional.quoteRevision !== Number(quote.revision) || !conditionalReason || conditionalReason.length > 500)) {
+    throw new PaymentReconciliationError("invalid");
+  }
+  if (!quote && (conditional || quotes.results.length)) throw new PaymentReconciliationError("invalid");
+  const requiredInitial = quote ? initial.filter((item) => item.registrationDraftChildId === quote.childId) : initial;
+  if (!requiredInitial.length || !requiredInitial.every((item) => item.allocatedAmountMnt >= item.amountMnt)) {
     throw new PaymentReconciliationError("invalid");
   }
   const confirmation = await env.DB.prepare(`SELECT payment_confirmation.id, payment_confirmation.status,
@@ -740,32 +896,313 @@ export async function confirmSeatForSufficientPayment(
       AND payment_confirmation.status IN ('tentative', 'finalized')
       AND payment_confirmation.seat_confirmation_approved = 0
       AND payment_installment.installment_kind = 'initial'
+      ${quote ? "AND payment_installment.registration_draft_child_id = ?" : ""}
     ORDER BY CASE payment_confirmation.status WHEN 'finalized' THEN 0 ELSE 1 END,
       payment_confirmation.created_at DESC, payment_confirmation.id DESC LIMIT 1`)
-    .bind(request.id).first<{ id: string; status: "tentative" | "finalized"; finalizeAfter: string }>();
+    .bind(request.id, ...(quote ? [quote.childId] : [])).first<{ id: string; status: "tentative" | "finalized"; finalizeAfter: string }>();
   if (!confirmation) {
     const alreadyConfirmed = await env.DB.prepare(`SELECT 1 AS value FROM payment_confirmation
-      WHERE payment_request_id = ? AND status IN ('tentative', 'finalized') AND seat_confirmation_approved = 1 LIMIT 1`)
-      .bind(request.id).first();
+      WHERE payment_request_id = ? AND status IN ('tentative', 'finalized') AND seat_confirmation_approved = 1
+        ${quote ? "AND conditional_quote_id = ? AND conditional_quote_revision = ?" : ""} LIMIT 1`)
+      .bind(request.id, ...(quote ? [quote.id, Number(quote.revision)] : [])).first();
     if (alreadyConfirmed) return { idempotent: true, pending: false };
     throw new PaymentReconciliationError("not_found");
   }
   const now = nowDate.toISOString();
   const changed = await env.DB.prepare(`UPDATE payment_confirmation
     SET seat_confirmation_approved = 1, remaining_payment_due_at = NULL,
-      remaining_reminder_lead_minutes = NULL, remaining_reminder_at = NULL, updated_at = ?
+      remaining_reminder_lead_minutes = NULL, remaining_reminder_at = NULL,
+      conditional_quote_id = ?, conditional_quote_revision = ?, conditional_quote_reason = ?, updated_at = ?
     WHERE id = ? AND status IN ('tentative', 'finalized') AND seat_confirmation_approved = 0`)
-    .bind(now, confirmation.id).run();
+    .bind(quote?.id ?? null, quote ? Number(quote.revision) : null, quote ? conditionalReason : null, now, confirmation.id).run();
   if (changes(changed) !== 1) throw new PaymentReconciliationError("conflict");
   await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
     metadata_json, environment, is_test, test_run_id, created_at)
-    VALUES (?, ?, 'staff', ?, 'seat_confirmation_corrected', 'payment_confirmation', ?, '{}', ?, ?, ?, ?)`)
-    .bind(crypto.randomUUID(), now, actor.staffAccountId, confirmation.id, env.APP_ENV, request.isTest, request.testRunId, now).run();
+    VALUES (?, ?, 'staff', ?, ?, 'payment_confirmation', ?, ?, ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), now, actor.staffAccountId,
+      quote ? 'conditional_seat_confirmation_approved' : 'seat_confirmation_corrected', confirmation.id,
+      JSON.stringify(quote ? { conditionalQuoteId: quote.id, quoteRevision: Number(quote.revision), reason: conditionalReason } : {}),
+      env.APP_ENV, request.isTest, request.testRunId, now).run();
   if (confirmation.status === "tentative") {
     return { idempotent: false, pending: true, finalizeAfter: confirmation.finalizeAfter };
   }
   const promotion = await promotePaidDraftChildren(env, actor, request.registrationDraftId, nowDate);
+  if (quote) {
+    try { await sendConditionalSeatConfirmationEmail(env, quote.childId, quote.id); } catch { /* durable outbox retry */ }
+  }
   return { idempotent: false, pending: false, promotion };
+}
+
+/**
+ * A historical conversion can preserve a legacy receipt/allocation pair that
+ * predates payment_confirmation.  The receipt is real, but it cannot enter
+ * the ordinary fenced promotion path until a staff member explicitly reviews
+ * and binds it to its qualified historical quote.
+ */
+export async function reviewHistoricalQualifiedPayment(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { paymentRequestId: string; registrationDraftChildId: string; quoteId: string; quoteRevision: number; reason: string },
+  nowDate = new Date(),
+) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const reason = input.reason.normalize("NFKC").trim();
+  if (!input.paymentRequestId || !input.registrationDraftChildId || !input.quoteId
+    || !Number.isInteger(input.quoteRevision) || !reason || reason.length > 500) {
+    throw new PaymentReconciliationError("invalid");
+  }
+  const request = await requestForId(env, input.paymentRequestId);
+  const quote = await env.DB.prepare(`SELECT id, revision, registration_draft_child_id AS childId
+    FROM conditional_family_discount_quote
+    WHERE id = ? AND registration_draft_child_id = ? AND state = 'qualified'
+      AND resolution_reason = 'historical_adoption'`)
+    .bind(input.quoteId, input.registrationDraftChildId)
+    .first<{ id: string; revision: number; childId: string }>();
+  if (!quote || Number(quote.revision) !== input.quoteRevision) throw new PaymentReconciliationError("conflict");
+  const initial = (await installmentsForRequest(env, request.id)).filter((item) =>
+    item.registrationDraftChildId === input.registrationDraftChildId && item.installmentKind === "initial" && item.status !== "released");
+  if (initial.length !== 1 || initial[0].allocatedAmountMnt < initial[0].amountMnt) {
+    throw new PaymentReconciliationError("invalid");
+  }
+  const existing = await env.DB.prepare(`SELECT payment_confirmation.id, payment_confirmation.status,
+      payment_confirmation.seat_confirmation_approved AS seatApproved,
+      payment_confirmation.conditional_quote_id AS quoteId,
+      payment_confirmation.conditional_quote_revision AS quoteRevision
+    FROM payment_confirmation
+    INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_confirmation.received_payment_id
+    WHERE payment_confirmation.payment_request_id = ? AND payment_allocation.payment_installment_id = ?
+    ORDER BY payment_confirmation.created_at DESC LIMIT 1`)
+    .bind(request.id, initial[0].id)
+    .first<{ id: string; status: string; seatApproved: number; quoteId: string | null; quoteRevision: number | null }>();
+  if (existing) {
+    if (existing.status === "finalized" && Boolean(existing.seatApproved)
+      && existing.quoteId === quote.id && Number(existing.quoteRevision) === Number(quote.revision)) {
+      await refreshInstallmentsForChild(env, request, input.registrationDraftChildId, nowDate.toISOString());
+      await recalculateDiscountAwardBalances(env.DB, input.registrationDraftChildId, nowDate.toISOString());
+      await promotePaidDraftChild(env, actor, input.registrationDraftChildId, null, nowDate);
+      return { idempotent: true, pending: false };
+    }
+    throw new PaymentReconciliationError("conflict");
+  }
+  // One historical receipt is intentionally reviewed at a time.  A shared
+  // receipt needs its own explicitly modelled reconciliation instead of
+  // silently confirming unrelated children that happened to share a transfer.
+  const receipts = await env.DB.prepare(`SELECT received_payment.id AS paymentId
+    FROM payment_allocation
+    INNER JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
+    WHERE payment_allocation.payment_installment_id = ?
+      AND NOT EXISTS (SELECT 1 FROM payment_confirmation WHERE payment_confirmation.received_payment_id = received_payment.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM payment_allocation AS other
+        INNER JOIN payment_installment AS other_installment ON other_installment.id = other.payment_installment_id
+        WHERE other.received_payment_id = received_payment.id
+          AND other_installment.registration_draft_child_id != ?
+      )
+    GROUP BY received_payment.id`)
+    .bind(initial[0].id, input.registrationDraftChildId)
+    .all<{ paymentId: string }>();
+  if (receipts.results.length !== 1) throw new PaymentReconciliationError("conflict");
+  const now = nowDate.toISOString();
+  const confirmationId = crypto.randomUUID();
+  const inserted = await env.DB.prepare(`INSERT INTO payment_confirmation (
+    id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
+    remaining_payment_due_at, finalized_at, conditional_quote_id, conditional_quote_revision,
+    conditional_quote_reason, created_at, updated_at, is_test, test_run_id
+  ) SELECT ?, ?, ?, 'finalized', ?, 1, NULL, ?, ?, ?, ?, ?, ?, is_test, test_run_id
+    FROM payment_request WHERE id = ?`)
+    .bind(confirmationId, receipts.results[0].paymentId, request.id, now, now, quote.id, Number(quote.revision), reason,
+      now, now, request.id).run();
+  if (changes(inserted) !== 1) throw new PaymentReconciliationError("conflict");
+  const state = await refreshInstallmentsForChild(env, request, input.registrationDraftChildId, now);
+  await recalculateDiscountAwardBalances(env.DB, input.registrationDraftChildId, now);
+  const promotion = await promotePaidDraftChild(env, actor, input.registrationDraftChildId, null, nowDate);
+  await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+    metadata_json, environment, is_test, test_run_id, created_at)
+    VALUES (?, ?, 'staff', ?, 'historical_payment_settlement_reviewed', 'payment_confirmation', ?, ?, ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), now, actor.staffAccountId, confirmationId,
+      JSON.stringify({ registrationDraftChildId: input.registrationDraftChildId, conditionalQuoteId: quote.id,
+        conditionalQuoteRevision: Number(quote.revision), reason, receiptId: receipts.results[0].paymentId,
+        initialPaid: state.initialPaid, promotion: promotion.state }),
+      env.APP_ENV, request.isTest, request.testRunId, now).run();
+  return { idempotent: false, pending: false, promotion };
+}
+
+type HistoricalIncidentState = "award_credit_missing" | "review_missing" | "reconciled";
+
+interface HistoricalIncidentRow {
+  childId: string; requestId: string; installmentId: string; initialAmountMnt: number; installmentStrategy: string; quoteId: string; quoteRevision: number;
+  awardId: string; awardAmountMnt: number; awardAppliedMnt: number; awardCreditMnt: number;
+  allocatedMnt: number; receivedMnt: number; receiptId: string | null; confirmationId: string | null;
+  canonicalStudentId: string | null; canonicalEnrollmentId: string | null; rootCount: number;
+  isTest: number; testRunId: string | null;
+}
+
+interface HistoricalIncidentSnapshotRow extends HistoricalIncidentRow { state: HistoricalIncidentState; }
+
+async function historicalIncidentFingerprint(rows: HistoricalIncidentSnapshotRow[]) {
+  const source = JSON.stringify(rows.map((row) => ({
+    childId: row.childId, requestId: row.requestId, installmentId: row.installmentId, initialAmountMnt: Number(row.initialAmountMnt), installmentStrategy: row.installmentStrategy,
+    quoteId: row.quoteId, quoteRevision: Number(row.quoteRevision), awardId: row.awardId,
+    awardAmountMnt: Number(row.awardAmountMnt), awardAppliedMnt: Number(row.awardAppliedMnt), awardCreditMnt: Number(row.awardCreditMnt),
+    allocatedMnt: Number(row.allocatedMnt), receivedMnt: Number(row.receivedMnt), receiptId: row.receiptId,
+    confirmationId: row.confirmationId, canonicalStudentId: row.canonicalStudentId, canonicalEnrollmentId: row.canonicalEnrollmentId,
+    rootCount: Number(row.rootCount), state: row.state,
+  })));
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function historicalIncidentRows(env: WorkerEnv, registrationDraftId: string, childIds: string[]): Promise<HistoricalIncidentSnapshotRow[]> {
+  if (!registrationDraftId || childIds.length !== 2 || new Set(childIds).size !== childIds.length) throw new PaymentReconciliationError("invalid");
+  const rows = await env.DB.prepare(`SELECT child.id AS childId, request.id AS requestId, installment.id AS installmentId,
+      installment.amount_mnt AS initialAmountMnt,
+      quote.id AS quoteId, quote.revision AS quoteRevision, quote.installment_strategy AS installmentStrategy, award.id AS awardId,
+      award.award_amount_mnt AS awardAmountMnt, award.applied_amount_mnt AS awardAppliedMnt, award.credit_amount_mnt AS awardCreditMnt,
+      COALESCE((SELECT SUM(allocation.allocated_amount_mnt) FROM payment_allocation AS allocation
+        LEFT JOIN payment_confirmation AS confirmation ON confirmation.received_payment_id = allocation.received_payment_id
+        WHERE allocation.payment_installment_id = installment.id AND (confirmation.status IS NULL OR confirmation.status != 'undone')), 0) AS allocatedMnt,
+      (SELECT receipt.id FROM received_payment AS receipt
+        INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = receipt.id
+        WHERE allocation.payment_installment_id = installment.id
+          AND NOT EXISTS (SELECT 1 FROM payment_allocation AS other
+            INNER JOIN payment_installment AS other_installment ON other_installment.id = other.payment_installment_id
+            WHERE other.received_payment_id = receipt.id AND other_installment.registration_draft_child_id != child.id)
+        ORDER BY receipt.received_at DESC, receipt.id DESC LIMIT 1) AS receiptId,
+      COALESCE((SELECT receipt.received_amount_mnt FROM received_payment AS receipt
+        INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = receipt.id
+        WHERE allocation.payment_installment_id = installment.id
+          AND NOT EXISTS (SELECT 1 FROM payment_allocation AS other
+            INNER JOIN payment_installment AS other_installment ON other_installment.id = other.payment_installment_id
+            WHERE other.received_payment_id = receipt.id AND other_installment.registration_draft_child_id != child.id)
+        ORDER BY receipt.received_at DESC, receipt.id DESC LIMIT 1), 0) AS receivedMnt,
+      (SELECT confirmation.id FROM payment_confirmation AS confirmation
+        INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = confirmation.received_payment_id
+        WHERE allocation.payment_installment_id = installment.id AND confirmation.status = 'finalized'
+          AND confirmation.seat_confirmation_approved = 1 AND confirmation.conditional_quote_id = quote.id
+          AND confirmation.conditional_quote_revision = quote.revision
+        ORDER BY confirmation.created_at DESC LIMIT 1) AS confirmationId,
+      child.canonical_student_id AS canonicalStudentId, child.canonical_enrollment_id AS canonicalEnrollmentId,
+      (SELECT COUNT(*) FROM child_credit_entry AS root WHERE root.source_discount_award_id = award.id) AS rootCount,
+      child.is_test AS isTest, child.test_run_id AS testRunId
+    FROM registration_draft_child AS child
+    INNER JOIN payment_request AS request ON request.registration_draft_id = child.registration_draft_id
+    INNER JOIN payment_installment AS installment ON installment.payment_request_id = request.id
+      AND installment.registration_draft_child_id = child.id AND installment.installment_kind = 'initial' AND installment.status != 'released'
+    INNER JOIN discount_award AS award ON award.registration_draft_child_id = child.id
+      AND award.award_type = 'family_multi_child' AND award.status = 'active' AND award.qualification_state = 'earned'
+    INNER JOIN conditional_family_discount_quote AS quote ON quote.id = award.conditional_quote_id
+      AND quote.state = 'qualified' AND quote.resolution_reason = 'historical_adoption'
+    WHERE child.registration_draft_id = ? AND child.id IN (${childIds.map(() => "?").join(",")})
+    ORDER BY child.id`).bind(registrationDraftId, ...childIds).all<HistoricalIncidentRow>();
+  if (rows.results.length !== childIds.length) throw new PaymentReconciliationError("conflict");
+  return rows.results.map((row) => {
+    const hasCanonicalOwner = Boolean(row.canonicalStudentId && row.canonicalEnrollmentId);
+    const awardCreditMissing = Boolean(row.confirmationId) && hasCanonicalOwner && Number(row.rootCount) === 0
+      && Number(row.awardCreditMnt) === 0 && Number(row.awardAppliedMnt) === Number(row.awardAmountMnt)
+      && Number(row.receivedMnt) - Number(row.allocatedMnt) === Number(row.awardAmountMnt);
+    const settledWithRoot = Boolean(row.confirmationId) && hasCanonicalOwner && Number(row.rootCount) === 1
+      && Number(row.awardCreditMnt) === Number(row.awardAmountMnt) && Number(row.awardAppliedMnt) === 0;
+    const requiredInitialMnt = row.installmentStrategy === "one_payment"
+      ? Number(row.initialAmountMnt) - Number(row.awardAmountMnt) : Number(row.initialAmountMnt);
+    const reviewMissing = !row.confirmationId && hasCanonicalOwner && Boolean(row.receiptId)
+      && Number(row.allocatedMnt) >= requiredInitialMnt;
+    if (awardCreditMissing) return { ...row, state: "award_credit_missing" };
+    if (reviewMissing) return { ...row, state: "review_missing" };
+    if (settledWithRoot || (Boolean(row.confirmationId) && hasCanonicalOwner && Number(row.awardCreditMnt) === 0 && Number(row.awardAppliedMnt) === Number(row.awardAmountMnt))) {
+      return { ...row, state: "reconciled" };
+    }
+    throw new PaymentReconciliationError("conflict");
+  });
+}
+
+export async function previewHistoricalSettlementIncidentReconciliation(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { registrationDraftId: string; childIds: string[] },
+) {
+  if (!hasStaffCapability(actor, "admin.settings.manage")) throw new PaymentReconciliationError("forbidden");
+  const rows = await historicalIncidentRows(env, input.registrationDraftId, input.childIds);
+  if (rows.every((row) => row.state === "reconciled")) {
+    const completed = await env.DB.prepare(`SELECT metadata_json AS metadataJson FROM audit_event
+      WHERE action = 'historical_payment_settlement_incident_reconciled'
+        AND subject_type = 'registration_draft' AND subject_id = ?
+      ORDER BY occurred_at DESC LIMIT 1`).bind(input.registrationDraftId).first<{ metadataJson: string }>();
+    return {
+      rows,
+      reviewFingerprint: await historicalIncidentFingerprint(rows),
+      alreadyReconciled: true,
+      operationId: completed ? JSON.parse(completed.metadataJson).operationId ?? null : null,
+    };
+  }
+  if (!rows.some((row) => row.state === "award_credit_missing") || !rows.some((row) => row.state === "review_missing")) {
+    throw new PaymentReconciliationError("conflict");
+  }
+  return { rows, reviewFingerprint: await historicalIncidentFingerprint(rows), alreadyReconciled: false, operationId: null };
+}
+
+export async function reconcileHistoricalSettlementIncident(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { registrationDraftId: string; childIds: string[]; reviewFingerprint: string; operationId: string; reason: string },
+  nowDate = new Date(),
+) {
+  if (!hasStaffCapability(actor, "admin.settings.manage")) throw new PaymentReconciliationError("forbidden");
+  const reason = input.reason.normalize("NFKC").trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(input.operationId) || !/^[0-9a-f]{64}$/i.test(input.reviewFingerprint)
+    || !reason || reason.length > 500) throw new PaymentReconciliationError("invalid");
+  const completed = await env.DB.prepare(`SELECT 1 AS value FROM audit_event
+    WHERE action = 'historical_payment_settlement_incident_reconciled'
+      AND json_extract(metadata_json, '$.operationId') = ? LIMIT 1`).bind(input.operationId).first();
+  if (completed) return { operationId: input.operationId, idempotent: true };
+  const rows = await historicalIncidentRows(env, input.registrationDraftId, input.childIds);
+  if (rows.every((row) => row.state === "reconciled")) throw new PaymentReconciliationError("conflict");
+  const currentFingerprint = await historicalIncidentFingerprint(rows);
+  const now = nowDate.toISOString();
+  const owner = rows[0];
+  const operationMetadata = JSON.stringify({ operationId: input.operationId, reviewFingerprint: input.reviewFingerprint, childIds: [...input.childIds].sort(), reason });
+  let prior = await env.DB.prepare(`SELECT metadata_json AS metadataJson FROM audit_event WHERE id = ?`)
+    .bind(`historical-settlement-incident:${input.operationId}`).first<{ metadataJson: string }>();
+  if (!prior) {
+    if (currentFingerprint !== input.reviewFingerprint) throw new PaymentReconciliationError("conflict");
+    const started = await env.DB.prepare(`INSERT OR IGNORE INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+        metadata_json, environment, is_test, test_run_id, created_at)
+      VALUES (?, ?, 'staff', ?, 'historical_payment_settlement_incident_started', 'registration_draft', ?, ?, ?, ?, ?, ?)`)
+      .bind(`historical-settlement-incident:${input.operationId}`, now, actor.staffAccountId, input.registrationDraftId,
+        operationMetadata,
+        env.APP_ENV, owner.isTest, owner.testRunId, now).run();
+    if (!changes(started)) {
+      prior = await env.DB.prepare(`SELECT metadata_json AS metadataJson FROM audit_event WHERE id = ?`)
+        .bind(`historical-settlement-incident:${input.operationId}`).first<{ metadataJson: string }>();
+    }
+  }
+  if (prior) {
+    if (!prior || prior.metadataJson !== operationMetadata
+      || rows.some((row) => row.state !== "award_credit_missing" && row.state !== "review_missing" && row.state !== "reconciled")) {
+      throw new PaymentReconciliationError("conflict");
+    }
+  }
+  for (const row of rows) {
+    if (row.state === "review_missing") {
+      await reviewHistoricalQualifiedPayment(env, actor, {
+        paymentRequestId: row.requestId, registrationDraftChildId: row.childId, quoteId: row.quoteId,
+        quoteRevision: Number(row.quoteRevision), reason,
+      }, nowDate);
+    }
+    if (row.state === "award_credit_missing") {
+      await recalculateDiscountAwardBalances(env.DB, row.childId, now);
+      await materializeConditionalFamilyAwardCredit(env, row.childId, now);
+    }
+  }
+  const reconciledRows = await historicalIncidentRows(env, input.registrationDraftId, input.childIds);
+  if (reconciledRows.some((row) => row.state !== "reconciled")) throw new PaymentReconciliationError("conflict");
+  await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+    metadata_json, environment, is_test, test_run_id, created_at)
+    VALUES (?, ?, 'staff', ?, 'historical_payment_settlement_incident_reconciled', 'registration_draft', ?, ?, ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), now, actor.staffAccountId, input.registrationDraftId,
+      JSON.stringify({ operationId: input.operationId, reviewFingerprint: input.reviewFingerprint, childIds: [...input.childIds].sort(), reason,
+        effects: reconciledRows.map((row) => ({ childId: row.childId, state: row.state, confirmationId: row.confirmationId, awardId: row.awardId })) }),
+      env.APP_ENV, owner.isTest, owner.testRunId, now).run();
+  return { operationId: input.operationId, idempotent: false, rows: reconciledRows };
 }
 
 export async function undoTentativePaymentConfirmation(env: WorkerEnv, actor: StaffPrincipal, receivedPaymentId: string, nowDate = new Date()) {
@@ -792,19 +1229,48 @@ export async function undoTentativePaymentConfirmation(env: WorkerEnv, actor: St
 
 export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = new Date()): Promise<number> {
   const now = nowDate.toISOString();
+  const systemActor = { staffAccountId: "system:payment-finalizer", roles: ["admin"], capabilities: ["payment.manage"] } as StaffPrincipal;
+  // A previously finalized cash receipt can still have a retryable protected
+  // conditional settlement. Recover it from the quote state before looking
+  // for new tentative payment confirmations.
+  const recoveredAwards = await recoverFundedConditionalFamilyQuotes(env, nowDate);
+  if (recoveredAwards > 0) {
+    const recoveredRequests = await env.DB.prepare(`SELECT DISTINCT payment_request.id, payment_request.registration_draft_id AS registrationDraftId,
+        payment_request.payment_reference AS paymentReference, payment_request.is_test AS isTest, payment_request.test_run_id AS testRunId
+      FROM conditional_family_discount_quote
+      INNER JOIN registration_draft_child ON registration_draft_child.id = conditional_family_discount_quote.registration_draft_child_id
+      INNER JOIN payment_request ON payment_request.registration_draft_id = registration_draft_child.registration_draft_id
+      WHERE conditional_family_discount_quote.state = 'qualified' AND conditional_family_discount_quote.resolved_at = ?`)
+      .bind(now).all<PaymentRequestRow>();
+    for (const request of recoveredRequests.results) {
+      const state = await refreshInstallmentsAndDraft(env, request, now);
+      const promotion = await promotePaidDraftChildren(env, systemActor, request.registrationDraftId, nowDate);
+      if (promotion.length) {
+        await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+          metadata_json, environment, is_test, test_run_id, created_at) VALUES (?, ?, 'system', 'payment-finalizer',
+          'conditional_family_settlement_promotion_recovered', 'registration_draft', ?, ?, ?, ?, ?, ?)`)
+          .bind(crypto.randomUUID(), now, request.registrationDraftId,
+            JSON.stringify({ allInitialPaid: state.allInitialPaid, promotion: promotion.map((entry) => entry.state) }),
+            env.APP_ENV, request.isTest, request.testRunId, now).run();
+      }
+    }
+  }
   const rows = await env.DB.prepare(`SELECT payment_confirmation.id, payment_confirmation.payment_request_id AS paymentRequestId,
     payment_confirmation.seat_confirmation_approved AS seatConfirmationApproved, payment_request.registration_draft_id AS registrationDraftId,
+    payment_confirmation.conditional_quote_id AS conditionalQuoteId,
     payment_request.is_test AS isTest, payment_request.test_run_id AS testRunId
     FROM payment_confirmation INNER JOIN payment_request ON payment_request.id = payment_confirmation.payment_request_id
     WHERE payment_confirmation.status = 'tentative' AND payment_confirmation.finalize_after <= ? ORDER BY payment_confirmation.finalize_after LIMIT 100`)
-    .bind(now).all<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; isTest: number; testRunId: string | null }>();
+    .bind(now).all<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }>();
   let finalized = 0;
-  const systemActor = { staffAccountId: "system:payment-finalizer", roles: ["admin"], capabilities: ["payment.manage"] } as StaffPrincipal;
   for (const row of rows.results) {
     const changed = await env.DB.prepare(`UPDATE payment_confirmation SET status = 'finalized', finalized_at = ?, updated_at = ?
       WHERE id = ? AND status = 'tentative' AND finalize_after <= ?`).bind(now, now, row.id, now).run();
     if (!changes(changed)) continue;
     const request = await requestForId(env, row.paymentRequestId);
+    // A same-submission quote becomes an earned award only after every member
+    // of one funded subset has been revalidated under its own fence.
+    await finalizeFundedSameSubmissionQuotes(env, request.registrationDraftId, nowDate);
     const state = await refreshInstallmentsAndDraft(env, request, now);
     const promotion = await promotePaidDraftChildren(env, systemActor, request.registrationDraftId, nowDate);
     await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
@@ -812,13 +1278,17 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
       'payment_confirmation_finalized', 'payment_confirmation', ?, ?, ?, ?, ?, ?)`)
       .bind(crypto.randomUUID(), now, row.id, JSON.stringify({ allInitialPaid: state.allInitialPaid, promotion: promotion.map((entry) => entry.state) }),
         env.APP_ENV, row.isTest, row.testRunId, now).run();
-    if (state.allInitialPaid) {
+    if (row.conditionalQuoteId) {
       try {
-        const { sendPaymentConfirmedEmail } = await import("../email/registration-transactional");
-        await sendPaymentConfirmedEmail(env, request.registrationDraftId, row.id);
+        const quotedChild = await env.DB.prepare(`SELECT registration_draft_child_id AS childId FROM conditional_family_discount_quote WHERE id = ?`)
+          .bind(row.conditionalQuoteId).first<{ childId: string }>();
+        if (quotedChild) await sendConditionalSeatConfirmationEmail(env, quotedChild.childId, row.conditionalQuoteId);
       } catch {
-        // The confirmation and its audit event are already durable; the queued email remains observable for retry.
+        // The conditional confirmation and its audit event are durable; its
+        // outbox row remains observable for retry without a capability link.
       }
+    } else if (state.allInitialPaid) {
+      try { await sendPaymentConfirmedEmail(env, request.registrationDraftId, row.id); } catch { /* durable retry */ }
     }
     finalized += 1;
   }
@@ -868,7 +1338,10 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
     WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
       AND payment_installment.installment_kind = 'initial'
       AND registration_draft_child.canonical_enrollment_id IS NULL
-      AND registration_draft_child.promotion_status = 'not_eligible'
+      AND (registration_draft_child.promotion_status = 'not_eligible'
+        OR EXISTS (SELECT 1 FROM conditional_family_discount_quote
+          WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
+            AND conditional_family_discount_quote.state = 'qualified'))
       AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`)
     .all<{ registrationDraftId: string; isTest: number; testRunId: string | null }>();
   for (const row of stranded.results) {

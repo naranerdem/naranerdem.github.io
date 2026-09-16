@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-registration-holds-"));
 const databasePath = path.join(tempDir, "registration.sqlite3");
 const esbuild = path.resolve("node_modules/esbuild/bin/esbuild");
+const releasedRuntimeRoot = "/private/tmp/naranerdem-release-8e86";
 
 function bundle(source, output) {
   const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
@@ -33,6 +34,9 @@ const initialPaymentDeadlineBundle = path.join(tempDir, "initial-payment-deadlin
 const childCreditBundle = path.join(tempDir, "child-credit-ledger.mjs");
 const paymentRemindersBundle = path.join(tempDir, "payment-reminders.mjs");
 const publicSeatCountThresholdBundle = path.join(tempDir, "public-seat-count-threshold.mjs");
+const conditionalFamilyDiscountBundle = path.join(tempDir, "conditional-family-discounts.mjs");
+const releasedRegistrationBundle = path.join(tempDir, "released-registration-submission.mjs");
+const releasedPaymentReconciliationBundle = path.join(tempDir, "released-payment-reconciliation.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
 bundle("src/server/services/registration-catalog.ts", catalogBundle);
 bundle("src/server/services/public-site.ts", publicSiteBundle);
@@ -51,6 +55,9 @@ bundle("src/server/staff/initial-payment-deadline.ts", initialPaymentDeadlineBun
 bundle("src/server/services/child-credit-ledger.ts", childCreditBundle);
 bundle("src/server/staff/payment-reminders.ts", paymentRemindersBundle);
 bundle("src/server/staff/public-seat-count-threshold.ts", publicSeatCountThresholdBundle);
+bundle("src/server/services/conditional-family-discounts.ts", conditionalFamilyDiscountBundle);
+bundle(path.join(releasedRuntimeRoot, "src/server/services/registration-submission.ts"), releasedRegistrationBundle);
+bundle(path.join(releasedRuntimeRoot, "src/server/staff/payment-reconciliation.ts"), releasedPaymentReconciliationBundle);
 const {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -63,14 +70,19 @@ const {
   registrationStatusForSession,
   RegistrationSubmissionError,
 } = await import(pathToFileURL(registrationBundle).href);
+const { createRegistrationDraft: createReleasedRegistrationDraft } = await import(pathToFileURL(releasedRegistrationBundle).href);
 const { getRegistrationCatalog } = await import(pathToFileURL(catalogBundle).href);
 const { getPublicSeatCountThreshold, updatePublicSeatCountThreshold, PublicSeatCountThresholdError } = await import(pathToFileURL(publicSeatCountThresholdBundle).href);
+const { adoptHistoricalConditionalFamilyAwards, finalizeFundedConditionalFamilyQuotes, previewHistoricalConditionalFamilyAdoption,
+  recoverFundedConditionalFamilyQuotes,
+  quoteConditionalFamilyDiscountsForGroup, quoteConditionalFamilyDiscountsForSameStudent,
+  setConditionalFamilyFailureDeadline, ConditionalFamilyDiscountError } = await import(pathToFileURL(conditionalFamilyDiscountBundle).href);
 const { getAdditionalClassPreview, AdditionalClassPreviewError } = await import(pathToFileURL(additionalClassPreviewBundle).href);
 const { createAdditionalClassAdmission: createAdditionalClassAdmissionService, AdditionalClassAdmissionError } = await import(pathToFileURL(additionalClassAdmissionBundle).href);
 const { claimAdditionalAdmissionConfirmation, finalizeAdditionalAdmissionClaim, promotePaidDraftChild } = await import(pathToFileURL(canonicalPromotionBundle).href);
 const { cancelRegistration } = await import(pathToFileURL(registrationCancellationBundle).href);
 const { closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets } = await import(pathToFileURL(classTransferBundle).href);
-const { effectiveInstallments } = await import(pathToFileURL(discountsBundle).href);
+const { effectiveInstallments, effectiveInstallmentsForRows } = await import(pathToFileURL(discountsBundle).href);
 const { getPublicSiteModel } = await import(pathToFileURL(publicSiteBundle).href);
 const { TurnstileError, verifyTurnstile } = await import(pathToFileURL(turnstileBundle).href);
 const gatesBundle = path.join(tempDir, "operational-gates.mjs");
@@ -84,10 +96,18 @@ const {
   finalizeDuePaymentConfirmations,
   getRegistrationExportRows,
   getInitialPaymentQueue,
+  markPaymentCreditRefunded,
   recordCheckedNotFound,
   recordManualPayment,
+  previewHistoricalSettlementIncidentReconciliation,
+  reconcileHistoricalSettlementIncident,
+  reviewHistoricalQualifiedPayment,
   releaseUnpaidSeat,
 } = await import(pathToFileURL(paymentReconciliationBundle).href);
+const {
+  getInitialPaymentQueue: getReleasedInitialPaymentQueue,
+  recordManualPayment: recordReleasedManualPayment,
+} = await import(pathToFileURL(releasedPaymentReconciliationBundle).href);
 const { registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } = await import(pathToFileURL(registrationCorrectionBundle).href);
 const { getInitialPaymentDeadlineSetting, updateInitialPaymentDeadlineSetting } = await import(pathToFileURL(initialPaymentDeadlineBundle).href);
 const { addManualChildCredit, applyChildCredit, childCreditSummary, correctChildCredit, creditPaymentReviewState, leaveChildCreditUnused, transferChildCredit } = await import(pathToFileURL(childCreditBundle).href);
@@ -109,11 +129,15 @@ function bindSql(sql, values) {
   return bound;
 }
 
-function sqlite(input, json = false) {
-  const args = json ? ["-json", databasePath] : [databasePath];
+function sqliteAt(file, input, json = false) {
+  const args = json ? ["-json", file] : [file];
   const result = spawnSync("sqlite3", args, { input: `.timeout 5000\nPRAGMA foreign_keys=ON;\n${input}`, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`sqlite3 failed\n${result.stdout}\n${result.stderr}\n${input}`);
   return result.stdout.trim();
+}
+
+function sqlite(input, json = false) {
+  return sqliteAt(databasePath, input, json);
 }
 
 class Statement {
@@ -257,6 +281,24 @@ function session(now, expiresAt) {
 }
 
 try {
+  const migrationCompatibilityPath = path.join(tempDir, "released-through-0051.sqlite3");
+  const preConditionalMigrations = readdirSync(path.resolve("migrations"))
+    .filter((name) => name.endsWith(".sql") && name < "0052_conditional_family_discount_quotes.sql")
+    .sort()
+    .map((name) => readFileSync(path.resolve("migrations", name), "utf8"))
+    .join("\n");
+  sqliteAt(migrationCompatibilityPath, preConditionalMigrations);
+  sqliteAt(migrationCompatibilityPath, readFileSync(path.resolve("migrations/0052_conditional_family_discount_quotes.sql"), "utf8"));
+  const conditionalMigrationColumns = JSON.parse(sqliteAt(migrationCompatibilityPath, "PRAGMA table_info(discount_award);", true));
+  const conditionalMigrationIndexes = JSON.parse(sqliteAt(migrationCompatibilityPath,
+    "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_discount_award_qualification_state', 'idx_conditional_family_discount_quote_current');", true));
+  assert.ok(conditionalMigrationColumns.some((column) => column.name === "qualification_state" && column.dflt_value === "'earned'"),
+    "0052 adds an earned-by-default classification so migration alone preserves released award treatment");
+  assert.ok(conditionalMigrationColumns.some((column) => column.name === "conditional_quote_id"),
+    "0052 adds quote lineage without rewriting existing awards");
+  assert.deepEqual(conditionalMigrationIndexes.map((row) => row.name).sort(),
+    ["idx_conditional_family_discount_quote_current", "idx_discount_award_qualification_state"],
+    "0052 creates the required compatibility indexes when applied after the released schema");
   const migrations = readdirSync(path.resolve("migrations"))
     .filter((name) => name.endsWith(".sql"))
     .sort()
@@ -357,7 +399,9 @@ try {
     }, nowDate);
   }
   const exportStaff = { ...paymentStaff, capabilities: ['payment.view', 'registration.view'] };
-  const adminStaff = { ...paymentStaff, staffAccountId: 'staff-admin-test', capabilities: ['admin.settings.manage'] };
+  // Administrators retain the existing payment capability in production; keep
+  // the disposable principal faithful to that role for admin reconciliation.
+  const adminStaff = { ...paymentStaff, staffAccountId: 'staff-admin-test', capabilities: ['admin.settings.manage', 'payment.manage'] };
 
   database.query("UPDATE academic_year SET registration_status = 'closed' WHERE id = 'year-test'");
   const stageOneOnlyCatalog = await getRegistrationCatalog(database, "staging", new Date(iso()));
@@ -463,6 +507,8 @@ try {
   const one = await createRegistrationDraft(env(database), submission("class-last-seat"), new Date(iso()));
   assert.equal(one.hasPaymentHold, true);
   assert.equal(one.paymentDeadlineAt, iso(24 * 60), "accepted submission starts the 24-hour payment deadline without email verification");
+  assert.equal(count(database, "conditional_family_discount_quote", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${one.draftId}')`), 0,
+    "an unrelated single-child registration retains the released payment and enrollment path without a conditional family quote");
   const initialDeadline = await getInitialPaymentDeadlineSetting(env(database));
   assert.equal(initialDeadline.deadlineMinutes, 1440, "the default initial-payment deadline is 24 hours");
   await assert.rejects(updateInitialPaymentDeadlineSetting(env(database), paymentStaff, { deadlineMinutes: 5, expectedUpdatedAt: initialDeadline.updatedAt }), "teacher/accountant cannot change the initial-payment deadline");
@@ -1080,6 +1126,38 @@ try {
   }, new Date('2026-08-13T09:27:00.000Z'));
   assert.equal(transferredCredit.source.availableAmountMnt, 75000, "cross-child transfer debits the source ledger once");
   assert.equal(transferredCredit.target.availableAmountMnt, 25000, "cross-child transfer creates one destination ledger credit");
+  const provisionalReservedAwardId = `conditional-reserved-award-${randomUUID()}`;
+  const provisionalReservedRootId = `conditional-reserved-root-${randomUUID()}`;
+  database.query(`INSERT INTO discount_award (
+      id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+      credit_amount_mnt, status, qualification_state, reason, awarded_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, 'family_multi_child', 1000, 1200000, 120000, 120000,
+      'active', 'provisional', 'conditional test reservation', ?, 1, 'registration-test', ?, ?);
+    INSERT INTO child_credit_entry (
+      id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, reserved_amount_mnt,
+      source_discount_award_id, reason, is_test, test_run_id, created_at
+    ) VALUES (?, ?, ?, 'discount_award_credit', 120000, 120000, ?, 'conditional test reservation', 1, 'registration-test', ?);`,
+  [provisionalReservedAwardId, approvedTwoChild.id, iso(27), iso(27), iso(27), provisionalReservedRootId,
+    approvedTwoStudent.studentId, approvedTwoChild.id, provisionalReservedAwardId, iso(27)]);
+  const provisionalBefore = database.query(`SELECT reserved_amount_mnt AS reservedMnt,
+    (SELECT COUNT(*) FROM child_credit_entry WHERE origin_entry_id = ?) AS debits FROM child_credit_entry WHERE id = ?`,
+  [provisionalReservedRootId, provisionalReservedRootId])[0];
+  await assert.rejects(transferChildCredit(env(database), paymentStaff, {
+    sourceRegistrationDraftChildId: approvedTwoChild.id, targetRegistrationDraftChildId: strandedChildId, amountMnt: 120000,
+    reason: 'Нөөцөлсөн нөхцөлт кредитийг шилжүүлэх оролдлого', operationId: randomUUID(),
+  }, new Date('2026-08-13T09:27:05.000Z')), (error) => error?.code === 'insufficient',
+  "the general transfer service rejects a provisional reserved family-award root server-side");
+  await assert.rejects(applyChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: approvedTwoChild.id, paymentInstallmentId: approvedTwoLater.id, amountMnt: 120000,
+    reason: 'Нөөцөлсөн нөхцөлт кредитийг хэрэглэх оролдлого', operationId: randomUUID(),
+  }, new Date('2026-08-13T09:27:10.000Z')), (error) => error?.code === 'insufficient',
+  "the general application service also rejects a provisional reserved family-award root server-side");
+  assert.deepEqual(database.query(`SELECT reserved_amount_mnt AS reservedMnt,
+    (SELECT COUNT(*) FROM child_credit_entry WHERE origin_entry_id = ?) AS debits FROM child_credit_entry WHERE id = ?`,
+  [provisionalReservedRootId, provisionalReservedRootId])[0], provisionalBefore,
+  "rejected general credit calls leave the conditional reservation and ledger unchanged for its owning finalizer");
+  database.query(`DELETE FROM child_credit_entry WHERE id = ?; DELETE FROM discount_award WHERE id = ?;`,
+    [provisionalReservedRootId, provisionalReservedAwardId]);
   const reviewBefore = await creditPaymentReviewState(database, approvedTwoChild.id, approvedTwoLater.id);
   assert.equal(reviewBefore.availableCreditMnt, 75000,
     "the review sees the partial usable credit remaining after a linked cross-child transfer");
@@ -1316,10 +1394,14 @@ try {
     FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [multiChildDraft.draftId]),
   [{ position: 0, paymentPlanCode: "two_installment", initialAmount: 500000 }, { position: 1, paymentPlanCode: "single", initialAmount: 700000 }],
   "siblings may retain independent Offering prices and payment plans");
-  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${multiChildDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 2,
-    "two children accepted together each receive one family award before payment");
-  assert.deepEqual(database.query(`SELECT award_amount_mnt AS amountMnt FROM discount_award WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?) ORDER BY registration_draft_child_id`, [multiChildDraft.draftId]).map((row) => row.amountMnt).sort((a, b) => a - b), [70000, 100000],
-    "family awards snapshot ten percent of each selected plan, including independent installment plans");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${multiChildDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 0,
+    "submission creates conditional family quotes instead of prematurely earning awards");
+  assert.deepEqual(database.query(`SELECT base_amount_mnt AS baseAmountMnt, award_amount_mnt AS awardAmountMnt, installment_strategy AS strategy, state
+    FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)
+    ORDER BY award_amount_mnt`, [multiChildDraft.draftId]), [
+    { baseAmountMnt: 700000, awardAmountMnt: 70000, strategy: 'one_payment', state: 'quoted_pending' },
+    { baseAmountMnt: 1000000, awardAmountMnt: 100000, strategy: 'final_installment_first', state: 'quoted_pending' },
+  ], "each selected agreement keeps its own conditional quote and installment strategy");
   const multiChallenge = addChallenge(database, multiChildDraft.draftId, multiChildDraft.normalizedEmail, iso(-4), iso(56));
   const multiSession = session(iso(-3), iso(57));
   await confirmRegistrationChallenge(env(database), multiChallenge, multiSession, new Date(iso(-3)));
@@ -1328,11 +1410,86 @@ try {
     WHERE payment_request_id = ? AND installment_kind = 'initial' ORDER BY id`, [multiRequest.id]);
   await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: multiRequest.id,
-    allocations: multiInstallments.map((item) => ({ installmentId: item.id, amountMnt: Number(item.amountMnt) === 500000 ? 400000 : 630000 })),
-    receivedAmountMnt: 1201000, source: 'staff_manual_bank', idempotencyKey: 'multi-child-transfer',
+    allocations: multiInstallments.map((item) => ({ installmentId: item.id, amountMnt: Number(item.amountMnt) === 500000 ? 500000 : 630000 })),
+    receivedAmountMnt: 1130000, source: 'staff_manual_bank', idempotencyKey: 'multi-child-transfer',
   }, new Date(iso(-2)));
   assert.equal(count(database, "payment_allocation", `received_payment_id = (SELECT id FROM received_payment WHERE idempotency_key = 'multi-child-transfer')`), 2, "one received payment can allocate across two children's initial obligations");
-  assert.equal(database.query(`SELECT received_amount_mnt AS amountMnt FROM received_payment WHERE idempotency_key = 'multi-child-transfer'`)[0].amountMnt, 1201000, "unallocated overpayment remains representable without inventing a credit");
+  assert.equal(database.query(`SELECT received_amount_mnt AS amountMnt FROM received_payment WHERE idempotency_key = 'multi-child-transfer'`)[0].amountMnt, 1130000, "the joint receipt preserves the actual conditional cash collected");
+  await finalizeDuePaymentConfirmations(env(database), new Date(iso(4)));
+  assert.deepEqual(database.query(`SELECT award_amount_mnt AS amountMnt FROM discount_award
+    WHERE registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = ?)
+      AND award_type = 'family_multi_child' AND status = 'active' ORDER BY award_amount_mnt`, [multiChildDraft.draftId]),
+  [{ amountMnt: 70000 }, { amountMnt: 100000 }],
+  "the protected finalizer earns exactly one family award per funded agreement");
+  const conditionalEffective = await effectiveInstallmentsForRows(env(database).DB, database.query(`SELECT payment_installment.id,
+    payment_installment.registration_draft_child_id AS registrationDraftChildId, payment_installment.installment_number AS installmentNumber,
+    payment_installment.amount_mnt AS amountMnt, COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) AS allocatedAmountMnt
+    FROM payment_installment LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+    WHERE payment_installment.payment_request_id = ? GROUP BY payment_installment.id ORDER BY payment_installment.amount_mnt, payment_installment.installment_number`, [multiRequest.id])
+    .map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) })));
+  assert.deepEqual(conditionalEffective.map((row) => ({ amountMnt: row.amountMnt, effectiveAmountMnt: row.effectiveAmountMnt })), [
+    { amountMnt: 500000, effectiveAmountMnt: 500000 },
+    { amountMnt: 500000, effectiveAmountMnt: 400000 },
+    { amountMnt: 700000, effectiveAmountMnt: 630000 },
+  ], "earned conditional awards retain cash-only first installments and reduce only the later installment");
+  await Promise.all([
+    finalizeDuePaymentConfirmations(env(database), new Date(iso(5))),
+    finalizeDuePaymentConfirmations(env(database), new Date(iso(5))),
+  ]);
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${multiChildDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 2,
+    "replaying or racing the finalizer cannot duplicate deterministic conditional awards");
+  const conditionalApproval = submission("class-priced", undefined, 1, "two_installment");
+  conditionalApproval.children.push({ ...conditionalApproval.children[0], givenName: "Нөхцөлтэй суудал", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" });
+  const conditionalApprovalDraft = await createRegistrationDraft(env(database), conditionalApproval, new Date(iso(-4)));
+  const conditionalChildren = database.query(`SELECT id, given_name AS givenName FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [conditionalApprovalDraft.draftId]);
+  const conditionalRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [conditionalApprovalDraft.draftId])[0];
+  const conditionalSingleInstallment = database.query(`SELECT payment_installment.id FROM payment_installment
+    WHERE payment_request_id = ? AND registration_draft_child_id = ? AND installment_kind = 'initial'`, [conditionalRequest.id, conditionalChildren[1].id])[0];
+  const conditionalQuote = database.query(`SELECT id, revision FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?`, [conditionalChildren[1].id])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: conditionalRequest.id, allocations: [{ installmentId: conditionalSingleInstallment.id, amountMnt: 630000 }],
+    receivedAmountMnt: 630000, source: 'staff_manual_bank', idempotencyKey: 'conditional-seat-cash',
+  }, new Date(iso(-2)));
+  await finalizeDuePaymentConfirmations(env(database), new Date(iso(4)));
+  assert.equal(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ?`, [conditionalChildren[1].id])[0].enrollmentId, null,
+    "a conditional quote blocks ordinary promotion after only one sibling's discounted cash is finalized");
+  await confirmSeatForSufficientPayment(env(database), paymentStaff, conditionalRequest.id, {
+    quoteId: conditionalQuote.id, quoteRevision: Number(conditionalQuote.revision), reason: 'Гэр бүлийн нөхцөл шийдэгдэхийг хүлээнэ',
+  }, new Date(iso(5)));
+  assert.ok(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ?`, [conditionalChildren[1].id])[0].enrollmentId,
+    "only the explicitly approved quote child can receive a conditional seat");
+  assert.equal(database.query(`SELECT conditional_quote_id AS quoteId, conditional_quote_revision AS quoteRevision FROM payment_confirmation
+    WHERE payment_request_id = ? AND seat_confirmation_approved = 1`, [conditionalRequest.id])[0].quoteId, conditionalQuote.id,
+    "the conditional seat approval is bound to the displayed quote rather than the parent request alone");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN ('${conditionalChildren[0].id}', '${conditionalChildren[1].id}') AND award_type = 'family_multi_child' AND status = 'active'`), 0,
+    "conditional approval never manufactures an earned award or credit before a funded subset qualifies");
+  const fundedSubset = submission("class-priced", undefined, 1, "two_installment");
+  fundedSubset.children.push(
+    { ...fundedSubset.children[0], givenName: "Санхүүжсэн 2", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" },
+    { ...fundedSubset.children[0], givenName: "Хүлээгдэж буй 3", selectedClassSessionId: "class-legacy-status", paymentPlanCode: "single" },
+  );
+  const fundedSubsetDraft = await createRegistrationDraft(env(database), fundedSubset, new Date(iso(-3)));
+  const fundedSubsetChildren = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [fundedSubsetDraft.draftId]);
+  const fundedSubsetRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [fundedSubsetDraft.draftId])[0];
+  const fundedSubsetInstallments = database.query(`SELECT id, registration_draft_child_id AS childId, amount_mnt AS amountMnt
+    FROM payment_installment WHERE payment_request_id = ? AND installment_kind = 'initial' ORDER BY registration_draft_child_id`, [fundedSubsetRequest.id]);
+  const fundedSubsetAllocations = fundedSubsetInstallments
+    .filter((installment) => installment.childId !== fundedSubsetChildren[2].id)
+    .map((installment) => ({ installmentId: installment.id, amountMnt: Number(installment.amountMnt) === 500000 ? 500000 : 630000 }));
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: fundedSubsetRequest.id, allocations: fundedSubsetAllocations,
+    receivedAmountMnt: fundedSubsetAllocations.reduce((sum, allocation) => sum + allocation.amountMnt, 0),
+    source: 'staff_manual_bank', idempotencyKey: 'funded-subset-of-three',
+  }, new Date(iso(-2)));
+  await finalizeDuePaymentConfirmations(env(database), new Date(iso(4)));
+  assert.equal(count(database, 'discount_award', `registration_draft_child_id IN ('${fundedSubsetChildren[0].id}', '${fundedSubsetChildren[1].id}')
+    AND award_type = 'family_multi_child' AND qualification_state = 'earned'`), 2,
+  'a funded two-child subset of three earns exactly its two agreement awards');
+  assert.equal(database.query(`SELECT state FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?`, [fundedSubsetChildren[2].id])[0].state, 'quoted_pending',
+    'the unfunded third child remains conditional instead of receiving an unearned award or a failure state');
+  for (const child of fundedSubsetChildren) {
+    await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: child.id, reason: 'guardian_request' }, new Date(iso(5)));
+  }
   const familyLifecycle = submission("class-priced", undefined, 1, "two_installment");
   familyLifecycle.children.push(
     { ...familyLifecycle.children[0], givenName: "Амьдрал 2", selectedClassSessionId: "class-second-offering", paymentPlanCode: "single" },
@@ -1341,14 +1498,220 @@ try {
   const familyLifecycleDraft = await createRegistrationDraft(env(database), familyLifecycle, new Date(iso(-3)));
   const familyLifecycleChildren = database.query(`SELECT id, given_name AS givenName FROM registration_draft_child
     WHERE registration_draft_id = ? ORDER BY position`, [familyLifecycleDraft.draftId]);
-  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${familyLifecycleDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 3,
-  "three accepted siblings receive their family awards before payment or canonical promotion");
+  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${familyLifecycleDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 0,
+  "three accepted siblings begin with conditional quotes, not earned awards");
   await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: familyLifecycleChildren[1].id, reason: "guardian_request" });
-  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${familyLifecycleDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 3,
-    "three-to-two cancellation keeps the historical awards active without automatic recalculation");
+  assert.equal(database.query(`SELECT state FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?`, [familyLifecycleChildren[1].id])[0].state, 'cancelled',
+    "cancelling an unfunded sibling invalidates only that sibling's quote");
+  assert.equal(count(database, "conditional_family_discount_quote", `registration_draft_child_id IN ('${familyLifecycleChildren[0].id}', '${familyLifecycleChildren[2].id}') AND state = 'quoted_pending'`), 2,
+    "three-to-two leaves the remaining pair unresolved rather than declaring failure");
   await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: familyLifecycleChildren[2].id, reason: "guardian_request" });
-  assert.equal(count(database, "discount_award", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${familyLifecycleDraft.draftId}') AND award_type = 'family_multi_child' AND status = 'active'`), 3,
-    "three-to-one cancellation also leaves award reversal to the audited admin path");
+  assert.equal(database.query(`SELECT state FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?`, [familyLifecycleChildren[0].id])[0].state, 'qualification_failed',
+    "three-to-one becomes explicit staff review without creating an award or debt");
+  const failedConditionalQuote = database.query(`SELECT id, revision FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?`, [familyLifecycleChildren[0].id])[0];
+  const failureDeadline = new Date(iso(30));
+  await setConditionalFamilyFailureDeadline(env(database), paymentStaff, {
+    quoteId: failedConditionalQuote.id, quoteRevision: Number(failedConditionalQuote.revision), dueAt: failureDeadline.toISOString(), reason: "Гэр бүлийн нөхцөлийн зөрүүг тохирсон",
+  }, new Date(iso(6)));
+  assert.equal(database.query(`SELECT conditional_failure_due_at AS dueAt FROM conditional_family_discount_quote WHERE id = ?`, [failedConditionalQuote.id])[0].dueAt, failureDeadline.toISOString(),
+    "a definitive qualification failure stays out of overdue scheduling until staff sets a replacement deadline");
+  assert.equal(count(database, "audit_event", `action = 'conditional_family_failure_deadline_set' AND subject_id = '${failedConditionalQuote.id}'`), 1,
+    "the replacement deadline is an auditable, revision-bound staff resolution");
+  await assert.rejects(() => setConditionalFamilyFailureDeadline(env(database), paymentStaff, {
+    quoteId: failedConditionalQuote.id, quoteRevision: Number(failedConditionalQuote.revision), dueAt: failureDeadline.toISOString(), reason: "stale",
+  }, new Date(iso(6))), (error) => error instanceof ConditionalFamilyDiscountError && error.code === "not_found",
+  "a stale quote revision cannot overwrite the staff-set failure deadline");
+  // The same protected finalizer is used by relationship routes discovered
+  // after canonical promotion. Reclassifying this disposable paid pair here
+  // proves the generic basis is not a second award implementation.
+  const genericChildren = database.query(`SELECT id, payment_plan_code AS plan, initial_payment_amount_mnt AS initialAmount,
+    second_payment_amount_mnt AS secondAmount FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [multiChildDraft.draftId]);
+  database.query(`UPDATE discount_award SET conditional_quote_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    UPDATE conditional_family_discount_quote SET linked_discount_award_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM discount_award WHERE registration_draft_child_id IN (?, ?) AND award_type = 'family_multi_child';`,
+    [genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id,
+      genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id]);
+  for (const child of genericChildren) {
+    const baseAmount = Number(child.initialAmount) + Number(child.secondAmount || 0);
+    database.query(`INSERT INTO conditional_family_discount_quote (
+      id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+      basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state, created_at, updated_at, is_test, test_run_id
+    ) VALUES (?, ?, 'year-test', 'guardian', 'runtime-generic-guardian', 1000, ?, ?, ?, 'quoted_pending', ?, ?, 1, 'registration-test')`,
+    [randomUUID(), child.id, baseAmount, Math.floor(baseAmount / 10), child.plan === 'two_installment' ? 'final_installment_first' : 'one_payment', iso(7), iso(7)]);
+  }
+  const genericFinalization = await finalizeFundedConditionalFamilyQuotes(env(database), 'guardian', 'runtime-generic-guardian', new Date(iso(8)));
+  assert.equal(genericFinalization.state, 'qualified', 'a same-guardian relationship uses the shared funded-subset finalizer');
+  assert.equal(genericFinalization.awarded, 2, 'the relationship finalizer earns one award per distinct funded agreement');
+  assert.equal(count(database, 'discount_award', `registration_draft_child_id IN ('${genericChildren[0].id}', '${genericChildren[1].id}') AND award_type = 'family_multi_child' AND qualification_state = 'earned'`), 2,
+    'generic relationship resolution cannot duplicate value through its relationship basis');
+  const alternateBasisSource = database.query(`SELECT canonical_student_id AS studentId FROM registration_draft_child WHERE id = ?`, [autoTwoChild.id])[0];
+  assert.ok(alternateBasisSource.studentId, "the alternate relationship fixture starts from a canonical enrollment");
+  const alternateBasisGroupId = `alternate-family-${randomUUID()}`;
+  database.query(`INSERT INTO family_group (id, status, source, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, 'active', 'test_fixture', 1, 'registration-test', ?, ?);
+    INSERT INTO family_group_member (id, family_group_id, student_id, relationship_basis, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'test_fixture', 'active', 1, 'registration-test', ?, ?),
+        (?, ?, ?, 'test_fixture', 'active', 1, 'registration-test', ?, ?);`,
+  [alternateBasisGroupId, iso(8), iso(8), randomUUID(), alternateBasisGroupId, alternateBasisSource.studentId, iso(8), iso(8),
+    randomUUID(), alternateBasisGroupId, approvedTwoStudent.studentId, iso(8), iso(8)]);
+  const alternateBefore = database.query(`SELECT
+    (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id = ? AND award_type = 'family_multi_child') AS awards,
+    (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ? AND entry_kind = 'discount_award_credit') AS roots`,
+  [autoTwoChild.id, autoTwoChild.id])[0];
+  await quoteConditionalFamilyDiscountsForGroup(env(database), alternateBasisGroupId, autoTwoChild.id, iso(8));
+  assert.deepEqual(database.query(`SELECT
+    (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id = ? AND award_type = 'family_multi_child') AS awards,
+    (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ? AND entry_kind = 'discount_award_credit') AS roots`,
+  [autoTwoChild.id, autoTwoChild.id])[0], alternateBefore,
+  'a second valid relationship basis cannot create another award or residual-credit root for an already-qualified agreement');
+  database.query(`UPDATE discount_award SET conditional_quote_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    UPDATE conditional_family_discount_quote SET linked_discount_award_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM discount_award WHERE registration_draft_child_id IN (?, ?) AND award_type = 'family_multi_child';`,
+  [genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id,
+    genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id]);
+  const sameStudentId = `same-student-${randomUUID()}`;
+  const sameStudentGuardianId = `same-student-guardian-${randomUUID()}`;
+  database.query(`INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized,
+      home_address, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, 'Ижил хүүхдийн тест асран', '99770000', '99770000', ?, ?, 'Тест хаяг', 'active', 1, 'registration-test', ?, ?);
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, 'Нэг', 'Хүүхэд', 'not_specified', '2015-01-01', 'active', 1, 'registration-test', ?, ?);`,
+  [sameStudentGuardianId, `${sameStudentGuardianId}@example.test`, `${sameStudentGuardianId}@example.test`, iso(8), iso(8), sameStudentId, iso(8), iso(8)]);
+  for (const [index, child] of genericChildren.entries()) {
+    const source = database.query(`SELECT current_grade AS currentGrade, returning_status AS returningStatus,
+      payment_plan_code AS paymentPlanCode, selected_class_session_id AS classSessionId
+      FROM registration_draft_child WHERE id = ?`, [child.id])[0];
+    const preRegistrationId = `same-student-pre-${index}-${randomUUID()}`;
+    const applicationId = `same-student-application-${index}-${randomUUID()}`;
+    const enrollmentId = `same-student-enrollment-${index}-${randomUUID()}`;
+    database.query(`INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, submitted_at, parent_rules_version, student_rules_version,
+        is_test, test_run_id, created_at, updated_at)
+        VALUES (?, ?, 'year-test', 'completed', ?, 'parent-rules-v1', 'student-rules-v1', 1, 'registration-test', ?, ?);
+      INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, selected_payment_plan_code,
+        selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'enrolled', 1, 'registration-test', ?, ?);
+      INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at,
+        is_test, test_run_id, created_at, updated_at)
+        VALUES (?, ?, ?, 'year-test', ?, 'confirmed', ?, 1, 'registration-test', ?, ?);
+      UPDATE registration_draft_child SET canonical_student_id = ?, canonical_application_child_id = ?, canonical_enrollment_id = ?,
+        identity_resolution_status = 'promoted', promotion_status = 'promoted' WHERE id = ?;`,
+    [preRegistrationId, sameStudentGuardianId, iso(8), iso(8), iso(8), applicationId, preRegistrationId, sameStudentId,
+      source.currentGrade, source.returningStatus, source.paymentPlanCode, source.classSessionId, iso(8), iso(8), enrollmentId,
+      applicationId, sameStudentId, source.classSessionId, iso(8), iso(8), iso(8), sameStudentId, applicationId, enrollmentId, child.id]);
+  }
+  await quoteConditionalFamilyDiscountsForSameStudent(env(database), sameStudentId, genericChildren[0].id, iso(9));
+  assert.equal(count(database, 'discount_award', `registration_draft_child_id IN ('${genericChildren[0].id}', '${genericChildren[1].id}') AND award_type = 'family_multi_child' AND qualification_state = 'earned'`), 2,
+    'one canonical child in two distinct class sessions qualifies through the same protected finalizer');
+  database.query(`UPDATE discount_award SET conditional_quote_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    UPDATE conditional_family_discount_quote SET linked_discount_award_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM discount_award WHERE registration_draft_child_id IN (?, ?) AND award_type = 'family_multi_child';
+    UPDATE registration_draft_child SET selected_class_session_id = (SELECT selected_class_session_id FROM registration_draft_child WHERE id = ?) WHERE id = ?;
+    UPDATE enrollment SET class_session_id = (SELECT selected_class_session_id FROM registration_draft_child WHERE id = ?) WHERE id =
+      (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = ?);`,
+  [genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id,
+    genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id,
+    genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id]);
+  const sameClass = await quoteConditionalFamilyDiscountsForSameStudent(env(database), sameStudentId, genericChildren[0].id, iso(10));
+  assert.deepEqual(sameClass, { created: 0, qualified: 0 },
+    'duplicate registrations for one canonical child in the same class cannot qualify each other');
+  database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at)
+      VALUES ('year-conditional-other', 'Өөр тест жил', 'open', 0, 1, 'registration-test', ?, ?);
+    INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status,
+      is_test, test_run_id, created_at, updated_at)
+      VALUES ('offering-conditional-other-year', 'annual_course', 'Өөр тест сургалт', 'year-conditional-other', 'stage_1', 1, 'paid', 'active',
+        1, 'registration-test', ?, ?);
+    INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time,
+      capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
+      VALUES ('class-conditional-other-year', 'offering-conditional-other-year', 'year-conditional-other', 'stage_1', 'Өөр тест анги', 'Бямба', '20:00', '21:20',
+        10, 'available', 1, 1, 'registration-test', ?, ?);
+    UPDATE registration_draft_child SET selected_class_session_id = 'class-conditional-other-year' WHERE id = ?;
+    UPDATE enrollment SET academic_year_id = 'year-conditional-other', class_session_id = 'class-conditional-other-year'
+      WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = ?);`,
+  [iso(10), iso(10), iso(10), iso(10), iso(10), iso(10), genericChildren[1].id, genericChildren[1].id]);
+  const crossYear = await quoteConditionalFamilyDiscountsForSameStudent(env(database), sameStudentId, genericChildren[0].id, iso(11));
+  assert.deepEqual(crossYear, { created: 0, qualified: 0 },
+    'a relationship persists but only same-academic-year agreements can qualify together');
+  database.query(`UPDATE registration_draft_child SET selected_class_session_id = 'class-second-offering' WHERE id = ?;
+    UPDATE enrollment SET academic_year_id = 'year-test', class_session_id = 'class-second-offering'
+      WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = ?);`,
+  [genericChildren[1].id, genericChildren[1].id]);
+  const overlappingBasisQuotes = [
+    [randomUUID(), genericChildren[0].id, 'same_child_distinct_class', 'same-student-overlap-a'],
+    [randomUUID(), genericChildren[1].id, 'same_child_distinct_class', 'same-student-overlap-a'],
+    [randomUUID(), genericChildren[0].id, 'family_group', 'same-student-overlap-b'],
+    [randomUUID(), genericChildren[1].id, 'family_group', 'same-student-overlap-b'],
+  ];
+  for (const [quoteId, childId, basis, key] of overlappingBasisQuotes) {
+    database.query(`INSERT INTO conditional_family_discount_quote (
+      id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+      basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state, created_at, updated_at, is_test, test_run_id
+    ) VALUES (?, ?, 'year-test', ?, ?, 1000, ?, ?, ?, 'quoted_pending', ?, ?, 1, 'registration-test')`,
+    [quoteId, childId, basis, key, Number(childId === genericChildren[0].id ? genericChildren[0].initialAmount : genericChildren[1].initialAmount)
+      + Number(childId === genericChildren[0].id ? genericChildren[0].secondAmount || 0 : genericChildren[1].secondAmount || 0),
+      Math.floor((Number(childId === genericChildren[0].id ? genericChildren[0].initialAmount : genericChildren[1].initialAmount)
+        + Number(childId === genericChildren[0].id ? genericChildren[0].secondAmount || 0 : genericChildren[1].secondAmount || 0)) / 10),
+      childId === genericChildren[0].id ? 'final_installment_first' : 'one_payment', iso(11), iso(11)]);
+  }
+  await Promise.all([
+    finalizeFundedConditionalFamilyQuotes(env(database), 'same_child_distinct_class', 'same-student-overlap-a', new Date(iso(11))),
+    finalizeFundedConditionalFamilyQuotes(env(database), 'family_group', 'same-student-overlap-b', new Date(iso(11))),
+  ]);
+  assert.equal(count(database, 'discount_award', `registration_draft_child_id IN ('${genericChildren[0].id}', '${genericChildren[1].id}')
+    AND award_type = 'family_multi_child' AND qualification_state = 'earned'`), 2,
+  'concurrent finalizers from different relationship bases create exactly one earned award per shared agreement');
+  database.query(`UPDATE discount_award SET conditional_quote_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    UPDATE conditional_family_discount_quote SET linked_discount_award_id = NULL WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (?, ?);
+    DELETE FROM discount_award WHERE registration_draft_child_id IN (?, ?) AND award_type = 'family_multi_child';`,
+  [genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id,
+    genericChildren[0].id, genericChildren[1].id, genericChildren[0].id, genericChildren[1].id]);
+  // A source agreement can have more than one valid relationship basis. If a
+  // sibling cancels in one basis, the remaining agreement must stay pending
+  // while another same-year two-agreement relationship is still live.
+  const alternateCancellationQuotes = [
+    [randomUUID(), genericChildren[0].id, 'same_child_distinct_class', 'same-student-cancellation-basis'],
+    [randomUUID(), genericChildren[1].id, 'same_child_distinct_class', 'same-student-cancellation-basis'],
+    [randomUUID(), genericChildren[0].id, 'family_group', 'family-alternate-cancellation-basis'],
+    [randomUUID(), approvedTwoChild.id, 'family_group', 'family-alternate-cancellation-basis'],
+  ];
+  for (const [quoteId, childId, basis, key] of alternateCancellationQuotes) {
+    database.query(`INSERT INTO conditional_family_discount_quote (
+      id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+      basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state, created_at, updated_at, is_test, test_run_id
+    ) VALUES (?, ?, 'year-test', ?, ?, 1000, 1000000, 100000, 'one_payment', 'quoted_pending', ?, ?, 1, 'registration-test')`,
+    [quoteId, childId, basis, key, iso(11), iso(11)]);
+  }
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: genericChildren[1].id, reason: 'guardian_request' }, new Date(iso(12)));
+  const alternateCancellationState = database.query(`SELECT relationship_key AS relationshipKey, state
+    FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?
+      AND relationship_key IN ('same-student-cancellation-basis', 'family-alternate-cancellation-basis')
+    ORDER BY relationship_key`, [genericChildren[0].id]);
+  assert.deepEqual(alternateCancellationState, [
+    { relationshipKey: 'family-alternate-cancellation-basis', state: 'quoted_pending' },
+    { relationshipKey: 'same-student-cancellation-basis', state: 'quoted_pending' },
+  ], 'cancelling one relationship leaves the shared agreement pending when another valid same-year basis remains');
+  // Historical adoption is explicit. A clean unused award becomes provisional
+  // only after the audited operation; an existing root with debit/reservation
+  // would be surfaced as reconciliation review instead.
+  const historicalAwardId = `historical-family-${randomUUID()}`;
+  database.query(`INSERT INTO discount_award (id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+    status, reason, awarded_at, is_test, test_run_id, created_at, updated_at)
+    VALUES (?, ?, 'family_multi_child', 1000, 1000000, 100000, 'active', 'same_registration_guardian_multiple_children', ?, 1, 'registration-test', ?, ?)`,
+    [historicalAwardId, familyLifecycleChildren[0].id, iso(8), iso(8), iso(8)]);
+  await assert.rejects(previewHistoricalConditionalFamilyAdoption(env(database), registrationStaff, [familyLifecycleChildren[0].id]),
+    (error) => error.code === "forbidden", "an ordinary registration teacher cannot preview historical adoption");
+  await assert.rejects(adoptHistoricalConditionalFamilyAwards(env(database), registrationStaff, {
+    operationId: randomUUID(), childIds: [familyLifecycleChildren[0].id], reason: 'Teacher attempt', reviewFingerprint: '0'.repeat(64),
+  }, new Date(iso(9))), (error) => error.code === "forbidden", "an ordinary registration teacher cannot adopt historical awards");
+  const adoptionPreview = await previewHistoricalConditionalFamilyAdoption(env(database), adminStaff, [familyLifecycleChildren[0].id]);
+  assert.equal(adoptionPreview.rows.find((row) => row.awardId === historicalAwardId)?.classification, 'qualification_failed', 'an isolated historical award is classified without modifying it in dry-run');
+  const adoption = await adoptHistoricalConditionalFamilyAwards(env(database), adminStaff, { operationId: randomUUID(), childIds: [familyLifecycleChildren[0].id], reason: 'Түүхэн нөхцөлт хөнгөлөлтийг хянах', reviewFingerprint: adoptionPreview.reviewFingerprint }, new Date(iso(9)));
+  assert.equal(adoption.adopted, 1, 'the explicit adoption operation classifies exactly one clean historical award');
+  assert.equal(database.query(`SELECT qualification_state AS state FROM discount_award WHERE id = ?`, [historicalAwardId])[0].state, 'failed',
+    'historical adoption preserves the award row while protecting an isolated failed qualification from active financial effect');
   const manipulated = submission("class-priced");
   manipulated.children[0].initialPaymentAmountMnt = 1;
   const manipulatedDraft = await createRegistrationDraft(env(database), manipulated, new Date(iso(-1)));
@@ -1738,6 +2101,430 @@ try {
   await assert.rejects(verifyTurnstile(env(database), "bad-token"), (error) => error.code === "invalid");
   globalThis.fetch = async () => { throw new TypeError("network down"); };
   await assert.rejects(verifyTurnstile(env(database), "network-token"), (error) => error.code === "unavailable");
+
+  // Run the actual released 8e86 Worker against the post-0052 schema before
+  // any adoption. This deliberately models a legacy active award: 0052's
+  // default leaves its effective 1,080,000 MNT obligation intact, and the
+  // released payment write still uses its raw 1,200,000 MNT installment.
+  database.query(`UPDATE class_session SET capacity = 100 WHERE id = 'class-priced';
+    UPDATE offering_course_pricing SET one_time_amount_mnt = 1200000 WHERE activity_offering_id = 'offering-test';`);
+  const releasedCompatibilityDraft = await createReleasedRegistrationDraft(env(database), submission("class-priced"), new Date(iso(69)));
+  const releasedCompatibilityChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [releasedCompatibilityDraft.draftId])[0];
+  const releasedCompatibilityRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [releasedCompatibilityDraft.draftId])[0];
+  const releasedCompatibilityInstallment = database.query(`SELECT id FROM payment_installment
+    WHERE payment_request_id = ? AND installment_kind = 'initial'`, [releasedCompatibilityRequest.id])[0];
+  const releasedCompatibilityAwardId = `released-compatibility-award-${randomUUID()}`;
+  database.query(`INSERT INTO discount_award (id, registration_draft_child_id, award_type, basis_points, base_amount_mnt,
+    award_amount_mnt, status, reason, awarded_at, is_test, test_run_id, created_at, updated_at)
+    VALUES (?, ?, 'family_multi_child', 1000, 1200000, 120000, 'active', 'same_registration_guardian_multiple_children', ?, 1, ?, ?, ?)`,
+  [releasedCompatibilityAwardId, releasedCompatibilityChild.id, iso(69), `registration:${releasedCompatibilityDraft.draftId}`, iso(69), iso(69)]);
+  const releasedQueueBeforeAdoption = await getReleasedInitialPaymentQueue(env(database), paymentStaff, new Date(iso(69)));
+  const releasedHistoricalItem = releasedQueueBeforeAdoption.items.find((item) => item.registrationDraftChildId === releasedCompatibilityChild.id);
+  assert.equal(releasedHistoricalItem?.expectedAmountMnt, 1080000,
+    "the actual released 8e86 payment projection runs on the 0052 schema and retains the legacy active family-award amount before adoption");
+  await recordReleasedManualPayment(env(database), paymentStaff, {
+    paymentRequestId: releasedCompatibilityRequest.id,
+    allocations: [{ installmentId: releasedCompatibilityInstallment.id, amountMnt: 1080000 }],
+    receivedAmountMnt: 1080000, source: 'staff_manual_bank', idempotencyKey: 'released-0052-compatibility-cash',
+  }, new Date(iso(70)));
+  assert.equal(Number(database.query(`SELECT SUM(received_amount_mnt) AS amount FROM received_payment WHERE payment_request_id = ?`, [releasedCompatibilityRequest.id])[0].amount), 1080000,
+    "the released Worker can complete a representative ordinary payment write after 0052 without creating an adoption operation");
+  assert.equal(await recoverFundedConditionalFamilyQuotes(env(database), new Date(iso(70))), 0,
+    "the new Worker does not adopt released historical awards during ordinary scheduled recovery");
+  assert.equal(count(database, 'conditional_family_discount_quote', `registration_draft_child_id = '${releasedCompatibilityChild.id}'`), 0,
+    "ordinary released reads/writes and new-worker recovery leave unadopted legacy awards without a quote or adoption effect");
+
+  // Historical-adoption fixture: these awards model the released
+  // submission-time rows (active/earned, no conditional quote) before 0052's
+  // explicit staff adoption. Receipts are created through the normal service.
+  database.query(`UPDATE class_session SET capacity = 100 WHERE id IN ('class-priced', 'class-second-offering', 'class-legacy-status');
+    UPDATE offering_course_pricing SET one_time_amount_mnt = 1200000 WHERE activity_offering_id IN ('offering-test', 'offering-second-test');`);
+  const historicalInput = submission("class-priced");
+  historicalInput.children.push(
+    { ...historicalInput.children[0], givenName: "Түүхэн 2", selectedClassSessionId: "class-second-offering" },
+    { ...historicalInput.children[0], givenName: "Түүхэн 3", selectedClassSessionId: "class-legacy-status" },
+  );
+  const historicalDraft = await createRegistrationDraft(env(database), historicalInput, new Date(iso(70)));
+  const historicalChildren = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [historicalDraft.draftId]);
+  const historicalRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [historicalDraft.draftId])[0];
+  database.query(`DELETE FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (?, ?, ?);`,
+    [historicalChildren[0].id, historicalChildren[1].id, historicalChildren[2].id]);
+  for (const child of historicalChildren) {
+    database.query(`INSERT INTO discount_award (id, registration_draft_child_id, award_type, basis_points, base_amount_mnt,
+      award_amount_mnt, status, reason, awarded_at, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, 'family_multi_child', 1000, 1200000, 120000, 'active', 'same_registration_guardian_multiple_children', ?, 1, ?, ?, ?)`,
+    [`historical-award-${child.id}`, child.id, iso(70), historicalDraft.draftId.replace(/^/, 'registration:'), iso(70), iso(70)]);
+  }
+  const historicalUnpaid = await previewHistoricalConditionalFamilyAdoption(env(database), adminStaff, historicalChildren.map((child) => child.id));
+  assert.deepEqual(historicalUnpaid.rows.map((row) => row.classification), ['provisional', 'provisional', 'provisional'],
+    'three released submission-time awards remain a non-mutating conditional quote while all three children are unpaid');
+  assert.equal(count(database, 'conditional_family_discount_quote', `registration_draft_child_id IN ('${historicalChildren[0].id}', '${historicalChildren[1].id}', '${historicalChildren[2].id}')`), 0,
+    'the historical preview never writes quotes, awards, credit, notices, or payment demands');
+  const historicalInstallments = database.query(`SELECT id, registration_draft_child_id AS childId FROM payment_installment
+    WHERE payment_request_id = ? AND installment_kind = 'initial' ORDER BY registration_draft_child_id`, [historicalRequest.id]);
+  const initialFor = (childId) => historicalInstallments.find((installment) => installment.childId === childId).id;
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: historicalRequest.id, allocations: [{ installmentId: initialFor(historicalChildren[0].id), amountMnt: 1080000 }],
+    receivedAmountMnt: 1200000, source: 'staff_manual_bank', idempotencyKey: 'historical-one-conditional-cash',
+    approveSeatConfirmation: true, remainingPaymentDueAt: iso(120),
+  }, new Date(iso(71)));
+  const historicalOneFunded = await previewHistoricalConditionalFamilyAdoption(env(database), adminStaff, historicalChildren.map((child) => child.id));
+  assert.deepEqual(historicalOneFunded.rows.map((row) => row.classification), ['provisional', 'provisional', 'provisional'],
+    'one 1,080,000 MNT historical conditional receipt remains provisional while siblings are pending');
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: historicalRequest.id,
+    allocations: [
+      { installmentId: initialFor(historicalChildren[1].id), amountMnt: 1080000 },
+    ],
+    receivedAmountMnt: 1080000, source: 'staff_manual_bank', idempotencyKey: 'historical-two-funded-cash',
+  }, new Date(iso(72)));
+  const historicalTwoFunded = await previewHistoricalConditionalFamilyAdoption(env(database), adminStaff, historicalChildren.map((child) => child.id));
+  const historicalRowFor = (childId) => historicalTwoFunded.rows.find((row) => row.childId === childId);
+  assert.deepEqual(historicalChildren.map((child) => historicalRowFor(child.id)?.classification), ['earned', 'earned', 'provisional'],
+    'two funded historical agreements are identified as earned while the unfunded third remains provisional');
+  assert.deepEqual(historicalChildren.map((child) => historicalRowFor(child.id)?.currentRequestedMnt), [0, 0, 1080000],
+    'the preview preserves the communicated discounted quote for the pending child and does not rewrite cash receipts');
+  assert.deepEqual(historicalChildren.map((child) => ({
+    cashReceivedMnt: Number(historicalRowFor(child.id)?.cashReceivedMnt),
+    cashAllocatedMnt: Number(historicalRowFor(child.id)?.cashMnt),
+    attributableExcessMnt: Number(historicalRowFor(child.id)?.attributableCashExcessMnt),
+  })), [
+    { cashReceivedMnt: 1200000, cashAllocatedMnt: 1080000, attributableExcessMnt: 120000 },
+    { cashReceivedMnt: 1080000, cashAllocatedMnt: 1080000, attributableExcessMnt: 0 },
+    { cashReceivedMnt: 0, cashAllocatedMnt: 0, attributableExcessMnt: 0 },
+  ], 'historical-adoption preview keeps actual received cash distinct from the allocation used for qualification');
+  const historicalQueueBeforePromotion = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(72)));
+  const historicalQueueA = historicalQueueBeforePromotion.items.find((item) => item.registrationDraftChildId === historicalChildren[0].id);
+  const historicalQueueB = historicalQueueBeforePromotion.items.find((item) => item.registrationDraftChildId === historicalChildren[1].id);
+  assert.deepEqual({
+    aReceived: historicalQueueA?.totalCashReceivedMnt,
+    aAllocated: historicalQueueA?.totalCashAllocatedMnt,
+    aExcess: historicalQueueA?.attributableCashExcessMnt,
+    bReceived: historicalQueueB?.totalCashReceivedMnt,
+    bAllocated: historicalQueueB?.totalCashAllocatedMnt,
+  }, {
+    aReceived: 1200000, aAllocated: 1080000, aExcess: 120000,
+    bReceived: 1080000, bAllocated: 1080000,
+  }, 'staff payment projection shows A\'s full receipt without substituting its 1,080,000 MNT allocation');
+  const sharedReceiptDraft = await createRegistrationDraft(env(database), submission("class-priced", undefined, 2), new Date(iso(72)));
+  const sharedReceiptChildren = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [sharedReceiptDraft.draftId]);
+  const sharedReceiptRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [sharedReceiptDraft.draftId])[0];
+  const sharedReceiptInstallments = database.query(`SELECT id, registration_draft_child_id AS childId FROM payment_installment
+    WHERE payment_request_id = ? AND installment_kind = 'initial' ORDER BY registration_draft_child_id`, [sharedReceiptRequest.id]);
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: sharedReceiptRequest.id,
+    allocations: sharedReceiptChildren.map((child) => ({
+      installmentId: sharedReceiptInstallments.find((installment) => installment.childId === child.id).id,
+      amountMnt: 1080000,
+    })),
+    receivedAmountMnt: 2400000, source: 'staff_manual_bank', idempotencyKey: 'shared-receipt-unassigned-excess',
+  }, new Date(iso(72)));
+  const sharedReceiptQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(72)));
+  assert.deepEqual(sharedReceiptChildren.map((child) => {
+    const item = sharedReceiptQueue.items.find((candidate) => candidate.registrationDraftChildId === child.id);
+    return { received: item?.totalCashReceivedMnt, allocated: item?.totalCashAllocatedMnt, excess: item?.attributableCashExcessMnt };
+  }), [
+    { received: 1080000, allocated: 1080000, excess: 0 },
+    { received: 1080000, allocated: 1080000, excess: 0 },
+  ], 'a shared receipt never attributes its unallocated 240,000 MNT remainder to each child or creates duplicate apparent cash');
+  const historicalOperationId = randomUUID();
+  const historicalAdoption = await adoptHistoricalConditionalFamilyAwards(env(database), adminStaff, {
+    operationId: historicalOperationId, childIds: historicalChildren.map((child) => child.id),
+    reason: 'Түүхэн гэр бүлийн нөхцөлийг хянаж батлав', reviewFingerprint: historicalTwoFunded.reviewFingerprint,
+  }, new Date(iso(73)));
+  assert.deepEqual({ adopted: historicalAdoption.adopted, reconciliationReview: historicalAdoption.reconciliationReview }, { adopted: 3, reconciliationReview: 0 },
+    'the reviewed historical operation adopts the funded pair and protected pending sibling together');
+  assert.deepEqual(database.query(`SELECT qualification_state AS state FROM discount_award WHERE registration_draft_child_id IN (?, ?, ?)
+    ORDER BY registration_draft_child_id`, [historicalChildren[0].id, historicalChildren[1].id, historicalChildren[2].id]).map((row) => row.state).sort(),
+  ['earned', 'earned', 'provisional'], 'adoption changes only the award financial-effect state, never the receipt history');
+  // The staging historical fixture predates payment_confirmation. Preserve the
+  // recorded receipts/allocation rows, then reproduce that exact missing link.
+  database.query(`DELETE FROM payment_confirmation WHERE received_payment_id IN (
+    SELECT payment_allocation.received_payment_id FROM payment_allocation
+    INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+    WHERE payment_installment.registration_draft_child_id IN (?, ?)
+      AND payment_installment.installment_kind = 'initial'
+  )`, [historicalChildren[0].id, historicalChildren[1].id]);
+  const historicalLegacyQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(73)));
+  const historicalLegacyA = historicalLegacyQueue.items.find((item) => item.registrationDraftChildId === historicalChildren[0].id);
+  const historicalLegacyB = historicalLegacyQueue.items.find((item) => item.registrationDraftChildId === historicalChildren[1].id);
+  assert.deepEqual({ aReview: Boolean(historicalLegacyA?.historicalSettlementReview), bReview: Boolean(historicalLegacyB?.historicalSettlementReview),
+    aAllocated: historicalLegacyA?.allocatedAmountMnt, bAllocated: historicalLegacyB?.allocatedAmountMnt },
+  { aReview: true, bReview: true, aAllocated: 1080000, bAllocated: 1080000 },
+  'a qualified adopted receipt with no payment confirmation is an explicit historical settlement review, not a misleading payment-waiting record');
+  const historicalQuoteRows = database.query(`SELECT id, registration_draft_child_id AS childId, revision
+    FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (?, ?) ORDER BY registration_draft_child_id`,
+  [historicalChildren[0].id, historicalChildren[1].id]);
+  const historicalAQuote = historicalQuoteRows.find((quote) => quote.childId === historicalChildren[0].id);
+  const historicalBQuote = historicalQuoteRows.find((quote) => quote.childId === historicalChildren[1].id);
+  assert.ok(historicalAQuote && historicalBQuote, 'each independently funded historical child retains its own qualified quote');
+  await reviewHistoricalQualifiedPayment(env(database), paymentStaff, {
+    paymentRequestId: historicalRequest.id, registrationDraftChildId: historicalAQuote.childId, quoteId: historicalAQuote.id,
+    quoteRevision: Number(historicalAQuote.revision), reason: 'Түүхэн төлбөрийн баримтыг хянаж батлав',
+  }, new Date(iso(74)));
+  const afterAOnlyReview = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(74)));
+  const afterAOnly = afterAOnlyReview.items.find((item) => item.registrationDraftChildId === historicalChildren[0].id);
+  const afterBOnly = afterAOnlyReview.items.find((item) => item.registrationDraftChildId === historicalChildren[1].id);
+  assert.equal(Boolean(afterAOnly?.historicalSettlementReview), false,
+    'the selected historical receipt leaves its review state after receiving its own confirmation');
+  assert.equal(Boolean(afterBOnly?.historicalSettlementReview), true,
+    'reviewing A cannot authorize, reconcile, or hide B\'s independently unreviewed historical receipt');
+  assert.equal(count(database, 'payment_confirmation', `payment_request_id = '${historicalRequest.id}' AND conditional_quote_id IS NOT NULL`), 1,
+    'an A-only review creates exactly one quote-bound confirmation');
+  const historicalReviewReplay = await reviewHistoricalQualifiedPayment(env(database), paymentStaff, {
+    paymentRequestId: historicalRequest.id, registrationDraftChildId: historicalAQuote.childId, quoteId: historicalAQuote.id,
+    quoteRevision: Number(historicalAQuote.revision), reason: 'Түүхэн төлбөрийн баримтыг хянаж батлав',
+  }, new Date(iso(74)));
+  assert.equal(historicalReviewReplay.idempotent, true,
+    'repeating a completed historical settlement review reuses the existing confirmation without a second receipt or allocation');
+  assert.equal(count(database, 'child_credit_entry', `source_discount_award_id = 'historical-award-${historicalChildren[0].id}' AND amount_mnt = 120000`), 0,
+    'adoption never fabricates a residual root before historical identity/promotion is available; that record stays on the existing protected path');
+  const historicalCashBeforePromotion = database.query(`SELECT
+      (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id = ?) AS receivedMnt,
+      (SELECT COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) FROM payment_allocation
+        INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_installment.registration_draft_child_id = ?) AS allocatedMnt`,
+    [historicalRequest.id, historicalChildren[0].id])[0];
+  await finalizeDuePaymentConfirmations(env(database), new Date(iso(77)));
+  const afterHistoricalScheduler = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(77)));
+  assert.equal(Boolean(afterHistoricalScheduler.items.find((item) => item.registrationDraftChildId === historicalChildren[1].id)?.historicalSettlementReview), true,
+    'scheduled recovery cannot reinterpret A\'s reviewed confirmation as authorization for B\'s separate historical receipt');
+  assert.equal(count(database, 'payment_confirmation', `payment_request_id = '${historicalRequest.id}' AND conditional_quote_id IS NOT NULL`), 1,
+    'scheduled recovery retains the one quote-bound A confirmation until B is explicitly reviewed');
+  const historicalPromotion = await promotePaidDraftChild(env(database), paymentStaff, historicalChildren[0].id,
+    { kind: 'new' }, new Date(iso(78)));
+  assert.equal(historicalPromotion.state, 'promoted',
+    'the ordinary staff identity-resolution promotion accepts the finalized adopted agreement without another payment or adoption');
+  const historicalOwner = database.query(`SELECT canonical_student_id AS studentId, canonical_enrollment_id AS enrollmentId
+    FROM registration_draft_child WHERE id = ?`, [historicalChildren[0].id])[0];
+  assert.ok(historicalOwner.enrollmentId,
+    'ordinary finalization and staff identity resolution promote the adopted historical agreement without another payment or adoption');
+  const historicalCreditRoot = database.query(`SELECT id, canonical_student_id AS studentId, amount_mnt AS amountMnt,
+    source_discount_award_id AS awardId FROM child_credit_entry WHERE source_discount_award_id = ?`,
+    [`historical-award-${historicalChildren[0].id}`]);
+  assert.deepEqual(historicalCreditRoot.map((root) => ({ ...root, amountMnt: Number(root.amountMnt) })), [{
+    id: `child-credit:award:historical-award-${historicalChildren[0].id}`, studentId: historicalOwner.studentId,
+    amountMnt: 120000, awardId: `historical-award-${historicalChildren[0].id}`,
+  }], 'promotion turns the adopted fully paid child\'s residual into exactly one canonical child-credit root linked to its award');
+  // Reproduce the deployed incident, rather than using the clean pre-review
+  // fixture: A's historical award was misclassified as applied and B was
+  // promoted without its own quote-bound settlement review.
+  database.query(`DELETE FROM child_credit_entry WHERE source_discount_award_id = ?;
+    UPDATE discount_award SET applied_amount_mnt = award_amount_mnt, credit_amount_mnt = 0 WHERE id = ?`,
+  [`historical-award-${historicalChildren[0].id}`, `historical-award-${historicalChildren[0].id}`]);
+  // The old request-wide handler had already created B's canonical lineage.
+  // Recreate that durable post-incident shape directly in this disposable
+  // fixture; B deliberately has no payment_confirmation yet.
+  database.query(`INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+    SELECT ?, surname, given_name, gender, date_of_birth, 'active', 1, test_run_id, ?, ?
+    FROM registration_draft_child WHERE id = ?;
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_school, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+    SELECT ?, application_child.pre_registration_id, ?, application_child.current_school, application_child.current_grade,
+      'new', 'enrolled', 1, application_child.test_run_id, ?, ?
+    FROM application_child WHERE id = ?;
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+    SELECT ?, ?, ?, class_session.academic_year_id, registration_draft_child.selected_class_session_id, 'confirmed', ?,
+      registration_draft_child.is_test, registration_draft_child.test_run_id, ?, ?
+    FROM registration_draft_child INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    WHERE registration_draft_child.id = ?;
+    UPDATE registration_draft_child SET canonical_student_id = ?, canonical_application_child_id = ?, canonical_enrollment_id = ?,
+      identity_resolution_status = 'promoted', promotion_status = 'promoted' WHERE id = ?`,
+  [`${historicalChildren[1].id}:incident-student`, iso(79), iso(79), historicalChildren[1].id,
+    `${historicalChildren[1].id}:incident-application`, `${historicalChildren[1].id}:incident-student`, iso(79), iso(79), `${historicalChildren[0].id}:application`,
+    `${historicalChildren[1].id}:incident-enrollment`, `${historicalChildren[1].id}:incident-application`, `${historicalChildren[1].id}:incident-student`, iso(79), iso(79), iso(79), historicalChildren[1].id,
+    `${historicalChildren[1].id}:incident-student`, `${historicalChildren[1].id}:incident-application`, `${historicalChildren[1].id}:incident-enrollment`, historicalChildren[1].id]);
+  const incidentPreview = await previewHistoricalSettlementIncidentReconciliation(env(database), adminStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+  });
+  assert.deepEqual(incidentPreview.rows.map((row) => ({ childId: row.childId, state: row.state })).sort((a, b) => a.childId.localeCompare(b.childId)), [
+    { childId: historicalChildren[0].id, state: 'award_credit_missing' },
+    { childId: historicalChildren[1].id, state: 'review_missing' },
+  ].sort((a, b) => a.childId.localeCompare(b.childId)),
+  'the admin preview recognizes the exact post-incident A credit and B review gaps without including C');
+  await assert.rejects(() => previewHistoricalSettlementIncidentReconciliation(env(database), paymentStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+  }), (error) => error?.code === 'forbidden', 'an ordinary payment teacher cannot preview the incident reconciliation');
+  database.query(`UPDATE payment_allocation SET allocated_amount_mnt = allocated_amount_mnt - 1
+    WHERE payment_installment_id = (SELECT id FROM payment_installment WHERE registration_draft_child_id = ? AND installment_kind = 'initial')`, [historicalChildren[1].id]);
+  await assert.rejects(() => reconcileHistoricalSettlementIncident(env(database), adminStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+    reviewFingerprint: incidentPreview.reviewFingerprint, operationId: randomUUID(), reason: 'Хуучин хяналтын алдааг засах',
+  }, new Date(iso(80))), (error) => error?.code === 'conflict', 'a stale incident preview cannot write a reconciliation marker or financial correction');
+  database.query(`UPDATE payment_allocation SET allocated_amount_mnt = allocated_amount_mnt + 1
+    WHERE payment_installment_id = (SELECT id FROM payment_installment WHERE registration_draft_child_id = ? AND installment_kind = 'initial')`, [historicalChildren[1].id]);
+  const currentIncidentPreview = await previewHistoricalSettlementIncidentReconciliation(env(database), adminStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+  });
+  const incidentOperationId = randomUUID();
+  const incidentRepair = await reconcileHistoricalSettlementIncident(env(database), adminStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+    reviewFingerprint: currentIncidentPreview.reviewFingerprint, operationId: incidentOperationId, reason: 'Хуучин хяналтын алдааг засах',
+  }, new Date(iso(80)));
+  assert.equal(incidentRepair.idempotent, false, 'the guarded admin operation repairs the reviewed post-incident state once');
+  assert.equal((await reconcileHistoricalSettlementIncident(env(database), adminStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+    reviewFingerprint: currentIncidentPreview.reviewFingerprint, operationId: incidentOperationId, reason: 'Хуучин хяналтын алдааг засах',
+  }, new Date(iso(81)))).idempotent, true, 'the same incident operation replays without another credit, confirmation, enrollment, or audit completion');
+  const completedIncidentPreview = await previewHistoricalSettlementIncidentReconciliation(env(database), adminStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+  });
+  assert.equal(completedIncidentPreview.alreadyReconciled, true, 'a completed incident scope reports its durable result instead of appearing stale');
+  assert.equal(completedIncidentPreview.operationId, incidentOperationId, 'the completed preview identifies the operation that made the repair');
+  await assert.rejects(() => reconcileHistoricalSettlementIncident(env(database), adminStaff, {
+    registrationDraftId: historicalDraft.draftId, childIds: [historicalChildren[0].id, historicalChildren[1].id],
+    reviewFingerprint: completedIncidentPreview.reviewFingerprint, operationId: randomUUID(), reason: 'Дахин хэрэглэх оролдлого',
+  }, new Date(iso(81))), (error) => error?.code === 'conflict', 'a different operation cannot unnecessarily reapply an already reconciled scope');
+  assert.equal(count(database, 'payment_confirmation', `payment_request_id = '${historicalRequest.id}' AND conditional_quote_id IS NOT NULL`), 2,
+    'the repair binds B to its own separately reviewed historical receipt without recreating its existing enrollment');
+  assert.equal(count(database, 'child_credit_entry', `registration_draft_child_id = '${historicalChildren[1].id}' AND source_discount_award_id IS NOT NULL`), 0,
+    'the exactly settled B agreement receives no residual credit while its independent review never duplicates A\'s root');
+  assert.deepEqual(database.query(`SELECT receivedMnt, allocatedMnt FROM (
+      SELECT (SELECT COALESCE(SUM(received_amount_mnt), 0) FROM received_payment WHERE payment_request_id = ?) AS receivedMnt,
+        (SELECT COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) FROM payment_allocation
+          INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+          WHERE payment_installment.registration_draft_child_id = ?) AS allocatedMnt)`,
+    [historicalRequest.id, historicalChildren[0].id]), [historicalCashBeforePromotion],
+  'promotion does not rewrite the original 1,200,000 MNT receipt or its 1,080,000 MNT cash allocation');
+  assert.equal(Number(database.query(`SELECT credit_amount_mnt AS creditMnt FROM discount_award WHERE id = ?`,
+    [`historical-award-${historicalChildren[0].id}`])[0].creditMnt), 120000,
+  'the immutable award balance, not a second cash allocation, is the sole source of the 120,000 MNT credit');
+  assert.equal((await childCreditSummary(database, historicalOwner.studentId)).availableAmountMnt, 120000,
+    'the canonical owner sees the residual as one available credit balance');
+  await assert.rejects(() => markPaymentCreditRefunded(env(database), paymentStaff,
+    `child-credit:award:historical-award-${historicalChildren[0].id}`, new Date(iso(78))),
+  (error) => error?.code === 'not_found',
+  'the unrelated released-seat refund path cannot consume an award-linked historical residual');
+  assert.equal(count(database, 'payment_credit', `payment_request_id = '${historicalRequest.id}'`), 0,
+    'the residual is not also represented as a refundable payment-credit balance');
+  assert.equal(count(database, 'child_credit_entry', `registration_draft_child_id = '${historicalChildren[1].id}' AND source_discount_award_id IS NOT NULL`), 0,
+    'the exactly settled sibling receives no residual root');
+  assert.equal(database.query(`SELECT qualification_state AS state FROM discount_award WHERE registration_draft_child_id = ?`,
+    [historicalChildren[2].id])[0].state, 'provisional', 'the unpaid sibling remains conditional after a sibling promotion');
+  const historicalReplay = await adoptHistoricalConditionalFamilyAwards(env(database), adminStaff, {
+    operationId: historicalOperationId, childIds: historicalChildren.map((child) => child.id),
+    reason: 'Түүхэн гэр бүлийн нөхцөлийг хянаж батлав', reviewFingerprint: historicalTwoFunded.reviewFingerprint,
+  }, new Date(iso(74)));
+  assert.equal(historicalReplay.idempotent, true, 'a retry of the same reviewed historical operation resumes/reports the original result');
+  assert.equal(count(database, 'audit_event', `action = 'conditional_family_historical_adoption_completed' AND json_extract(metadata_json, '$.operationId') = '${historicalOperationId}'`), 1,
+    'a historical-adoption replay cannot duplicate its completion audit or financial effects');
+  const historicalPromotionRetry = await promotePaidDraftChild(env(database), paymentStaff, historicalChildren[0].id, null, new Date(iso(75)));
+  assert.equal(historicalPromotionRetry.state, 'promoted', 'a normal promotion retry returns the existing canonical enrollment');
+  await recoverFundedConditionalFamilyQuotes(env(database), new Date(iso(75)));
+  assert.equal(count(database, 'child_credit_entry', `source_discount_award_id = 'historical-award-${historicalChildren[0].id}'`), 1,
+    'promotion replay and scheduled recovery cannot mint a second root for the receipt-minus-allocation residual');
+  assert.equal(count(database, 'enrollment', `id = '${historicalOwner.enrollmentId}' AND status = 'confirmed'`), 1,
+    'promotion replay and scheduled recovery retain exactly one canonical enrollment');
+  assert.ok(count(database, 'outbound_email', `registration_draft_id = '${historicalDraft.draftId}' AND event_type = 'enrollment_confirmed'`) <= 1,
+    'promotion replay and scheduled recovery cannot duplicate an enrollment-confirmation notice');
+  assert.equal(Number(database.query(`SELECT COALESCE(SUM(payment_allocation.allocated_amount_mnt), 0) AS allocatedMnt
+    FROM payment_allocation INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+    WHERE payment_installment.registration_draft_child_id = ?`, [historicalChildren[0].id])[0].allocatedMnt), 1080000,
+  'the 120,000 MNT residual is never independently reallocated as cash after becoming award-linked credit');
+  await cancelRegistration(env(database), registrationStaff, { registrationDraftChildId: historicalChildren[2].id, reason: 'guardian_request' }, new Date(iso(75)));
+  assert.equal(count(database, 'discount_award', `registration_draft_child_id IN ('${historicalChildren[0].id}', '${historicalChildren[1].id}') AND qualification_state = 'earned'`), 2,
+    'cancelling the unfunded third historical child preserves the independently earned pair without automatic clawback');
+
+  // A released fully paid child can already have an unused award root when a
+  // still-pending sibling makes the old award provisional. Adoption must keep
+  // the root as history but make it unavailable to every server-side spender.
+  const provisionalHistoricalDraft = await createRegistrationDraft(env(database), submission('class-priced', undefined, 2), new Date(iso(75)));
+  const provisionalHistoricalChildren = database.query(`SELECT id, canonical_student_id AS studentId FROM registration_draft_child
+    WHERE registration_draft_id = ? ORDER BY position`, [provisionalHistoricalDraft.draftId]);
+  const provisionalHistoricalRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [provisionalHistoricalDraft.draftId])[0];
+  database.query(`DELETE FROM conditional_family_discount_quote WHERE registration_draft_child_id IN (?, ?);`,
+    [provisionalHistoricalChildren[0].id, provisionalHistoricalChildren[1].id]);
+  const provisionalHistoricalInstallment = database.query(`SELECT id FROM payment_installment WHERE payment_request_id = ?
+    AND registration_draft_child_id = ? AND installment_kind = 'initial'`, [provisionalHistoricalRequest.id, provisionalHistoricalChildren[0].id])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: provisionalHistoricalRequest.id,
+    allocations: [{ installmentId: provisionalHistoricalInstallment.id, amountMnt: 1200000 }],
+    receivedAmountMnt: 1200000, source: 'staff_manual_bank', idempotencyKey: 'historical-provisional-root-cash',
+  }, new Date(iso(76)));
+  await finalizeDuePaymentConfirmations(env(database), new Date(iso(100)));
+  await promotePaidDraftChild(env(database), paymentStaff, provisionalHistoricalChildren[0].id, { kind: 'new' }, new Date(iso(100)));
+  const provisionalHistoricalOwner = database.query(`SELECT canonical_student_id AS studentId FROM registration_draft_child WHERE id = ?`, [provisionalHistoricalChildren[0].id])[0];
+  assert.ok(provisionalHistoricalOwner.studentId, 'the funded historical child has a canonical owner before its legacy residual root is classified');
+  const provisionalHistoricalAwardIds = provisionalHistoricalChildren.map((child) => `historical-provisional-${child.id}`);
+  database.query(`INSERT INTO discount_award (id, registration_draft_child_id, award_type, basis_points, base_amount_mnt,
+      award_amount_mnt, credit_amount_mnt, status, reason, awarded_at, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, 'family_multi_child', 1000, 1200000, 120000, 120000, 'active', 'same_registration_guardian_multiple_children', ?, 1, 'registration-test', ?, ?),
+        (?, ?, 'family_multi_child', 1000, 1200000, 120000, 0, 'active', 'same_registration_guardian_multiple_children', ?, 1, 'registration-test', ?, ?);
+    INSERT INTO child_credit_entry (id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt,
+      source_discount_award_id, reason, is_test, test_run_id, created_at)
+      VALUES (?, ?, ?, 'discount_award_credit', 120000, ?, 'Historical unused residual', 1, 'registration-test', ?);`,
+  [provisionalHistoricalAwardIds[0], provisionalHistoricalChildren[0].id, iso(76), iso(76), iso(76),
+    provisionalHistoricalAwardIds[1], provisionalHistoricalChildren[1].id, iso(76), iso(76), iso(76),
+    `historical-provisional-root-${provisionalHistoricalChildren[0].id}`, provisionalHistoricalOwner.studentId,
+    provisionalHistoricalChildren[0].id, provisionalHistoricalAwardIds[0], iso(76)]);
+  const provisionalHistoricalPreview = await previewHistoricalConditionalFamilyAdoption(env(database), adminStaff, provisionalHistoricalChildren.map((child) => child.id));
+  assert.deepEqual(provisionalHistoricalPreview.rows.map((row) => row.classification).sort(), ['provisional', 'provisional'],
+    'one funded historical child and one pending sibling classify both legacy awards as provisional rather than earned');
+  await adoptHistoricalConditionalFamilyAwards(env(database), adminStaff, {
+    operationId: randomUUID(), childIds: provisionalHistoricalChildren.map((child) => child.id),
+    reason: 'Ашиглаагүй түүхэн кредитийг хамгаалж хянах', reviewFingerprint: provisionalHistoricalPreview.reviewFingerprint,
+  }, new Date(iso(77)));
+  assert.equal(count(database, 'child_credit_entry', `source_discount_award_id = '${provisionalHistoricalAwardIds[0]}'`), 1,
+    'provisional adoption neither deletes nor duplicates the unused historical residual root');
+  const provisionalHistoricalCredit = await childCreditSummary(database, provisionalHistoricalOwner.studentId);
+  assert.equal(provisionalHistoricalCredit.roots.some((root) => root.id === `historical-provisional-root-${provisionalHistoricalChildren[0].id}`), false,
+    'the unused provisional residual is protected server-side from ordinary credit transfer or application');
+  const complexHistoricalChild = database.query(`SELECT child.id, child.canonical_student_id AS studentId
+    FROM registration_draft_child AS child
+    INNER JOIN registration_draft AS draft ON draft.id = child.registration_draft_id
+    WHERE child.canonical_student_id IS NOT NULL
+      AND child.status != 'cancelled' AND draft.status NOT IN ('cancelled', 'expired')
+      AND NOT EXISTS (SELECT 1 FROM discount_award AS award WHERE award.registration_draft_child_id = child.id AND award.award_type = 'family_multi_child')
+      AND NOT EXISTS (SELECT 1 FROM child_credit_entry AS root WHERE root.registration_draft_child_id = child.id AND root.source_discount_award_id IS NOT NULL)
+    ORDER BY child.created_at, child.id LIMIT 1`)[0];
+  assert.ok(complexHistoricalChild, 'the disposable ledger fixture has a canonical child with no existing family award or discount-credit root');
+  const complexHistoricalAwardId = `historical-complex-${randomUUID()}`;
+  const complexHistoricalRootId = `historical-complex-root-${randomUUID()}`;
+  database.query(`INSERT INTO discount_award (id, registration_draft_child_id, award_type, basis_points, base_amount_mnt,
+      award_amount_mnt, credit_amount_mnt, status, reason, awarded_at, is_test, test_run_id, created_at, updated_at)
+      VALUES (?, ?, 'family_multi_child', 1000, 1200000, 120000, 120000, 'active', 'same_registration_guardian_multiple_children', ?, 1, 'registration-test', ?, ?);
+    INSERT INTO child_credit_entry (id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, reserved_amount_mnt,
+      source_discount_award_id, reason, is_test, test_run_id, created_at)
+      VALUES (?, ?, ?, 'discount_award_credit', 120000, 120000, ?, 'Historical residual', 1, 'registration-test', ?);
+    INSERT INTO child_credit_entry (id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, origin_entry_id,
+      reason, is_test, test_run_id, created_at)
+      VALUES (?, ?, ?, 'refund', -120000, ?, 'Historical refund', 1, 'registration-test', ?);`,
+  [complexHistoricalAwardId, complexHistoricalChild.id, iso(76), iso(76), iso(76), complexHistoricalRootId, complexHistoricalChild.studentId,
+    complexHistoricalChild.id, complexHistoricalAwardId, iso(76), `${complexHistoricalRootId}:refund`, complexHistoricalChild.studentId,
+    complexHistoricalChild.id, complexHistoricalRootId, iso(76)]);
+  const complexHistoricalPreview = await previewHistoricalConditionalFamilyAdoption(env(database), adminStaff, [complexHistoricalChild.id]);
+  assert.equal(complexHistoricalPreview.rows.find((row) => row.awardId === complexHistoricalAwardId)?.classification, 'reconciliation_review',
+    'a historical root with refunded, reserved, transferred, or applied lineage enters explicit reconciliation review rather than an automatic clawback');
+  const interruptedHistoricalMarkerId = `${complexHistoricalAwardId}:historical-quote`;
+  database.query(`INSERT INTO conditional_family_discount_quote (
+    id, registration_draft_child_id, academic_year_id, relationship_basis, relationship_key,
+    basis_points, base_amount_mnt, award_amount_mnt, installment_strategy, state, linked_discount_award_id,
+    resolution_reason, created_at, updated_at, is_test, test_run_id
+  ) VALUES (?, ?, 'year-test', 'same_submission', 'historical:interrupted:year-test',
+    1000, 1200000, 120000, 'one_payment', 'reconciliation_review', ?, 'historical_adoption', ?, ?, 1, 'registration-test')`,
+  [interruptedHistoricalMarkerId, complexHistoricalChild.id, complexHistoricalAwardId, iso(76), iso(76)]);
+  assert.equal(database.query(`SELECT conditional_quote_id AS quoteId FROM discount_award WHERE id = ?`, [complexHistoricalAwardId])[0].quoteId, null,
+    'an interruption after the deterministic quote marker but before award linkage leaves the legacy award unchanged');
+  const complexOriginalStatus = database.query(`SELECT status FROM registration_draft_child WHERE id = ?`, [complexHistoricalChild.id])[0].status;
+  database.query(`UPDATE registration_draft_child SET status = 'cancelled' WHERE id = ?`, [complexHistoricalChild.id]);
+  await assert.rejects(adoptHistoricalConditionalFamilyAwards(env(database), adminStaff, {
+    operationId: randomUUID(), childIds: [complexHistoricalChild.id], reason: 'Хуучирсан хяналт', reviewFingerprint: complexHistoricalPreview.reviewFingerprint,
+  }, new Date(iso(77))), (error) => error instanceof ConditionalFamilyDiscountError && error.code === 'conflict',
+  'a changed relationship/lifecycle snapshot cannot adopt from a stale historical preview');
+  database.query(`UPDATE registration_draft_child SET status = ? WHERE id = ?`, [complexOriginalStatus, complexHistoricalChild.id]);
+  const refreshedComplexPreview = await previewHistoricalConditionalFamilyAdoption(env(database), adminStaff, [complexHistoricalChild.id]);
+  await adoptHistoricalConditionalFamilyAwards(env(database), adminStaff, {
+    operationId: randomUUID(), childIds: [complexHistoricalChild.id], reason: 'Түүхэн кредитийн мөрийг тусад нь хянах', reviewFingerprint: refreshedComplexPreview.reviewFingerprint,
+  }, new Date(iso(77)));
+  const recoveredComplexAward = database.query(`SELECT qualification_state AS state, conditional_quote_id AS quoteId FROM discount_award WHERE id = ?`, [complexHistoricalAwardId])[0];
+  assert.deepEqual(recoveredComplexAward, { state: 'reconciliation_review', quoteId: interruptedHistoricalMarkerId },
+    'a retry adopts its own deterministic marker after the reviewed fingerprint is current, without creating another quote');
+  assert.equal(count(database, 'conditional_family_discount_quote', `id = '${interruptedHistoricalMarkerId}'`), 1,
+    'interrupted historical adoption retains exactly one recovery marker');
+  assert.equal(count(database, 'child_credit_entry', `source_discount_award_id = '${complexHistoricalAwardId}'`), 1,
+    'a reserved or refunded historical residual remains immutable evidence; recovery creates no replacement root or reservation');
+  const complexCreditProjection = await childCreditSummary(database, complexHistoricalChild.studentId);
+  assert.equal(complexCreditProjection.roots.some((root) => root.id === complexHistoricalRootId), false,
+    'server-side credit projections hide a reconciliation-review residual root even though its immutable ledger history remains');
 
   console.log("ok staged registration capacity, confirmation, waitlist, and Turnstile tests");
 } finally {

@@ -112,7 +112,7 @@ export async function discountAwardsForChildren(database: D1Database, childIds: 
     basis_points AS basisPoints, base_amount_mnt AS baseAmountMnt, award_amount_mnt AS awardAmountMnt,
     applied_amount_mnt AS appliedAmountMnt, credit_amount_mnt AS creditAmountMnt, status, reason,
     awarded_at AS awardedAt, reversed_at AS reversedAt, reversal_reason AS reversalReason
-    FROM discount_award WHERE ${includeReversed ? "status IN ('active', 'reversed')" : "status = 'active'"} AND registration_draft_child_id IN (${childIds.map(() => "?").join(", ")})
+    FROM discount_award WHERE ${includeReversed ? "status IN ('active', 'reversed')" : "status = 'active' AND qualification_state = 'earned'"} AND registration_draft_child_id IN (${childIds.map(() => "?").join(", ")})
     ORDER BY CASE award_type WHEN 'family_multi_child' THEN 1 WHEN 'referral_referred' THEN 2 ELSE 3 END, id`).bind(...childIds).all<DiscountAward>();
   const byChild = new Map<string, DiscountAward[]>();
   for (const row of rows.results) {
@@ -161,6 +161,41 @@ async function pendingAdditionalClassAwardsForChildren(database: D1Database, chi
   return byChild;
 }
 
+// A family quote changes what staff/parents are asked to collect under the
+// condition, but is never a ledger award until the guarded quote finalizer has
+// earned it. This mirrors the already-released additional-class projection.
+async function pendingConditionalFamilyAwardsForChildren(database: D1Database, childIds: string[]): Promise<Map<string, DiscountAward[]>> {
+  if (!childIds.length) return new Map();
+  const rows = await database.prepare(`SELECT conditional_family_discount_quote.id,
+      conditional_family_discount_quote.registration_draft_child_id AS registrationDraftChildId,
+      conditional_family_discount_quote.basis_points AS basisPoints,
+      conditional_family_discount_quote.base_amount_mnt AS baseAmountMnt,
+      conditional_family_discount_quote.award_amount_mnt AS awardAmountMnt,
+      conditional_family_discount_quote.created_at AS awardedAt
+    FROM conditional_family_discount_quote
+    WHERE conditional_family_discount_quote.registration_draft_child_id IN (${childIds.map(() => "?").join(", ")})
+      AND conditional_family_discount_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
+      AND NOT EXISTS (SELECT 1 FROM discount_award
+        WHERE discount_award.conditional_quote_id = conditional_family_discount_quote.id
+          AND discount_award.status = 'active' AND discount_award.qualification_state = 'earned')`)
+    .bind(...childIds).all<{
+      id: string; registrationDraftChildId: string; basisPoints: number; baseAmountMnt: number; awardAmountMnt: number; awardedAt: string;
+    }>();
+  const byChild = new Map<string, DiscountAward[]>();
+  for (const row of rows.results) {
+    const award: DiscountAward = {
+      id: `${row.id}:projected`, registrationDraftChildId: row.registrationDraftChildId,
+      beneficiaryEnrollmentId: null, awardType: "family_multi_child", sourceRegistrationDraftChildId: null,
+      sourceReferralId: null, basisPoints: Number(row.basisPoints), baseAmountMnt: Number(row.baseAmountMnt),
+      awardAmountMnt: Number(row.awardAmountMnt), appliedAmountMnt: 0, creditAmountMnt: 0,
+      status: "active", reason: "conditional_family_discount_quote", awardedAt: row.awardedAt,
+      reversedAt: null, reversalReason: null,
+    };
+    byChild.set(award.registrationDraftChildId, [...(byChild.get(award.registrationDraftChildId) ?? []), award]);
+  }
+  return byChild;
+}
+
 export function effectiveInstallments(inputs: EffectiveInstallmentInput[], awardsByChild: Map<string, DiscountAward[]>): EffectiveInstallment[] {
   const byChild = new Map<string, EffectiveInstallmentInput[]>();
   for (const input of inputs) byChild.set(input.registrationDraftChildId, [...(byChild.get(input.registrationDraftChildId) ?? []), input]);
@@ -172,9 +207,9 @@ export function effectiveInstallments(inputs: EffectiveInstallmentInput[], award
     const awards = awardsByChild.get(childId) ?? [];
     // Only the new staff additional-class promise uses second-installment-first
     // allocation. Existing family awards keep their historic projection.
-    const deferredFamilyAward = awards.filter((award) => award.reason === "additional_class_canonical_confirmation")
+    const deferredFamilyAward = awards.filter((award) => award.reason === "additional_class_canonical_confirmation" || award.reason === "conditional_family_discount_quote")
       .reduce((sum, award) => sum + award.awardAmountMnt, 0);
-    const ordinaryAward = awards.filter((award) => award.reason !== "additional_class_canonical_confirmation")
+    const ordinaryAward = awards.filter((award) => award.reason !== "additional_class_canonical_confirmation" && award.reason !== "conditional_family_discount_quote")
       .reduce((sum, award) => sum + award.awardAmountMnt, 0);
     const deferredByIndex = ordered.map(() => 0);
     let remainingDeferred = Math.min(deferredFamilyAward, totalUnpaid);
@@ -203,10 +238,12 @@ export function effectiveInstallments(inputs: EffectiveInstallmentInput[], award
 
 export async function effectiveInstallmentsForRows(database: D1Database, inputs: EffectiveInstallmentInput[]): Promise<EffectiveInstallment[]> {
   const childIds = [...new Set(inputs.map((item) => item.registrationDraftChildId))];
-  const [active, pending] = await Promise.all([
+  const [active, pendingAdditional, pendingConditional] = await Promise.all([
     activeDiscountAwardsForChildren(database, childIds), pendingAdditionalClassAwardsForChildren(database, childIds),
+    pendingConditionalFamilyAwardsForChildren(database, childIds),
   ]);
-  for (const [childId, awards] of pending) active.set(childId, [...(active.get(childId) ?? []), ...awards]);
+  for (const [childId, awards] of pendingAdditional) active.set(childId, [...(active.get(childId) ?? []), ...awards]);
+  for (const [childId, awards] of pendingConditional) active.set(childId, [...(active.get(childId) ?? []), ...awards]);
   return effectiveInstallments(inputs, active);
 }
 
@@ -226,9 +263,44 @@ export async function recalculateDiscountAwardBalances(database: D1Database, chi
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
     WHERE payment_installment.registration_draft_child_id = ?`).bind(childId).first<{ amountMnt: number }>();
+  // A reviewed historical conversion can preserve a real receipt whose cash
+  // allocation was already reduced to the communicated conditional amount.
+  // When that receipt belongs only to this child, its immutable unallocated
+  // remainder is the evidence for the earned award residual. Shared receipts
+  // intentionally do not enter this path: their remainder has no safe child
+  // owner and remains a reconciliation case instead of becoming credit.
+  const historicalAdoption = await database.prepare(`SELECT 1 AS value
+    FROM discount_award
+    INNER JOIN conditional_family_discount_quote
+      ON conditional_family_discount_quote.id = discount_award.conditional_quote_id
+    WHERE discount_award.registration_draft_child_id = ?
+      AND discount_award.status = 'active' AND discount_award.qualification_state = 'earned'
+      AND conditional_family_discount_quote.state = 'qualified'
+      AND conditional_family_discount_quote.resolution_reason = 'historical_adoption'
+    LIMIT 1`).bind(childId).first();
+  const attributedHistoricalReceiptRemainder = historicalAdoption
+    ? await database.prepare(`SELECT COALESCE(SUM(received_payment.received_amount_mnt
+        - COALESCE((SELECT SUM(allocation.allocated_amount_mnt)
+          FROM payment_allocation AS allocation WHERE allocation.received_payment_id = received_payment.id), 0)), 0) AS amountMnt
+      FROM received_payment
+      WHERE EXISTS (SELECT 1 FROM payment_allocation AS child_allocation
+        INNER JOIN payment_installment AS child_installment ON child_installment.id = child_allocation.payment_installment_id
+        WHERE child_allocation.received_payment_id = received_payment.id
+          AND child_installment.registration_draft_child_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM payment_allocation AS other_allocation
+          INNER JOIN payment_installment AS other_installment ON other_installment.id = other_allocation.payment_installment_id
+          WHERE other_allocation.received_payment_id = received_payment.id
+            AND other_installment.registration_draft_child_id != ?)
+        AND NOT EXISTS (SELECT 1 FROM payment_confirmation
+          WHERE payment_confirmation.received_payment_id = received_payment.id AND payment_confirmation.status = 'undone')
+        AND received_payment.received_amount_mnt > COALESCE((SELECT SUM(allocation.allocated_amount_mnt)
+          FROM payment_allocation AS allocation WHERE allocation.received_payment_id = received_payment.id), 0)`)
+      .bind(childId, childId).first<{ amountMnt: number }>()
+    : null;
   // Awards first reduce unpaid plan value. Any remainder is an explicit
   // discount credit because allocated money is immutable financial history.
-  let remaining = Math.max(0, Number(child.initialAmountMnt) + Number(child.secondAmountMnt ?? 0) - Number(paid?.amountMnt ?? 0));
+  const recognizedPaidMnt = Number(paid?.amountMnt ?? 0) + Number(attributedHistoricalReceiptRemainder?.amountMnt ?? 0);
+  let remaining = Math.max(0, Number(child.initialAmountMnt) + Number(child.secondAmountMnt ?? 0) - recognizedPaidMnt);
   const statements: D1PreparedStatement[] = [];
   for (const award of awards) {
     const appliedAmountMnt = Math.min(remaining, award.awardAmountMnt);

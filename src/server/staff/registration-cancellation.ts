@@ -3,6 +3,7 @@ import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { getClassCapacityProjections } from "../services/class-capacity";
 import { releaseAdditionalAdmissionCreditReservations } from "../services/child-credit-ledger";
+import { invalidatePendingConditionalFamilyQuotesForChild } from "../services/conditional-family-discounts";
 
 export type RegistrationCancellationReason = "guardian_request" | "payment_overdue" | "other";
 
@@ -205,8 +206,22 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
         WHERE status = 'pending_confirmation' AND confirmation_claim_expires_at IS NOT NULL AND confirmation_claim_expires_at > ?
           AND (source_registration_draft_child_id = ? OR target_registration_draft_child_id = ?))
       AND NOT EXISTS (SELECT 1 FROM additional_class_admission
-        WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation')`)
-    .bind(now, row.childId, now, row.childId, row.childId, row.childId).run();
+        WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation')
+      AND NOT EXISTS (SELECT 1 FROM conditional_family_discount_quote
+        WHERE registration_draft_child_id = ? AND claim_expires_at IS NOT NULL AND claim_expires_at > ?
+          AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed'))
+      -- Once the contingent ledger batch has committed, a later cancellation
+      -- must enter the existing explicit reconciliation boundary. It cannot
+      -- invalidate the quote while its transfer/application is awaiting the
+      -- final earned/qualified transition.
+      AND NOT EXISTS (SELECT 1 FROM conditional_family_discount_quote AS source_quote
+        INNER JOIN conditional_family_discount_quote AS recipient_quote
+          ON recipient_quote.contingent_source_quote_id = source_quote.id
+        INNER JOIN child_credit_operation ON child_credit_operation.id = recipient_quote.contingent_operation_id
+        WHERE source_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
+          AND recipient_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
+          AND (source_quote.registration_draft_child_id = ? OR recipient_quote.registration_draft_child_id = ?))`)
+    .bind(now, row.childId, now, row.childId, row.childId, row.childId, row.childId, now, row.childId, row.childId).run();
   if (changes(gate) !== 1) {
     const current = await rowForChild(env, row.childId);
     if (current?.childStatus === "cancelled") return { cancelled: false, idempotent: true, classSessionId: row.classSessionId, creditCount: 0 };
@@ -215,6 +230,20 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
         AND (source_registration_draft_child_id = ? OR target_registration_draft_child_id = ?) LIMIT 1`)
       .bind(now, row.childId, row.childId).first();
     if (activeClaim) throw new RegistrationCancellationError("confirmation_in_progress");
+    const activeConditionalClaim = await env.DB.prepare(`SELECT 1 AS value FROM conditional_family_discount_quote
+      WHERE registration_draft_child_id = ? AND claim_expires_at IS NOT NULL AND claim_expires_at > ?
+        AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed') LIMIT 1`)
+      .bind(row.childId, now).first();
+    if (activeConditionalClaim) throw new RegistrationCancellationError("confirmation_in_progress");
+    const committedConditionalSettlement = await env.DB.prepare(`SELECT 1 AS value FROM conditional_family_discount_quote AS source_quote
+      INNER JOIN conditional_family_discount_quote AS recipient_quote
+        ON recipient_quote.contingent_source_quote_id = source_quote.id
+      INNER JOIN child_credit_operation ON child_credit_operation.id = recipient_quote.contingent_operation_id
+      WHERE source_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
+        AND recipient_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
+        AND (source_quote.registration_draft_child_id = ? OR recipient_quote.registration_draft_child_id = ?) LIMIT 1`)
+      .bind(row.childId, row.childId).first();
+    if (committedConditionalSettlement) throw new RegistrationCancellationError("confirmation_in_progress");
     const pendingAdmission = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_admission
       WHERE source_registration_draft_child_id = ? AND status = 'pending_confirmation' LIMIT 1`)
       .bind(row.childId).first();
@@ -277,6 +306,7 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
       .bind(`credit:${credit.paymentId}`, credit.paymentId, credit.paymentRequestId, credit.amountMnt, now, now, row.isTest, row.testRunId)),
   ];
   await env.DB.batch(statements);
+  await invalidatePendingConditionalFamilyQuotesForChild(env, row.childId, nowDate);
   // Allocation uses the same projection as the public catalogue. It sees the
   // cancelled hold/enrollment as non-consuming before it offers this one seat.
   await allocateWaitlistOffers(env, row.classSessionId, nowDate);
