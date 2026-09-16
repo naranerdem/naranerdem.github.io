@@ -32,17 +32,19 @@ try {
     dueAt: "2026-09-01T11:12:00.000Z", parentClaimed: false, bankName: null, accountHolderName: null, accountNumber: null, iban: null, transferInstruction: null });
   assert.match(later.text, /Дараагийн төлбөрийн хугацаа ойртож байна\./);
   const confirmation = paymentConfirmedTemplate({
+    eventReceivedAmountMnt: 800000,
     children: [
-      { childName: "Тест Нэг", classLabel: "1-р шат · Мягмар 09:00–10:20", receivedAmountMnt: 600000, totalPaidAmountMnt: 600000,
+      { childName: "Тест Нэг", classLabel: "1-р шат · Мягмар 09:00–10:20", eventAllocatedAmountMnt: 600000, totalPaidAmountMnt: 600000,
         remainingAmountMnt: 600000, nextPaymentAmountMnt: 600000, nextPaymentDueAt: "2026-10-15T04:00:00.000Z", seatConfirmed: true },
-      { childName: "Тест Хоёр", classLabel: "2-р шат · Лхагва 15:00–16:20", receivedAmountMnt: 200000, totalPaidAmountMnt: 200000,
+      { childName: "Тест Хоёр", classLabel: "2-р шат · Лхагва 15:00–16:20", eventAllocatedAmountMnt: 200000, totalPaidAmountMnt: 200000,
         remainingAmountMnt: 1000000, nextPaymentAmountMnt: null, nextPaymentDueAt: null, seatConfirmed: false },
     ],
   });
   assert.match(confirmation.text, /Тест Нэг/);
   assert.match(confirmation.text, /Тест Хоёр/);
-  assert.match(confirmation.text, /Хүлээн авсан төлбөр: 600,000 ₮/);
-  assert.match(confirmation.text, /Үлдсэн төлбөр: 600,000 ₮/);
+  assert.match(confirmation.text, /Энэ удаа хүлээн авсан төлбөр: 800,000 ₮/);
+  assert.match(confirmation.text, /Энэ удаагийн хуваарилалт: 600,000 ₮/);
+  assert.match(confirmation.text, /Төлөх үлдэгдэл: 600,000 ₮/);
   assert.match(confirmation.text, /Дараагийн төлбөр: 600,000 ₮/);
   assert.match(confirmation.text, /Төлөх хугацаа: 2026-10-15/);
   assert.match(confirmation.text, /Суудал баталгаажсан\./);
@@ -50,12 +52,25 @@ try {
   assert.doesNotMatch(confirmation.text, /verify-email|token=/i, "ordinary payment confirmation contains no capability link");
   assert.doesNotMatch(confirmation.text, /Хүүхэд Facebook хаягтай бол мөн бүлэгт нэгдэж болно/, "a school Facebook page alone is never presented as a class-group invitation");
   const groupedConfirmation = paymentConfirmedTemplate({
-    children: [{ childName: "Тест Бүлэг", classLabel: "2-р шат · 2-р шат · Ням 10:00–11:20", receivedAmountMnt: 1, totalPaidAmountMnt: 1,
+    eventReceivedAmountMnt: 1,
+    children: [{ childName: "Тест Бүлэг", classLabel: "2-р шат · 2-р шат · Ням 10:00–11:20", eventAllocatedAmountMnt: 1, totalPaidAmountMnt: 1,
       remainingAmountMnt: 0, nextPaymentAmountMnt: null, nextPaymentDueAt: null, seatConfirmed: true, facebookGroupUrl: "https://facebook.example.test/groups/class" }],
     centerFacebookUrl: "https://facebook.example.test/page",
   });
   assert.match(groupedConfirmation.text, /Facebook бүлэгт нэгдэнэ үү: https:\/\/facebook\.example\.test\/groups\/class/, "a configured class group is the only basis for a group invitation");
   assert.equal((groupedConfirmation.text.match(/2-р шат/g) || []).length, 1, "duplicate historic class-label components are rendered once");
+  const siblingSummary = paymentConfirmedTemplate({
+    eventReceivedAmountMnt: 1080000,
+    children: [
+      { childName: "Төлбөртэй", classLabel: "1-р шат · Мягмар 09:00–10:20", eventAllocatedAmountMnt: 1080000, totalPaidAmountMnt: 1080000,
+        remainingAmountMnt: 0, nextPaymentAmountMnt: null, nextPaymentDueAt: null, seatConfirmed: true },
+      { childName: "Өмнө төлсөн", classLabel: "2-р шат · Лхагва 15:00–16:20", eventAllocatedAmountMnt: 0, totalPaidAmountMnt: 1080000,
+        remainingAmountMnt: 0, nextPaymentAmountMnt: null, nextPaymentDueAt: null, seatConfirmed: false },
+    ],
+  });
+  assert.match(siblingSummary.text, /Төлбөртэй[\s\S]*Энэ удаагийн хуваарилалт: 1,080,000 ₮/);
+  assert.match(siblingSummary.text, /Өмнө төлсөн[\s\S]*Нийт төлсөн дүн: 1,080,000 ₮/);
+  assert.doesNotMatch(siblingSummary.text, /Өмнө төлсөн[\s\S]*Энэ удаагийн хуваарилалт: 0 ₮/, "an unaffected sibling keeps its cumulative summary without a misleading zero-event allocation");
   const referralPolicy = { referrerBasisPoints: 725, referredChildBasisPoints: 175 };
   const enrollmentChild = { childName: "Тест Гурав", academicYearLabel: "2027–2028 хичээлийн жил", offeringLabel: "3-р шат", classLabel: "Пүрэв 15:00–16:20", paidAmountMnt: 650000, remainingAmountMnt: 650000, remainingPaymentDueAt: "2027-01-25T00:00:00.000Z", referralCode: "NE-DYNAMIC" };
   const enrollment = enrollmentConfirmationTemplate({ children: [enrollmentChild], accessUrl: "https://example.test/parent/?token=opaque", referralPolicy });

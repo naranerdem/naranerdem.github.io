@@ -6,7 +6,11 @@ export type EmailSensitivity = "archive_bcc_safe" | "sensitive_capability";
 // These are durable Outbox event types, rather than translated subject lines.
 // The final enrollment email carries a parent-access capability, so it remains
 // excluded from raw internal copies despite being a teacher-relevant event.
-const teacherCopyEventTypes = new Set(["registration_received"]);
+const teacherCopyEventTypes = new Set([
+  "registration_received",
+  "registration_initial_payment_confirmed", // pre-follow-up rows
+  "registration_payment_confirmed",
+]);
 
 const archiveSafeTemplateKeys = new Set([
   "registration_receipt_v1",
@@ -100,15 +104,11 @@ export async function internalEnrollmentNoticeRecipients(env: WorkerEnv): Promis
   if (env.APP_ENV === "staging") {
     return env.STAGING_EMAIL_OVERRIDE_TO ? parseArchiveRecipients(env.STAGING_EMAIL_OVERRIDE_TO) : [];
   }
-  const row = await env.DB.prepare(`SELECT recipients_json AS adminRecipientsJson,
-    teacher_recipients_json AS teacherRecipientsJson FROM email_archive_bcc_setting WHERE singleton = 1`)
-    .first<{ adminRecipientsJson: string; teacherRecipientsJson: string }>();
+  const row = await env.DB.prepare(`SELECT recipients_json AS adminRecipientsJson FROM email_archive_bcc_setting WHERE singleton = 1`)
+    .first<{ adminRecipientsJson: string }>();
   if (!row) return [];
   try {
-    return distinctRecipients([
-      ...parseArchiveRecipients(JSON.parse(row.adminRecipientsJson)),
-      ...parseArchiveRecipients(JSON.parse(row.teacherRecipientsJson)),
-    ], "");
+    return distinctRecipients(parseArchiveRecipients(JSON.parse(row.adminRecipientsJson)), "");
   } catch {
     return [];
   }

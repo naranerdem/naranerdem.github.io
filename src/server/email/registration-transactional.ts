@@ -27,6 +27,14 @@ interface PaymentReceiptInstallmentRow {
   effectiveDueAt: string; enrollmentStatus: string | null; facebookGroupUrl: string | null;
 }
 
+interface PaymentConfirmationSnapshot {
+  version: 1;
+  paymentConfirmationId: string;
+  eventReceivedAmountMnt: number;
+  children: PaymentConfirmedChild[];
+  centerFacebookUrl: string | null;
+}
+
 interface EnrollmentEmailRow {
   email: string; childId: string; childName: string; academicYearLabel: string; offeringLabel: string; stageCode: string | null; classLabel: string;
   installmentId: string; installmentNumber: number; amountMnt: number; allocatedAmountMnt: number;
@@ -215,23 +223,36 @@ export async function sendPaymentConfirmedEmail(
   const draft = await env.DB.prepare(`SELECT email, normalized_email AS normalizedEmail, is_test AS isTest, test_run_id AS testRunId
     FROM registration_draft WHERE id = ? AND status != 'cancelled'`).bind(registrationDraftId).first<PaymentConfirmedRow>();
   if (!draft) return false;
-  const existing = await env.DB.prepare(`SELECT id, status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email
-    WHERE registration_draft_id = ? AND event_type = 'registration_initial_payment_confirmed'`).bind(registrationDraftId)
-    .first<{ id: string; status: string; actualDeliveryEmail: string }>();
+  const targetConfirmation = paymentConfirmationId ?? (await env.DB.prepare(`SELECT payment_confirmation.id
+    FROM payment_confirmation INNER JOIN payment_request ON payment_request.id = payment_confirmation.payment_request_id
+    WHERE payment_request.registration_draft_id = ? AND payment_confirmation.status = 'finalized'
+    ORDER BY payment_confirmation.finalized_at DESC, payment_confirmation.id DESC LIMIT 1`).bind(registrationDraftId)
+    .first<{ id: string }>())?.id;
+  if (!targetConfirmation) return false;
+  const existing = await env.DB.prepare(`SELECT id, status, actual_delivery_email AS actualDeliveryEmail,
+    context_json AS contextJson FROM outbound_email
+    WHERE registration_draft_id = ? AND event_type = 'registration_payment_confirmed'
+      AND json_extract(context_json, '$.paymentConfirmationId') = ?`)
+    .bind(registrationDraftId, targetConfirmation)
+    .first<{ id: string; status: string; actualDeliveryEmail: string; contextJson: string | null }>();
   if (existing?.status === "sent") return true;
   const delivery = resolveDeliveryAddress(env.APP_ENV, draft.normalizedEmail, env.STAGING_EMAIL_OVERRIDE_TO);
   const now = new Date().toISOString();
-  const id = existing?.id ?? crypto.randomUUID();
-  if (!existing) await env.DB.prepare(`INSERT OR IGNORE INTO outbound_email (
-    id, event_type, template_key, intended_to_email, actual_delivery_email, delivery_mode, status, attempt_count,
-    queued_at, context_json, idempotency_key, is_test, test_run_id, created_at, updated_at, registration_draft_id
-  ) VALUES (?, 'registration_initial_payment_confirmed', 'payment_confirmed_v1', ?, ?, ?, 'queued', 0, ?, '{}', ?, ?, ?, ?, ?, ?)`)
-    .bind(id, draft.email, delivery.actualEmail, delivery.deliveryMode, now, `payment-confirmed/${registrationDraftId}`,
-      draft.isTest, draft.testRunId, now, now, registrationDraftId).run();
-  const queued = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email WHERE id = ?`)
-    .bind(id).first<{ status: string; actualDeliveryEmail: string }>();
-  if (!queued || queued.status === "sent") return Boolean(queued);
-  const rows = await env.DB.prepare(`SELECT registration_draft_child.id AS childId,
+  let snapshot: PaymentConfirmationSnapshot | null = null;
+  let snapshotFromOutbox = false;
+  if (existing?.contextJson) {
+    try {
+      const parsed = JSON.parse(existing.contextJson) as Partial<PaymentConfirmationSnapshot>;
+      if (parsed.version === 1 && parsed.paymentConfirmationId === targetConfirmation
+        && typeof parsed.eventReceivedAmountMnt === "number" && Array.isArray(parsed.children)) {
+        snapshot = parsed as PaymentConfirmationSnapshot;
+        snapshotFromOutbox = true;
+      }
+    } catch { /* rebuild a legacy queued row below */ }
+  }
+  const id = existing?.id ?? `${targetConfirmation}:payment-confirmation`;
+  if (!snapshot) {
+    const rows = await env.DB.prepare(`SELECT registration_draft_child.id AS childId,
     trim(registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childName,
     COALESCE(class_session.display_label, class_session.stage_code) || ' · ' || COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) || ' ' || COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' || COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
     payment_installment.id AS installmentId, payment_installment.installment_number AS installmentNumber,
@@ -254,34 +275,59 @@ export async function sendPaymentConfirmedEmail(
       AND (? IS NULL OR payment_confirmation.id = ?)
     GROUP BY payment_confirmation.id, payment_installment.id
     ORDER BY registration_draft_child.position, payment_installment.installment_number`)
-    .bind(registrationDraftId, paymentConfirmationId ?? null, paymentConfirmationId ?? null).all<PaymentReceiptInstallmentRow>();
-  if (!rows.results.length) return false;
-  const effective = new Map((await effectiveInstallmentsForRows(env.DB, rows.results.map((row) => ({
+      .bind(registrationDraftId, targetConfirmation, targetConfirmation).all<PaymentReceiptInstallmentRow>();
+    if (!rows.results.length) return false;
+    const effective = new Map((await effectiveInstallmentsForRows(env.DB, rows.results.map((row) => ({
     id: row.installmentId, registrationDraftChildId: row.childId, installmentNumber: Number(row.installmentNumber),
     amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt),
-  })))).map((row) => [row.id, row]));
-  const childrenById = new Map<string, PaymentConfirmedChild>();
-  for (const row of rows.results) {
+    })))).map((row) => [row.id, row]));
+    const childrenById = new Map<string, PaymentConfirmedChild>();
+    for (const row of rows.results) {
     const effectiveAmount = effective.get(row.installmentId)?.effectiveAmountMnt ?? Number(row.amountMnt);
     const child = childrenById.get(row.childId) ?? {
-      childName: row.childName, classLabel: row.classLabel, receivedAmountMnt: 0, totalPaidAmountMnt: 0,
+      childName: row.childName, classLabel: row.classLabel, eventAllocatedAmountMnt: 0, totalPaidAmountMnt: 0,
       remainingAmountMnt: 0, nextPaymentAmountMnt: null, nextPaymentDueAt: null,
       seatConfirmed: row.enrollmentStatus === "confirmed", facebookGroupUrl: row.facebookGroupUrl,
     };
-    child.receivedAmountMnt += Number(row.receivedAmountMnt);
+    child.eventAllocatedAmountMnt += Number(row.receivedAmountMnt);
     child.totalPaidAmountMnt += Number(row.allocatedAmountMnt);
     child.remainingAmountMnt += Math.max(0, effectiveAmount - Number(row.allocatedAmountMnt));
     if (row.installmentKind === "later" && effectiveAmount > Number(row.allocatedAmountMnt) && child.nextPaymentDueAt == null) {
       child.nextPaymentAmountMnt = Math.max(0, effectiveAmount - Number(row.allocatedAmountMnt));
       child.nextPaymentDueAt = row.effectiveDueAt;
     }
-    childrenById.set(row.childId, child);
+      childrenById.set(row.childId, child);
+    }
+    const center = await env.DB.prepare(`SELECT facebook_page_url AS facebookUrl FROM public_center_information WHERE singleton = 1`)
+      .first<{ facebookUrl: string | null }>();
+    const receipt = await env.DB.prepare(`SELECT received_payment.received_amount_mnt AS receivedAmountMnt
+      FROM payment_confirmation INNER JOIN received_payment ON received_payment.id = payment_confirmation.received_payment_id
+      WHERE payment_confirmation.id = ? AND payment_confirmation.status = 'finalized'`).bind(targetConfirmation)
+      .first<{ receivedAmountMnt: number }>();
+    if (!receipt) return false;
+    snapshot = {
+      version: 1,
+      paymentConfirmationId: targetConfirmation,
+      eventReceivedAmountMnt: Number(receipt.receivedAmountMnt),
+      children: [...childrenById.values()],
+      centerFacebookUrl: center?.facebookUrl ?? null,
+    };
   }
-  const center = await env.DB.prepare(`SELECT facebook_page_url AS facebookUrl FROM public_center_information WHERE singleton = 1`)
-    .first<{ facebookUrl: string | null }>();
-  const template = paymentConfirmedTemplate({ children: [...childrenById.values()], centerFacebookUrl: center?.facebookUrl });
+  if (!existing) await env.DB.prepare(`INSERT OR IGNORE INTO outbound_email (
+    id, event_type, template_key, intended_to_email, actual_delivery_email, delivery_mode, status, attempt_count,
+    queued_at, context_json, idempotency_key, is_test, test_run_id, created_at, updated_at, registration_draft_id
+  ) VALUES (?, 'registration_payment_confirmed', 'payment_confirmed_v1', ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, draft.email, delivery.actualEmail, delivery.deliveryMode, now, JSON.stringify(snapshot), `payment-confirmed/${targetConfirmation}`,
+      draft.isTest, draft.testRunId, now, now, registrationDraftId).run();
+  else if (!snapshotFromOutbox) await env.DB.prepare(`UPDATE outbound_email SET context_json = ?, updated_at = ?
+    WHERE id = ? AND status IN ('queued', 'failed')`).bind(JSON.stringify(snapshot), now, id).run();
+  const queued = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email WHERE id = ?`)
+    .bind(id).first<{ status: string; actualDeliveryEmail: string }>();
+  if (!queued || queued.status === "sent") return Boolean(queued);
+  if (!snapshot) return false;
+  const template = paymentConfirmedTemplate(snapshot);
   await deliverQueuedEmail(env, emailProvider(env, provider), {
-    id, idempotencyKey: `payment-confirmed/${registrationDraftId}`, templateKey: "payment_confirmed_v1",
+    id, idempotencyKey: `payment-confirmed/${targetConfirmation}`, templateKey: "payment_confirmed_v1",
     message: { from: env.EMAIL_FROM, to: queued.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text },
   });
   return true;

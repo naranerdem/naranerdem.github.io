@@ -1287,7 +1287,7 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
         // The conditional confirmation and its audit event are durable; its
         // outbox row remains observable for retry without a capability link.
       }
-    } else if (state.allInitialPaid) {
+    } else {
       try { await sendPaymentConfirmedEmail(env, request.registrationDraftId, row.id); } catch { /* durable retry */ }
     }
     finalized += 1;

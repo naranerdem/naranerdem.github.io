@@ -144,15 +144,47 @@ try {
   assert.equal(messages.length, 1, "receipt retries are idempotent after success");
   assert.equal(await sendPaymentConfirmedEmail(env(database), "receipt", "receipt-confirmation", provider), true, "payment confirmation is also independent of auth email");
   assert.equal(messages.length, 2);
-  assert.match(messages[1].message.text, /Таны төлбөрийг хүлээн авч баталгаажууллаа\./);
+  assert.match(messages[1].message.text, /Энэ удаа хүлээн авсан төлбөр: 1,200,000 ₮/);
   assert.match(messages[1].message.text, /Тест Хүүхэд/);
   assert.match(messages[1].message.text, /Анги: Тест анги · Мягмар 09:00–10:20/);
-  assert.match(messages[1].message.text, /Хүлээн авсан төлбөр: 1,200,000 ₮/);
-  assert.match(messages[1].message.text, /Үлдсэн төлбөр: 0 ₮/);
+  assert.match(messages[1].message.text, /Энэ удаа хүлээн авсан төлбөр: 1,200,000 ₮/);
+  assert.match(messages[1].message.text, /Энэ удаагийн хуваарилалт: 1,200,000 ₮/);
+  assert.match(messages[1].message.text, /Төлөх үлдэгдэл: 0 ₮/);
   assert.match(messages[1].message.text, /Суудал хараахан баталгаажаагүй байна\./);
   assert.doesNotMatch(messages[1].message.text, /эхний төлбөр/i, "payment confirmation is plan-neutral");
   assert.deepEqual(messages[1].message.bcc, ["archive@example.test"], "ordinary payment receipts remain archive-BCC safe");
-  assert.equal(database.query("SELECT status FROM outbound_email WHERE event_type = 'registration_initial_payment_confirmed'")[0].status, "sent");
+  assert.equal(database.query("SELECT status FROM outbound_email WHERE event_type = 'registration_payment_confirmed'")[0].status, "sent");
+  const paymentSnapshot = database.query("SELECT context_json AS contextJson FROM outbound_email WHERE event_type = 'registration_payment_confirmed'")[0];
+  assert.equal(JSON.parse(paymentSnapshot.contextJson).eventReceivedAmountMnt, 1200000, "the Outbox persists the exact receipt amount before delivery retries");
+  database.query(`UPDATE outbound_email SET status = 'failed', sent_at = NULL WHERE event_type = 'registration_payment_confirmed';
+    UPDATE received_payment SET received_amount_mnt = 1300000 WHERE id = 'receipt-payment';
+    UPDATE payment_allocation SET allocated_amount_mnt = 1300000 WHERE id = 'receipt-allocation';`);
+  assert.equal(await sendPaymentConfirmedEmail(env(database), "receipt", "receipt-confirmation", provider), true,
+    "a failed payment-confirmation delivery retries its same durable receipt event");
+  assert.equal(messages.length, 3);
+  assert.match(messages[2].message.text, /Энэ удаа хүлээн авсан төлбөр: 1,200,000 ₮/,
+    "a later payment change cannot rewrite the failed event's receipt snapshot");
+  seedDraft(database, "shared-payment", "shared-payment@example.test");
+  seedCanonicalEnrollment(database, "shared-payment", "shared-payment-child", 0, "Нэг");
+  seedCanonicalEnrollment(database, "shared-payment", "shared-payment-child-b", 1, "Хоёр");
+  database.query(`INSERT INTO received_payment (
+    id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
+    confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id
+  ) VALUES ('shared-payment-receipt', 'shared-payment-request', 2400000, ?, 'staff_manual_bank', 'confirmed', ?, 'shared-payment-key', ?, ?, 1, 'email-test');
+  INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
+    VALUES ('shared-payment-allocation-a', 'shared-payment-receipt', 'shared-payment-installment', 1200000, ?, ?, 1, 'email-test'),
+      ('shared-payment-allocation-b', 'shared-payment-receipt', 'shared-payment-child-b-installment', 1200000, ?, ?, 1, 'email-test');
+  INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved, finalized_at, created_at, updated_at, is_test, test_run_id)
+    VALUES ('shared-payment-confirmation', 'shared-payment-receipt', 'shared-payment-request', 'finalized', ?, 0, ?, ?, ?, 1, 'email-test');`,
+  [now(), now(), now(), now(), now(), now(), now(), now(), now(), now(), now(), now()]);
+  assert.equal(await sendPaymentConfirmedEmail(env(database), "shared-payment", "shared-payment-confirmation", provider), true,
+    "one shared receipt creates one payment-confirmation event with its child allocations");
+  assert.equal(messages.length, 4);
+  assert.match(messages[3].message.text, /Энэ удаа хүлээн авсан төлбөр: 2,400,000 ₮/);
+  assert.match(messages[3].message.text, /Тест Хүүхэд[\s\S]*Энэ удаагийн хуваарилалт: 1,200,000 ₮/);
+  assert.match(messages[3].message.text, /Тест Хоёр[\s\S]*Энэ удаагийн хуваарилалт: 1,200,000 ₮/);
+  assert.equal(database.query("SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id = 'shared-payment' AND event_type = 'registration_payment_confirmed'")[0].count, 1,
+    "a shared receipt still has one durable event identity rather than one duplicated receipt per child");
   database.query(`UPDATE email_archive_bcc_setting SET recipients_json = '["admin@example.test"]', teacher_recipients_json = '[]' WHERE singleton = 1`);
   seedDraft(database, "sequential-confirmation", "sequential@example.test");
   seedCanonicalEnrollment(database, "sequential-confirmation", "sequential-confirmation-child", 0, "A");
@@ -307,7 +339,7 @@ try {
     "a confirmed enrollment can queue one capability-free internal notice");
   assert.equal(internalMessages.length, 1);
   assert.equal(internalMessages[0].message.to, "admin@example.test");
-  assert.deepEqual(internalMessages[0].message.bcc, ["overlap@example.test", "teacher@example.test"], "admin and teacher lists receive one deduplicated internal notice");
+  assert.deepEqual(internalMessages[0].message.bcc, ["overlap@example.test"], "only the admin list receives the deduplicated internal enrollment notice");
   assert.doesNotMatch(internalMessages[0].message.text, /verify-email|token=|Бүртгэлээ харах/i, "the internal notice contains no parent capability");
   assert.equal(database.query("SELECT COUNT(*) AS count FROM email_verification_challenge WHERE registration_draft_id = 'internal-notice'")[0].count, 0, "the internal notice issues no challenge");
   await sendInternalEnrollmentConfirmationNotice({ ...env(database), APP_ENV: "production" }, "internal-notice", internalChildren, { referrerBasisPoints: 0, referredChildBasisPoints: 0 }, internalProvider);
@@ -330,7 +362,7 @@ try {
   seedDraft(database, "cancelled");
   database.query("UPDATE registration_draft SET status = 'cancelled' WHERE id = 'cancelled'");
   assert.equal(await sendPaymentConfirmedEmail(env(database), "cancelled", provider), false, "a cancelled registration cannot receive a late confirmation email");
-  assert.equal(messages.length, 2, "cancellation does not queue or send a parent confirmation");
+  assert.equal(messages.length, 4, "cancellation does not queue or send a parent confirmation");
   seedDraft(database, "failure");
   const failingProvider = { async send() { throw new Error("provider unavailable"); } };
   await assert.rejects(sendRegistrationReceipt(env(database), "failure", failingProvider), /Transactional email delivery failed/);

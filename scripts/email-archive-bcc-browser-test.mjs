@@ -104,6 +104,7 @@ try {
   await page.goto(`${baseUrl}/staff/settings/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   assert.match(await page.locator("#email-archive-bcc-setting").textContent(), /таслал эсвэл шинэ мөрөөр/, "form explains supported separators");
+  assert.match(await page.locator("#email-archive-bcc-setting").textContent(), /анхны бүртгэл болон төлбөр баталгаажсан мэдэгдэл/, "the rendered setting explains the teacher's future payment-copy routing");
 
   const dotted = "dotted.name+tag@example.test";
   let saved = await save(page, dotted, "teacher.one@example.test");

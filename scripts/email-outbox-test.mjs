@@ -99,6 +99,9 @@ try {
     eventType: "registration_received", sensitivity: "archive_bcc_safe", primaryRecipient: "parent@example.test",
   }), ["admin@example.test", "overlap@example.test", "teacher@example.test"], "registration notice combines both lists once and excludes the parent recipient");
   assert.deepEqual(await archiveBccRecipients(productionEnv, {
+    eventType: "registration_payment_confirmed", sensitivity: "archive_bcc_safe", primaryRecipient: "parent@example.test",
+  }), ["admin@example.test", "overlap@example.test", "teacher@example.test"], "payment confirmations use the same event-based teacher routing without a subject match");
+  assert.deepEqual(await archiveBccRecipients(productionEnv, {
     eventType: "payment_initial_reminder", sensitivity: "archive_bcc_safe", primaryRecipient: "parent@example.test",
   }), ["admin@example.test", "overlap@example.test"], "reminders go only to admins");
   assert.deepEqual(await archiveBccRecipients(productionEnv, {

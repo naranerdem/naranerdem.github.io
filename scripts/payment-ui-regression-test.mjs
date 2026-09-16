@@ -25,7 +25,8 @@ assert.match(page, /Суудлыг баталгаажуулах/, "the seat-conf
 assert.match(page, /Төлбөрийг бүртгэсний дараа баталгаажуулна/, "a sufficient required installment shows its separate muted completion explanation");
 assert.match(page, /seatInput\.disabled = sufficient; if \(sufficient\) seatInput\.checked = true/, "the fixed confirmation-control space updates in place as amount changes");
 assert.match(page, /data-seat-required="\$\{escape\(cashRequired\)\}"/, "seat-control sufficiency uses the effective cash requirement rather than the raw receipt ceiling");
-assert.match(page, /seat\?\.dataset\.seatRequired \|\| form\.elements\.amount\.max/, "the client re-evaluates the seat control against its rendered effective requirement");
+assert.match(page, /seat\?\.dataset\.seatRequired \|\| form\.dataset\.paymentRequired \|\| form\.elements\.amount\.max/, "the client re-evaluates the seat control against its rendered effective requirement");
+assert.match(page, /data-payment-required="\$\{escape\(cashRequired\)\}"/, "a protected reservation uses its actual cash requirement instead of requiring a hidden partial-payment deadline");
 assert.match(page, /seatExplanation\.hidden = !sufficient/, "the completion explanation appears only at the effective sufficient amount");
 assert.match(page, /else if \(wasAutoConfirmed\) seatInput\.checked = false/, "reducing an automatic full-payment state clears the checkbox without undoing a later explicit partial approval");
 assert.match(page, /collectionMaximum > cashRequired && !familyQualificationEstablished/, "established family qualification does not show an obsolete conditional collection proposal");

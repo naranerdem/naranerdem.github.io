@@ -361,7 +361,10 @@ async function recordPartialCashPayment(page, childId) {
   await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
 }
 
-async function recordCashPayment(page, childId, amount, { expectedAmount = amount } = {}) {
+async function recordCashPayment(page, childId, amount, {
+  expectedAmount = amount,
+  proceedWithoutFamilyCredit = false,
+} = {}) {
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
   const row = page.locator(`[data-registration-child="${childId}"]`);
   await row.waitFor({ state: "visible" });
@@ -371,6 +374,16 @@ async function recordCashPayment(page, childId, amount, { expectedAmount = amoun
     "the rendered staff payment form requests the authoritative effective amount");
   await form.locator('input[name="amount"]').fill(String(amount));
   await form.locator('select[name="source"]').selectOption("staff_manual_cash");
+  const familyCreditDecision = form.locator('input[name="proceedWithoutFamilyCredit"]');
+  if (await familyCreditDecision.count()) {
+    assert.equal(proceedWithoutFamilyCredit, true,
+      "a cash-only browser path must explicitly choose not to use the available family credit");
+    await familyCreditDecision.check();
+  }
+  const invalidFields = await form.evaluate((element) => [...element.elements]
+    .filter((field) => "checkValidity" in field && !field.checkValidity())
+    .map((field) => ({ name: field.name, value: field.value, validationMessage: field.validationMessage })));
+  assert.deepEqual(invalidFields, [], "the rendered payment form is valid before submitting a cash receipt");
   const request = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
     && response.request().method() === "POST");
   await form.locator('button[type="submit"]').click();
@@ -1212,6 +1225,13 @@ try {
     assert.deepEqual({ enrollments: Number(ordinaryPromotion[0]?.enrollments), quotes: Number(ordinaryPromotion[0]?.quotes) },
       { enrollments: 1, quotes: 0 },
       "the conditional finalizer changes neither ordinary raw-paid enrollment nor its communication classification");
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(ordinary)}`);
+    const ordinaryRow = page.locator(`[data-registration-child="${ordinary}"]`);
+    await ordinaryRow.locator('button[data-payment-detail]').click();
+    await ordinaryRow.locator('[data-registration-view]').click();
+    await ordinaryRow.getByText("Төлөв: Баталгаажсан").waitFor({ state: "visible" });
+    assert.equal(await ordinaryRow.getByText("Төлөв: Төлбөр хүлээж байна").count(), 0,
+      "the rendered public-registration detail prioritizes its canonical enrollment over the draft payment status");
 
     const joint = await submitPublicRegistration(browser, {
       childName: "ConditionalJointA", email: "conditional-joint@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200,
@@ -1860,7 +1880,9 @@ try {
     FROM additional_class_admission WHERE source_registration_draft_child_id = ${sql(laterCashChildId)}
       AND status = 'pending_confirmation' ORDER BY created_at DESC LIMIT 1`);
   assert.equal(laterCashAdmission.length, 1, "the fully cash-settled source can create a pending discounted one-payment target");
-  await recordCashPayment(page, laterCashAdmission[0].targetChildId, 800);
+  await recordCashPayment(page, laterCashAdmission[0].targetChildId, 800, {
+    proceedWithoutFamilyCredit: true,
+  });
   await finalizeCashRegistration(page, laterCashAdmission[0].targetChildId);
   const laterCashAward = await dbJson(`SELECT
     additional_class_admission.status AS admissionStatus,
@@ -1929,14 +1951,34 @@ try {
     await createIdentity.click();
   }
   assert.ok(afterFinalizer[0]?.enrollmentId, `credit finalization must produce a canonical enrollment: ${JSON.stringify(afterFinalizer)}`);
+  const finalizedLedger = await dbJson(`SELECT entry_kind AS entryKind, amount_mnt AS amountMnt,
+      payment_installment_id AS installmentId, canonical_student_id AS canonicalStudentId,
+      registration_draft_child_id AS childId
+    FROM child_credit_entry WHERE registration_draft_child_id = ${sql(childId)} ORDER BY created_at, id`);
+  const finalizedProjection = await staffPaymentProjection(page, childId);
+  assert.equal(Number(finalizedProjection?.totalCreditAppliedMnt), 1000,
+    `the staff projection retains the credit application after canonical promotion: ${JSON.stringify({ finalizedLedger, finalizedProjection })}`);
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
   await page.getByRole("button", { name: /Төлбөр баталгаажсан/ }).waitFor({ state: "visible", timeout: 5_000 });
-  await page.locator(`[data-registration-child="${childId}"]`).getByText("Кредитээр тооцсон: 1,000 ₮").waitFor({ state: "visible", timeout: 5_000 });
-  const actionOrder = await page.locator(`[data-registration-child="${childId}"] .staff-panel-actions[aria-label="Бүртгэлийн үйлдэл"]`).textContent();
+  const finalizedRow = page.locator(`[data-registration-child="${childId}"]`);
+  const closedDetail = finalizedRow.locator('button[data-payment-detail][aria-expanded="false"]');
+  if (await closedDetail.count()) await closedDetail.click();
+  else await finalizedRow.locator('button[data-payment-detail][aria-expanded="true"]').waitFor({ state: "visible" });
+  const finalizedFinancialSummary = finalizedRow.locator('.staff-payment-financial-summary:visible');
+  await finalizedFinancialSummary.waitFor({ state: "visible", timeout: 5_000 });
+  const finalizedFinancialDetails = finalizedRow.locator('details.staff-payment-financial-details:visible');
+  await finalizedFinancialDetails.locator('summary').click();
+  assert.match(await finalizedFinancialDetails.innerText(), /Кредитээр тооцсон:\s*1,000 ₮/,
+    "the rendered confirmed-record summary retains the applied-credit amount after canonical promotion");
+  const actionOrder = await finalizedRow.locator('.staff-panel-actions[aria-label="Бүртгэлийн үйлдэл"]').textContent();
   const availableActions = ["Мэдээлэл", "Төлбөр", "Кредит", "Шилжих", "Анги нэмэх"]
     .filter((label) => actionOrder.includes(label));
   assert.deepEqual(availableActions, [...availableActions].sort((left, right) => actionOrder.indexOf(left) - actionOrder.indexOf(right)),
     "available outer actions use the staff workflow order");
+  await finalizedRow.locator('[data-registration-view]').click();
+  await finalizedRow.getByText("Төлөв: Баталгаажсан").waitFor({ state: "visible" });
+  assert.equal(await finalizedRow.getByText("Төлөв: Төлбөр хүлээж байна").count(), 0,
+    "the rendered staff-assisted registration detail prioritizes its canonical enrollment over the draft payment status");
   const promoted = await dbJson(`SELECT canonical_student_id AS canonicalStudentId, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ${sql(childId)}`);
   assert.ok(promoted[0].canonicalStudentId && promoted[0].enrollmentId, "normal finalization promotes the credit-settled draft");
   const ledger = await dbJson(`SELECT COUNT(*) AS entries, COUNT(DISTINCT operation_id) AS operations FROM child_credit_entry WHERE registration_draft_child_id = ${sql(childId)} AND canonical_student_id = ${sql(promoted[0].canonicalStudentId)}`);
