@@ -1604,12 +1604,14 @@ export async function handleApiRequest(
       switch (payload.action) {
         case "attendance.mark":
           result = await recordCourseAttendance(env, principal, {
-            slotId: String(payload.slotId ?? ""), enrollmentId: String(payload.enrollmentId ?? ""), status: payload.status,
+            slotId: String(payload.slotId ?? ""), enrollmentId: String(payload.enrollmentId ?? ""),
+            makeupAssignmentId: payload.makeupAssignmentId, status: payload.status,
           });
           break;
         case "attendance.clear":
           result = await clearCourseAttendance(env, principal, {
             slotId: String(payload.slotId ?? ""), enrollmentId: String(payload.enrollmentId ?? ""),
+            makeupAssignmentId: payload.makeupAssignmentId,
           });
           break;
         case "attendance.bulk-present":

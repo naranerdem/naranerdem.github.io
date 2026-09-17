@@ -138,19 +138,22 @@ try {
       VALUES ('offering', 'annual_course', 'Ирцийн жилийн сургалт', 'year', 'stage_1', '${addCivilDays(today, -14)}', 'program', 1, 'paid', 'active', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('class-a', 'year', 'stage_1', 'Тест анги', '${weekday}', '10:00', '11:20', 10, 'closed', 'offering', 1, 'attendance-test', '${now}', '${now}'),
-        ('class-b', 'year', 'stage_1', 'Өөр тест анги', 'Ням', '10:00', '11:20', 10, 'closed', 'offering', 1, 'attendance-test', '${now}', '${now}');
+        ('class-b', 'year', 'stage_1', 'Өөр тест анги', 'Ням', '10:00', '11:20', 10, 'available', 'offering', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at)
       VALUES ('class-a', 'weekly', '${past}', '${weekday}', '10:00', '11:20', '${now}', '${now}'),
         ('class-b', 'weekly', '${past}', 'Ням', '10:00', '11:20', '${now}', '${now}');
     INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
-      VALUES ('calendar-a', 'class-a', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}');
+      VALUES ('calendar-a', 'class-a', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}'),
+        ('calendar-b', 'class-b', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at)
-      VALUES ('revision-a', 'calendar-a', 'program', 1, 'draft', '${past}', 0, 1, 'attendance-test', '${now}', '${now}');
+      VALUES ('revision-a', 'calendar-a', 'program', 1, 'draft', '${past}', 0, 1, 'attendance-test', '${now}', '${now}'),
+        ('revision-b', 'calendar-b', 'program', 1, 'draft', '${past}', 0, 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('slot-past', 'revision-a', '${past}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}'),
         ('slot-today', 'revision-a', '${today}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-2', 1, 'attendance-test', '${now}', '${now}'),
-        ('slot-future', 'revision-a', '${future}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-3', 1, 'attendance-test', '${now}', '${now}');
-    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id = 'revision-a';
+        ('slot-future', 'revision-a', '${future}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-3', 1, 'attendance-test', '${now}', '${now}'),
+        ('slot-makeup-target', 'revision-b', '${past}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}');
+    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id IN ('revision-a', 'revision-b');
     INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, exclude_from_generation, warn_on_overlap, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('today-holiday', 'year', 'Тест амралт', '${today}', '${today}', 0, 'warn_only', 0, 1, 'active', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
@@ -215,7 +218,45 @@ try {
   const completed = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today");
   assert.equal(completed.selected.markedCount, 2);
   assert.equal(completed.selected.rosterCount, 2);
-  assert.equal(count(database, "class_calendar_revision"), 1, "attendance does not create a calendar revision");
+  assert.equal(count(database, "class_calendar_revision"), 2, "attendance does not create a calendar revision");
+
+  sqlite(`
+    INSERT INTO course_makeup_resolution (
+      id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('makeup-resolution', 'enrollment-a', 'class-a', 'lesson-1', 'assigned', 'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO course_makeup_assignment (
+      id, resolution_id, target_kind, target_class_session_id, target_curriculum_lesson_id,
+      status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('makeup-assignment', 'makeup-resolution', 'normal_class', 'class-b', 'lesson-1',
+      'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
+  `);
+  const makeupDestination = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-makeup-target", afterClassEnd);
+  assert.equal(makeupDestination.selected.rosterCount, 1, "an active normal make-up assignment joins its exact target attendance roster");
+  const makeupRow = makeupDestination.selected.roster[0];
+  assert.equal(makeupRow.attendanceKind, "makeup", "the destination roster labels the make-up attendee distinctly");
+  assert.equal(makeupRow.makeupAssignmentId, "makeup-assignment");
+  assert.equal(makeupRow.makeupSource.lessonTitle, "Өнгөрсөн хичээл", "the target roster preserves the source missed-lesson linkage");
+  assert.equal(makeupRow.makeupSource.slotId, "slot-past", "the target roster links directly to the source occurrence");
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "slot-makeup-target", enrollmentId: "enrollment-a", makeupAssignmentId: "makeup-assignment", status: "present",
+  });
+  assert.equal(count(database, "course_attendance", "enrollment_id = 'enrollment-a' AND class_session_id = 'class-b'"), 0, "make-up attendance never rewrites the source enrollment into the destination class");
+  assert.equal(database.query("SELECT attendance_status AS status FROM course_makeup_attendance WHERE course_makeup_assignment_id = 'makeup-assignment'")[0].status, "present", "the destination make-up attendance persists against its assignment");
+  assert.equal(await attendance.attendanceProtectedThroughSequence(runtime, "class-b", "program"), 1, "recorded make-up attendance protects its target lesson from a later schedule reflow");
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "slot-makeup-target", enrollmentId: "enrollment-a", makeupAssignmentId: "makeup-assignment", status: "late",
+  });
+  await attendance.clearCourseAttendance(runtime, actor(), {
+    slotId: "slot-makeup-target", enrollmentId: "enrollment-a", makeupAssignmentId: "makeup-assignment",
+  });
+  assert.equal(await attendance.attendanceProtectedThroughSequence(runtime, "class-b", "program"), 0, "clearing a make-up mark removes only its current schedule protection");
+  assert.equal(count(database, "course_makeup_attendance_change", "course_makeup_attendance_id = (SELECT id FROM course_makeup_attendance WHERE course_makeup_assignment_id = 'makeup-assignment')"), 3, "make-up attendance recording and correction retain append-only history");
+  sqlite(`UPDATE course_makeup_assignment SET status = 'cancelled', cancelled_at = '${now}', cancelled_by_staff_account_id = 'teacher-staff', cancellation_reason = 'teacher_reopened', updated_at = '${now}' WHERE id = 'makeup-assignment';
+    UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}' WHERE id = 'makeup-resolution';`);
+  const cancelledMakeupDestination = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-makeup-target", afterClassEnd);
+  assert.equal(cancelledMakeupDestination.selected.rosterCount, 0, "cancelled make-up assignments leave the target roster while preserving their audit history");
+
   await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-past", enrollmentId: "enrollment-a", status: "absent" });
   sqlite(`INSERT INTO registration_draft (
     id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone,

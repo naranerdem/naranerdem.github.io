@@ -55,7 +55,7 @@ try {
   const now = new Date().toISOString();
   const today = localToday();
   const sourceDate = addDays(today, -7);
-  const targetDate = addDays(today, 7);
+  const targetDate = today;
   const confirmedAt = new Date(`${addDays(today, -30)}T00:00:00+08:00`).toISOString();
   execute(`
     INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
@@ -77,10 +77,10 @@ try {
       VALUES ('offering', 'annual_course', 'Browser нөхөх сургалт', 'year', 'stage_1', '${sourceDate}', 'program', 1, 'paid', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-class', 'year', 'stage_1', 'Эх анги', 'Бямба', '10:00', '11:20', 10, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('target-class', 'year', 'stage_1', 'Зорилтот анги', 'Ням', '14:00', '15:20', 1, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('target-class', 'year', 'stage_1', 'Зорилтот анги', 'Ням', '23:00', '23:59', 1, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at) VALUES
       ('source-class', 'weekly', '${sourceDate}', 'Бямба', '10:00', '11:20', ${sql(now)}, ${sql(now)}),
-      ('target-class', 'weekly', '${targetDate}', 'Ням', '14:00', '15:20', ${sql(now)}, ${sql(now)});
+      ('target-class', 'weekly', '${targetDate}', 'Ням', '23:00', '23:59', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-calendar', 'source-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('target-calendar', 'target-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
@@ -89,7 +89,7 @@ try {
       ('target-revision', 'target-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-slot', 'source-revision', '${sourceDate}', '10:00', '11:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('target-slot', 'target-revision', '${targetDate}', '14:00', '15:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('target-slot', 'target-revision', '${targetDate}', '23:00', '23:59', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id IN ('source-revision', 'target-revision');
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('guardian', 'Browser Асран', '99000000', '99000000', 'guardian@example.test', 'guardian@example.test', 'Тест', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
@@ -140,6 +140,29 @@ try {
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   assert.equal(assignments.scheduled.length, 1, "the rendered normal-target action creates one active assignment");
   assert.equal(assignments.scheduled[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
+
+  await page.goto(`${baseUrl}/staff/attendance/?date=${today}&occurrence=target-slot`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.getByText("Browser Нөхөх", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Нөхөх", { exact: true }).waitFor({ state: "visible" });
+  await page.locator("#attendance-summary").getByText("0 / 1 тэмдэглэсэн", { exact: true }).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "makeup-destination-attendance-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "makeup-destination-attendance-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator('[data-attendance-control="present"]').check();
+  await page.getByText("Ирцийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.locator('[data-attendance-control="late"]').check();
+  await page.getByText("Ирцийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.reload();
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.locator('[data-attendance-control="late"]').waitFor({ state: "visible" });
+  assert.equal(await page.locator('[data-attendance-control="late"]').isChecked(), true, "destination make-up attendance persists through reload");
+  const destination = await page.evaluate(async () => (await fetch(`/api/staff/attendance?date=${encodeURIComponent(location.search.match(/date=([^&]+)/)?.[1] || "")}&occurrence=target-slot`, { credentials: "same-origin" })).json());
+  assert.equal(destination.selected.rosterCount, 1, "destination attendance summary counts the displayed make-up attendee");
+  assert.equal(destination.selected.roster[0].attendanceKind, "makeup", "destination attendee remains visibly distinct from an ordinary enrollment");
+  assert.equal(destination.selected.roster[0].makeupSource.lessonTitle, "Ижил хичээл", "destination attendee retains the source missed-lesson linkage");
   console.log(`ok browser make-up capacity target availability and booking (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);

@@ -191,6 +191,18 @@ try {
   assert.equal(count(database, "class_calendar_slot", `local_date = ${quote(sourceDate)} AND status = 'scheduled'`), 3, "blocked whole-day operation changes no class");
 
   sqlite(`UPDATE course_attendance SET attendance_status = NULL, updated_at = '${now}' WHERE id = 'attendance-c';`);
+  sqlite(`INSERT INTO course_makeup_attendance (
+    id, course_makeup_assignment_id, attendance_status, recorded_calendar_slot_id, scheduled_local_date,
+    first_recorded_at, updated_at, recorded_by_staff_account_id, updated_by_staff_account_id,
+    is_test, test_run_id, created_at
+  ) VALUES ('makeup-attendance', 'makeup-assignment', 'present', 'slot-b-3', '${sourceDate}',
+    '${now}', '${now}', 'teacher-staff', 'teacher-staff', 1, 'day-change-test', '${now}');`);
+  await assert.rejects(
+    () => service.previewDailyChange(runtime, actor(), { kind: "day-move", sourceDate, replacementDate }),
+    (caught) => caught instanceof service.DayChangeError && caught.code === "attendance_protected" && /Б анги/.test(caught.blockingClassLabel),
+    "recorded destination make-up attendance protects the target lesson from a reflow",
+  );
+  sqlite(`UPDATE course_makeup_attendance SET attendance_status = NULL, updated_at = '${now}' WHERE id = 'makeup-attendance';`);
   const preview = await service.previewDailyChange(runtime, actor(), { kind: "day-move", sourceDate, replacementDate });
   assert.equal(preview.affectedClassCount, 3, "whole-day preview lists every affected class");
   await service.applyDailyChange(runtime, actor(), { kind: "day-move", sourceDate, replacementDate });

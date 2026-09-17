@@ -261,6 +261,16 @@ protection. Stored attendance and effective attendance are distinct: historical
 explicit absent rows remain valid, while the make-up review service uses
 post-occurrence effective absence and never acts before class end.
 
+An active normal-class make-up assignment adds its source pupil to the exact
+target class/lesson attendance roster as a clearly labelled `Нөхөх` attendee.
+Its destination mark lives in `course_makeup_attendance`, keyed to the durable
+assignment rather than by moving the source enrollment into the target class.
+The row snapshots the target calendar slot/date and has append-only correction
+history. Cancelled or replaced assignments are not rostered, while their source
+absence, assignment, and any recorded destination attendance remain history.
+This keeps ordinary roster membership, expected make-up attendees, and capacity
+reservations as distinct operational quantities.
+
 `course_absence_notice` is deliberately distinct from attendance and currently
 has only the teacher-created `staff_manual` source. It may have an optional
 note, can be corrected or cancelled without hard deletion, and never changes an

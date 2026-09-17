@@ -205,7 +205,19 @@ const OCCURRENCE_SELECT = `SELECT slot.id AS slotId,
     (SELECT COUNT(*) FROM course_attendance AS attendance
       WHERE attendance.class_session_id = class_session.id
         AND attendance.curriculum_lesson_id = lesson.id
-        AND attendance.attendance_status IS NOT NULL) AS attendanceCount,
+        AND attendance.attendance_status IS NOT NULL)
+      +
+    (SELECT COUNT(*) FROM course_makeup_attendance AS makeup_attendance
+      INNER JOIN course_makeup_assignment AS makeup_assignment
+        ON makeup_assignment.id = makeup_attendance.course_makeup_assignment_id
+      INNER JOIN course_makeup_resolution AS makeup_resolution
+        ON makeup_resolution.id = makeup_assignment.resolution_id
+      WHERE makeup_assignment.target_kind = 'normal_class'
+        AND makeup_assignment.status = 'active'
+        AND makeup_resolution.status = 'active'
+        AND makeup_assignment.target_class_session_id = class_session.id
+        AND makeup_assignment.target_curriculum_lesson_id = lesson.id
+        AND makeup_attendance.attendance_status IS NOT NULL) AS attendanceCount,
     MAX(slot.is_test, class_session.is_test, offering.is_test) AS isTest,
     COALESCE(slot.test_run_id, class_session.test_run_id, offering.test_run_id) AS testRunId
   FROM class_calendar_slot AS slot

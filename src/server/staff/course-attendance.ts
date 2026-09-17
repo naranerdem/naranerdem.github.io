@@ -46,10 +46,20 @@ interface RosterRow {
   studentId: string;
   surname: string;
   givenName: string;
+  rosterKind: "ordinary" | "makeup";
+  makeupAssignmentId: string | null;
   attendanceId: string | null;
   attendanceStatus: CourseAttendanceStatus | null;
   absenceNoticeId: string | null;
   absenceNoticeNote: string | null;
+  sourceSlotId: string | null;
+  sourceLocalDate: string | null;
+  sourceStartTime: string | null;
+  sourceEndTime: string | null;
+  sourceLessonSequence: number | null;
+  sourceLessonTitle: string | null;
+  sourceStageCode: string | null;
+  sourceWeekday: string | null;
 }
 
 interface AttendanceOccurrence extends OccurrenceRow {
@@ -197,11 +207,16 @@ async function occurrenceForSlot(env: WorkerEnv, slotId: string): Promise<Occurr
 
 async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): Promise<RosterRow[]> {
   const { startsAt, endsAt } = localDateBounds(occurrence.localDate);
-  const result = await env.DB.prepare(`
+  const ordinary = await env.DB.prepare(`
     SELECT enrollment.id AS enrollmentId, student.id AS studentId,
       student.surname AS surname, student.given_name AS givenName,
+      'ordinary' AS rosterKind, NULL AS makeupAssignmentId,
       attendance.id AS attendanceId, attendance.attendance_status AS attendanceStatus,
-      absence_notice.id AS absenceNoticeId, absence_notice.note AS absenceNoticeNote
+      absence_notice.id AS absenceNoticeId, absence_notice.note AS absenceNoticeNote,
+      NULL AS sourceSlotId,
+      NULL AS sourceLocalDate, NULL AS sourceStartTime, NULL AS sourceEndTime,
+      NULL AS sourceLessonSequence, NULL AS sourceLessonTitle,
+      NULL AS sourceStageCode, NULL AS sourceWeekday
     FROM enrollment
     INNER JOIN student ON student.id = enrollment.student_id
     LEFT JOIN course_attendance AS attendance
@@ -231,7 +246,47 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): P
     occurrence.classSessionId, occurrence.curriculumLessonId,
     occurrence.classSessionId, endsAt, startsAt, startsAt,
   ).all<RosterRow>();
-  return result.results;
+  const makeup = await env.DB.prepare(`
+    SELECT source_enrollment.id AS enrollmentId, student.id AS studentId,
+      student.surname AS surname, student.given_name AS givenName,
+      'makeup' AS rosterKind, assignment.id AS makeupAssignmentId,
+      makeup_attendance.id AS attendanceId,
+      makeup_attendance.attendance_status AS attendanceStatus,
+      NULL AS absenceNoticeId, NULL AS absenceNoticeNote,
+      source_slot.id AS sourceSlotId,
+      source_slot.local_date AS sourceLocalDate,
+      source_slot.start_time AS sourceStartTime, source_slot.end_time AS sourceEndTime,
+      source_lesson.sequence_number AS sourceLessonSequence,
+      source_lesson.title AS sourceLessonTitle,
+      source_class.stage_code AS sourceStageCode,
+      COALESCE(source_meeting.weekly_weekday, source_class.weekday) AS sourceWeekday
+    FROM course_makeup_assignment AS assignment
+    INNER JOIN course_makeup_resolution AS resolution
+      ON resolution.id = assignment.resolution_id
+      AND resolution.status = 'active' AND resolution.decision = 'assigned'
+    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = resolution.source_enrollment_id
+    INNER JOIN student ON student.id = source_enrollment.student_id
+    INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
+    INNER JOIN curriculum_lesson AS source_lesson ON source_lesson.id = resolution.source_curriculum_lesson_id
+    LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
+    LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
+    LEFT JOIN class_calendar_revision AS source_revision
+      ON source_revision.class_calendar_id = source_calendar.id AND source_revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS source_slot
+      ON source_slot.class_calendar_revision_id = source_revision.id
+      AND source_slot.curriculum_lesson_id = resolution.source_curriculum_lesson_id
+      AND source_slot.status = 'scheduled'
+    LEFT JOIN course_makeup_attendance AS makeup_attendance
+      ON makeup_attendance.course_makeup_assignment_id = assignment.id
+    WHERE assignment.status = 'active'
+      AND assignment.target_kind = 'normal_class'
+      AND assignment.target_class_session_id = ?
+      AND assignment.target_curriculum_lesson_id = ?
+    ORDER BY student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE, source_enrollment.id
+  `).bind(occurrence.classSessionId, occurrence.curriculumLessonId).all<RosterRow>();
+  const ordinaryStudentIds = new Set(ordinary.results.map((entry) => entry.studentId));
+  return [...ordinary.results, ...makeup.results.filter((entry) => !ordinaryStudentIds.has(entry.studentId))]
+    .sort((left, right) => `${left.surname}\u0000${left.givenName}\u0000${left.enrollmentId}`.localeCompare(`${right.surname}\u0000${right.givenName}\u0000${right.enrollmentId}`));
 }
 
 function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
@@ -240,6 +295,17 @@ function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
     enrollmentId: entry.enrollmentId,
     studentId: entry.studentId,
     displayName: `${entry.surname} ${entry.givenName}`.trim(),
+    attendanceKind: entry.rosterKind,
+    makeupAssignmentId: entry.makeupAssignmentId,
+    makeupSource: entry.rosterKind === "makeup" ? {
+      slotId: entry.sourceSlotId,
+      localDate: entry.sourceLocalDate,
+      startTime: entry.sourceStartTime,
+      endTime: entry.sourceEndTime,
+      lessonSequence: entry.sourceLessonSequence,
+      lessonTitle: entry.sourceLessonTitle,
+      classLabel: `${entry.sourceStageCode ? stageLabel(entry.sourceStageCode) : ""}${entry.sourceWeekday ? ` · ${entry.sourceWeekday}` : ""}${entry.sourceStartTime && entry.sourceEndTime ? ` ${entry.sourceStartTime}–${entry.sourceEndTime}` : ""}`.trim(),
+    } : null,
     recordedAttendanceStatus: entry.attendanceStatus,
     effectiveAttendanceStatus: effectiveCourseAttendanceStatus(entry.attendanceStatus, occurrenceEnded),
     hasAbsenceNotice: Boolean(entry.absenceNoticeId),
@@ -325,9 +391,15 @@ function assertNotFuture(occurrence: OccurrenceRow): void {
   if (occurrence.localDate > localToday()) throw new CourseAttendanceError("future_occurrence");
 }
 
-async function rosterEntryForEnrollment(env: WorkerEnv, occurrence: OccurrenceRow, enrollmentId: string): Promise<RosterRow> {
+async function rosterEntryForEnrollment(
+  env: WorkerEnv,
+  occurrence: OccurrenceRow,
+  enrollmentId: string,
+  makeupAssignmentId = "",
+): Promise<RosterRow> {
   const roster = await rosterForOccurrence(env, occurrence);
-  const entry = roster.find((candidate) => candidate.enrollmentId === enrollmentId);
+  const entry = roster.find((candidate) => candidate.enrollmentId === enrollmentId
+    && (makeupAssignmentId ? candidate.makeupAssignmentId === makeupAssignmentId : candidate.rosterKind === "ordinary"));
   if (!entry) throw new CourseAttendanceError("not_enrolled");
   return entry;
 }
@@ -338,6 +410,64 @@ async function attendanceForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow
     WHERE enrollment_id = ? AND class_session_id = ? AND curriculum_lesson_id = ?`).bind(
     enrollmentId, occurrence.classSessionId, occurrence.curriculumLessonId,
   ).first<AttendanceRow>();
+}
+
+async function makeupAttendanceForAssignment(env: WorkerEnv, assignmentId: string): Promise<AttendanceRow | null> {
+  return env.DB.prepare(`SELECT id, attendance_status AS attendanceStatus, updated_at AS updatedAt
+    FROM course_makeup_attendance WHERE course_makeup_assignment_id = ?`).bind(assignmentId).first<AttendanceRow>();
+}
+
+function makeupAttendanceStatements(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  occurrence: OccurrenceRow,
+  entry: RosterRow,
+  status: CourseAttendanceStatus | null,
+  existing: AttendanceRow | null,
+  time: string,
+): D1PreparedStatement[] {
+  if (!entry.makeupAssignmentId) throw new CourseAttendanceError("not_enrolled");
+  const attendanceId = existing?.id ?? id();
+  const provenance = flags(occurrence);
+  const statements: D1PreparedStatement[] = [];
+  if (existing) {
+    statements.push(env.DB.prepare(`UPDATE course_makeup_attendance
+      SET attendance_status = ?, recorded_calendar_slot_id = ?, scheduled_local_date = ?,
+        updated_at = ?, updated_by_staff_account_id = ?
+      WHERE id = ?`).bind(
+      status, occurrence.slotId, occurrence.localDate, time, actor.staffAccountId, attendanceId,
+    ));
+  } else {
+    statements.push(env.DB.prepare(`INSERT INTO course_makeup_attendance (
+      id, course_makeup_assignment_id, attendance_status, recorded_calendar_slot_id,
+      scheduled_local_date, first_recorded_at, updated_at, recorded_by_staff_account_id,
+      updated_by_staff_account_id, is_test, test_run_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+      attendanceId, entry.makeupAssignmentId, status, occurrence.slotId,
+      occurrence.localDate, time, time, actor.staffAccountId, actor.staffAccountId,
+      provenance.isTest, provenance.testRunId, time,
+    ));
+  }
+  statements.push(
+    env.DB.prepare(`INSERT INTO course_makeup_attendance_change (
+      id, course_makeup_attendance_id, previous_status, new_status,
+      changed_by_staff_account_id, changed_at, is_test, test_run_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+      id(), attendanceId, existing?.attendanceStatus ?? null, status,
+      actor.staffAccountId, time, provenance.isTest, provenance.testRunId, time,
+    ),
+    audit(env, actor, existing?.attendanceStatus != null
+      ? "course_makeup_attendance_corrected" : "course_makeup_attendance_recorded",
+    "course_makeup_attendance", attendanceId, {
+      assignmentId: entry.makeupAssignmentId,
+      sourceEnrollmentId: entry.enrollmentId,
+      targetClassSessionId: occurrence.classSessionId,
+      curriculumLessonId: occurrence.curriculumLessonId,
+      from: existing?.attendanceStatus ?? null,
+      to: status,
+    }, occurrence, time),
+  );
+  return statements;
 }
 
 function invalidateActiveMakeupStatements(
@@ -373,13 +503,20 @@ function invalidateActiveMakeupStatements(
 export async function recordCourseAttendance(
   env: WorkerEnv,
   actor: StaffPrincipal,
-  input: { slotId: string; enrollmentId: string; status: unknown },
+  input: { slotId: string; enrollmentId: string; makeupAssignmentId?: unknown; status: unknown },
 ): Promise<{ changed: boolean; recordedAttendanceStatus: CourseAttendanceStatus }> {
   requireCapability(actor, "attendance.manage");
   assertAttendanceStatus(input.status);
   const occurrence = await occurrenceForSlot(env, text(input.slotId, 120));
   assertNotFuture(occurrence);
-  await rosterEntryForEnrollment(env, occurrence, text(input.enrollmentId, 120));
+  const entry = await rosterEntryForEnrollment(env, occurrence, text(input.enrollmentId, 120), text(input.makeupAssignmentId, 120));
+  if (entry.rosterKind === "makeup") {
+    const existing = await makeupAttendanceForAssignment(env, entry.makeupAssignmentId!);
+    if (existing?.attendanceStatus === input.status) return { changed: false, recordedAttendanceStatus: input.status };
+    const time = now();
+    await env.DB.batch(makeupAttendanceStatements(env, actor, occurrence, entry, input.status, existing, time));
+    return { changed: true, recordedAttendanceStatus: input.status };
+  }
   const existing = await attendanceForOccurrence(env, occurrence, input.enrollmentId);
   if (existing?.attendanceStatus === input.status) return { changed: false, recordedAttendanceStatus: input.status };
   const time = now();
@@ -427,12 +564,19 @@ export async function recordCourseAttendance(
 export async function clearCourseAttendance(
   env: WorkerEnv,
   actor: StaffPrincipal,
-  input: { slotId: string; enrollmentId: string },
+  input: { slotId: string; enrollmentId: string; makeupAssignmentId?: unknown },
 ): Promise<{ changed: boolean; recordedAttendanceStatus: null }> {
   requireCapability(actor, "attendance.manage");
   const occurrence = await occurrenceForSlot(env, text(input.slotId, 120));
   assertNotFuture(occurrence);
-  await rosterEntryForEnrollment(env, occurrence, text(input.enrollmentId, 120));
+  const entry = await rosterEntryForEnrollment(env, occurrence, text(input.enrollmentId, 120), text(input.makeupAssignmentId, 120));
+  if (entry.rosterKind === "makeup") {
+    const existing = await makeupAttendanceForAssignment(env, entry.makeupAssignmentId!);
+    if (!existing?.attendanceStatus) return { changed: false, recordedAttendanceStatus: null };
+    const time = now();
+    await env.DB.batch(makeupAttendanceStatements(env, actor, occurrence, entry, null, existing, time));
+    return { changed: true, recordedAttendanceStatus: null };
+  }
   const existing = await attendanceForOccurrence(env, occurrence, input.enrollmentId);
   if (!existing?.attendanceStatus) return { changed: false, recordedAttendanceStatus: null };
   const time = now();
@@ -473,6 +617,11 @@ export async function markUnmarkedRosterPresent(
   const provenance = flags(occurrence);
   const statements: D1PreparedStatement[] = [];
   for (const entry of unmarked) {
+    if (entry.rosterKind === "makeup") {
+      const existing = await makeupAttendanceForAssignment(env, entry.makeupAssignmentId!);
+      statements.push(...makeupAttendanceStatements(env, actor, occurrence, entry, "present", existing, time));
+      continue;
+    }
     const attendanceId = entry.attendanceId ?? id();
     if (entry.attendanceId) {
       statements.push(env.DB.prepare(`UPDATE course_attendance
@@ -603,11 +752,27 @@ export async function cancelCourseAbsenceNotice(
 }
 
 export async function attendanceProtectedThroughSequence(env: WorkerEnv, classSessionId: string, programId: string): Promise<number> {
-  const row = await env.DB.prepare(`SELECT COALESCE(MAX(lesson.sequence_number), 0) AS value
+  const row = await env.DB.prepare(`SELECT COALESCE(MAX(sequence_number), 0) AS value FROM (
+    SELECT lesson.sequence_number
     FROM course_attendance AS attendance
     INNER JOIN curriculum_lesson AS lesson ON lesson.id = attendance.curriculum_lesson_id
     WHERE attendance.class_session_id = ?
       AND attendance.attendance_status IS NOT NULL
-      AND lesson.curriculum_program_id = ?`).bind(classSessionId, programId).first<{ value: number }>();
+      AND lesson.curriculum_program_id = ?
+    UNION ALL
+    SELECT lesson.sequence_number
+    FROM course_makeup_attendance AS attendance
+    INNER JOIN course_makeup_assignment AS assignment
+      ON assignment.id = attendance.course_makeup_assignment_id
+    INNER JOIN course_makeup_resolution AS resolution
+      ON resolution.id = assignment.resolution_id
+    INNER JOIN curriculum_lesson AS lesson ON lesson.id = assignment.target_curriculum_lesson_id
+    WHERE assignment.target_kind = 'normal_class'
+      AND assignment.status = 'active'
+      AND resolution.status = 'active'
+      AND assignment.target_class_session_id = ?
+      AND attendance.attendance_status IS NOT NULL
+      AND lesson.curriculum_program_id = ?
+  )`).bind(classSessionId, programId, classSessionId, programId).first<{ value: number }>();
   return row?.value ?? 0;
 }

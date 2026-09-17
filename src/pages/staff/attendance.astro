@@ -90,11 +90,13 @@ import "../../styles/global.css";
         const checked = attendanceCheckboxState(status);
         const pending = optimistic.isPending(entry.enrollmentId);
         const effective = effectiveAttendanceStatus(status, state.data.selected.occurrenceEnded);
-        const control = (value, label) => `<label class="staff-attendance-check ${checked[value] ? "selected" : ""}"><input type="checkbox" data-attendance-control="${value}" data-enrollment="${escape(entry.enrollmentId)}" ${checked[value] ? "checked" : ""} ${pending ? "disabled" : ""} />${label}</label>`;
+        const assignment = entry.makeupAssignmentId ? ` data-makeup-assignment="${escape(entry.makeupAssignmentId)}"` : "";
+        const control = (value, label) => `<label class="staff-attendance-check ${checked[value] ? "selected" : ""}"><input type="checkbox" data-attendance-control="${value}" data-enrollment="${escape(entry.enrollmentId)}"${assignment} ${checked[value] ? "checked" : ""} ${pending ? "disabled" : ""} />${label}</label>`;
         return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}</div>`;
       }
 
       function noticeControls(entry) {
+        if (entry.attendanceKind === "makeup") return "";
         if (!isFuture()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
         const pending = optimistic.isPending(entry.enrollmentId);
         return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Урьдчилж мэдэгдсэн</label>`;
@@ -104,7 +106,14 @@ import "../../styles/global.css";
         const pending = optimistic.isPending(entry.enrollmentId);
         const error = state.rowErrorEnrollmentId === entry.enrollmentId ? `<p class="staff-attendance-row-error" role="status">${escape(state.rowErrorMessage)}</p>` : "";
         const notice = noticeControls(entry);
-        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${error}</div></article>`;
+        const source = entry.makeupSource;
+        const sourceParts = [`${source?.lessonSequence ? `${source.lessonSequence}. ` : ""}${source?.lessonTitle || ""}`.trim(), formatDate(source?.localDate), source?.classLabel].filter(Boolean);
+        const sourceText = sourceParts.join(" · ");
+        const sourceLink = source?.slotId && source?.localDate
+          ? `<a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(source.localDate)}&occurrence=${encodeURIComponent(source.slotId)}">Эх тасалсан: ${escape(sourceText)}</a>`
+          : `Эх тасалсан: ${escape(sourceText)}`;
+        const makeup = entry.attendanceKind === "makeup" ? `<p class="staff-muted"><span class="staff-kind-label">Нөхөх</span> ${sourceLink}</p>` : "";
+        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div>${makeup}<div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${error}</div></article>`;
       }
 
       function bulkMarkup(selected) {
@@ -151,7 +160,7 @@ import "../../styles/global.css";
         const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === enrollmentId);
         if (!entry) return;
         state.rowErrorEnrollmentId = "";
-        const saved = await optimistic.mutate(entry, next, () => postAttendanceAction(action, { slotId: state.selectedSlotId, enrollmentId, ...payload }));
+        const saved = await optimistic.mutate(entry, next, () => postAttendanceAction(action, { slotId: state.selectedSlotId, enrollmentId, makeupAssignmentId: entry.makeupAssignmentId || undefined, ...payload }));
         if (saved) message(success, true);
       }
 
