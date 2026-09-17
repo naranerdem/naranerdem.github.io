@@ -37,6 +37,7 @@
     "test:attendance": "npm run build && node scripts/course-attendance-test.mjs",
     "test:attendance-ui": "node scripts/attendance-optimistic-test.mjs",
     "test:makeups": "npm run build && node scripts/course-makeup-test.mjs",
+    "test:makeups-browser": "npm run build && node scripts/course-makeup-browser-test.mjs",
     "test:day-changes": "npm run build && node scripts/day-changes-test.mjs",
     "test:staff-reports": "node scripts/staff-reports-test.mjs",
     "test:reports": "npm run test:staff-reports",

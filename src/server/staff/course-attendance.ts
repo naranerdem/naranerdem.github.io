@@ -219,6 +219,7 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): P
           enrollment.confirmed_at IS NOT NULL
           AND enrollment.confirmed_at <= ?
           AND (enrollment.cancelled_at IS NULL OR enrollment.cancelled_at >= ?)
+          AND (enrollment.transferred_out_at IS NULL OR enrollment.transferred_out_at >= ?)
           AND enrollment.status IN ('confirmed', 'completed', 'cancelled')
         )
         OR attendance.id IS NOT NULL
@@ -228,7 +229,7 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): P
   `).bind(
     occurrence.classSessionId, occurrence.curriculumLessonId,
     occurrence.classSessionId, occurrence.curriculumLessonId,
-    occurrence.classSessionId, endsAt, startsAt,
+    occurrence.classSessionId, endsAt, startsAt, startsAt,
   ).all<RosterRow>();
   return result.results;
 }

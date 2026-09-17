@@ -279,6 +279,16 @@ the exact same `CurriculumLesson`, or creates a separate capacity-limited
 same-lesson occurrence. A normal assignment stores class plus lesson, so its
 display date follows safe target-calendar reflow. Source attendance correction
 invalidates the active decision and assignment while preserving history.
+Normal-class availability and its insert-time D1 guard use the shared class
+capacity projection (current enrollment, active draft hold, active waitlist
+offer, and active transfer reservation), plus active make-up assignments for
+that exact target class and lesson. This prevents a stale target list from
+overbooking while preserving the separate special-occurrence capacity rule.
+Migration `0054_course_makeup_normal_capacity.sql` replaces only that guard;
+it does not rewrite bookings or attendance history. Apply it before deploying
+the matching Worker: an older Worker may still display a target based on its
+obsolete read projection, while the new guard correctly rejects an overbooked
+insert.
 
 `/staff/day-changes/` handles one-class cancellation, all-class course closure,
 replacement dates, whole-day moves, and class-specific extra dates. It excludes

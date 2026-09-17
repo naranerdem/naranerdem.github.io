@@ -24,9 +24,9 @@ function bindSql(sql, values) {
   return bound;
 }
 
-function sqlite(sql, json = false) {
+function sqlite(sql, json = false, bail = false) {
   const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], {
-    input: `.timeout 5000\nPRAGMA foreign_keys=ON;\n${sql}`,
+    input: `.timeout 5000\n${bail ? ".bail on\n" : ""}PRAGMA foreign_keys=ON;\n${sql}`,
     encoding: "utf8",
   });
   if (result.status !== 0) throw new Error(`sqlite3 failed\n${result.stderr}\n${sql}`);
@@ -54,7 +54,7 @@ INSERT INTO _batch_changes VALUES (${index}, changes());`).join("\n");
 BEGIN IMMEDIATE;
 ${changes}
 COMMIT;
-SELECT idx, changes FROM _batch_changes ORDER BY idx;`, true);
+SELECT idx, changes FROM _batch_changes ORDER BY idx;`, true, true);
     return (output ? JSON.parse(output) : []).map((row) => ({ success: true, results: [], meta: { changes: Number(row.changes) } }));
   }
 }
@@ -124,21 +124,27 @@ try {
       VALUES ('offering', 'annual_course', 'Нөхөх тест сургалт', 'year', 'stage_1', '${sourceDate}', 'program', 1, 'paid', 'active', 1, 'makeup-test', '${now}', '${now}');
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-class', 'year', 'stage_1', 'Эх анги', 'Бямба', '10:00', '11:20', 10, 'available', 'offering', 1, 'makeup-test', '${now}', '${now}'),
-      ('target-class', 'year', 'stage_1', 'Зорилтот анги', 'Ням', '14:00', '15:20', 2, 'available', 'offering', 1, 'makeup-test', '${now}', '${now}');
+      ('target-class', 'year', 'stage_1', 'Зорилтот анги', 'Ням', '14:00', '15:20', 2, 'available', 'offering', 1, 'makeup-test', '${now}', '${now}'),
+      ('capacity-target', 'year', 'stage_1', 'Багтаамжийн зорилт', 'Ням', '16:00', '17:20', 1, 'available', 'offering', 1, 'makeup-test', '${now}', '${now}');
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at) VALUES
       ('source-class', 'weekly', '${sourceDate}', 'Бямба', '10:00', '11:20', '${now}', '${now}'),
-      ('target-class', 'weekly', '${targetDate}', 'Ням', '14:00', '15:20', '${now}', '${now}');
+      ('target-class', 'weekly', '${targetDate}', 'Ням', '14:00', '15:20', '${now}', '${now}'),
+      ('capacity-target', 'weekly', '${targetDate}', 'Ням', '16:00', '17:20', '${now}', '${now}');
     INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-calendar', 'source-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}'),
-      ('target-calendar', 'target-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}');
+      ('target-calendar', 'target-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}'),
+      ('capacity-calendar', 'capacity-target', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}');
     INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-revision', 'source-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-test', '${now}', '${now}'),
-      ('target-revision', 'target-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-test', '${now}', '${now}');
+      ('target-revision', 'target-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-test', '${now}', '${now}'),
+      ('capacity-revision', 'capacity-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-test', '${now}', '${now}');
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-slot', 'source-revision', '${sourceDate}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-1', 1, 'makeup-test', '${now}', '${now}'),
       ('target-slot', 'target-revision', '${targetDate}', '14:00', '15:20', 'generated', 'scheduled', 'lesson-1', 1, 'makeup-test', '${now}', '${now}'),
-      ('target-slot-2', 'target-revision', '${addCivilDays(targetDate, 7)}', '14:00', '15:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-test', '${now}', '${now}');
-    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id IN ('source-revision', 'target-revision');
+      ('target-slot-2', 'target-revision', '${addCivilDays(targetDate, 7)}', '14:00', '15:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-test', '${now}', '${now}'),
+      ('capacity-slot', 'capacity-revision', '${targetDate}', '16:00', '17:20', 'generated', 'scheduled', 'lesson-1', 1, 'makeup-test', '${now}', '${now}'),
+      ('capacity-slot-2', 'capacity-revision', '${addCivilDays(targetDate, 7)}', '16:00', '17:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-test', '${now}', '${now}');
+    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id IN ('source-revision', 'target-revision', 'capacity-revision');
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('guardian', 'Тест Асран', '99000000', '99000000', 'guardian@example.invalid', 'guardian@example.invalid', 'Тест', 'active', 1, 'makeup-test', '${now}', '${now}');
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at) VALUES
@@ -166,6 +172,34 @@ try {
   `);
 
   const source = (number) => ({ enrollmentId: `enrollment-${number}`, classSessionId: "source-class", curriculumLessonId: "lesson-1" });
+  function createDraftSeat(label) {
+    const draftId = `capacity-draft-${label}`;
+    const childId = `capacity-child-${label}`;
+    const tokenHash = `${label}${"0".repeat(64)}`.slice(0, 64);
+    sqlite(`
+      INSERT INTO registration_draft (
+        id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship,
+        primary_phone, email, normalized_email, home_address, payment_plan_code,
+        parent_rules_version, student_rules_version, status, expires_at,
+        is_test, test_run_id, created_at, updated_at
+      ) VALUES (
+        '${draftId}', '${tokenHash}', 'year', 'Багтаамж Асран', 'parent',
+        '99000000', '${label}@example.invalid', '${label}@example.invalid', 'Тест', 'single',
+        'v1', 'v1', 'awaiting_initial_payment', '${addCivilDays(today, 30)}T00:00:00.000Z',
+        1, 'makeup-test', '${now}', '${now}'
+      );
+      INSERT INTO registration_draft_child (
+        id, registration_draft_id, position, surname, given_name, gender, date_of_birth,
+        current_grade, returning_status, selected_stage_code, selected_class_session_id,
+        status, is_test, test_run_id, created_at, updated_at
+      ) VALUES (
+        '${childId}', '${draftId}', 0, 'Багтаамж', '${label}', 'not_specified', '2015-02-01',
+        '5', 'new', 'stage_1', 'capacity-target', 'awaiting_initial_payment',
+        1, 'makeup-test', '${now}', '${now}'
+      );
+    `);
+    return { draftId, childId };
+  }
   assert.equal((await makeups.getCourseMakeupOverview(runtime, actor(), undefined, beforeSourceEnd)).unresolved.length, 0, "no make-up case exists before source class end");
   let overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
   assert.deepEqual(overview.unresolved.map((entry) => entry.enrollmentId).sort(), ["enrollment-1", "enrollment-2", "enrollment-4", "enrollment-5"], "post-class unchecked students are unresolved while present is excluded");
@@ -234,6 +268,118 @@ try {
   const scheduled = (await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd)).scheduled.find((entry) => entry.assignmentId === followed.assignmentId);
   assert.equal(scheduled.targetLocalDate, shiftedTargetDate, "normal assignment follows target class + lesson after calendar reflow");
 
+  // The shared capacity projection excludes a transferred-out enrollment, but
+  // active operational reservations still occupy the target before a make-up
+  // is assigned.
+  sqlite(`UPDATE enrollment SET class_session_id = 'capacity-target' WHERE id = 'target-enrollment';`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.ok(!overview.selected.normalTargets.some((entry) => entry.classSessionId === 'capacity-target'), "a current enrollment fills the normal make-up target");
+  sqlite(`UPDATE enrollment SET transferred_out_at = '${now}' WHERE id = 'target-enrollment';`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.equal(overview.selected.normalTargets.find((entry) => entry.classSessionId === 'capacity-target')?.remainingCapacity, 1, "a transferred-out enrollment releases the future make-up seat");
+
+  sqlite(`
+    INSERT INTO course_makeup_resolution (
+      id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'capacity-other-lesson-resolution', 'enrollment-4', 'source-class', 'lesson-2',
+      'assigned', 'active', 'teacher-staff', '${now}', 1, 'makeup-test', '${now}', '${now}'
+    );
+    INSERT INTO course_makeup_assignment (
+      id, resolution_id, target_kind, target_class_session_id, target_curriculum_lesson_id,
+      status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES (
+      'capacity-other-lesson-assignment', 'capacity-other-lesson-resolution', 'normal_class', 'capacity-target', 'lesson-2',
+      'active', 'teacher-staff', '${now}', 1, 'makeup-test', '${now}', '${now}'
+    );
+  `);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.equal(overview.selected.normalTargets.find((entry) => entry.classSessionId === 'capacity-target')?.remainingCapacity, 1, "a make-up assignment for another target lesson does not consume this lesson's seat");
+
+  const held = createDraftSeat('hold');
+  sqlite(`INSERT INTO registration_capacity_hold (
+    id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at,
+    is_test, test_run_id, created_at, updated_at
+  ) VALUES ('capacity-hold', '${held.childId}', 'capacity-target', 'initial_payment', 'active',
+    '${addCivilDays(today, 30)}T00:00:00.000Z', 1, 'makeup-test', '${now}', '${now}');`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.ok(!overview.selected.normalTargets.some((entry) => entry.classSessionId === 'capacity-target'), "an active initial-payment hold blocks normal make-up capacity");
+  sqlite(`UPDATE registration_capacity_hold SET status = 'released', released_at = '${now}' WHERE id = 'capacity-hold';`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.ok(overview.selected.normalTargets.some((entry) => entry.classSessionId === 'capacity-target'), "a released hold no longer blocks the target");
+
+  const expired = createDraftSeat('expired');
+  sqlite(`INSERT INTO registration_capacity_hold (
+    id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at,
+    released_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('capacity-expired-hold', '${expired.childId}', 'capacity-target', 'provisional_email_confirmation', 'expired',
+    '${addCivilDays(today, -1)}T00:00:00.000Z', '${now}', 1, 'makeup-test', '${addCivilDays(today, -2)}T00:00:00.000Z', '${now}');`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.ok(overview.selected.normalTargets.some((entry) => entry.classSessionId === 'capacity-target'), "an expired hold is not counted as capacity");
+
+  const offered = createDraftSeat('offer');
+  sqlite(`INSERT INTO registration_draft_waitlist_entry (
+    id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('capacity-waitlist', '${offered.childId}', 'capacity-target', 'offered', 1, 'makeup-test', '${now}', '${now}');
+  INSERT INTO waitlist_seat_offer (
+    id, waitlist_entry_id, registration_draft_child_id, class_session_id, status, response_token_hash,
+    offered_at, respond_by_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('capacity-offer', 'capacity-waitlist', '${offered.childId}', 'capacity-target', 'active', '${"a".repeat(64)}',
+    '${now}', '${addCivilDays(today, 1)}T00:00:00.000Z', 1, 'makeup-test', '${now}', '${now}');`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.ok(!overview.selected.normalTargets.some((entry) => entry.classSessionId === 'capacity-target'), "an active waitlist offer blocks normal make-up capacity");
+  sqlite(`UPDATE waitlist_seat_offer SET status = 'closed', resolved_at = '${now}' WHERE id = 'capacity-offer';`);
+
+  sqlite(`INSERT INTO class_transfer (
+    id, source_enrollment_id, source_application_child_id, source_class_session_id, target_class_session_id,
+    status, reason, created_by_staff_account_id, idempotency_key, source_pricing_snapshot_json,
+    target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt,
+    recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt,
+    is_test, test_run_id, created_at, updated_at
+  ) VALUES ('capacity-transfer', 'enrollment-5', 'application-student-5', 'source-class', 'capacity-target',
+    'pending_difference', 'test', 'teacher-staff', 'capacity-transfer-key', '{}', '{}', 0, 0, 0, 0, 0,
+    1, 'makeup-test', '${now}', '${now}');
+  INSERT INTO class_transfer_target_reservation (
+    id, class_transfer_id, class_session_id, status, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('capacity-transfer-reservation', 'capacity-transfer', 'capacity-target', 'active', 1, 'makeup-test', '${now}', '${now}');`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), afterSourceEnd);
+  assert.ok(!overview.selected.normalTargets.some((entry) => entry.classSessionId === 'capacity-target'), "an active transfer reservation blocks normal make-up capacity");
+  sqlite(`UPDATE class_transfer_target_reservation SET status = 'released', released_at = '${now}' WHERE id = 'capacity-transfer-reservation';`);
+
+  // A capacity change after the teacher's target list loads is rechecked by
+  // the D1 trigger in the same batch as resolution/assignment creation.
+  const racing = createDraftSeat('race');
+  let reservationInserted = false;
+  const racingRuntime = {
+    ...runtime,
+    DB: {
+      prepare: database.prepare.bind(database),
+      batch: async (statements) => {
+        if (!reservationInserted) {
+          reservationInserted = true;
+          sqlite(`INSERT INTO registration_capacity_hold (
+            id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at,
+            is_test, test_run_id, created_at, updated_at
+          ) VALUES ('capacity-race-hold', '${racing.childId}', 'capacity-target', 'initial_payment', 'active',
+            '${addCivilDays(today, 30)}T00:00:00.000Z', 1, 'makeup-test', '${now}', '${now}');`);
+        }
+        return database.batch(statements);
+      },
+    },
+  };
+  await assert.rejects(() => makeups.assignCourseMakeupToNormalClass(racingRuntime, actor(), { ...source(4), targetClassSessionId: 'capacity-target' }, afterSourceEnd), /Course make-up/, "the insert-time capacity trigger rejects a stale available target");
+  assert.equal(count(database, 'course_makeup_resolution', "source_enrollment_id = 'enrollment-4' AND source_curriculum_lesson_id = 'lesson-1' AND status = 'active'"), 0, "a rejected booking leaves the source absence available");
+  sqlite(`UPDATE registration_capacity_hold SET status = 'released', released_at = '${now}' WHERE id = 'capacity-race-hold';`);
+
+  const race = await Promise.allSettled([
+    makeups.assignCourseMakeupToNormalClass(runtime, actor(), { ...source(4), targetClassSessionId: 'capacity-target' }, afterSourceEnd),
+    makeups.assignCourseMakeupToNormalClass(runtime, actor(), { ...source(5), targetClassSessionId: 'capacity-target' }, afterSourceEnd),
+  ]);
+  assert.equal(race.filter((entry) => entry.status === 'fulfilled').length, 1, "competing normal bookings consume the final capacity once");
+  assert.equal(race.filter((entry) => entry.status === 'rejected').length, 1, "the competing booking is rejected rather than overbooking");
+  assert.equal(count(database, 'course_makeup_assignment', "target_class_session_id = 'capacity-target' AND target_curriculum_lesson_id = 'lesson-1' AND status = 'active'"), 1, "active make-up occupancy is scoped to the exact target lesson");
+
   const page = readFileSync("src/pages/staff/makeups.astro", "utf8");
   const built = readFileSync("dist/staff/makeups/index.html", "utf8");
   assert.match(page, /Нөхөхгүй/);
@@ -243,7 +389,7 @@ try {
   assert.doesNotMatch(page, /урилга|Messenger|и-мэйл илгээ/, "make-up planning does not claim communication");
   assert.doesNotMatch(built, /Тест Нэг|Ижил хичээл/, "static make-up page contains no student or private lesson fixture");
 
-  console.log("ok effective-absence make-up review, same-lesson capacity, special sessions, correction invalidation, and reflow following");
+  console.log("ok effective-absence make-up review, shared-capacity normal targets, stale booking rejection, special sessions, correction invalidation, and reflow following");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

@@ -240,6 +240,9 @@ try {
   sqlite(`UPDATE enrollment SET status = 'cancelled', cancelled_at = '${now}' WHERE id = 'enrollment-a';`);
   const withdrawnHistorical = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-past");
   assert.ok(withdrawnHistorical.selected.roster.some((entry) => entry.enrollmentId === "enrollment-a"), "existing attendance stays available after later enrollment cancellation");
+  sqlite(`UPDATE enrollment SET status = 'confirmed', cancelled_at = NULL, transferred_out_at = '${now}' WHERE id = 'enrollment-a';`);
+  const transferredHistorical = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-past");
+  assert.ok(transferredHistorical.selected.roster.some((entry) => entry.enrollmentId === "enrollment-a"), "recorded source attendance remains visible after a later transfer");
   sqlite(`
     INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_test, test_run_id, created_at, updated_at)
       VALUES ('year-next', 'Дараагийн туршилтын жил', 'draft', '2027-09-01', '2028-05-31', 1, 'attendance-test', '${now}', '${now}');
@@ -256,6 +259,7 @@ try {
   await attendance.saveCourseAbsenceNotice(runtime, actor(), { slotId: "slot-future", enrollmentId: "enrollment-b", note: "Тест мэдэгдэл" });
   assert.equal(database.query("SELECT status, note FROM course_absence_notice WHERE enrollment_id = 'enrollment-b' AND curriculum_lesson_id = 'lesson-3'")[0].status, "active", "future notice is separate from attendance");
   const futureDay = await attendance.getCourseAttendanceDay(runtime, actor(), future, "slot-future", afterClassEnd);
+  assert.ok(!futureDay.selected.roster.some((entry) => entry.enrollmentId === "enrollment-a"), "a transferred-out enrollment is not rostered for a later source-class session");
   const notifiedFuture = futureDay.selected.roster.find((entry) => entry.enrollmentId === "enrollment-b");
   assert.equal(notifiedFuture.effectiveAttendanceStatus, null, "future unchecked attendance remains not applicable");
   assert.equal(notifiedFuture.hasAbsenceNotice, true, "prior notice remains independent from attendance");

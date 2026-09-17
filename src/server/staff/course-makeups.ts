@@ -1,5 +1,6 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { getClassCapacityProjections } from "../services/class-capacity";
 
 export class CourseMakeupError extends Error {
   constructor(public readonly code: "forbidden" | "invalid" | "not_found" | "not_eligible" | "capacity" | "conflict") {
@@ -43,7 +44,6 @@ interface NormalTargetRow {
   stageCode: string;
   classWeekday: string;
   capacity: number;
-  normalCount: number;
   makeupCount: number;
 }
 
@@ -256,9 +256,6 @@ async function normalTargets(
       class_session.stage_code AS stageCode,
       COALESCE(meeting.weekly_weekday, class_session.weekday) AS classWeekday,
       class_session.capacity,
-      (SELECT COUNT(*) FROM enrollment AS target_enrollment
-        WHERE target_enrollment.class_session_id = class_session.id
-          AND target_enrollment.status IN ('confirmed', 'completed')) AS normalCount,
       (SELECT COUNT(*) FROM course_makeup_assignment AS target_assignment
         WHERE target_assignment.target_kind = 'normal_class'
           AND target_assignment.target_class_session_id = class_session.id
@@ -281,9 +278,18 @@ async function normalTargets(
     ORDER BY slot.local_date, slot.start_time, offering.title, class_session.id`).bind(
     source.curriculumLessonId, source.classSessionId, local.date, local.date, local.time,
   ).all<NormalTargetRow>();
+  const projections = new Map((await getClassCapacityProjections(
+    env.DB,
+    env.APP_ENV,
+    at,
+    result.results.map((target) => target.classSessionId),
+  )).map((projection) => [projection.classSessionId, projection]));
   return result.results.map((target) => ({
     ...target,
-    remainingCapacity: target.capacity - target.normalCount - target.makeupCount,
+    // Class capacity already accounts for enrolled students, active draft
+    // holds, offered waitlist seats, and transfer reservations. A make-up
+    // visitor is additional only for this target lesson.
+    remainingCapacity: Math.max((projections.get(target.classSessionId)?.freeSeats ?? 0) - target.makeupCount, 0),
     classLabel: `${stageLabel(target.stageCode)} · ${target.classWeekday} ${target.startTime}–${target.endTime}`,
   })).filter((target) => target.remainingCapacity > 0);
 }
