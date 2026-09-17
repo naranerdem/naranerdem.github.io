@@ -399,8 +399,9 @@ async function settleReservedAdditionalAdmission(
       .bind(preRegistrationId, admission.canonicalGuardianId, row.academicYearId, row.verifiedAt ?? now,
         row.parentRulesVersion, row.studentRulesVersion, row.draftIsTest, row.draftTestRunId, now, now, ...bindFence()),
     env.DB.prepare(`UPDATE registration_draft SET canonical_guardian_account_id = ?, canonical_pre_registration_id = ?,
-      guardian_resolution_status = 'resolved', updated_at = ? WHERE id = ? AND ${fence}`)
-      .bind(admission.canonicalGuardianId, preRegistrationId, now, row.draftId, ...bindFence()),
+      guardian_resolution_status = 'resolved', updated_at = ? WHERE id = ?
+        AND (SELECT COUNT(*) FROM registration_draft_child WHERE registration_draft_id = ?) = 1 AND ${fence}`)
+      .bind(admission.canonicalGuardianId, preRegistrationId, now, row.draftId, row.draftId, ...bindFence()),
     env.DB.prepare(`INSERT OR IGNORE INTO application_child (
       id, pre_registration_id, student_id, current_school, current_grade, returning_status,
       previous_stage_code, code_input, selected_payment_plan_code, selected_class_session_id,
@@ -587,6 +588,8 @@ export async function finalizeClaimedAdditionalClassAdmission(
   const applicationChildId = row.canonicalApplicationChildId || `${row.childId}:application`;
   const enrollmentId = row.canonicalEnrollmentId || `${row.childId}:enrollment`;
   const needsEnrollment = !row.canonicalEnrollmentId;
+  const referral = await capturedReferral(env.DB, row.childId);
+  const sameFamilyReferral = Boolean(referral && (referral.referringStudentId === studentId || referral.referringGuardianId === admission.canonicalGuardianId));
   const reservedCreditEligible = await reservedCreditMakesAdditionalAdmissionEligible(env, admission, row.childId);
   if (needsEnrollment && (!(promotionPaymentEligible(row) || reservedCreditEligible) || !row.activeInitialHold || !row.selectedClassSessionId)) return null;
   if (needsEnrollment && reservedCreditEligible) {
@@ -605,8 +608,9 @@ export async function finalizeClaimedAdditionalClassAdmission(
         .bind(preRegistrationId, admission.canonicalGuardianId, row.academicYearId, row.verifiedAt ?? now,
           row.parentRulesVersion, row.studentRulesVersion, row.draftIsTest, row.draftTestRunId, now, now, ...bindFence()),
       env.DB.prepare(`UPDATE registration_draft SET canonical_guardian_account_id = ?, canonical_pre_registration_id = ?,
-        guardian_resolution_status = 'resolved', updated_at = ? WHERE id = ? AND ${fence}`)
-        .bind(admission.canonicalGuardianId, preRegistrationId, now, row.draftId, ...bindFence()),
+        guardian_resolution_status = 'resolved', updated_at = ? WHERE id = ?
+          AND (SELECT COUNT(*) FROM registration_draft_child WHERE registration_draft_id = ?) = 1 AND ${fence}`)
+        .bind(admission.canonicalGuardianId, preRegistrationId, now, row.draftId, row.draftId, ...bindFence()),
       env.DB.prepare(`INSERT OR IGNORE INTO application_child (
         id, pre_registration_id, student_id, current_school, current_grade, returning_status,
         previous_stage_code, code_input, selected_payment_plan_code, selected_class_session_id,
@@ -640,6 +644,9 @@ export async function finalizeClaimedAdditionalClassAdmission(
       env.DB.prepare(`UPDATE registration_draft_waitlist_entry SET canonical_application_child_id = ?, updated_at = ?
         WHERE registration_draft_child_id = ? AND ${fence}`)
         .bind(applicationChildId, now, row.childId, ...bindFence()),
+      env.DB.prepare(`UPDATE discount_award SET beneficiary_enrollment_id = ?, updated_at = ?
+        WHERE registration_draft_child_id = ? AND beneficiary_enrollment_id IS NULL AND ${fence}`)
+        .bind(enrollmentId, now, row.childId, ...bindFence()),
       env.DB.prepare(`INSERT INTO audit_event (
         id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
         metadata_json, environment, is_test, test_run_id, created_at
@@ -649,6 +656,20 @@ export async function finalizeClaimedAdditionalClassAdmission(
           JSON.stringify({ guardianId: admission.canonicalGuardianId, studentId, enrollmentId, identityResolution: "additional_class_admission" }),
           env.APP_ENV, row.childIsTest, row.childTestRunId, now, ...bindFence()),
     );
+    if (referral) {
+      statements.push(
+        env.DB.prepare(`INSERT OR IGNORE INTO referral (
+          id, referral_code, referring_enrollment_id, referring_student_id, referred_application_child_id,
+          status, qualification_reason, qualified_at, is_test, test_run_id, created_at, updated_at
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${fence}`)
+          .bind(`${row.childId}:referral`, referral.capturedCode, referral.referringEnrollmentId, referral.referringStudentId,
+            applicationChildId, sameFamilyReferral ? "disqualified" : "qualified", sameFamilyReferral ? "same_family" : "referred_child_confirmed",
+            sameFamilyReferral ? null : now, row.childIsTest, row.childTestRunId, now, now, ...bindFence()),
+        env.DB.prepare(`UPDATE registration_draft_referral SET status = ?, disqualification_reason = ?, updated_at = ?
+          WHERE registration_draft_child_id = ? AND ${fence}`)
+          .bind(sameFamilyReferral ? "disqualified" : "promoted", sameFamilyReferral ? "same_family" : null, now, row.childId, ...bindFence()),
+      );
+    }
   }
   if (admission.sourceAwardAmountMnt > 0) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO discount_award (
@@ -722,6 +743,7 @@ export async function finalizeClaimedAdditionalClassAdmission(
     if (current?.status === "confirmed") return { enrollmentId, createdEnrollment: needsEnrollment };
     return null;
   }
+  await settleCapturedReferralAfterPromotion(env, row, studentId, admission.canonicalGuardianId, now);
   return { enrollmentId, createdEnrollment: needsEnrollment };
 }
 
@@ -764,7 +786,11 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
     registration_draft.student_rules_version AS studentRulesVersion,
     registration_draft.verified_at AS verifiedAt, registration_draft.is_test AS draftIsTest,
     registration_draft.test_run_id AS draftTestRunId,
-    registration_draft.canonical_guardian_account_id AS canonicalGuardianId,
+    COALESCE(registration_draft.canonical_guardian_account_id, (
+      SELECT additional_class_admission.canonical_guardian_account_id
+      FROM additional_class_admission
+      WHERE additional_class_admission.target_registration_draft_child_id = registration_draft_child.id
+    )) AS canonicalGuardianId,
     registration_draft.canonical_pre_registration_id AS canonicalPreRegistrationId,
     registration_draft_child.id AS childId, registration_draft_child.position,
     registration_draft_child.surname, registration_draft_child.given_name AS givenName,
@@ -875,6 +901,18 @@ async function capturedReferral(database: D1Database, childId: string): Promise<
     WHERE registration_draft_referral.registration_draft_child_id = ?`).bind(childId).first<DraftReferralRow>();
 }
 
+async function settleCapturedReferralAfterPromotion(env: WorkerEnv, row: Pick<PromotionRow, "childId">,
+  studentId: string, guardianId: string, now: string): Promise<void> {
+  const referral = await capturedReferral(env.DB, row.childId);
+  if (!referral) return;
+  if (referral.referringStudentId === studentId || referral.referringGuardianId === guardianId) {
+    await reverseReferralAwardForSameFamily(env, row.childId, now);
+    return;
+  }
+  const policy = await getDiscountPolicySettingFromDatabase(env.DB);
+  await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy, now });
+}
+
 export async function promotePaidDraftChild(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -912,7 +950,6 @@ export async function promotePaidDraftChild(
     }
     await ensureEnrollmentReferralCode(env.DB, row.canonicalEnrollmentId, row.canonicalStudentId,
       { isTest: row.childIsTest, testRunId: row.childTestRunId }, new Date().toISOString());
-    const policy = await getDiscountPolicySettingFromDatabase(env.DB);
     if (row.canonicalGuardianId) {
       await quoteConditionalFamilyDiscountsForGuardian(env, row.canonicalGuardianId, row.childId);
       const familyGroup = await env.DB.prepare(`SELECT family_group_id AS familyGroupId FROM family_group_member
@@ -920,7 +957,7 @@ export async function promotePaidDraftChild(
       if (familyGroup?.familyGroupId) await quoteConditionalFamilyDiscountsForGroup(env, familyGroup.familyGroupId, row.childId);
       if (row.canonicalStudentId) await quoteConditionalFamilyDiscountsForSameStudent(env, row.canonicalStudentId, row.childId);
     }
-    await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy });
+    if (row.canonicalGuardianId) await settleCapturedReferralAfterPromotion(env, row, row.canonicalStudentId, row.canonicalGuardianId, nowDate.toISOString());
     return { state: "promoted", enrollmentId: row.canonicalEnrollmentId };
   }
   const now = nowDate.toISOString();
@@ -1130,17 +1167,12 @@ export async function promotePaidDraftChild(
     { isTest: row.childIsTest, testRunId: row.childTestRunId }, now);
   await env.DB.prepare(`UPDATE discount_award SET beneficiary_enrollment_id = ?, updated_at = ?
     WHERE registration_draft_child_id = ? AND beneficiary_enrollment_id IS NULL`).bind(promoted.enrollmentId, now, row.childId).run();
-  const discountPolicy = await getDiscountPolicySettingFromDatabase(env.DB);
   await quoteConditionalFamilyDiscountsForGuardian(env, guardian.guardianId, row.childId, now);
   const familyGroup = await env.DB.prepare(`SELECT family_group_id AS familyGroupId FROM family_group_member
     WHERE student_id = ? AND status = 'active' ORDER BY created_at LIMIT 1`).bind(studentId).first<{ familyGroupId: string }>();
   if (familyGroup?.familyGroupId) await quoteConditionalFamilyDiscountsForGroup(env, familyGroup.familyGroupId, row.childId, now);
   await quoteConditionalFamilyDiscountsForSameStudent(env, studentId, row.childId, now);
-  if (referral && sameFamilyReferral) {
-    await reverseReferralAwardForSameFamily(env, row.childId, now);
-  } else if (referral) {
-    await awardReferrerDiscountForReferral(env, { referralId: `${row.childId}:referral`, policy: discountPolicy, now });
-  }
+  await settleCapturedReferralAfterPromotion(env, row, studentId, guardian.guardianId, now);
   await materializeConditionalFamilyAwardCredit(env, row.childId, now);
   const conditionalSeatApproval = await env.DB.prepare(`SELECT 1 AS value FROM conditional_family_discount_quote
     WHERE registration_draft_child_id = ? AND state = 'conditionally_confirmed' LIMIT 1`)

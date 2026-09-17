@@ -78,7 +78,7 @@ const { adoptHistoricalConditionalFamilyAwards, finalizeFundedConditionalFamilyQ
   quoteConditionalFamilyDiscountsForGroup, quoteConditionalFamilyDiscountsForSameStudent,
   setConditionalFamilyFailureDeadline, ConditionalFamilyDiscountError } = await import(pathToFileURL(conditionalFamilyDiscountBundle).href);
 const { getAdditionalClassPreview, AdditionalClassPreviewError } = await import(pathToFileURL(additionalClassPreviewBundle).href);
-const { createAdditionalClassAdmission: createAdditionalClassAdmissionService, AdditionalClassAdmissionError } = await import(pathToFileURL(additionalClassAdmissionBundle).href);
+const { createAdditionalClassAdmission: createAdditionalClassAdmissionService, AdditionalClassAdmissionError, incorporateExistingAdditionalClass, previewExistingAdditionalClassIncorporation } = await import(pathToFileURL(additionalClassAdmissionBundle).href);
 const { claimAdditionalAdmissionConfirmation, finalizeAdditionalAdmissionClaim, promotePaidDraftChild } = await import(pathToFileURL(canonicalPromotionBundle).href);
 const { cancelRegistration } = await import(pathToFileURL(registrationCancellationBundle).href);
 const { closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets } = await import(pathToFileURL(classTransferBundle).href);
@@ -2525,6 +2525,198 @@ try {
   const complexCreditProjection = await childCreditSummary(database, complexHistoricalChild.studentId);
   assert.equal(complexCreditProjection.roots.some((root) => root.id === complexHistoricalRootId), false,
     'server-side credit projections hide a reconciliation-review residual root even though its immutable ledger history remains');
+
+  // Incorporation deliberately adopts one unpaid child from an ordinary incoming
+  // draft. It must not turn the whole draft into a new identity or recreate its
+  // already-snapshotted class, hold, or payment request.
+  const incorporationSource = database.query(`SELECT child.id, enrollment.student_id AS studentId, child.canonical_enrollment_id AS enrollmentId
+    FROM registration_draft_child AS child
+    INNER JOIN enrollment ON enrollment.id = child.canonical_enrollment_id
+    INNER JOIN student ON student.id = enrollment.student_id
+    INNER JOIN registration_draft AS draft ON draft.id = child.registration_draft_id
+    INNER JOIN guardian_account ON guardian_account.id = draft.canonical_guardian_account_id AND guardian_account.status = 'active'
+    INNER JOIN guardian_student_relationship ON guardian_student_relationship.guardian_id = guardian_account.id
+      AND guardian_student_relationship.student_id = enrollment.student_id AND guardian_student_relationship.status = 'active'
+    WHERE enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL AND enrollment.academic_year_id = 'year-test'
+      AND child.status != 'cancelled' AND draft.canonical_guardian_account_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM enrollment AS duplicate WHERE duplicate.student_id = enrollment.student_id
+        AND duplicate.class_session_id = 'class-second-offering' AND duplicate.status = 'confirmed' AND duplicate.transferred_out_at IS NULL)
+    ORDER BY child.created_at, child.id LIMIT 1`)[0];
+  assert.ok(incorporationSource, 'the disposable fixture retains an active confirmed child with an unoccupied target class');
+  const existingIncomingDraft = await createRegistrationDraft(env(database), submission("class-second-offering", undefined, 2), new Date(iso(80)));
+  const existingIncomingChallenge = addChallenge(database, existingIncomingDraft.draftId, existingIncomingDraft.normalizedEmail, iso(80), iso(80 + 24 * 60));
+  await confirmRegistrationChallenge(env(database), existingIncomingChallenge, session(iso(80), iso(140)), new Date(iso(80)));
+  const existingIncomingChildren = database.query(`SELECT id, status FROM registration_draft_child WHERE registration_draft_id = ? ORDER BY position`, [existingIncomingDraft.draftId]);
+  const existingIncomingChild = existingIncomingChildren[0].id;
+  const untouchedIncomingSibling = existingIncomingChildren[1];
+  database.query(`INSERT INTO discount_award (
+      id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+      status, reason, awarded_at, qualification_state, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, 'referral_referred', 200, 1200000, 24000, 'active', 'active_referral_code_captured', ?, 'earned', 1, ?, ?, ?)`,
+    [`${existingIncomingChild}:discount:referred`, existingIncomingChild, iso(80), existingIncomingDraft.draftId, iso(80), iso(80)]);
+  const incorporationSourceReferral = database.query(`SELECT id, code FROM enrollment_referral_code
+    WHERE enrollment_id = ? AND status = 'active'`, [incorporationSource.enrollmentId])[0];
+  assert.ok(incorporationSourceReferral, 'the established source has the child-level referral code used by ordinary registrations');
+  database.query(`INSERT INTO registration_draft_referral (
+      registration_draft_child_id, referral_code_id, referring_enrollment_id, captured_code, status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'captured', 1, 'registration-test', ?, ?);`,
+  [existingIncomingChild, incorporationSourceReferral.id, incorporationSource.enrollmentId, incorporationSourceReferral.code, iso(80), iso(80)]);
+  const incomingList = await getAdditionalClassPreview(env(database), registrationStaff, { registrationDraftChildId: incorporationSource.id }, new Date(iso(80)));
+  assert.equal(incomingList.incomingCandidates.find((candidate) => candidate.id === existingIncomingChild)?.supported, true,
+    'an unpaid held incoming child is offered for deliberate teacher selection without automatic identity matching');
+  assert.equal(incomingList.incomingCandidates.find((candidate) => candidate.id === untouchedIncomingSibling.id)?.supported, true,
+    'a sibling remains independently selectable; the teacher selects exactly one submitted child');
+  let incomingPreview = await previewExistingAdditionalClassIncorporation(env(database), registrationStaff, {
+    registrationDraftChildId: incorporationSource.id, incomingRegistrationDraftChildId: existingIncomingChild,
+  });
+  assert.equal(incomingPreview.supported, true, 'an unpaid held incoming child with its matching pricing snapshot can be incorporated');
+  assert.deepEqual(incomingPreview.awardEffect, {
+    existingReferralAwardMnt: 0, replacedConditionalAwardMnt: 120000, additionalFamilyAwardMnt: 120000,
+    sameFamilyReferral: true, totalAwardMnt: 120000, payableTotalMnt: 1080000,
+    installments: [
+      { installmentNumber: 1, originalAmountMnt: 1200000, payableAmountMnt: 1080000 },
+    ],
+  }, 'the review excludes a captured same-family referral before collection and retains only the distinct family entitlement');
+  await assert.rejects(incorporateExistingAdditionalClass(env(database), paymentStaff, {
+    registrationDraftChildId: incorporationSource.id, incomingRegistrationDraftChildId: existingIncomingChild,
+    reviewFingerprint: incomingPreview.reviewFingerprint, parentAcknowledged: true, childAcknowledged: true,
+    idempotencyKey: 'existing-incoming-incorporation-denied-0001',
+  }), AdditionalClassAdmissionError, 'payment-only staff cannot incorporate an incoming registration');
+  database.query(`UPDATE registration_draft_child SET updated_at = ? WHERE id = ?`, [iso(81), existingIncomingChild]);
+  await assert.rejects(incorporateExistingAdditionalClass(env(database), registrationStaff, {
+    registrationDraftChildId: incorporationSource.id, incomingRegistrationDraftChildId: existingIncomingChild,
+    reviewFingerprint: incomingPreview.reviewFingerprint, parentAcknowledged: true, childAcknowledged: true,
+    idempotencyKey: 'existing-incoming-incorporation-stale-0001',
+  }), (error) => error?.code === 'stale', 'a changed incoming child rejects a stale incorporation preview before any write');
+  incomingPreview = await previewExistingAdditionalClassIncorporation(env(database), registrationStaff, {
+    registrationDraftChildId: incorporationSource.id, incomingRegistrationDraftChildId: existingIncomingChild,
+  });
+  const incomingBefore = Object.fromEntries(['received_payment', 'payment_allocation', 'child_credit_entry', 'discount_award']
+    .map((table) => [table, count(database, table)]));
+  const incorporated = await incorporateExistingAdditionalClass(env(database), registrationStaff, {
+    registrationDraftChildId: incorporationSource.id, incomingRegistrationDraftChildId: existingIncomingChild,
+    reviewFingerprint: incomingPreview.reviewFingerprint, parentAcknowledged: true, childAcknowledged: true,
+    idempotencyKey: 'existing-incoming-incorporation-0001',
+  }, new Date(iso(81)));
+  assert.equal(incorporated.created, true, 'explicit confirmation creates one pending additional-class admission for the selected incoming child');
+  assert.deepEqual(database.query(`SELECT origin_kind AS originKind, target_registration_draft_id AS draftId, target_registration_draft_child_id AS childId,
+      status FROM additional_class_admission WHERE id = ?`, [incorporated.admissionId])[0],
+  { originKind: 'existing_registration', draftId: existingIncomingDraft.draftId, childId: existingIncomingChild, status: 'pending_confirmation' },
+  'the admission preserves the original incoming draft and identifies its incorporation origin');
+  assert.deepEqual(database.query(`SELECT canonical_student_id AS studentId, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ?`, [existingIncomingChild])[0],
+  { studentId: incorporationSource.studentId, enrollmentId: null },
+  'only the selected incoming child is bound to the existing canonical child before ordinary payment finalization');
+  assert.deepEqual(database.query(`SELECT canonical_student_id AS studentId, canonical_enrollment_id AS enrollmentId, status
+    FROM registration_draft_child WHERE id = ?`, [untouchedIncomingSibling.id])[0],
+  { studentId: null, enrollmentId: null, status: untouchedIncomingSibling.status },
+  'a sibling in the same incoming draft remains unbound and operationally unchanged');
+  assert.equal(database.query(`SELECT canonical_guardian_account_id AS guardianId FROM registration_draft WHERE id = ?`, [existingIncomingDraft.draftId])[0].guardianId, null,
+    'incorporation does not resolve the shared incoming draft guardian on behalf of untouched siblings');
+  assert.deepEqual(Object.fromEntries(['received_payment', 'payment_allocation', 'child_credit_entry', 'discount_award']
+    .map((table) => [table, count(database, table)])), incomingBefore,
+  'incorporation records no receipt, allocation, credit, or award before its ordinary confirmation');
+  assert.deepEqual(database.query(`SELECT award_type AS awardType, status, qualification_state AS qualificationState
+    FROM discount_award WHERE id = ?`, [`${existingIncomingChild}:discount:referred`])[0],
+  { awardType: 'referral_referred', status: 'reversed', qualificationState: 'earned' },
+  'incorporation reverses the same-family referral award before collection instead of letting a later finalizer make the receipt insufficient');
+  assert.equal(database.query(`SELECT status FROM registration_draft_referral WHERE registration_draft_child_id = ?`, [existingIncomingChild])[0].status,
+    'disqualified', 'the captured code is durably marked same-family before collection');
+  assert.equal(database.query(`SELECT state FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?`, [existingIncomingChild])[0].state,
+    'cancelled', 'only the selected incoming child has its matching provisional family quote replaced by the admission promise');
+  assert.notEqual(database.query(`SELECT state FROM conditional_family_discount_quote WHERE registration_draft_child_id = ?`, [untouchedIncomingSibling.id])[0].state,
+    'cancelled', 'an unselected sibling retains its independent conditional quote');
+  const incorporatedReplay = await incorporateExistingAdditionalClass(env(database), registrationStaff, {
+    registrationDraftChildId: incorporationSource.id, incomingRegistrationDraftChildId: existingIncomingChild,
+    reviewFingerprint: incomingPreview.reviewFingerprint, parentAcknowledged: true, childAcknowledged: true,
+    idempotencyKey: 'existing-incoming-incorporation-0001',
+  }, new Date(iso(82)));
+  assert.equal(incorporatedReplay.admissionId, incorporated.admissionId, 'retrying the same incorporation operation returns the original admission without duplicate value');
+  const incorporatedRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [existingIncomingDraft.draftId])[0];
+  const incorporatedInstallment = database.query(`SELECT id FROM payment_installment
+    WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [existingIncomingChild])[0];
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: incorporatedRequest.id, allocations: [{ installmentId: incorporatedInstallment.id, amountMnt: 1080000 }],
+    source: 'staff_manual_bank', idempotencyKey: 'existing-incoming-payment-0001',
+  }, new Date(iso(83)));
+  await finalizeDuePaymentConfirmations(env(database), new Date(iso(83 + 6)));
+  const incorporatedBeforePromotion = database.query(`SELECT payment_installment.status AS installmentStatus,
+      COALESCE((SELECT SUM(payment_allocation.allocated_amount_mnt) FROM payment_allocation
+        WHERE payment_allocation.payment_installment_id = payment_installment.id), 0) AS allocatedMnt,
+      (SELECT COUNT(*) FROM conditional_family_discount_quote WHERE registration_draft_child_id = payment_installment.registration_draft_child_id
+        AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')) AS pendingQuotes,
+      (SELECT status FROM additional_class_admission WHERE target_registration_draft_child_id = payment_installment.registration_draft_child_id) AS admissionStatus,
+      (SELECT COUNT(*) FROM registration_capacity_hold WHERE registration_draft_child_id = payment_installment.registration_draft_child_id
+        AND status = 'active' AND hold_type = 'initial_payment') AS activeHolds
+    FROM payment_installment WHERE id = ?`, [incorporatedInstallment.id])[0];
+  assert.deepEqual(incorporatedBeforePromotion, {
+    installmentStatus: 'paid', allocatedMnt: 1080000, pendingQuotes: 0, admissionStatus: 'confirmed', activeHolds: 0,
+  }, 'ordinary payment finalization routes the incorporated child through the protected additional-class finalizer');
+  assert.deepEqual(database.query(`SELECT
+      (SELECT COUNT(*) FROM enrollment WHERE id = ?) AS enrollmentCount,
+      (SELECT COUNT(*) FROM payment_allocation WHERE payment_installment_id = ?) AS allocationCount,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id = ? AND award_type = 'family_multi_child' AND status = 'active') AS familyAwards,
+      (SELECT beneficiary_enrollment_id FROM discount_award WHERE id = ?) AS referralEnrollmentId
+    `, [`${existingIncomingChild}:enrollment`, incorporatedInstallment.id, existingIncomingChild, `${existingIncomingChild}:discount:referred`])[0],
+  { enrollmentCount: 1, allocationCount: 1, familyAwards: 1, referralEnrollmentId: `${existingIncomingChild}:enrollment` },
+  'normal payment finalization creates one added-class enrollment and the one remaining family award');
+  await finalizeDuePaymentConfirmations(env(database), new Date(iso(85)));
+  assert.equal(count(database, 'discount_award', `registration_draft_child_id = '${existingIncomingChild}' AND status = 'active'`), 1,
+    'a finalizer replay leaves the family entitlement once without restoring the disqualified referral');
+
+  // The incorporation guard is deliberately narrow: a referral from another
+  // child and guardian remains available and stays active across an operation
+  // replay. Use a second source that has not occupied this target class.
+  const externalReferralSource = database.query(`SELECT child.id, enrollment.student_id AS studentId, child.canonical_enrollment_id AS enrollmentId
+    FROM registration_draft_child AS child
+    INNER JOIN enrollment ON enrollment.id = child.canonical_enrollment_id
+    INNER JOIN registration_draft AS draft ON draft.id = child.registration_draft_id
+    INNER JOIN guardian_account ON guardian_account.id = draft.canonical_guardian_account_id AND guardian_account.status = 'active'
+    INNER JOIN guardian_student_relationship ON guardian_student_relationship.guardian_id = guardian_account.id
+      AND guardian_student_relationship.student_id = enrollment.student_id AND guardian_student_relationship.status = 'active'
+    WHERE child.id != ? AND enrollment.status = 'confirmed' AND enrollment.transferred_out_at IS NULL
+      AND enrollment.academic_year_id = 'year-test' AND child.status != 'cancelled'
+      AND NOT EXISTS (SELECT 1 FROM enrollment AS duplicate WHERE duplicate.student_id = enrollment.student_id
+        AND duplicate.class_session_id = 'class-second-offering' AND duplicate.status = 'confirmed' AND duplicate.transferred_out_at IS NULL)
+    ORDER BY child.created_at, child.id LIMIT 1`, [incorporationSource.id])[0];
+  assert.ok(externalReferralSource, 'a separate confirmed child can prove that a valid external referral is retained');
+  const externalIncomingDraft = await createRegistrationDraft(env(database), submission("class-second-offering", undefined, 1), new Date(iso(86)));
+  const externalIncomingChallenge = addChallenge(database, externalIncomingDraft.draftId, externalIncomingDraft.normalizedEmail, iso(86), iso(86 + 24 * 60));
+  await confirmRegistrationChallenge(env(database), externalIncomingChallenge, session(iso(86), iso(146)), new Date(iso(86)));
+  const externalIncomingChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [externalIncomingDraft.draftId])[0].id;
+  database.query(`INSERT INTO registration_draft_referral (
+      registration_draft_child_id, referral_code_id, referring_enrollment_id, captured_code, status, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, 'referrer-code', 'referrer-enrollment', 'NE-REF2345', 'captured', 1, 'registration-test', ?, ?);`,
+  [externalIncomingChild, iso(86), iso(86)]);
+  database.query(`INSERT INTO discount_award (
+      id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+      status, reason, awarded_at, qualification_state, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, 'referral_referred', 200, 1200000, 24000, 'active', 'active_external_referral_code', ?, 'earned', 1, ?, ?, ?)`,
+  [`${externalIncomingChild}:discount:referred`, externalIncomingChild, iso(86), externalIncomingDraft.draftId, iso(86), iso(86)]);
+  const externalPreview = await previewExistingAdditionalClassIncorporation(env(database), registrationStaff, {
+    registrationDraftChildId: externalReferralSource.id, incomingRegistrationDraftChildId: externalIncomingChild,
+  });
+  assert.equal(externalPreview.awardEffect.sameFamilyReferral, false,
+    'a code belonging to a different student and guardian is not treated as a self-referral');
+  assert.equal(externalPreview.awardEffect.existingReferralAwardMnt, 24000,
+    'a valid external referral remains in the incorporation price projection');
+  const externalIncorporated = await incorporateExistingAdditionalClass(env(database), registrationStaff, {
+    registrationDraftChildId: externalReferralSource.id, incomingRegistrationDraftChildId: externalIncomingChild,
+    reviewFingerprint: externalPreview.reviewFingerprint, parentAcknowledged: true, childAcknowledged: true,
+    idempotencyKey: 'existing-incoming-external-referral-0001',
+  }, new Date(iso(87)));
+  const externalReplay = await incorporateExistingAdditionalClass(env(database), registrationStaff, {
+    registrationDraftChildId: externalReferralSource.id, incomingRegistrationDraftChildId: externalIncomingChild,
+    reviewFingerprint: externalPreview.reviewFingerprint, parentAcknowledged: true, childAcknowledged: true,
+    idempotencyKey: 'existing-incoming-external-referral-0001',
+  }, new Date(iso(88)));
+  assert.equal(externalReplay.admissionId, externalIncorporated.admissionId,
+    'an external-referral incorporation replay returns the original admission');
+  assert.deepEqual(database.query(`SELECT referral.status, award.status AS awardStatus
+    FROM registration_draft_referral AS referral
+    INNER JOIN discount_award AS award ON award.registration_draft_child_id = referral.registration_draft_child_id
+    WHERE referral.registration_draft_child_id = ? AND award.award_type = 'referral_referred'`, [externalIncomingChild])[0],
+  { status: 'captured', awardStatus: 'active' },
+  'external referral lineage is neither disqualified nor reversed by incorporation or replay');
 
   console.log("ok staged registration capacity, confirmation, waitlist, and Turnstile tests");
 } finally {

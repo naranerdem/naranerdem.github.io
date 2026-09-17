@@ -2336,6 +2336,118 @@ try {
   }, { status: "completed", sourceStage: "stage_3", targetStage: "stage_2", sourceTransferredOut: true, targetEnrollmentStatus: "confirmed" },
   "the prior Stage 3 enrollment remains explicit transfer history while the current enrollment is Stage 2");
 
+  // A teacher manually selects one child from a separate ordinary incoming
+  // registration. No identity matching data is manufactured: the original
+  // hold, payment request, and pricing snapshot come from staff intake.
+  const existingIncomingChildId = await fillIntake(page, "ExistingIncomingBrowser", "single", {
+    stage: "stage_2", classSessionId: "browser-class-high",
+  });
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const existingSourceRow = page.locator(`[data-registration-child="${childId}"]`);
+  await existingSourceRow.locator('[data-additional-class-open]').click();
+  const existingPanel = existingSourceRow.locator('[data-additional-class-preview]');
+  await existingPanel.waitFor({ state: "visible" });
+  const existingSelector = existingPanel.locator(`select[data-additional-incoming-select="${childId}"]`);
+  const alreadyAwardedIncomingChildId = await fillIntake(page, "ExistingAwardedIncoming", "single", {
+    stage: "stage_1", classSessionId: "browser-class-target",
+  });
+  execute(`INSERT INTO discount_award (
+    id, registration_draft_child_id, award_type, basis_points, base_amount_mnt, award_amount_mnt,
+    status, reason, qualification_state, awarded_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES (${sql(`${alreadyAwardedIncomingChildId}:family-award`)}, ${sql(alreadyAwardedIncomingChildId)},
+    'family_multi_child', 1000, 1000, 100, 'active', 'browser_existing_family_award', 'earned',
+    '2026-09-16T00:00:00.000Z', 1, ${sql(testRunId)}, '2026-09-16T00:00:00.000Z', '2026-09-16T00:00:00.000Z');`);
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  await existingSourceRow.locator('[data-additional-class-open]').click();
+  await existingPanel.waitFor({ state: "visible" });
+  const unsupportedPreviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("additional-class.incoming-preview"));
+  await existingSelector.selectOption(alreadyAwardedIncomingChildId);
+  const unsupportedPreviewBody = await (await unsupportedPreviewResponse).json();
+  assert.deepEqual({ supported: unsupportedPreviewBody.supported, reason: unsupportedPreviewBody.unsupportedReason },
+    { supported: false, reason: "existing_family_award" },
+  "an incoming child with an already-earned family award is rejected before confirmation");
+  await existingPanel.getByText("энэ урсгалаар нэгтгэхгүй; өөрчлөлт хийгдэхгүй.").waitFor({ state: "visible" });
+  const unsupportedIncomingState = await dbJson(`SELECT
+      (SELECT COUNT(*) FROM additional_class_admission WHERE target_registration_draft_child_id = ${sql(alreadyAwardedIncomingChildId)}) AS admissions,
+      (SELECT COUNT(*) FROM payment_allocation INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_installment.registration_draft_child_id = ${sql(alreadyAwardedIncomingChildId)}) AS allocations,
+      (SELECT COUNT(*) FROM discount_award WHERE registration_draft_child_id = ${sql(alreadyAwardedIncomingChildId)}
+        AND award_type = 'family_multi_child' AND status = 'active' AND qualification_state = 'earned') AS awards`);
+  assert.deepEqual(unsupportedIncomingState[0] && { admissions: Number(unsupportedIncomingState[0].admissions),
+    allocations: Number(unsupportedIncomingState[0].allocations), awards: Number(unsupportedIncomingState[0].awards) },
+  { admissions: 0, allocations: 0, awards: 1 },
+  "the unsupported incoming record remains available to its ordinary workflow without an incorporation mutation");
+  const incomingPreviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("additional-class.incoming-preview"));
+  await existingSelector.selectOption(existingIncomingChildId);
+  const incomingPreviewBody = await (await incomingPreviewResponse).json();
+  assert.equal(incomingPreviewBody.supported, true, `the selected unpaid incoming child is supported: ${JSON.stringify(incomingPreviewBody)}`);
+  await existingPanel.getByText("Нэгтгэхийн өмнөх шалгалт").waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await existingPanel.screenshot({ path: "/tmp/naranerdem-add-class-existing-desktop.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await existingPanel.screenshot({ path: "/tmp/naranerdem-add-class-existing-mobile.png" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const incorporationBefore = await dbJson(`SELECT
+    (SELECT COUNT(*) FROM additional_class_admission WHERE target_registration_draft_child_id = ${sql(existingIncomingChildId)}) AS admissions,
+    (SELECT COUNT(*) FROM received_payment WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id =
+      (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(existingIncomingChildId)}))) AS receipts`);
+  assert.deepEqual(incorporationBefore[0], { admissions: 0, receipts: 0 }, "opening and selecting an incoming registration performs no financial or admission mutation");
+  await existingPanel.locator('[data-additional-incoming-prepare]').click();
+  await existingPanel.locator(`[data-additional-incoming-parent="${childId}"]`).check();
+  await existingPanel.locator(`[data-additional-incoming-child="${childId}"]`).check();
+  const incorporationRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("additional-class.incorporate-existing"));
+  await existingPanel.locator('[data-additional-incoming-confirm]').click();
+  assert.ok((await incorporationRequest).ok(), "the rendered confirmation submits the dedicated existing-registration incorporation operation");
+  const incorporationState = await dbJson(`SELECT admission.origin_kind AS originKind, admission.status,
+      child.canonical_student_id AS targetStudentId, child.canonical_enrollment_id AS targetEnrollmentId,
+      (SELECT COUNT(*) FROM received_payment WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id = admission.target_registration_draft_id)) AS receipts
+    FROM additional_class_admission AS admission INNER JOIN registration_draft_child AS child
+      ON child.id = admission.target_registration_draft_child_id
+    WHERE admission.target_registration_draft_child_id = ${sql(existingIncomingChildId)}`);
+  assert.deepEqual(incorporationState[0] && { originKind: incorporationState[0].originKind, status: incorporationState[0].status,
+    targetStudentId: Boolean(incorporationState[0].targetStudentId), targetEnrollmentId: incorporationState[0].targetEnrollmentId, receipts: Number(incorporationState[0].receipts) },
+  { originKind: "existing_registration", status: "pending_confirmation", targetStudentId: true, targetEnrollmentId: null, receipts: 0 },
+  "the selected incoming child is bound to the source identity and ordinary pending confirmation without a duplicate receipt or enrollment");
+  await recordCashPayment(page, existingIncomingChildId, 1080);
+  // Advance only this disposable receipt through the existing grace window;
+  // the subsequent scheduled request still runs the real finalizer.
+  execute(`UPDATE payment_confirmation SET finalize_after = '2000-01-01T00:00:00.000Z'
+    WHERE payment_request_id IN (SELECT id FROM payment_request WHERE registration_draft_id =
+      (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(existingIncomingChildId)}));`);
+  const incomingFinalizer = await fetch(`${baseUrl}/__scheduled`);
+  assert.ok(incomingFinalizer.ok, "the ordinary scheduled finalizer completes a manually incorporated, fully paid added class");
+  const incorporatedFinal = await dbJson(`SELECT admission.status AS admissionStatus,
+      child.canonical_student_id AS targetStudentId, child.canonical_enrollment_id AS targetEnrollmentId,
+      (SELECT COUNT(*) FROM payment_allocation INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_installment.registration_draft_child_id = child.id) AS allocations,
+      (SELECT COALESCE(SUM(received_payment.received_amount_mnt), 0) FROM received_payment
+        INNER JOIN payment_request ON payment_request.id = received_payment.payment_request_id
+        WHERE payment_request.registration_draft_id = admission.target_registration_draft_id) AS receivedMnt,
+      (SELECT COUNT(*) FROM enrollment WHERE student_id = admission.canonical_student_id AND class_session_id = child.selected_class_session_id
+        AND status = 'confirmed' AND transferred_out_at IS NULL) AS targetEnrollments,
+      (SELECT COUNT(*) FROM enrollment WHERE id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = ${sql(childId)})) AS sourceEnrollment
+    FROM additional_class_admission AS admission INNER JOIN registration_draft_child AS child
+      ON child.id = admission.target_registration_draft_child_id
+    WHERE child.id = ${sql(existingIncomingChildId)}`);
+  assert.deepEqual(incorporatedFinal[0] && { admissionStatus: incorporatedFinal[0].admissionStatus,
+    targetStudentId: Boolean(incorporatedFinal[0].targetStudentId), targetEnrollmentId: Boolean(incorporatedFinal[0].targetEnrollmentId),
+    allocations: Number(incorporatedFinal[0].allocations), receivedMnt: Number(incorporatedFinal[0].receivedMnt),
+    targetEnrollments: Number(incorporatedFinal[0].targetEnrollments), sourceEnrollment: Number(incorporatedFinal[0].sourceEnrollment) },
+  { admissionStatus: "confirmed", targetStudentId: true, targetEnrollmentId: true, allocations: 1, receivedMnt: 1080,
+    targetEnrollments: 1, sourceEnrollment: 1 },
+  "manual incorporation finalizes once with one ordinary receipt/allocation while preserving the original class enrollment");
+  const incomingReplayFinalizer = await fetch(`${baseUrl}/__scheduled`);
+  assert.ok(incomingReplayFinalizer.ok, "a later scheduler pass is an idempotent no-op for the incorporated class");
+  const incorporationReplayCounts = await dbJson(`SELECT
+    (SELECT COUNT(*) FROM enrollment WHERE id = ${sql(`${existingIncomingChildId}:enrollment`)}) AS enrollments,
+    (SELECT COUNT(*) FROM received_payment INNER JOIN payment_request ON payment_request.id = received_payment.payment_request_id
+      WHERE payment_request.registration_draft_id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(existingIncomingChildId)})) AS receipts`);
+  assert.deepEqual(incorporationReplayCounts[0] && { enrollments: Number(incorporationReplayCounts[0].enrollments), receipts: Number(incorporationReplayCounts[0].receipts) },
+    { enrollments: 1, receipts: 1 }, "scheduler recovery cannot duplicate the incorporated enrollment or its receipt");
+
   const acceptedOffer = await exerciseWaitlistResponse(browser, "BrowserWaitlistAccept", "accept");
   const acceptedState = await dbJson(`SELECT waitlist_seat_offer.status AS offerStatus,
       registration_draft_waitlist_entry.status AS entryStatus,

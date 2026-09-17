@@ -50,7 +50,7 @@ import {
 import { cancelRegistration, reinstateRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
 import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets, recordClassTransferDifference } from "../staff/class-transfer";
 import { AdditionalClassPreviewError, getAdditionalClassPreview } from "../staff/additional-class-preview";
-import { AdditionalClassAdmissionError, createAdditionalClassAdmission } from "../staff/additional-class-admission";
+import { AdditionalClassAdmissionError, createAdditionalClassAdmission, incorporateExistingAdditionalClass, previewExistingAdditionalClassIncorporation } from "../staff/additional-class-admission";
 import { applyFamilyCreditSuggestion, confirmFamilyDiscountMembership, FamilyDiscountError, familyDiscountDetail, findFamilyDiscountCandidates, previewFamilyDiscountMembership, recoverFamilyDiscountCredits } from "../staff/family-discounts";
 import { addManualChildCredit, applyChildCredit, ChildCreditError, correctChildCredit, leaveChildCreditUnused, transferChildCredit } from "../services/child-credit-ledger";
 import { adoptHistoricalConditionalFamilyAwards, authorizeContingentFamilyCredit, ConditionalFamilyDiscountError, historicalAdoptionChildIdsForDraft, previewHistoricalConditionalFamilyAdoption, setConditionalFamilyFailureDeadline } from "../services/conditional-family-discounts";
@@ -1328,6 +1328,26 @@ export async function handleApiRequest(
         } catch (caught) {
           return additionalClassAdmissionError(caught);
         }
+      }
+      if (payload.action === "additional-class.incoming-preview") {
+        try {
+          return json({ ok: true, ...await previewExistingAdditionalClassIncorporation(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            incomingRegistrationDraftChildId: String(payload.incomingRegistrationDraftChildId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        } catch (caught) { return additionalClassAdmissionError(caught); }
+      }
+      if (payload.action === "additional-class.incorporate-existing") {
+        try {
+          return json({ ok: true, ...await incorporateExistingAdditionalClass(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            incomingRegistrationDraftChildId: String(payload.incomingRegistrationDraftChildId ?? ""),
+            reviewFingerprint: String(payload.reviewFingerprint ?? ""),
+            parentAcknowledged: payload.parentAcknowledged === true,
+            childAcknowledged: payload.childAcknowledged === true,
+            idempotencyKey: String(payload.idempotencyKey ?? ""),
+          }) }, 201, { "Cache-Control": "no-store" });
+        } catch (caught) { return additionalClassAdmissionError(caught); }
       }
       if (payload.action === "family-discount.detail") {
         if (!hasStaffCapability(principal, "registration.manage")) return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });

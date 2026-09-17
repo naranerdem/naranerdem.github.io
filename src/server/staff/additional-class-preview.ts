@@ -42,6 +42,7 @@ async function sourceForChild(env: WorkerEnv, actor: StaffPrincipal, childId: st
       registration_draft_child.payment_plan_code AS sourcePaymentPlanCode
     FROM registration_draft_child
     INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     INNER JOIN class_session ON class_session.id = enrollment.class_session_id
     INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
     INNER JOIN academic_year ON academic_year.id = enrollment.academic_year_id
@@ -51,6 +52,83 @@ async function sourceForChild(env: WorkerEnv, actor: StaffPrincipal, childId: st
   if (!row) throw new AdditionalClassPreviewError("not_found");
   return { ...row, isTest: integer(row.isTest), sourceClassIsTest: integer(row.sourceClassIsTest),
     sourceOfferingIsTest: integer(row.sourceOfferingIsTest), sourceYearIsTest: integer(row.sourceYearIsTest) };
+}
+
+type IncomingCandidateRow = {
+  childId: string; childName: string; dateOfBirth: string; guardianName: string; classLabel: string;
+  submittedAt: string; childStatus: string; draftStatus: string; paymentPlanCode: string | null;
+  cashPaidMnt: number; appliedCreditMnt: number; hasEarnedFamilyAward: number; hasReferral: number;
+  hasActiveHold: number; hasAdmission: number; hasCanonicalIdentity: number; hasPendingQuote: number;
+  classSessionId: string; normalizedEmail: string; primaryPhone: string; isTest: number;
+  classIsTest: number; offeringIsTest: number; yearIsTest: number;
+};
+
+// This is deliberately a teacher-selected list, not an identity-matching
+// mechanism. A staff member reviews the displayed identity and class before
+// incorporation; automatic suggestions and dismissal history are deferred.
+async function incomingCandidatesForSource(env: WorkerEnv, source: Source, currentClassIds: Set<string>) {
+  const rows = await env.DB.prepare(`SELECT registration_draft_child.id AS childId,
+      trim(registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childName,
+      registration_draft_child.date_of_birth AS dateOfBirth,
+      registration_draft.guardian_full_name AS guardianName,
+      class_session.display_label AS classLabel,
+      registration_draft.created_at AS submittedAt,
+      registration_draft_child.status AS childStatus, registration_draft.status AS draftStatus,
+      registration_draft_child.payment_plan_code AS paymentPlanCode,
+      registration_draft_child.selected_class_session_id AS classSessionId,
+      registration_draft.normalized_email AS normalizedEmail,
+      registration_draft.primary_phone AS primaryPhone,
+      registration_draft_child.is_test AS isTest, class_session.is_test AS classIsTest,
+      activity_offering.is_test AS offeringIsTest, academic_year.is_test AS yearIsTest,
+      COALESCE((SELECT SUM(payment_allocation.allocated_amount_mnt)
+        FROM payment_installment INNER JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+        LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
+        WHERE payment_installment.registration_draft_child_id = registration_draft_child.id
+          AND (payment_confirmation.status IS NULL OR payment_confirmation.status != 'undone')), 0) AS cashPaidMnt,
+      COALESCE((SELECT SUM(-child_credit_entry.amount_mnt) FROM child_credit_entry
+        WHERE child_credit_entry.registration_draft_child_id = registration_draft_child.id
+          AND child_credit_entry.amount_mnt < 0), 0) AS appliedCreditMnt,
+      EXISTS(SELECT 1 FROM discount_award WHERE registration_draft_child_id = registration_draft_child.id
+        AND award_type = 'family_multi_child' AND status = 'active' AND qualification_state = 'earned') AS hasEarnedFamilyAward,
+      EXISTS(SELECT 1 FROM registration_draft_referral WHERE registration_draft_child_id = registration_draft_child.id) AS hasReferral,
+      EXISTS(SELECT 1 FROM registration_capacity_hold WHERE registration_draft_child_id = registration_draft_child.id
+        AND hold_type = 'initial_payment' AND status = 'active') AS hasActiveHold,
+      EXISTS(SELECT 1 FROM additional_class_admission WHERE target_registration_draft_child_id = registration_draft_child.id) AS hasAdmission,
+      CASE WHEN registration_draft_child.canonical_student_id IS NOT NULL
+          OR registration_draft_child.canonical_enrollment_id IS NOT NULL THEN 1 ELSE 0 END AS hasCanonicalIdentity,
+      EXISTS(SELECT 1 FROM conditional_family_discount_quote WHERE registration_draft_child_id = registration_draft_child.id
+        AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')) AS hasPendingQuote
+    FROM registration_draft_child
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    INNER JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+    INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
+    WHERE registration_draft_child.id != ? AND registration_draft_child.selected_class_session_id IS NOT NULL
+      AND registration_draft.academic_year_id = ? AND registration_draft.status NOT IN ('cancelled', 'expired')
+      AND registration_draft_child.status != 'cancelled'
+    ORDER BY lower(registration_draft_child.surname), lower(registration_draft_child.given_name),
+      registration_draft.created_at DESC, registration_draft_child.position ASC`).bind(source.childId, source.academicYearId).all<IncomingCandidateRow>();
+  return rows.results.filter((row) => Number(row.isTest) === source.isTest
+    && Number(row.classIsTest) === source.isTest && Number(row.offeringIsTest) === source.isTest && Number(row.yearIsTest) === source.isTest)
+    .map((row) => {
+      const sameClass = currentClassIds.has(row.classSessionId);
+      const financeFree = Number(row.cashPaidMnt) === 0 && Number(row.appliedCreditMnt) === 0
+        && !Number(row.hasEarnedFamilyAward);
+      const supported = !sameClass && financeFree && Number(row.hasActiveHold) === 1 && Number(row.hasAdmission) === 0
+        && Number(row.hasCanonicalIdentity) === 0 && Boolean(row.paymentPlanCode);
+      const unsupportedReason = sameClass ? "Энэ хүүхэд тухайн ангид аль хэдийн бүртгэлтэй байна."
+        : !financeFree ? "Төлбөр, кредит эсвэл хэрэгжсэн гэр бүлийн хөнгөлөлттэй хүсэлтийг энэ урсгалаар нэгтгэхгүй."
+          : !Number(row.hasActiveHold) ? "Идэвхтэй суудлын нөөцгүй хүсэлтийг энэ урсгалаар нэгтгэхгүй."
+            : Number(row.hasAdmission) || Number(row.hasCanonicalIdentity) ? "Энэ хүсэлт өөр нэгтгэл эсвэл каноник танихтай байна."
+              : !row.paymentPlanCode ? "Төлбөрийн хэлбэр тодорхойгүй байна." : null;
+      return {
+        id: row.childId, childName: row.childName, dateOfBirth: row.dateOfBirth, guardianName: row.guardianName,
+        classLabel: row.classLabel, submittedAt: row.submittedAt, paymentPlanCode: row.paymentPlanCode,
+        paymentStatus: Number(row.cashPaidMnt) > 0 ? "Төлбөр орсон" : "Төлбөр хүлээж байна",
+        registrationStatus: row.childStatus, supported, unsupportedReason,
+        hasPendingQuote: Boolean(row.hasPendingQuote),
+      };
+    });
 }
 
 async function currentClasses(env: WorkerEnv, source: Source) {
@@ -133,6 +211,7 @@ export async function getAdditionalClassPreview(env: WorkerEnv, actor: StaffPrin
   const sourceProvenanceConsistent = [source.sourceClassIsTest, source.sourceOfferingIsTest, source.sourceYearIsTest]
     .every((value) => value === source.isTest);
   const currentClassIds = new Set(current.map((row) => row.classSessionId));
+  const incomingCandidates = await incomingCandidatesForSource(env, source, currentClassIds);
   const pending = await env.DB.prepare(`SELECT selected_class_session_id AS classSessionId FROM registration_draft_child
     INNER JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
     WHERE registration_draft_child.canonical_student_id = ? AND registration_draft_child.canonical_enrollment_id IS NULL
@@ -239,5 +318,6 @@ export async function getAdditionalClassPreview(env: WorkerEnv, actor: StaffPrin
     } : null,
     admissionEligibility: "eligible",
     publicRegistrationWindowIsNotRequired: true,
+    incomingCandidates,
   };
 }

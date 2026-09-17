@@ -283,7 +283,28 @@ import "../../styles/global.css";
         const readyToCreate = previewCurrent && !discountUnavailable && !preview.proposal.unresolved.length;
         const creditChoices = creditProposal?.eligibleNow ? `<fieldset class="staff-wide staff-registration-secondary"><legend>Кредитийн санал</legend><label class="staff-check"><input name="useExistingCredit" type="checkbox" ${draft.useExistingCredit !== false ? "checked" : ""} ${creating ? "disabled" : ""}/><span>Одоогийн боломжтой кредитийг хэрэглэх</span></label><label class="staff-check"><input name="useSourceAwardCredit" type="checkbox" ${draft.useSourceAwardCredit !== false ? "checked" : ""} ${creating ? "disabled" : ""}/><span>Эх ангийн шинээр үүсэх кредитийг хэрэглэх</span></label></fieldset>` : "";
         proposal += creditChoices;
-        return `<form class="staff-payment-form" data-additional-class-preview="${escape(item.registrationDraftChildId)}" aria-live="polite"><h3>Нэмэлт ангийн урьдчилан харагдац</h3><p>Сонголт хийж, урьдчилан харах хүртэл суудал нөөцлөхгүй, бүртгэл үүсгэхгүй.</p><p><strong>${escape(preview.child.name)}</strong> одоо:</p><ul>${current}</ul><label>Нэмэх анги<select name="targetClassSessionId" ${creating ? "disabled" : ""}><option value="">Сонгоно уу</option>${options}</select></label><label>Төлбөрийн хэлбэр<select name="paymentPlanCode" ${!selected || creating || plans.length <= 1 ? "disabled" : ""}><option value="">Сонгоно уу</option>${planOptions}</select>${planUnavailable ? `<span class="staff-muted">Энэ ангид тохирох төлбөрийн хэлбэр одоогоор алга.</span>` : plans.length === 1 ? `<span class="staff-muted">Энэ ангид нэг л төлбөрийн хэлбэр боломжтой.</span>` : ""}</label><p class="staff-muted staff-wide">${discountUnavailable ? "Гэр бүлийн хөнгөлөлтийн бодлого одоогоор идэвхгүй байна." : `${escape(`${rate}%`)} суурь хөнгөлөлт нь тохирох нөхцөл хангагдвал баталгаажуулалтын үед автоматаар тооцогдоно.`}</p>${discountNote ? `<p class="staff-muted staff-wide">${discountNote}</p>` : ""}${proposal}${readyToCreate ? `<fieldset class="staff-wide staff-registration-secondary" ${creating ? "disabled" : ""}><legend>Шинэ зөвшөөрөл</legend><label class="staff-check"><input name="parentAcknowledged" type="checkbox" required /><span>Эцэг эх / асран хамгаалагч энэ нэмэлт ангид зөвшөөрсөн.</span></label><label class="staff-check"><input name="childAcknowledged" type="checkbox" required /><span>Хүүхэд энэ нэмэлт ангид бүртгүүлэхээ мэдэж, зөвшөөрсөн.</span></label></fieldset>` : ""}<div class="staff-inline-actions">${previewCurrent ? "" : `<button class="button secondary" type="submit" ${creating || planUnavailable ? "disabled" : ""}>${creating ? "Бэлтгэж байна…" : "Урьдчилан харах"}</button>`}${readyToCreate ? `<button class="button primary" type="button" data-additional-class-create="${escape(item.registrationDraftChildId)}" ${creating ? "disabled aria-busy=\"true\"" : ""}>${creating ? "Бүртгэл үүсгэж байна…" : "Бүртгэл үүсгэх"}</button>` : ""}<button class="text-button" type="button" data-additional-class-dismiss="${escape(item.registrationDraftChildId)}" ${creating ? "disabled" : ""}>Хаах</button></div>${actionFeedback(item.registrationDraftChildId, ["additional-class"])}</form>`;
+        const incomingCandidates = preview.incomingCandidates || [];
+        const incomingState = panel.incoming || {}; const incomingQuery = (incomingState.query || "").trim().toLocaleLowerCase();
+        const filteredIncoming = incomingCandidates.filter((candidate) => !incomingQuery || `${candidate.childName} ${candidate.guardianName} ${candidate.classLabel}`.toLocaleLowerCase().includes(incomingQuery));
+        const incomingOptions = filteredIncoming.map((candidate) => `<option value="${escape(candidate.id)}" ${incomingState.selectedId === candidate.id ? "selected" : ""}>${escape(candidate.childName)} · ${escape(candidate.classLabel)} · ${escape(candidate.guardianName)} · ${escape(candidate.paymentStatus)}${candidate.supported ? "" : " · Шалгах шаардлагатай"}</option>`).join("");
+        const incomingPreview = incomingState.preview;
+        // An incorporation has its own frozen pricing; do not mix in the new-draft proposal.
+        if (incomingPreview) proposal = "";
+        const sameFamilyReferralNotice = incomingPreview?.awardEffect?.sameFamilyReferral
+          ? `<p class="staff-muted">Энэ урилгын код нь одоогийн хүүхэд эсвэл нэг гэр бүлийнх тул referral хөнгөлөлтөд тооцохгүй. Нэгтгэсний дараах төлбөрт уг дүн орохгүй.</p>` : "";
+        const incomingReason = incomingPreview?.unsupportedReason === "financial_history" ? "Төлбөр эсвэл кредитийн түүхтэй хүсэлтийг энэ урсгалаар нэгтгэхгүй. Энд ямар ч санхүүгийн өөрчлөлт хийгдэхгүй."
+          : incomingPreview?.unsupportedReason === "existing_family_award" ? "Энэ хүсэлтэд аль хэдийн хэрэгжсэн гэр бүлийн хөнгөлөлт байна. Давхар үнэ цэнэ үүсгэхгүй тул энэ урсгалаар нэгтгэхгүй; өөрчлөлт хийгдэхгүй."
+          : incomingPreview?.unsupportedReason === "duplicate_class" ? "Энэ хүүхэд сонгосон ангид аль хэдийн баталгаажсан байна."
+            : incomingPreview?.unsupportedReason === "missing_hold" ? "Идэвхтэй суудлын нөөцгүй хүсэлтийг энд нэгтгэхгүй."
+              : incomingPreview?.unsupportedReason === "already_linked" ? "Энэ хүсэлт өөр нэмэлт ангийн холбоос эсвэл каноник танихтай байна."
+                : incomingPreview?.unsupportedReason === "pricing_changed" ? "Ирсэн хүсэлтийн үнийн snapshot одоогийн сонгосон ангийн үнэтэй зөрж байна."
+                  : incomingPreview?.unsupportedReason === "quote_conflict" ? "Ирсэн хүсэлтийн нөхцөлт хөнгөлөлт одоогийн бодлоготой зөрж байна. Энэ урсгалаар нэгтгэхгүй; өөрчлөлт хийгдэхгүй."
+                  : "Энэ ирсэн хүсэлтийг аюулгүйгээр нэгтгэх боломжгүй байна.";
+        const incomingDetails = incomingState.loading ? `<p class="staff-muted">Ирсэн бүртгэлийг шалгаж байна…</p>`
+          : incomingState.error ? `<p class="staff-error" role="status">${escape(incomingState.error)}</p>`
+            : incomingPreview ? (!incomingPreview.supported ? `<p class="staff-error">${escape(incomingReason)}</p>` : `<section class="staff-registration-secondary"><h4>Нэгтгэхийн өмнөх шалгалт</h4><p><strong>Одоогийн хүүхэд:</strong> ${escape(incomingPreview.source.name)}</p><p><strong>Ирсэн хүүхэд:</strong> ${escape(incomingPreview.incoming.childName)} · Төрсөн: ${escape(incomingPreview.incoming.dateOfBirth)}<br><strong>Асран хамгаалагч:</strong> ${escape(incomingPreview.incoming.guardianName)} · ${escape(incomingPreview.incoming.guardianPhone)} · ${escape(incomingPreview.incoming.guardianEmail)}<br><strong>Хүссэн анги:</strong> ${escape(incomingPreview.incoming.classLabel)}</p><p>Төлбөрийн хэлбэр: <strong>${escape(incomingPreview.incoming.paymentPlanCode === "single" ? "Нэг удаа төлөх" : "Хоёр хувааж төлөх")}</strong> · Анхны үнийн snapshot: ${escape(mnt(incomingPreview.incoming.rawTotalMnt))} · Төлсөн: ${escape(mnt(incomingPreview.incoming.cashPaidMnt))}</p><p>Хадгалах referral хөнгөлөлт: <strong>${escape(mnt(incomingPreview.awardEffect.existingReferralAwardMnt))}</strong><br>Нөхцөлт гэр бүлийн хөнгөлөлт: ${escape(mnt(incomingPreview.awardEffect.replacedConditionalAwardMnt))} → <strong>${escape(mnt(incomingPreview.awardEffect.additionalFamilyAwardMnt))}</strong><br>Нийт хөнгөлөлт: <strong>${escape(mnt(incomingPreview.awardEffect.totalAwardMnt))}</strong> · Төлөх нийт дүн: <strong>${escape(mnt(incomingPreview.awardEffect.payableTotalMnt))}</strong></p><p>${incomingPreview.awardEffect.installments.map((entry) => `${entry.installmentNumber}-р төлбөр: ${mnt(entry.originalAmountMnt)} → ${mnt(entry.payableAmountMnt)}`).join(" · ")}</p><p>${escape(incomingPreview.disposition)}</p>${incomingState.confirm ? `<fieldset><legend>Нэгтгэх зөвшөөрөл</legend><label class="staff-check"><input type="checkbox" data-additional-incoming-parent="${escape(item.registrationDraftChildId)}"/><span>Эцэг эх / асран хамгаалагч энэ анги нэмэгдэхийг зөвшөөрсөн.</span></label><label class="staff-check"><input type="checkbox" data-additional-incoming-child="${escape(item.registrationDraftChildId)}"/><span>Хүүхэд энэ ангид бүртгүүлэхээ мэдэж, зөвшөөрсөн.</span></label></fieldset><div class="staff-inline-actions"><button class="button primary" type="button" data-additional-incoming-confirm="${escape(item.registrationDraftChildId)}" ${incomingState.creating ? "disabled aria-busy=\"true\"" : ""}>${incomingState.creating ? "Нэгтгэж байна…" : "Баталгаажуулж нэгтгэх"}</button><button class="text-button" type="button" data-additional-incoming-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>` : `<button class="button primary" type="button" data-additional-incoming-prepare="${escape(item.registrationDraftChildId)}">Нэгтгэхийг үргэлжлүүлэх</button>`}</section>`) : "";
+        const incomingMarkup = `<section class="staff-registration-secondary staff-wide"><h4>Ирсэн бүртгэлээс анги нэмэх</h4><p class="staff-muted">Багш хүүхэд болон хүссэн ангийг гараар сонгож, таних мэдээлэл ба төлбөрийн нөлөөг шалгана. Сонголт өөрөө ямар ч өөрчлөлт хийхгүй. Ах, дүүгийн бусад мөр өөрчлөгдөхгүй.</p><label>Хүүхдийн нэрээр шүүх<input type="search" data-additional-incoming-filter="${escape(item.registrationDraftChildId)}" value="${escape(incomingState.query || "")}" /></label><label>Ирсэн хүүхэд, анги сонгох<select data-additional-incoming-select="${escape(item.registrationDraftChildId)}"><option value="">Сонгоно уу</option>${incomingOptions}</select>${!filteredIncoming.length ? `<span class="staff-muted">Энэ хичээлийн жилд сонгох ирсэн хүсэлт алга.</span>` : ""}</label>${sameFamilyReferralNotice}${incomingDetails}</section>`;
+        return `<form class="staff-payment-form" data-additional-class-preview="${escape(item.registrationDraftChildId)}" aria-live="polite"><h3>Нэмэлт ангийн урьдчилан харагдац</h3><p>Сонголт хийж, урьдчилан харах хүртэл суудал нөөцлөхгүй, бүртгэл үүсгэхгүй.</p><p><strong>${escape(preview.child.name)}</strong> одоо:</p><ul>${current}</ul>${incomingMarkup}<label>Нэмэх анги<select name="targetClassSessionId" ${creating ? "disabled" : ""}><option value="">Сонгоно уу</option>${options}</select></label><label>Төлбөрийн хэлбэр<select name="paymentPlanCode" ${!selected || creating || plans.length <= 1 ? "disabled" : ""}><option value="">Сонгоно уу</option>${planOptions}</select>${planUnavailable ? `<span class="staff-muted">Энэ ангид тохирох төлбөрийн хэлбэр одоогоор алга.</span>` : plans.length === 1 ? `<span class="staff-muted">Энэ ангид нэг л төлбөрийн хэлбэр боломжтой.</span>` : ""}</label><p class="staff-muted staff-wide">${discountUnavailable ? "Гэр бүлийн хөнгөлөлтийн бодлого одоогоор идэвхгүй байна." : `${escape(`${rate}%`)} суурь хөнгөлөлт нь тохирох нөхцөл хангагдвал баталгаажуулалтын үед автоматаар тооцогдоно.`}</p>${discountNote ? `<p class="staff-muted staff-wide">${discountNote}</p>` : ""}${proposal}${readyToCreate ? `<fieldset class="staff-wide staff-registration-secondary" ${creating ? "disabled" : ""}><legend>Шинэ зөвшөөрөл</legend><label class="staff-check"><input name="parentAcknowledged" type="checkbox" required /><span>Эцэг эх / асран хамгаалагч энэ нэмэлт ангид зөвшөөрсөн.</span></label><label class="staff-check"><input name="childAcknowledged" type="checkbox" required /><span>Хүүхэд энэ нэмэлт ангид бүртгүүлэхээ мэдэж, зөвшөөрсөн.</span></label></fieldset>` : ""}<div class="staff-inline-actions">${previewCurrent ? "" : `<button class="button secondary" type="submit" ${creating || planUnavailable ? "disabled" : ""}>${creating ? "Бэлтгэж байна…" : "Урьдчилан харах"}</button>`}${readyToCreate ? `<button class="button primary" type="button" data-additional-class-create="${escape(item.registrationDraftChildId)}" ${creating ? "disabled aria-busy=\"true\"" : ""}>${creating ? "Бүртгэл үүсгэж байна…" : "Бүртгэл үүсгэх"}</button>` : ""}<button class="text-button" type="button" data-additional-class-dismiss="${escape(item.registrationDraftChildId)}" ${creating ? "disabled" : ""}>Хаах</button></div>${actionFeedback(item.registrationDraftChildId, ["additional-class"])}</form>`;
       }
       function childCreditMarkup(item) {
         if (activePanel(item.registrationDraftChildId) !== "credit") return "";
@@ -603,6 +624,20 @@ import "../../styles/global.css";
         }
       }
       async function post(payload) { const response = await fetch("/api/staff/payments", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, credentials: "same-origin", body: JSON.stringify(payload) }); const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || "Төлбөрийн мэдээллийг хадгалж чадсангүй."); return body; }
+      async function loadExistingAdditionalIncoming(childId, incomingChildId) {
+        const panel = state.additionalClassPreviews[childId];
+        if (!panel || !incomingChildId || panel.incoming?.loading) return;
+        const request = panel.request;
+        panel.incoming = { ...(panel.incoming || {}), selectedId: incomingChildId, loading: true, preview: null, error: "", confirm: false };
+        render();
+        try {
+          const preview = await post({ action: "additional-class.incoming-preview", registrationDraftChildId: childId, incomingRegistrationDraftChildId: incomingChildId });
+          if (panelIsCurrent(request) && state.additionalClassPreviews[childId] === panel) panel.incoming = { ...panel.incoming, selectedId: incomingChildId, preview, loading: false };
+        } catch (error) {
+          if (panelIsCurrent(request) && state.additionalClassPreviews[childId] === panel) panel.incoming = { ...panel.incoming, selectedId: incomingChildId, loading: false, error: error.message || "Ирсэн бүртгэлийг шалгаж чадсангүй." };
+        }
+        render();
+      }
       async function submitCancellation(confirmation) {
         const { childId, reason, note } = confirmation;
         if (actionPending(childId, "cancel")) return;
@@ -780,7 +815,7 @@ import "../../styles/global.css";
           const request = activatePanel(childId, "additional");
           if (state.additionalClassPreviews[childId] && !state.additionalClassPreviews[childId].loading) { render(); return; }
           state.additionalClassPreviews[childId] = { loading: true, request }; render();
-          try { const preview = await post({ action: "additional-class.preview", registrationDraftChildId: childId }); if (panelIsCurrent(request)) state.additionalClassPreviews[childId] = { preview, draft: {} }; }
+          try { const preview = await post({ action: "additional-class.preview", registrationDraftChildId: childId }); if (panelIsCurrent(request)) state.additionalClassPreviews[childId] = { preview, draft: {}, request }; }
           catch (error) { if (panelIsCurrent(request)) state.additionalClassPreviews[childId] = { error: error.message || "Нэмэлт ангийн сонголтыг авч чадсангүй." }; }
           render(); return;
         }
@@ -817,6 +852,36 @@ import "../../styles/global.css";
           } catch (error) {
             panel.creating = false; setActionFeedback(childId, "additional-class", error.message || "Нэмэлт ангийн бүртгэлийг үүсгэж чадсангүй."); render();
           }
+          return;
+        }
+        if (target.dataset.additionalIncomingSelect) { await loadExistingAdditionalIncoming(target.dataset.additionalIncomingSelect, target.dataset.incomingChildId); return; }
+        if (target.dataset.additionalIncomingPrepare) {
+          const childId = target.dataset.additionalIncomingPrepare; const panel = state.additionalClassPreviews[childId];
+          if (!panel?.incoming?.preview?.supported || panel.incoming.creating) return;
+          panel.incoming.confirm = true; render(); return;
+        }
+        if (target.dataset.additionalIncomingCancel) {
+          const panel = state.additionalClassPreviews[target.dataset.additionalIncomingCancel];
+          if (!panel?.incoming || panel.incoming.creating) return;
+          panel.incoming.confirm = false; render(); return;
+        }
+        if (target.dataset.additionalIncomingConfirm) {
+          const childId = target.dataset.additionalIncomingConfirm; const panel = state.additionalClassPreviews[childId]; const incoming = panel?.incoming;
+          const parentAcknowledged = Boolean(q(`[data-additional-incoming-parent="${childId}"]`)?.checked);
+          const childAcknowledged = Boolean(q(`[data-additional-incoming-child="${childId}"]`)?.checked);
+          if (!incoming?.preview?.supported || incoming.creating || !parentAcknowledged || !childAcknowledged) {
+            setActionFeedback(childId, "additional-class", "Хоёр зөвшөөрлийг баталгаажуулна уу."); render(); return;
+          }
+          incoming.creating = true; setActionFeedback(childId, "additional-class", "Ирсэн бүртгэлийг нэгтгэж байна…"); render();
+          try {
+            incoming.operationId ||= `additional-existing:${childId}:${await secureStaffUuidV4()}`;
+            const created = await post({ action: "additional-class.incorporate-existing", registrationDraftChildId: childId,
+              incomingRegistrationDraftChildId: incoming.selectedId, reviewFingerprint: incoming.preview.reviewFingerprint,
+              parentAcknowledged, childAcknowledged, idempotencyKey: incoming.operationId });
+            delete state.additionalClassPreviews[childId]; closePanel(childId, "additional");
+            setActionFeedback(childId, "additional-class", created.replayed ? "Энэ ирсэн бүртгэл аль хэдийн нэмэлт ангид холбогдсон байна." : "Ирсэн бүртгэлийн сонгосон хүүхдийг нэмэлт ангийн баталгаажуулалтад холбоно.");
+            await refresh("", { anchorChildId: created.registrationDraftChildId || childId });
+          } catch (error) { incoming.creating = false; setActionFeedback(childId, "additional-class", error.message || "Ирсэн бүртгэлийг нэгтгэж чадсангүй."); render(); }
           return;
         }
         if (target.dataset.additionalClassDismiss) { closePanel(target.dataset.additionalClassDismiss, "additional"); render(); return; }
@@ -1234,8 +1299,8 @@ import "../../styles/global.css";
           ? `Санал болгож буй өөрчлөлт: ${mnt(amount)}. Боломжтой кредит хүрэлцэхгүй; засвар хадгалагдахгүй.`
           : `Санал болгож буй өөрчлөлт: ${mnt(amount)}. Үлдэх боломжтой кредит: ${mnt(after)}.`;
       }
-      q("#payment-list").addEventListener("input", (event) => { const input = event.target; const form = input.closest("form"); if (form?.matches("[data-payment-form]") && !actionPending((state.data?.items || []).find((item) => item.installmentId === form.dataset.paymentForm || item.laterInstallmentId === form.dataset.paymentForm)?.registrationDraftChildId, "payment")) { const draft = state.paymentDrafts[form.dataset.paymentDraftKey]; if (draft) delete draft.idempotencyKey; } if (input.name === "amount") updateRemainingDeadline(form); updateCreditProposal(form); });
-      q("#payment-list").addEventListener("change", (event) => { const input = event.target;
+      q("#payment-list").addEventListener("input", (event) => { const input = event.target; const form = input.closest("form"); if (input.dataset.additionalIncomingFilter) { const panel = state.additionalClassPreviews[input.dataset.additionalIncomingFilter]; if (panel) { panel.incoming = { ...(panel.incoming || {}), query: input.value }; render(); } return; } if (form?.matches("[data-payment-form]") && !actionPending((state.data?.items || []).find((item) => item.installmentId === form.dataset.paymentForm || item.laterInstallmentId === form.dataset.paymentForm)?.registrationDraftChildId, "payment")) { const draft = state.paymentDrafts[form.dataset.paymentDraftKey]; if (draft) delete draft.idempotencyKey; } if (input.name === "amount") updateRemainingDeadline(form); updateCreditProposal(form); });
+      q("#payment-list").addEventListener("change", async (event) => { const input = event.target;
         const paymentForm = input.closest("[data-payment-form]");
         if (paymentForm && (input.name === "source" || input.name === "receivedAt")) { const draft = state.paymentDrafts[paymentForm.dataset.paymentDraftKey]; if (draft) delete draft.idempotencyKey; }
         if (input.dataset.familyDiscountSelect) {
@@ -1258,6 +1323,7 @@ import "../../styles/global.css";
           if (!childId || !state.creditSubpanels[childId]) return;
           state.creditSubpanels[childId].transferFilter = input.value; render(); return;
         }
+        if (input.dataset.additionalIncomingSelect) { await loadExistingAdditionalIncoming(input.dataset.additionalIncomingSelect, input.value); return; }
         const additionalForm = input.closest("[data-additional-class-preview]");
         if (additionalForm) {
           const childId = additionalForm.dataset.additionalClassPreview;

@@ -41,6 +41,8 @@ try {
   sql(`UPDATE email_archive_bcc_setting SET recipients_json = '["admin@example.test"]' WHERE singleton = 1;`);
   sql(readFileSync("migrations/0050_internal_email_copy_recipients.sql", "utf8"));
   sql(readFileSync("migrations/0051_public_seat_count_threshold.sql", "utf8"));
+  sql(readFileSync("migrations/0052_conditional_family_discount_quotes.sql", "utf8"));
+  sql(readFileSync("migrations/0053_existing_registration_additional_class_incorporation.sql", "utf8"));
 
   assert.deepEqual(JSON.parse(sql(`SELECT operation_type AS operationType, source_student_id AS studentId, amount_mnt AS amountMnt FROM child_credit_operation WHERE id = 'operation';`, true)), [
     { operationType: "manual_add", studentId: "student", amountMnt: 110000 },
@@ -65,6 +67,14 @@ try {
     FROM public_seat_count_threshold_setting WHERE singleton = 1`, true)), [
     { remainingSeatThreshold: null },
   ], "0051 adds an explicit null compatibility setting without touching existing catalog or financial rows");
+  const admissionColumns = JSON.parse(sql(`SELECT name FROM pragma_table_info('additional_class_admission') ORDER BY cid;`, true)).map((row) => row.name);
+  assert.ok(admissionColumns.includes("origin_kind"), "0053 records whether an admission originated from an existing registration");
+  const admissionIndexes = JSON.parse(sql(`SELECT name FROM pragma_index_list('additional_class_admission') ORDER BY name;`, true)).map((row) => row.name);
+  assert.ok(admissionIndexes.includes("idx_additional_class_admission_target_draft"), "0053 indexes non-unique target drafts while preserving target-child uniqueness");
+  const admissionSql = JSON.parse(sql(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'additional_class_admission';`, true))[0].sql;
+  assert.doesNotMatch(admissionSql, /target_registration_draft_id TEXT NOT NULL UNIQUE/, "0053 permits a selected child from a multi-child incoming draft");
+  assert.match(admissionSql, /target_registration_draft_child_id TEXT NOT NULL UNIQUE/, "0053 still prevents incorporating the same incoming child entry twice");
+  assert.doesNotMatch(admissionSql, /source_registration_draft_child_id TEXT NOT NULL UNIQUE/, "0053 allows one established child to add more than one distinct class");
   assert.equal(sql("PRAGMA foreign_key_check;"), "", "the 0045 data remains foreign-key consistent after 0046 and 0047");
   assert.equal(sql("PRAGMA integrity_check;"), "ok", "the upgraded database remains structurally sound");
   console.log("ok additional-class, credit, and family migrations preserve 0045 ledger rows and add reservation/membership lineage");

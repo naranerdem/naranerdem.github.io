@@ -317,6 +317,43 @@ try {
   assert.equal(count(database, "discount_award", `source_referral_id = '${referred.childId}:referral' AND award_type = 'referral_referrer'`), 1,
     "promotion retry does not duplicate the referrer award");
 
+  // A child can have more than one current class. Referral identity remains
+  // child-level, but each referral permanently names the enrollment that
+  // owned the code when the referred registration was accepted.
+  const referringSecondClass = seedDraft(database, "referrer-second-class", {
+    email: first.email, classId: "class-2", surname: "Тест", givenName: "new-family",
+  });
+  const firstStudentId = database.query(`SELECT canonical_student_id AS studentId FROM registration_draft_child WHERE id = ?`, [first.childId])[0].studentId;
+  assert.deepEqual(await promotePaidDraftChild(env(database), actor, referringSecondClass.childId, { kind: "existing", studentId: firstStudentId }),
+    { state: "promoted", enrollmentId: `${referringSecondClass.childId}:enrollment` },
+  "the referrer can acquire a distinct current class without replacing the original referral-code owner");
+  assert.deepEqual(database.query(`SELECT enrollment_id AS enrollmentId, code FROM enrollment_referral_code
+    WHERE student_id = ? AND status = 'active'`, [firstStudentId])[0],
+  { enrollmentId: `${first.childId}:enrollment`, code: firstReferralCode.code },
+  "the public code remains anchored to its original confirmed enrollment after an additional class");
+  assert.deepEqual(database.query(`SELECT registration_draft_child_id AS childId, beneficiary_enrollment_id AS enrollmentId
+    FROM discount_award WHERE source_referral_id = ? AND award_type = 'referral_referrer'`, [`${referred.childId}:referral`])[0],
+  { childId: first.childId, enrollmentId: `${first.childId}:enrollment` },
+  "an existing earned referral benefit remains on its original agreement");
+  const referredAfterSecondClass = seedDraft(database, "referred-after-second-class", { email: "referred-second@example.test" });
+  database.query(`INSERT INTO registration_draft_referral (
+    registration_draft_child_id, referral_code_id, referring_enrollment_id, captured_code,
+    status, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, 'captured', 1, 'promotion-test', ?, ?)`,
+  [referredAfterSecondClass.childId, firstReferralCode.id, `${first.childId}:enrollment`, firstReferralCode.code, now, now]);
+  await promotePaidDraftChild(env(database), actor, referredAfterSecondClass.childId);
+  assert.deepEqual(database.query(`SELECT referring_enrollment_id AS enrollmentId, referring_student_id AS studentId
+    FROM referral WHERE id = ?`, [`${referredAfterSecondClass.childId}:referral`])[0],
+  { enrollmentId: `${first.childId}:enrollment`, studentId: firstStudentId },
+  "a later referral keeps the captured code-owner enrollment instead of selecting among the child's classes");
+  assert.deepEqual(database.query(`SELECT registration_draft_child_id AS childId, beneficiary_enrollment_id AS enrollmentId
+    FROM discount_award WHERE source_referral_id = ? AND award_type = 'referral_referrer'`, [`${referredAfterSecondClass.childId}:referral`])[0],
+  { childId: first.childId, enrollmentId: `${first.childId}:enrollment` },
+  "each distinct qualified referral earns one benefit on the captured agreement, never every current class");
+  await promotePaidDraftChild(env(database), actor, referredAfterSecondClass.childId);
+  assert.equal(count(database, "discount_award", `source_referral_id = '${referredAfterSecondClass.childId}:referral' AND award_type = 'referral_referrer'`), 1,
+    "retry keeps a later multi-class referral's benefit idempotent");
+
   const selfReferral = seedDraft(database, "self-referral", { email: first.email, surname: "Өөр", givenName: "Дүү" });
   database.query(`INSERT INTO registration_draft_referral (
     registration_draft_child_id, referral_code_id, referring_enrollment_id, captured_code,
