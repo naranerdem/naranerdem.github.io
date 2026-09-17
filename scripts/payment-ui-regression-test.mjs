@@ -205,7 +205,12 @@ assert.match(page, /Бүртгэл баталгаажсаны дараа кре�
 assert.doesNotMatch(page, /Илүү төлсөн дүн \$\{escape\(mnt\(attributableCashExcess\)\)\}\. Бүртгэл баталгаажсаны дараа кредитэд тооцогдоно/, "the pending-credit explanation does not repeat the excess amount");
 assert.match(page, /data-historical-settlement-form=/, "a qualified historical receipt without a confirmation exposes its guarded staff review action");
 assert.match(paymentService, /reviewHistoricalQualifiedPayment/, "historical settlement review binds an existing receipt to the guarded ordinary promotion path");
-assert.match(page, /Энэ сонголт суудал нөөцлөхгүй, бүртгэл үүсгэхгүй./, "the preview explicitly states that it creates no reservation or admission");
+assert.match(page, /Урьдчилан харахад бүртгэл өөрчлөгдөхгүй\. Баталгаажуулсны дараа өөрчлөлт хийгдэнэ\./, "both preview modes explain that previewing does not mutate a registration");
+assert.match(page, /Шинээр анги нэмэх/, "the ordinary additional-class mode is an explicit staff choice");
+assert.match(page, /Ирсэн бүртгэлээс нэмэх/, "incoming-registration incorporation is an explicit alternative mode");
+assert.match(page, /setAdditionalClassMode/, "switching modes clears the inactive workflow state before it can submit");
+assert.match(page, /modeVersion/, "late preview responses are fenced to the currently selected additional-class mode");
+assert.match(page, /Энэ хүүхдэд зориулж илгээсэн бүртгэлийг сонгоно уу\./, "incoming mode uses the concise requested instructional copy");
 assert.match(page, /additional-class\.preview/, "the staff panel uses the protected read-only preview action");
 assert.match(page, /additional-class\.create/, "the reviewed staff additional-class form uses its guarded admission endpoint");
 assert.match(page, /Эцэг эх \/ асран хамгаалагч энэ нэмэлт ангид зөвшөөрсөн\./, "additional admission records fresh parent acknowledgement");

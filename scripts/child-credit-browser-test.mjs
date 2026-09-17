@@ -43,7 +43,7 @@ async function waitForWorker() {
   let lastError;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/api/health`);
+      const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(1_000) });
       if (response.ok) return;
     } catch (error) {
       lastError = error;
@@ -2347,7 +2347,12 @@ try {
   await existingSourceRow.locator('[data-additional-class-open]').click();
   const existingPanel = existingSourceRow.locator('[data-additional-class-preview]');
   await existingPanel.waitFor({ state: "visible" });
-  const existingSelector = existingPanel.locator(`select[data-additional-incoming-select="${childId}"]`);
+  assert.equal(await existingPanel.getByLabel("Шинээр анги нэмэх").isChecked(), true,
+    "a newly opened additional-class panel starts in the independent new-class workflow");
+  assert.equal(await existingPanel.locator('select[name="targetClassSessionId"]').count(), 1,
+    "ordinary mode renders the class selector without an incoming-registration selector");
+  assert.equal(await existingPanel.locator(`select[data-additional-incoming-select="${childId}"]`).count(), 0,
+    "the inactive incoming workflow does not contribute hidden fields to the ordinary form");
   const alreadyAwardedIncomingChildId = await fillIntake(page, "ExistingAwardedIncoming", "single", {
     stage: "stage_1", classSessionId: "browser-class-target",
   });
@@ -2360,6 +2365,11 @@ try {
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
   await existingSourceRow.locator('[data-additional-class-open]').click();
   await existingPanel.waitFor({ state: "visible" });
+  await existingPanel.getByLabel("Ирсэн бүртгэлээс нэмэх").check();
+  assert.equal(await existingPanel.locator('select[name="targetClassSessionId"]').count(), 0,
+    "incoming mode removes the independent class selector so it cannot disagree with the selected incoming class");
+  let existingSelector = existingPanel.locator(`select[data-additional-incoming-select="${childId}"]`);
+  await existingSelector.waitFor({ state: "visible" });
   const unsupportedPreviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
     && response.request().method() === "POST" && response.request().postData()?.includes("additional-class.incoming-preview"));
   await existingSelector.selectOption(alreadyAwardedIncomingChildId);
@@ -2378,16 +2388,57 @@ try {
     allocations: Number(unsupportedIncomingState[0].allocations), awards: Number(unsupportedIncomingState[0].awards) },
   { admissions: 0, allocations: 0, awards: 1 },
   "the unsupported incoming record remains available to its ordinary workflow without an incorporation mutation");
+  await existingPanel.getByLabel("Шинээр анги нэмэх").check();
+  assert.equal(await existingPanel.locator(`select[data-additional-incoming-select="${childId}"]`).count(), 0,
+    "switching back clears the incoming review instead of retaining its unsupported state in the ordinary workflow");
+  assert.equal(await existingPanel.locator('select[name="targetClassSessionId"]').count(), 1,
+    "switching back restores only the ordinary class and plan controls");
+  await existingPanel.getByLabel("Ирсэн бүртгэлээс нэмэх").check();
+  existingSelector = existingPanel.locator(`select[data-additional-incoming-select="${childId}"]`);
+  await existingSelector.waitFor({ state: "visible" });
+  let releaseIncomingPreview;
+  let incomingPreviewCaptured;
+  const incomingPreviewStarted = new Promise((resolve) => { incomingPreviewCaptured = resolve; });
+  const delayedIncomingResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST"
+    && response.request().postData()?.includes("additional-class.incoming-preview")
+    && response.request().postData()?.includes(existingIncomingChildId));
+  const delayIncomingPreview = async (route) => {
+    const body = route.request().postData() || "";
+    if (body.includes("additional-class.incoming-preview") && body.includes(existingIncomingChildId)) {
+      incomingPreviewCaptured();
+      await new Promise((resolve) => { releaseIncomingPreview = resolve; });
+    }
+    await route.continue();
+  };
+  await page.route("**/api/staff/payments", delayIncomingPreview);
+  await existingSelector.selectOption(existingIncomingChildId);
+  await existingPanel.getByText("Ирсэн бүртгэлийг шалгаж байна…").waitFor({ state: "visible" });
+  await incomingPreviewStarted;
+  await existingPanel.getByLabel("Шинээр анги нэмэх").check();
+  releaseIncomingPreview();
+  await delayedIncomingResponse;
+  await page.unroute("**/api/staff/payments", delayIncomingPreview);
+  assert.equal(await existingPanel.getByText("Нэгтгэхийн өмнөх шалгалт").count(), 0,
+    "a late incoming preview cannot restore its confirmation state after switching modes");
+  await existingPanel.getByLabel("Ирсэн бүртгэлээс нэмэх").check();
+  existingSelector = existingPanel.locator(`select[data-additional-incoming-select="${childId}"]`);
+  await existingSelector.waitFor({ state: "visible" });
   const incomingPreviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
     && response.request().method() === "POST" && response.request().postData()?.includes("additional-class.incoming-preview"));
   await existingSelector.selectOption(existingIncomingChildId);
   const incomingPreviewBody = await (await incomingPreviewResponse).json();
   assert.equal(incomingPreviewBody.supported, true, `the selected unpaid incoming child is supported: ${JSON.stringify(incomingPreviewBody)}`);
   await existingPanel.getByText("Нэгтгэхийн өмнөх шалгалт").waitFor({ state: "visible" });
+  await existingPanel.locator("[data-additional-incoming-class-summary]").waitFor({ state: "visible" });
+  assert.equal(await existingPanel.locator("[data-additional-incoming-class-summary]").count(), 1,
+    "the requested class has one read-only summary rather than duplicate competing labels");
+  assert.equal(await existingPanel.locator('select[name="targetClassSessionId"]').count(), 0,
+    "the selected incoming registration supplies the read-only requested class rather than an editable competing selector");
   await page.setViewportSize({ width: 1280, height: 900 });
-  await existingPanel.screenshot({ path: "/tmp/naranerdem-add-class-existing-desktop.png" });
+  await capturePaymentPanel(page, "additional-class-incoming-desktop.png");
   await page.setViewportSize({ width: 390, height: 844 });
-  await existingPanel.screenshot({ path: "/tmp/naranerdem-add-class-existing-mobile.png" });
+  await capturePaymentPanel(page, "additional-class-incoming-mobile.png");
   await page.setViewportSize({ width: 1280, height: 900 });
   const incorporationBefore = await dbJson(`SELECT
     (SELECT COUNT(*) FROM additional_class_admission WHERE target_registration_draft_child_id = ${sql(existingIncomingChildId)}) AS admissions,
