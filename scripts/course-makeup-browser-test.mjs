@@ -292,15 +292,68 @@ try {
   await page.goto(`${baseUrl}/staff/day-changes/?date=${dayChangeDate}&occurrence=day-change-slot`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   await page.locator(".staff-day-selected").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-idle-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-idle-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "Цуцлаад орлуулах цаг товлох", exact: true }).click();
   await page.locator('[data-day-change-form] [name="replacementDate"]').fill(dayChangeReplacementDate);
   await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("19:00");
+  const failDayPreview = async (route) => {
+    if (route.request().method() === "POST" && route.request().postData()?.includes("day-change.preview")) {
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: { message: "Туршилтын урьдчилан харах алдаа" } }) });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**/api/staff/day-changes", failDayPreview);
   await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
-  await page.waitForTimeout(300);
+  await page.getByText("Туршилтын урьдчилан харах алдаа", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator('[data-day-change-form] [name="replacementDate"]').inputValue(), dayChangeReplacementDate,
+    "a recoverable preview error retains the entered replacement date");
+  assert.equal(await page.locator('[data-day-change-form] [name="replacementStartTime"]').inputValue(), "19:00",
+    "a recoverable preview error retains the entered replacement time");
+  await page.unroute("**/api/staff/day-changes", failDayPreview);
+  let releasePreview;
+  let previewPosts = 0;
+  const previewStarted = new Promise((resolve) => { releasePreview = resolve; });
+  let allowPreview;
+  const continuePreview = new Promise((resolve) => { allowPreview = resolve; });
+  const delayDayPreview = async (route) => {
+    if (route.request().method() === "POST" && route.request().postData()?.includes("day-change.preview")) {
+      previewPosts += 1;
+      releasePreview();
+      await continuePreview;
+      await route.continue();
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**/api/staff/day-changes", delayDayPreview);
+  await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await previewStarted;
+  await page.getByRole("button", { name: "Тооцоолж байна…", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("button", { name: "Тооцоолж байна…", exact: true }).isDisabled(), true,
+    "the day-change preview enters a visible, duplicate-safe busy state before the response");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-busy-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-busy-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator('[data-day-change-form] [name="replacementDate"]').press("Enter");
+  assert.equal(previewPosts, 1, "a busy day-change form ignores a repeated Enter submission");
+  allowPreview();
   await page.locator("#day-confirmation").waitFor({ state: "visible" });
+  await page.unroute("**/api/staff/day-changes", delayDayPreview);
   await page.locator(".staff-day-preview-list").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
   assert.equal(await page.locator("#day-operation").isHidden(), true, "whole-day controls collapse while an individual lesson change is under review");
   assert.equal(await page.locator("[name='replacementDate']").inputValue(), dayChangeReplacementDate, "the reviewed replacement date remains visible beside its confirmation");
+  await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("18:30");
+  assert.equal(await page.locator("#day-confirmation").isHidden(), true, "editing a reviewed replacement invalidates its stale preview");
+  await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("19:00");
+  await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await page.locator("#day-confirmation").waitFor({ state: "visible" });
   await page.locator("#day-confirmation").scrollIntoViewIfNeeded();
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: path.join(screenshotDir, "day-change-preview-desktop.png") });
@@ -308,9 +361,36 @@ try {
   await page.locator("#day-confirmation").scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(screenshotDir, "day-change-preview-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
+  let releaseApply;
+  let applyPosts = 0;
+  const applyStarted = new Promise((resolve) => { releaseApply = resolve; });
+  let allowApply;
+  const continueApply = new Promise((resolve) => { allowApply = resolve; });
+  const delayDayApply = async (route) => {
+    if (route.request().method() === "POST" && route.request().postData()?.includes("day-change.apply")) {
+      applyPosts += 1;
+      releaseApply();
+      await continueApply;
+      await route.continue();
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**/api/staff/day-changes", delayDayApply);
+  await page.getByRole("button", { name: "Орлуулах цагийг хадгалах", exact: true }).click();
+  await applyStarted;
+  await page.getByRole("button", { name: "Хадгалж байна…", exact: true }).waitFor({ state: "visible" });
+  assert.equal(applyPosts, 1, "the reviewed day change sends one operation while busy");
+  assert.equal(await page.getByRole("button", { name: "Хадгалж байна…", exact: true }).isDisabled(), true,
+    "the reviewed day-change confirmation cannot be clicked twice while saving");
+  allowApply();
   await page.getByText("Өдрийн хуваарийн өөрчлөлтийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.unroute("**/api/staff/day-changes", delayDayApply);
   assert.equal(await page.locator("#day-confirmation").isHidden(), true, "the reviewed regular change is applied once and clears its preview");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-result-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-result-mobile.png") });
   console.log(`ok browser make-up capacity target availability and booking (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);

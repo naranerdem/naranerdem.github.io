@@ -118,9 +118,22 @@ export async function postDailyChange(action, payload = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.error?.message || "Өдрийн өөрчлөлтийг хадгалж чадсангүй.");
+    const error = new Error(body?.error?.message || "Өдрийн өөрчлөлтийг хадгалж чадсангүй.");
+    error.responseReceived = true;
+    throw error;
   }
   return response.json();
+}
+
+// Staff mutations keep a stable label and accessible busy state while their
+// caller owns request identity and outcome reconciliation.
+export function setStaffButtonBusy(button, pending, busyLabel) {
+  if (!button) return;
+  button.dataset.readyLabel ||= button.textContent;
+  button.disabled = pending;
+  button.setAttribute("aria-busy", String(pending));
+  button.setAttribute("aria-disabled", String(pending));
+  button.textContent = pending ? busyLabel : button.dataset.readyLabel;
 }
 
 export async function hasDayChangeAccess() {

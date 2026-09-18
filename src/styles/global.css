@@ -2884,6 +2884,10 @@ textarea:focus {
 }
 
 @media (max-width: 680px) {
+  .staff-day-change-fields {
+    grid-template-columns: 1fr;
+  }
+
   .staff-registration-view {
     grid-template-columns: 1fr;
   }
@@ -3739,6 +3743,35 @@ textarea:focus {
   color: var(--blue);
 }
 
+.staff-day-action-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.staff-day-action-choice {
+  min-height: 44px;
+  border: 1px solid rgba(7, 58, 175, 0.28);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--blue-deep);
+  font: inherit;
+  font-weight: 750;
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+}
+
+.staff-day-action-choice.selected {
+  border-color: var(--blue);
+  background: #edf3ff;
+  color: var(--blue);
+}
+
+.staff-day-action-choice:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .staff-day-selected,
 .staff-day-whole {
   border: 1px solid var(--line);
@@ -3769,6 +3802,19 @@ textarea:focus {
   border-top: 1px solid var(--line);
   margin-top: 0.1rem;
   padding-top: 0.75rem;
+}
+
+.staff-day-change-fields {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.staff-day-change-fields label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.82rem;
+  font-weight: 750;
 }
 
 .staff-day-special-link {
@@ -3843,6 +3889,10 @@ textarea:focus {
 .staff-day-confirmation ul {
   margin: 0.45rem 0;
   padding-left: 1.1rem;
+}
+
+.staff-action-status.staff-action-error {
+  color: #a12f18;
 }
 
 .staff-calendar-actions {

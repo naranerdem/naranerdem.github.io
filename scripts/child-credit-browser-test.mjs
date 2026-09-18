@@ -1822,7 +1822,19 @@ try {
   await laterForm.locator('input[name="receivedAt"]').fill(receivedAt);
   await laterForm.locator('select[name="source"]').selectOption("staff_manual_cash");
   let failRefresh = true;
+  let paymentPosts = 0;
+  let releasePayment;
+  const paymentStarted = new Promise((resolve) => { releasePayment = resolve; });
+  let allowPayment;
+  const continuePayment = new Promise((resolve) => { allowPayment = resolve; });
   await page.route("**/api/staff/payments", async (route) => {
+    if (route.request().method() === "POST" && route.request().postData()?.includes("payment.record")) {
+      paymentPosts += 1;
+      releasePayment();
+      await continuePayment;
+      await route.continue();
+      return;
+    }
     if (failRefresh && route.request().method() === "GET") {
       failRefresh = false;
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "түр туршилтын шинэчлэлтийн алдаа" } }) });
@@ -1833,6 +1845,13 @@ try {
   const laterRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
     && response.request().method() === "POST");
   await laterForm.locator('button[type="submit"]').click();
+  await paymentStarted;
+  await laterForm.getByText("Төлбөр бүртгэж байна…", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await laterForm.getByRole("button", { name: "Төлбөр бүртгэж байна…", exact: true }).isDisabled(), true,
+    "the payment form immediately announces and locks its specific receipt action");
+  await laterForm.locator('input[name="amount"]').press("Enter");
+  assert.equal(paymentPosts, 1, "a busy payment form ignores a repeated Enter submission");
+  allowPayment();
   const laterResponse = await laterRequest;
   if (!laterResponse.ok()) throw new Error(`later cash payment failed: ${await laterResponse.text()}`);
   await laterForm.locator('[data-action-feedback]').getByText("Төлбөр бүртгэгдлээ. Жагсаалтыг шинэчилж чадсангүй").waitFor({ state: "visible" });

@@ -40,7 +40,7 @@ import "../../styles/global.css";
     </main>
     <script>
       // @ts-nocheck
-      import { escape, formatDate } from "../../scripts/staff-setup.js";
+      import { escape, formatDate, setStaffButtonBusy } from "../../scripts/staff-setup.js";
       import { buildRegistrationPaymentReport, copyReportToClipboard, downloadReportTsv, reportToTsv } from "../../scripts/staff-reports.js";
       import { createPaymentDetailSelectionState, createStaffPanelState, selectAdditionalClassPlan, selectAdditionalClassTarget, supportedAdditionalClassPlans } from "../../scripts/staff-panel-state.js";
       const launchParams = new URLSearchParams(window.location.search);
@@ -53,12 +53,7 @@ import "../../styles/global.css";
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
       const setToolbarBusy = (selector, pending, busyLabel) => {
-        const button = q(selector); if (!button) return;
-        button.dataset.readyLabel ||= button.textContent;
-        button.disabled = pending;
-        button.setAttribute("aria-busy", String(pending));
-        button.setAttribute("aria-disabled", String(pending));
-        button.textContent = pending ? busyLabel : button.dataset.readyLabel;
+        setStaffButtonBusy(q(selector), pending, busyLabel);
       };
       const copyFallback = (tsv = "") => {
         const section = q("#payment-copy-fallback");
@@ -490,7 +485,7 @@ import "../../styles/global.css";
         const laterPaymentDraft = state.paymentDrafts[paymentDraftKey] || {};
         const familyCreditDecision = item.familyCreditSuggestion ? `<div class="staff-warning staff-wide"><p><strong>${escape(item.familyCreditSuggestion.donorName)}</strong>-ын ${escape(mnt(item.familyCreditSuggestion.proposedAmountMnt))} кредитийг шилжүүлж тооцож болно.</p><button class="text-button" type="button" data-family-credit-suggestion data-family-credit-donor="${escape(item.familyCreditSuggestion.donorChildId)}" data-family-credit-recipient="${escape(item.familyCreditSuggestion.recipientChildId)}" data-family-credit-installment="${escape(item.familyCreditSuggestion.paymentInstallmentId)}" data-family-credit-amount="${escape(item.familyCreditSuggestion.proposedAmountMnt)}">Энэ төлбөрт кредит хэрэглэх</button><label class="staff-check"><input name="proceedWithoutFamilyCredit" type="checkbox" /><span>Энэ кредитийг шилжүүлэхгүйгээр бэлэн мөнгөний төлбөрийг үргэлжлүүлнэ.</span></label></div>` : "";
         const laterPaymentForm = activePanel(item.registrationDraftChildId) === "payment" && item.laterInstallmentId && laterOutstanding > 0
-          ? `<form class="staff-payment-form staff-later-payment-form" data-payment-form="${escape(item.laterInstallmentId)}" data-payment-draft-key="${escape(paymentDraftKey)}" novalidate ${pending ? 'aria-busy="true"' : ""}><h3>Хоёр дахь төлбөр бүртгэх</h3><p>Төлбөрийн нөхцөл: <strong>2 хувааж</strong></p><p>Хоёр дахь төлбөрийн хугацаа: <strong>${escape(localLabel(item.laterDueAt))}</strong></p><p>Үлдсэн төлбөр: <strong>${escape(mnt(laterOutstanding))}</strong></p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong> · Энэ хүүхдийн бүх ангид хамт ашиглагдана.${item.creditReviewNeeded ? " · Эхлээд кредитийг төлбөрт тооцох эсвэл ашиглахгүйг шийднэ үү." : ""}</p>${familyCreditDecision}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(laterOutstanding)}" step="1" value="${escape(laterPaymentDraft.amountMnt ?? laterOutstanding)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank" ${laterPaymentDraft.source === "staff_manual_bank" || !laterPaymentDraft.source ? "selected" : ""}>Дансаар</option><option value="staff_manual_cash" ${laterPaymentDraft.source === "staff_manual_cash" ? "selected" : ""}>Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${escape(laterPaymentDraft.receivedAt || localDateTime(new Date()))}" required ${pending ? "disabled" : ""} /></label><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-close="${escape(item.registrationDraftChildId)}" ${pending ? "disabled" : ""}>Хаах</button></div>${actionFeedback(item.registrationDraftChildId, ["payment"])}</form>`
+          ? `<form class="staff-payment-form staff-later-payment-form" data-payment-form="${escape(item.laterInstallmentId)}" data-payment-draft-key="${escape(paymentDraftKey)}" novalidate ${pending ? 'aria-busy="true"' : ""}><h3>Хоёр дахь төлбөр бүртгэх</h3><p>Төлбөрийн нөхцөл: <strong>2 хувааж</strong></p><p>Хоёр дахь төлбөрийн хугацаа: <strong>${escape(localLabel(item.laterDueAt))}</strong></p><p>Үлдсэн төлбөр: <strong>${escape(mnt(laterOutstanding))}</strong></p><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(item.availableCreditMnt || 0))}</strong> · Энэ хүүхдийн бүх ангид хамт ашиглагдана.${item.creditReviewNeeded ? " · Эхлээд кредитийг төлбөрт тооцох эсвэл ашиглахгүйг шийднэ үү." : ""}</p>${familyCreditDecision}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(laterOutstanding)}" step="1" value="${escape(laterPaymentDraft.amountMnt ?? laterOutstanding)}" required ${pending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${pending ? "disabled" : ""}><option value="staff_manual_bank" ${laterPaymentDraft.source === "staff_manual_bank" || !laterPaymentDraft.source ? "selected" : ""}>Дансаар</option><option value="staff_manual_cash" ${laterPaymentDraft.source === "staff_manual_cash" ? "selected" : ""}>Бэлнээр</option></select></label><label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${escape(laterPaymentDraft.receivedAt || localDateTime(new Date()))}" required ${pending ? "disabled" : ""} /></label><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${pending ? "disabled aria-busy=\"true\"" : ""}>${pending ? "Төлбөр бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-close="${escape(item.registrationDraftChildId)}" ${pending ? "disabled" : ""}>Хаах</button></div>${actionFeedback(item.registrationDraftChildId, ["payment"])}</form>`
           : "";
         const identityReview = item.identityResolutionStatus === "needs_identity_review"
           ? `<p class="staff-muted">Хүүхдийн бүртгэлийг баталгаажуулах шаардлагатай</p>` : "";
@@ -564,6 +559,10 @@ import "../../styles/global.css";
           const controls = opener.getAttribute("aria-controls"); if (controls) summary.setAttribute("aria-controls", controls);
         });
         list.querySelectorAll("[data-payment-form]").forEach(updateRemainingDeadline);
+        list.querySelectorAll("[data-payment-form]").forEach((form) => {
+          const item = (state.data?.items || []).find((entry) => entry.installmentId === form.dataset.paymentForm || entry.laterInstallmentId === form.dataset.paymentForm);
+          if (item) setStaffButtonBusy(form.querySelector('button[type="submit"]'), actionPending(item.registrationDraftChildId, "payment"), "Төлбөр бүртгэж байна…");
+        });
       }
       function scheduleGraceRefresh() {
         if (state.refreshTimer) { clearTimeout(state.refreshTimer); state.refreshTimer = null; }
@@ -1296,7 +1295,7 @@ import "../../styles/global.css";
         if (!receivedAt) { setActionFeedback(item.registrationDraftChildId, "payment", "Орсон хугацааг зөв оруулна уу."); render(); return; }
         const approveSeat = Boolean(form.elements.approveSeat?.checked && !form.elements.approveSeat?.disabled); const proceedWithoutFamilyCredit = Boolean(form.elements.proceedWithoutFamilyCredit?.checked); const remainingDueAt = form.elements.remainingDueAt?.value ? ulaanbaatarDateTimeIso(form.elements.remainingDueAt.value) : undefined;
         if (form.elements.remainingDueAt?.value && !remainingDueAt) { setActionFeedback(item.registrationDraftChildId, "payment", "Үлдсэн төлбөрийн хугацааг зөв оруулна уу."); render(); return; }
-        setActionPending(item.registrationDraftChildId, "payment", true); setActionFeedback(item.registrationDraftChildId, "payment", "Бүртгэж байна…"); render();
+        setActionPending(item.registrationDraftChildId, "payment", true); setActionFeedback(item.registrationDraftChildId, "payment", "Төлбөр бүртгэж байна…"); render();
         try {
           state.paymentDrafts[draftKey].idempotencyKey ||= `manual:${item.paymentRequestId}:${installmentId}:${await secureStaffUuidV4()}`;
           const result = await post({ action: "payment.record", paymentRequestId: item.paymentRequestId, allocations: [{ installmentId, amountMnt }], source, receivedAt, approveSeatConfirmation: approveSeat, proceedWithoutFamilyCredit, remainingPaymentDueAt: remainingDueAt, idempotencyKey: state.paymentDrafts[draftKey].idempotencyKey });

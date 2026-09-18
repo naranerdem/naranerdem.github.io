@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const page = readFileSync("src/pages/staff/payments.astro", "utf8");
+const staffSetup = readFileSync("src/scripts/staff-setup.js", "utf8");
 const styles = readFileSync("src/styles/global.css", "utf8");
 const reports = readFileSync("src/scripts/staff-reports.js", "utf8");
 const router = readFileSync("src/server/api/router.ts", "utf8");
@@ -245,7 +246,8 @@ assert.match(styles, /\.staff-waitlist-subsection-toggle[\s\S]*font-style: itali
 assert.match(page, /id="payment-refresh"/, "staff can manually refresh the permanent payment surface");
 assert.match(page, /setToolbarBusy\("#payment-refresh", true, "Шинэчилж байна…"\)/, "refresh enters a synchronous visible busy state before fetching");
 assert.match(page, /setToolbarBusy\("#payment-export", true, "Татаж байна…"\)/, "download enters a synchronous visible busy state before fetching");
-assert.match(page, /button\.setAttribute\("aria-busy", String\(pending\)\)/, "toolbar pending state is exposed accessibly");
+assert.match(page, /setStaffButtonBusy\(q\(selector\), pending, busyLabel\)/, "payment toolbar reuses the shared staff busy-state helper");
+assert.match(staffSetup, /button\.setAttribute\("aria-busy", String\(pending\)\)/, "shared toolbar pending state is exposed accessibly");
 assert.match(page, /Файлыг хөтөчид бэлдлээ\./, "download completion does not claim that a browser-supplied file was saved to disk");
 assert.match(page, /id="payment-export" class="button secondary"/, "export shares the outlined toolbar treatment with refresh");
 assert.match(page, /id="payment-export"[^>]*aria-label="TSV файл татах"[^>]*>Татах</, "file download uses a compact visible label with an explicit accessible name");
