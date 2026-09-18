@@ -44,6 +44,7 @@ interface DailyOccurrenceRow {
   classLabel: string;
   attendanceCount: number;
   activeMakeupAssignmentCount: number;
+  replacementScheduled: number;
   isTest: number;
   testRunId: string | null;
 }
@@ -239,6 +240,11 @@ const OCCURRENCE_SELECT = `SELECT slot.id AS slotId,
         AND makeup_resolution.status = 'active'
         AND makeup_assignment.target_class_session_id = class_session.id
         AND makeup_assignment.target_curriculum_lesson_id = lesson.id) AS activeMakeupAssignmentCount,
+    EXISTS(SELECT 1 FROM class_calendar_slot AS replacement
+      WHERE replacement.class_calendar_revision_id = revision.id
+        AND replacement.status = 'scheduled'
+        AND replacement.slot_source = 'manual_extra'
+        AND replacement.curriculum_lesson_id = lesson.id) AS replacementScheduled,
     MAX(slot.is_test, class_session.is_test, offering.is_test) AS isTest,
     COALESCE(slot.test_run_id, class_session.test_run_id, offering.test_run_id) AS testRunId
   FROM class_calendar_slot AS slot
@@ -643,26 +649,77 @@ async function plansForAction(
   if (kind === "extra") {
     const classSessionId = clean(input.classSessionId);
     const localDate = clean(input.localDate, 10);
+    const sourceSlotId = clean(input.sourceSlotId);
+    if (!sourceSlotId) throw new DayChangeError("invalid");
+    const source = await env.DB.prepare(`${OCCURRENCE_SELECT} AND slot.id = ? GROUP BY slot.id, lesson.id`)
+      .bind(sourceSlotId).first<DailyOccurrenceRow>();
+    if (!source || source.status !== "cancelled" || source.classSessionId !== classSessionId) throw new DayChangeError("invalid");
     const context = await contextForClass(env, classSessionId);
+    const data = await commonPlanningData(env, context);
+    if (data.slots.some((slot) => slot.status === "scheduled"
+      && slot.slotSource === "manual_extra"
+      && slot.lesson?.id === source.curriculumLessonId)) throw new DayChangeError("conflict");
     const startTime = clean(input.startTime, 5) || context.startTime;
     const endTime = clean(input.endTime, 5) || addMinutes(startTime, durationMinutes(context.startTime, context.endTime));
     const plan = await planExtras(env, context, [{ id: id(), localDate, startTime, endTime, reasonLabel: clean(input.note) || "Нэмэлт өдөр" }], at);
     return {
-      action: "course_extra_day_added",
-      subjectId: classSessionId,
+      action: "course_occurrence_replacement_added",
+      subjectId: sourceSlotId,
       plans: [plan],
-      metadata: { classSessionIds: [classSessionId], localDate },
+      metadata: { classSessionIds: [classSessionId], localDate, sourceSlotId },
     };
   }
   throw new DayChangeError("invalid");
+}
+
+interface AppliedReplacement {
+  sourceSlotId: string | null;
+  slotId: string;
+  classSessionId: string;
+  classLabel: string;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  lessonSequence: number | null;
+  lessonTitle: string | null;
+}
+
+function appliedReplacements(
+  planned: { plans: PlannedRevision[] },
+  input: Record<string, unknown>,
+  builtRevisions: Array<{ slotIds: Map<string, string> }>,
+): AppliedReplacement[] {
+  const kind = clean(input.kind);
+  const replacementDate = kind === "extra" ? clean(input.localDate, 10) : clean(input.replacementDate, 10);
+  if (!replacementDate) return [];
+  const sourceSlotId = kind === "single-cancel" ? clean(input.slotId) || null
+    : kind === "extra" ? clean(input.sourceSlotId) || null : null;
+  return planned.plans.flatMap((plan, index) => {
+    const previousIds = new Set(plan.previousSlots.map((slot) => slot.id));
+    return plan.slots.filter((slot) => slot.status === "scheduled"
+      && slot.slotSource === "manual_extra"
+      && slot.localDate === replacementDate
+      && !previousIds.has(slot.id)).map((slot) => ({
+      sourceSlotId,
+      slotId: builtRevisions[index].slotIds.get(slot.id) || slot.id,
+      classSessionId: plan.context.classSessionId,
+      classLabel: plan.context.classLabel,
+      localDate: slot.localDate,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      lessonSequence: slot.lesson?.sequenceNumber ?? null,
+      lessonTitle: slot.lesson?.title ?? null,
+    }));
+  });
 }
 
 function insertRevisionStatements(
   env: WorkerEnv,
   plan: PlannedRevision,
   time: string,
-): { statements: D1PreparedStatement[]; newRevisionId: string } {
+): { statements: D1PreparedStatement[]; newRevisionId: string; slotIds: Map<string, string> } {
   const newRevisionId = id();
+  const slotIds = new Map(plan.slots.map((slot) => [slot.id, id()]));
   const flags = { isTest: plan.context.isTest, testRunId: plan.context.testRunId };
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(`INSERT INTO class_calendar_revision (
@@ -687,7 +744,7 @@ function insertRevisionStatements(
       status, curriculum_lesson_id, cancelled_lesson_sequence, cancelled_lesson_title,
       reason_label, is_test, test_run_id, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
-      id(), newRevisionId, slot.localDate, slot.startTime, slot.endTime, slot.slotSource,
+      slotIds.get(slot.id), newRevisionId, slot.localDate, slot.startTime, slot.endTime, slot.slotSource,
       slot.status, slot.lesson?.id ?? null, slot.cancelledLessonSequence,
       slot.cancelledLessonTitle, slot.reasonLabel, flags.isTest, flags.testRunId, time, time,
     )),
@@ -700,7 +757,7 @@ function insertRevisionStatements(
       SET status = 'published', published_at = ?, updated_at = ?
       WHERE id = ? AND status = 'draft'`).bind(time, time, newRevisionId),
   ];
-  return { statements, newRevisionId };
+  return { statements, newRevisionId, slotIds };
 }
 
 export async function previewDailyChange(
@@ -738,7 +795,7 @@ export async function applyDailyChange(
   actor: StaffPrincipal,
   input: Record<string, unknown>,
   at = new Date(),
-): Promise<{ revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }> }> {
+): Promise<{ revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[] }> {
   requireManage(actor);
   const idempotencyId = operationId(input.operationId);
   const previewFingerprint = clean(input.previewFingerprint, 4000);
@@ -749,12 +806,12 @@ export async function applyDailyChange(
     previewFingerprint,
     kind: clean(input.kind), slotId: clean(input.slotId), sourceDate: clean(input.sourceDate, 10),
     replacementDate: clean(input.replacementDate, 10), replacementStartTime: clean(input.replacementStartTime, 5),
-    classSessionId: clean(input.classSessionId), localDate: clean(input.localDate, 10), startTime: clean(input.startTime, 5),
+    classSessionId: clean(input.classSessionId), sourceSlotId: clean(input.sourceSlotId), localDate: clean(input.localDate, 10), startTime: clean(input.startTime, 5),
   });
   const existing = await existingOperation(env, idempotencyId);
   if (existing) {
     if (existing.requestFingerprint !== requestFingerprint) throw new DayChangeError("conflict");
-    return JSON.parse(existing.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }> };
+    return JSON.parse(existing.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[] };
   }
   if (!(await previewFingerprintIsCurrent(env, previewFingerprint))) throw new DayChangeError("conflict");
   const planned = await plansForAction(env, input, at);
@@ -775,7 +832,7 @@ export async function applyDailyChange(
     lessonSequence: lesson.sequenceNumber,
     lessonTitle: lesson.title,
   })));
-  const resultPayload = { revisionIds, unscheduledLessons };
+  const resultPayload = { revisionIds, unscheduledLessons, replacements: appliedReplacements(planned, input, builtRevisions) };
   statements.push(env.DB.prepare(`INSERT INTO course_day_change_operation (
     operation_id, request_fingerprint, schedule_lock_version, action, subject_id, result_json,
     created_by_staff_account_id, is_test, test_run_id, created_at, updated_at
@@ -809,7 +866,7 @@ export async function applyDailyChange(
     const message = caught instanceof Error ? caught.message : String(caught);
     if (/UNIQUE constraint|published|draft/i.test(message)) {
       const replay = await existingOperation(env, idempotencyId);
-      if (replay?.requestFingerprint === requestFingerprint) return JSON.parse(replay.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }> };
+      if (replay?.requestFingerprint === requestFingerprint) return JSON.parse(replay.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[] };
       throw new DayChangeError("conflict");
     }
     throw caught;

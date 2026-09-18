@@ -248,10 +248,28 @@ try {
   assert.equal(currentSlot(database, "class-b", "lesson-3").localDate, replacementDate, "single cancellation leaves peers unchanged");
   const singleCurrent = database.query("SELECT revision.id FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-a' AND revision.status = 'published'")[0];
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(singleCurrent.id)} AND local_date = ${quote(replacementDate)} AND status = 'cancelled'`), 1, "cancelled occurrence is retained in the new revision");
+  const cancelledSourceSlot = database.query(`SELECT id, local_date AS localDate FROM class_calendar_slot
+    WHERE class_calendar_revision_id = ${quote(singleCurrent.id)}
+      AND status = 'cancelled' AND cancelled_lesson_sequence = 3`)[0];
 
   const extraDate = addDays(sourceDate, 4);
-  await applyReviewed({ kind: "extra", classSessionId: "class-a", localDate: extraDate });
+  const replacementResult = await applyReviewed({ kind: "extra", sourceSlotId: cancelledSourceSlot.id, classSessionId: "class-a", localDate: extraDate });
   assert.equal(currentSlot(database, "class-a", "lesson-3").localDate, extraDate, "extra day is ordered without submitting a lesson number");
+  assert.equal(replacementResult.result.replacements.length, 1, "the durable result identifies the authoritative replacement occurrence");
+  assert.equal(replacementResult.result.replacements[0].localDate, extraDate, "the result keeps the committed replacement date");
+  const currentCancelledSource = database.query(`SELECT id, local_date AS localDate FROM class_calendar_slot
+    WHERE class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision
+      INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+      WHERE revision.status = 'published' AND calendar.class_session_id = 'class-a')
+      AND status = 'cancelled' AND cancelled_lesson_sequence = 3`)[0];
+  const replacedOverview = await service.getDailyChangesOverview(runtime, actor(), currentCancelledSource.localDate);
+  assert.equal(replacedOverview.occurrences.find((entry) => entry.slotId === currentCancelledSource.id)?.replacementScheduled, 1,
+    "the cancelled source exposes its completed replacement state after refresh");
+  await assert.rejects(
+    () => service.previewDailyChange(runtime, actor(), { kind: "extra", sourceSlotId: currentCancelledSource.id, classSessionId: "class-a", localDate: laterReplacement }),
+    (caught) => caught instanceof service.DayChangeError && caught.code === "conflict",
+    "a cancelled occurrence with a replacement cannot receive a second replacement through a crafted request",
+  );
 
   const dayCancelPreview = await service.previewDailyChange(runtime, actor(), { kind: "day-cancel", sourceDate: thirdDate });
   assert.equal(dayCancelPreview.affectedClassCount, 3);
@@ -259,7 +277,7 @@ try {
   assert.equal(count(database, "class_calendar_slot", `local_date = ${quote(thirdDate)} AND status = 'cancelled' AND class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision WHERE revision.status = 'published')`), 3, "whole-day cancellation writes every class together");
   await applyReviewed({ kind: "day-replace", sourceDate: thirdDate, replacementDate: laterReplacement });
   for (const classId of classes) assert.ok(database.query(`SELECT 1 AS value FROM class_calendar_slot AS slot INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE revision.status = 'published' AND calendar.class_session_id = ? AND slot.local_date = ? AND slot.status = 'scheduled'`, [classId, laterReplacement]).length, `${classId} receives the all-class replacement slot`);
-  assert.equal(count(database, "audit_event", "action IN ('course_day_moved', 'course_occurrence_cancelled', 'course_extra_day_added', 'course_day_cancelled', 'course_day_replacement_added')"), 5, "daily operations create one coarse audit event each");
+  assert.equal(count(database, "audit_event", "action IN ('course_day_moved', 'course_occurrence_cancelled', 'course_occurrence_replacement_added', 'course_day_cancelled', 'course_day_replacement_added')"), 5, "daily operations create one coarse audit event each");
 
   const staleSlot = currentSlot(database, "class-b", "lesson-4");
   const staleInput = { kind: "single-cancel", slotId: staleSlot.id };

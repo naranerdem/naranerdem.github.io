@@ -339,16 +339,20 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: path.join(screenshotDir, "day-change-busy-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: path.join(screenshotDir, "day-change-busy-mobile.png") });
+  await page.locator("[data-day-change-form]").screenshot({ path: path.join(screenshotDir, "day-change-busy-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator('[data-day-change-form] [name="replacementDate"]').press("Enter");
   assert.equal(previewPosts, 1, "a busy day-change form ignores a repeated Enter submission");
   allowPreview();
   await page.locator("#day-confirmation").waitFor({ state: "visible" });
   await page.unroute("**/api/staff/day-changes", delayDayPreview);
+  assert.equal(await page.locator("[data-day-change-form]").count(), 0,
+    "the reviewed operation replaces its editable form instead of leaving a competing preview button");
   await page.locator(".staff-day-preview-list").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
   assert.equal(await page.locator("#day-operation").isHidden(), true, "whole-day controls collapse while an individual lesson change is under review");
-  assert.equal(await page.locator("[name='replacementDate']").inputValue(), dayChangeReplacementDate, "the reviewed replacement date remains visible beside its confirmation");
+  await page.getByRole("button", { name: "Засах", exact: true }).click();
+  assert.equal(await page.locator("[name='replacementDate']").inputValue(), dayChangeReplacementDate,
+    "editing restores the reviewed replacement date");
   await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("18:30");
   assert.equal(await page.locator("#day-confirmation").isHidden(), true, "editing a reviewed replacement invalidates its stale preview");
   await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("19:00");
@@ -363,14 +367,22 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   let releaseApply;
   let applyPosts = 0;
+  const applyOperationIds = [];
   const applyStarted = new Promise((resolve) => { releaseApply = resolve; });
   let allowApply;
   const continueApply = new Promise((resolve) => { allowApply = resolve; });
   const delayDayApply = async (route) => {
     if (route.request().method() === "POST" && route.request().postData()?.includes("day-change.apply")) {
       applyPosts += 1;
+      applyOperationIds.push(route.request().postDataJSON().operationId);
       releaseApply();
       await continueApply;
+      if (applyPosts === 1) {
+        const committed = await route.fetch();
+        assert.equal(committed.ok(), true, "the delayed first apply reaches the real Worker before its response is lost");
+        await route.abort("failed");
+        return;
+      }
       await route.continue();
       return;
     }
@@ -384,9 +396,19 @@ try {
   assert.equal(await page.getByRole("button", { name: "Хадгалж байна…", exact: true }).isDisabled(), true,
     "the reviewed day-change confirmation cannot be clicked twice while saving");
   allowApply();
+  await page.getByText("Хадгалсан эсэх тодорхойгүй байна. Ижил баталгаажуулалтыг дахин дарж шалгана уу.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("#day-confirmation").isHidden(), false,
+    "a lost apply response keeps the reviewed operation available for same-ID recovery");
+  await page.getByRole("button", { name: "Орлуулах цагийг хадгалах", exact: true }).click();
   await page.getByText("Өдрийн хуваарийн өөрчлөлтийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
   await page.unroute("**/api/staff/day-changes", delayDayApply);
+  assert.equal(applyPosts, 2, "a recovery retry sends one additional request after the lost response");
+  assert.equal(applyOperationIds[0], applyOperationIds[1], "the lost-response retry keeps its original durable operation identity");
   assert.equal(await page.locator("#day-confirmation").isHidden(), true, "the reviewed regular change is applied once and clears its preview");
+  await page.getByText("Орлуулах ээлжит цаг товлогдлоо.", { exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Орлуулах хичээл рүү очих", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("button", { name: "Орлуулах ээлжит цаг оруулах", exact: true }).count(), 0,
+    "a saved replacement does not offer a second replacement for the same cancelled source slot");
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: path.join(screenshotDir, "day-change-result-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });

@@ -3804,6 +3804,10 @@ textarea:focus {
   padding-top: 0.75rem;
 }
 
+.staff-day-change-form > .staff-muted {
+  margin: 0 0 0.7rem;
+}
+
 .staff-day-change-fields {
   display: grid;
   gap: 0.65rem;
@@ -3889,6 +3893,16 @@ textarea:focus {
 .staff-day-confirmation ul {
   margin: 0.45rem 0;
   padding-left: 1.1rem;
+}
+
+.staff-day-result {
+  border-left: 3px solid #187044;
+  margin-top: 0.8rem;
+  padding: 0.3rem 0 0.3rem 0.8rem;
+}
+
+.staff-day-result p {
+  margin: 0.35rem 0 0;
 }
 
 .staff-action-status.staff-action-error {
