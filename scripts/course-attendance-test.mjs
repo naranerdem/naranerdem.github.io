@@ -361,7 +361,9 @@ try {
   assert.doesNotMatch(staffHome, /staff-agenda-detail|data-home-attendance|Ирцийн хуудас нээх/, "home keeps roster actions on the attendance page");
   assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Бүртгэл, төлбөр[\s\S]*?Нөхөх хичээл[\s\S]*?Хичээлийн хуваарь[\s\S]*?СУРГАЛТЫН ТОХИРГОО/, "staff home keeps daily work, the agenda, and existing setup tools in order");
   assert.match(source, /role="tab"[\s\S]*?\$\{escape\(entry\.startTime\)\}–\$\{escape\(entry\.endTime\)\}/, "attendance selection uses time-only tabs while retaining slot identity in the link");
-  assert.match(source, /Тасалсан хичээл:/, "make-up attendees name their missed source lesson clearly");
+  assert.match(source, /Тасалсан хичээл/, "make-up attendees retain a compact missed-lesson link");
+  assert.match(source, /staff-attendance-identity/, "roster identity and attendance controls use separate layout regions");
+  assert.match(staffHome, /staff-agenda-day-heading[\s\S]*?<strong>\$\{weekday\(day\)\}/, "each agenda day renders its heading before its entries");
   assert.doesNotMatch(source, /Эх тасалсан/, "deprecated missed-lesson wording is not shown");
   assert.doesNotMatch(staffHome, /Таны ажиллах хэсэг/, "staff home has no redundant capability list");
   assert.doesNotMatch(renderedAttendance, /Анударь|Билгүүн|Тест амралт/, "the static attendance page ships no roster or curriculum data");

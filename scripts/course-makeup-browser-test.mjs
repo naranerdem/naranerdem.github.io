@@ -105,7 +105,7 @@ try {
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('guardian', 'Browser Асран', '99000000', '99000000', 'guardian@example.test', 'guardian@example.test', 'Тест', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
-      VALUES ('student', 'Browser', 'Нөхөх', 'not_specified', '2015-01-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      VALUES ('student', 'Browser Маш Урт', 'Нөхөх Оролцогчийн Нэр', 'not_specified', '2015-01-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('prereg', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
@@ -148,6 +148,8 @@ try {
   await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-before-booking-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-before-booking-mobile.png") });
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-before-booking-intermediate.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
 
   execute(`UPDATE teacher_dashboard_preferences SET show_setup_section = 0, updated_at = ${sql(now)} WHERE singleton = 1;`);
@@ -182,38 +184,52 @@ try {
   assert.equal(assignments.scheduled.length, 1, "the rendered normal-target action creates one active assignment");
   assert.equal(assignments.scheduled[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
 
+  execute(`
+    UPDATE class_session SET capacity = 2 WHERE id = 'target-class';
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('ordinary-student', 'Үндсэн Оролцогчийн', 'Маш Урт Туршилтын Нэр', 'not_specified', '2014-03-03', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('ordinary-application', 'prereg', 'ordinary-student', 6, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('ordinary-target-enrollment', 'ordinary-application', 'ordinary-student', 'year', 'target-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+  `);
+
   console.log("make-up browser fixture: checking destination attendance");
   await page.goto(`${baseUrl}/staff/attendance/?date=${today}&occurrence=target-slot`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await page.getByText("Browser Нөхөх", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Үндсэн Оролцогчийн Маш Урт Туршилтын Нэр", { exact: true }).waitFor({ state: "visible" });
   await page.getByText("Нөхөх", { exact: true }).waitFor({ state: "visible" });
-  await page.locator("#attendance-summary").getByText("0 / 1 тэмдэглэсэн", { exact: true }).waitFor({ state: "visible" });
+  await page.locator("#attendance-summary").getByText("0 / 2 тэмдэглэсэн", { exact: true }).waitFor({ state: "visible" });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "makeup-destination-attendance-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "makeup-destination-attendance-mobile.png") });
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "makeup-destination-attendance-intermediate.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.locator('[data-attendance-control="present"]').check();
+  await page.locator("[data-attendance-row='source-enrollment'] [data-attendance-control='present']").check();
   await page.getByText("Ирцийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
-  await page.locator('[data-attendance-control="late"]').check();
+  await page.locator("[data-attendance-row='source-enrollment'] [data-attendance-control='late']").check();
   await page.getByText("Ирцийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
   await page.reload();
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await page.locator('[data-attendance-control="late"]').waitFor({ state: "visible" });
-  assert.equal(await page.locator('[data-attendance-control="late"]').isChecked(), true, "destination make-up attendance persists through reload");
+  await page.locator("[data-attendance-row='source-enrollment'] [data-attendance-control='late']").waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-attendance-row='source-enrollment'] [data-attendance-control='late']").isChecked(), true, "destination make-up attendance persists through reload");
   const destination = await page.evaluate(async () => (await fetch(`/api/staff/attendance?date=${encodeURIComponent(location.search.match(/date=([^&]+)/)?.[1] || "")}&occurrence=target-slot`, { credentials: "same-origin" })).json());
-  assert.equal(destination.selected.rosterCount, 1, "destination attendance summary counts the displayed make-up attendee");
-  assert.equal(destination.selected.roster[0].attendanceKind, "makeup", "destination attendee remains visibly distinct from an ordinary enrollment");
-  assert.equal(destination.selected.roster[0].makeupSource.lessonTitle, "Ижил хичээл", "destination attendee retains the source missed-lesson linkage");
+  assert.equal(destination.selected.rosterCount, 2, "destination attendance summary counts the displayed ordinary and make-up attendees");
+  assert.equal(destination.selected.roster.filter((entry) => entry.attendanceKind === "makeup").length, 1, "destination attendee remains visibly distinct from an ordinary enrollment");
+  assert.equal(destination.selected.roster.filter((entry) => entry.attendanceKind === "ordinary").length, 1, "destination roster retains the ordinary attendee");
+  assert.equal(destination.selected.roster.find((entry) => entry.attendanceKind === "makeup").makeupSource.lessonTitle, "Ижил хичээл", "destination attendee retains the source missed-lesson linkage");
   console.log("make-up browser fixture: reconciling agenda counts");
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });
   await page.locator("#staff-agenda [data-agenda-occurrence='target-slot']").waitFor({ state: "visible" });
-  assert.match(await page.locator("#staff-agenda [data-agenda-occurrence='target-slot']").innerText(), /Үндсэн 0 · Нөхөх 1/, "the agenda card keeps ordinary and make-up counts distinct");
+  assert.match(await page.locator("#staff-agenda [data-agenda-occurrence='target-slot']").innerText(), /Үндсэн 1 · Нөхөх 1/, "the agenda card keeps ordinary and make-up counts distinct");
   await page.locator("#staff-agenda [data-agenda-occurrence='target-slot']").click();
   await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=target-slot/);
-  await page.getByText("Browser Нөхөх", { exact: true }).waitFor({ state: "visible" });
-  assert.match(await page.locator("#attendance-detail").innerText(), /Тасалсан хичээл: 1\. Ижил хичээл/, "the selected attendance roster retains the make-up source link and wording");
+  await page.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).waitFor({ state: "visible" });
+  assert.match(await page.locator(".staff-attendance-makeup-source").innerText(), /Тасалсан хичээл · \d{2}\/\d{2}/, "the selected attendance roster keeps a compact missed-lesson link");
   assert.equal(await page.locator("#attendance-list [role='tab']").count(), 1, "the attendance selector keeps one time-only tab for the dated occurrence");
   await page.goBack();
   await page.locator("#staff-home").waitFor({ state: "visible" });

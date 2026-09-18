@@ -166,7 +166,13 @@ import "../styles/global.css";
         const daysMarkup = days.map((day) => {
           const entriesForDay = entries.filter((entry) => entry.localDate === day);
           const open = agendaState.expandedDays.has(day);
-          return `<section class="staff-agenda-day ${day === today ? "today" : ""}" data-agenda-day="${day}" data-open="${open}"><button class="staff-agenda-day-heading" type="button" data-agenda-day-toggle="${day}" aria-expanded="${open}"><strong>${weekday(day)} · ${shortDate(day)}</strong><span>${entriesForDay.length ? "" : "Хичээлгүй"}</span></button>${entriesForDay.length ? `<div class="staff-agenda-entries">${entriesForDay.map(agendaEntry).join("")}</div>` : (day === today ? `<p class="staff-muted">Энэ долоо хоногт хичээлгүй. ${entries.find((entry) => entry.localDate > day) ? `Дараагийн хичээл: ${formatDate(entries.find((entry) => entry.localDate > day).localDate)}.` : ""}</p>` : "")}</section>`;
+          const emptySummary = day === today && entries.find((entry) => entry.localDate > day)
+            ? `<p class="staff-muted">Дараагийн хичээл: ${formatDate(entries.find((entry) => entry.localDate > day).localDate)}.</p>`
+            : "";
+          const content = entriesForDay.length
+            ? entriesForDay.map(agendaEntry).join("")
+            : `<p class="staff-agenda-empty">Хичээлгүй</p>${emptySummary}`;
+          return `<section class="staff-agenda-day ${day === today ? "today" : ""}" data-agenda-day="${day}" data-open="${open}"><button class="staff-agenda-day-heading" type="button" data-agenda-day-toggle="${day}" aria-expanded="${open}"><strong>${weekday(day)} · ${shortDate(day)}</strong></button><div class="staff-agenda-entries">${content}</div></section>`;
         }).join("");
         agenda.innerHTML = `<div class="staff-agenda-controls"><button type="button" class="button secondary" data-agenda-week="previous" aria-label="Өмнөх долоо хоног">Өмнөх 7 хоног</button><strong>${formatDate(weekStart)}–${formatDate(addDays(weekStart, 6))}</strong><button type="button" class="button secondary" data-agenda-week="next" aria-label="Дараагийн 7 хоног">Дараагийн 7 хоног</button><label class="staff-agenda-date"><span class="screen-reader-text">Огноо сонгох</span><input type="date" aria-label="Огноо сонгох" value="${escape(agendaState.selectedDate || today)}" data-agenda-date /></label><button type="button" class="staff-text-action" data-agenda-week="today">Өнөөдөр</button></div><div class="staff-agenda-week">${daysMarkup}</div>`;
       }

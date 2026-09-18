@@ -1818,37 +1818,42 @@ textarea:focus {
 }
 
 .staff-agenda-day {
-  border-top: 2px solid var(--line);
   min-width: 0;
-  padding-top: 0.5rem;
-}
-
-.staff-agenda-day.today {
-  border-color: var(--blue);
 }
 
 .staff-agenda-day-heading {
   align-items: baseline;
   background: transparent;
   border: 0;
+  border-bottom: 2px solid var(--line);
   color: var(--ink);
   cursor: pointer;
   padding: 0;
   text-align: left;
   width: 100%;
   font-size: 0.85rem;
+  padding-bottom: 0.5rem;
 }
 
-.staff-agenda-day-heading span,
 .staff-agenda-entry small,
 .staff-agenda-detail p {
   color: var(--muted);
+}
+
+.staff-agenda-day.today .staff-agenda-day-heading {
+  border-color: var(--blue);
 }
 
 .staff-agenda-entries {
   display: grid;
   gap: 0.45rem;
   margin-top: 0.5rem;
+}
+
+.staff-agenda-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0;
 }
 
 .staff-agenda-entry {
@@ -3385,6 +3390,10 @@ textarea:focus {
   min-width: 0;
 }
 
+.staff-attendance-identity {
+  min-width: 0;
+}
+
 .staff-attendance-student-name {
   align-items: baseline;
   display: flex;
@@ -3395,6 +3404,21 @@ textarea:focus {
 
 .staff-attendance-student-name strong {
   overflow-wrap: anywhere;
+}
+
+.staff-attendance-makeup-source {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  gap: 0.35rem;
+  margin: 0.18rem 0 0;
+  min-width: 0;
+}
+
+.staff-attendance-makeup-source .staff-text-action {
+  min-width: 0;
 }
 
 .staff-attendance-checklist {

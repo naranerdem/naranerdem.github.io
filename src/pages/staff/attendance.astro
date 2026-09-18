@@ -112,13 +112,13 @@ import "../../styles/global.css";
         const error = state.rowErrorEnrollmentId === entry.enrollmentId ? `<p class="staff-attendance-row-error" role="status">${escape(state.rowErrorMessage)}</p>` : "";
         const notice = noticeControls(entry);
         const source = entry.makeupSource;
-        const sourceParts = [`${source?.lessonSequence ? `${source.lessonSequence}. ` : ""}${source?.lessonTitle || ""}`.trim(), formatDate(source?.localDate), source?.classLabel].filter(Boolean);
-        const sourceText = sourceParts.join(" · ");
+        const sourceDate = source?.localDate ? source.localDate.slice(5).replace("-", "/") : "";
+        const sourceText = ["Тасалсан хичээл", sourceDate].filter(Boolean).join(" · ");
         const sourceLink = source?.slotId && source?.localDate
-          ? `<a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(source.localDate)}&occurrence=${encodeURIComponent(source.slotId)}">Тасалсан хичээл: ${escape(sourceText)}</a>`
-          : `Тасалсан хичээл: ${escape(sourceText)}`;
-        const makeup = entry.attendanceKind === "makeup" ? `<p class="staff-muted"><span class="staff-kind-label">Нөхөх</span> ${sourceLink}</p>` : "";
-        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div>${makeup}<div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${error}</div></article>`;
+          ? `<a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(source.localDate)}&occurrence=${encodeURIComponent(source.slotId)}">${escape(sourceText)}</a>`
+          : escape(sourceText);
+        const makeup = entry.attendanceKind === "makeup" ? `<p class="staff-attendance-makeup-source"><span class="staff-kind-label">Нөхөх</span>${sourceLink}</p>` : "";
+        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><div class="staff-attendance-identity"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div>${makeup}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${error}</div></article>`;
       }
 
       function bulkMarkup(selected) {
