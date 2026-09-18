@@ -108,6 +108,8 @@ export interface ScheduleReflowInput extends ScheduleGenerationInput {
   lockedThroughSequence: number;
   cancelSlotId: string;
   replacementSlots?: readonly ExtraTeachingSlot[];
+  /** Day-change review may leave a final lesson unscheduled rather than inventing a new date. */
+  allowGeneratedTail?: boolean;
 }
 
 export interface ScheduleReflowResult {
@@ -115,7 +117,8 @@ export interface ScheduleReflowResult {
   cancelledSlot: CalendarSlot;
   nextLessonSlot: CalendarSlot | null;
   changedFutureLessonAssignments: number;
-  newFinalLessonDate: LocalDate;
+  newFinalLessonDate: LocalDate | null;
+  unscheduledLessons: ProgramLesson[];
   warnings: CalendarWarning[];
 }
 
@@ -370,10 +373,11 @@ function makeExtraSlot(slot: ExtraTeachingSlot): CalendarSlot {
   };
 }
 
-function assignLessons(slots: CalendarSlot[], lessons: readonly ProgramLesson[]): CalendarSlot[] {
+function assignLessons(slots: CalendarSlot[], lessons: readonly ProgramLesson[], allowUnscheduled = false): CalendarSlot[] {
   const ordered = [...slots].sort(compareSlots);
   const active = ordered.filter((slot) => slot.status === "scheduled");
-  invariant(active.length === lessons.length, "active teaching slots must exactly cover every program lesson");
+  invariant(active.length <= lessons.length, "active teaching slots cannot exceed program lessons");
+  if (!allowUnscheduled) invariant(active.length === lessons.length, "active teaching slots must exactly cover every program lesson");
   const assigned = new Map<string, ProgramLesson>();
   active.forEach((slot, index) => assigned.set(slot.id, lessons[index]));
   return ordered.map((slot) => slot.status === "scheduled"
@@ -531,7 +535,7 @@ export function reflowCancelledFutureSchedule(input: ScheduleReflowInput): Sched
   let activeCount = revised.filter((slot) => slot.status === "scheduled").length;
   invariant(activeCount <= lessons.length, "replacement slots exceed remaining program lessons");
   let tailDate = revised.reduce((latest, slot) => slot.localDate > latest ? slot.localDate : latest, input.firstCandidateDate);
-  while (activeCount < lessons.length) {
+  while (activeCount < lessons.length && input.allowGeneratedTail !== false) {
     tailDate = nextRuleDate(tailDate, input);
     if (input.lastCandidateDate && tailDate > input.lastCandidateDate) {
       throw new SchedulePlanningError("insufficient_slots", "the program no longer fits the configured class period");
@@ -543,7 +547,7 @@ export function reflowCancelledFutureSchedule(input: ScheduleReflowInput): Sched
   assertUniqueSlotIds(revised);
   assertUniqueSlotTimes(revised);
 
-  const assigned = assignLessons(revised, lessons);
+  const assigned = assignLessons(revised, lessons, input.allowGeneratedTail === false);
   for (const oldSlot of original) {
     if (oldSlot.status !== "scheduled" || !oldSlot.lesson || oldSlot.lesson.sequenceNumber > input.lockedThroughSequence) continue;
     const revisedSlot = assigned.find((slot) => slot.id === oldSlot.id);
@@ -552,15 +556,18 @@ export function reflowCancelledFutureSchedule(input: ScheduleReflowInput): Sched
   const nextLessonSlot = assigned
     .filter((slot) => slot.status === "scheduled" && (slot.lesson?.sequenceNumber ?? 0) > input.lockedThroughSequence)
     .sort(compareSlots)[0] ?? null;
-  const finalLessonSlot = assigned.find((slot) => slot.status === "scheduled" && slot.lesson?.sequenceNumber === lessons.length);
-  invariant(finalLessonSlot, "final lesson is missing after reflow");
+  const finalLessonSlot = assigned.find((slot) => slot.status === "scheduled" && slot.lesson?.sequenceNumber === lessons.length) ?? null;
+  const scheduledLessonIds = new Set(assigned.filter((slot) => slot.status === "scheduled" && slot.lesson).map((slot) => slot.lesson!.id));
+  const unscheduledLessons = lessons.filter((lesson) => !scheduledLessonIds.has(lesson.id));
+  if (input.allowGeneratedTail !== false) invariant(finalLessonSlot, "final lesson is missing after reflow");
 
   return {
     slots: assigned,
     cancelledSlot: assigned.find((slot) => slot.id === cancelledSlot.id) ?? cancelledSlot,
     nextLessonSlot,
     changedFutureLessonAssignments: changedLessonCount(original, assigned, input.lockedThroughSequence, lessons),
-    newFinalLessonDate: finalLessonSlot.localDate,
+    newFinalLessonDate: finalLessonSlot?.localDate ?? null,
+    unscheduledLessons,
     warnings: calendarWarnings(assigned, input),
   };
 }

@@ -1871,6 +1871,14 @@ textarea:focus {
   border-color: var(--blue);
 }
 
+@media (min-width: 32rem) {
+  .staff-agenda-day-heading {
+    box-sizing: border-box;
+    min-height: 2rem;
+    padding-top: 0.15rem;
+  }
+}
+
 .staff-agenda-entries {
   display: grid;
   gap: 0.45rem;
@@ -3705,6 +3713,66 @@ textarea:focus {
 .staff-day-list {
   display: grid;
   gap: 0;
+}
+
+.staff-day-session-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+}
+
+.staff-day-session-tabs button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 750;
+  min-height: 2.5rem;
+  padding: 0.35rem 0.65rem;
+}
+
+.staff-day-session-tabs button.selected {
+  background: #edf3ff;
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.staff-day-selected,
+.staff-day-whole {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 0.25rem;
+  padding: 0.85rem;
+}
+
+.staff-day-selected h2,
+.staff-day-whole h2 {
+  font-size: 1.05rem;
+  margin: 0.15rem 0;
+}
+
+.staff-day-whole ul,
+.staff-day-preview-list {
+  margin: 0.25rem 0;
+  padding-left: 1.1rem;
+}
+
+.staff-day-preview-list li + li {
+  margin-top: 0.4rem;
+}
+
+.staff-day-change-form {
+  border-top: 1px solid var(--line);
+  margin-top: 0.1rem;
+  padding-top: 0.75rem;
+}
+
+.staff-day-special-link {
+  margin-top: 1rem;
 }
 
 .staff-day-row {

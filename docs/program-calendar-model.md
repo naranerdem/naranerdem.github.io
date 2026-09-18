@@ -301,10 +301,17 @@ obsolete read projection, while the new guard correctly rejects an overbooked
 insert.
 
 `/staff/day-changes/` handles one-class cancellation, all-class course closure,
-replacement dates, whole-day moves, and class-specific extra dates. It excludes
-unrelated events, rejects attendance/history-protected occurrences, preflights
-all classes, and applies a whole-day operation atomically. Each action creates
-new immutable current calendar revisions and one coarse audit event; it does not
+reviewed replacement dates/times, whole-day moves, and class-specific extra
+dates. A regular cancellation does not silently invent another teaching date:
+when no replacement slot exists, its later named lessons reflow through the
+remaining regular slots and any final lesson without a slot is shown as
+unscheduled for a later explicit regular replacement. It excludes unrelated
+events, rejects attendance/history-protected occurrences, preflights all
+classes, and applies a whole-day operation atomically. Each reviewed change has
+a durable operation ID and one-room schedule fence, so a lost-response retry
+returns its original result while a competing/stale room change cannot publish
+partial revisions. Each action creates new immutable current calendar revisions
+and one coarse audit event; it does not
 change attendance, make-up identity, enrollment, or send notifications.
 
 ## Staff Setup Surface

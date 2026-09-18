@@ -43,6 +43,7 @@ interface DailyOccurrenceRow {
   stageCode: string;
   classLabel: string;
   attendanceCount: number;
+  activeMakeupAssignmentCount: number;
   isTest: number;
   testRunId: string | null;
 }
@@ -92,9 +93,11 @@ interface SlotRow {
 
 interface PlannedRevision {
   context: CalendarContextRow;
+  previousSlots: CalendarSlot[];
   slots: CalendarSlot[];
   overrides: CalendarOverride[];
   changedFutureLessonAssignments: number;
+  unscheduledLessons: Array<{ id: string; sequenceNumber: number; title: string }>;
   warningLabels: string[];
   protectedThroughSequence: number;
 }
@@ -113,6 +116,12 @@ interface SchoolPeriodRow {
 function id(): string { return crypto.randomUUID(); }
 function now(): string { return new Date().toISOString(); }
 function clean(value: unknown, max = 160): string { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
+
+function operationId(value: unknown): string | null {
+  const candidate = clean(value, 80);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate)
+    ? candidate : null;
+}
 
 function localDateTime(at = new Date()): { date: string; time: string } {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -145,6 +154,10 @@ function durationMinutes(startTime: string, endTime: string): number {
   const [startHour, startMinute] = startTime.split(":").map(Number);
   const [endHour, endMinute] = endTime.split(":").map(Number);
   return endHour * 60 + endMinute - startHour * 60 - startMinute;
+}
+
+function validTime(value: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
 function requireManage(actor: StaffPrincipal): void {
@@ -218,6 +231,14 @@ const OCCURRENCE_SELECT = `SELECT slot.id AS slotId,
         AND makeup_assignment.target_class_session_id = class_session.id
         AND makeup_assignment.target_curriculum_lesson_id = lesson.id
         AND makeup_attendance.attendance_status IS NOT NULL) AS attendanceCount,
+    (SELECT COUNT(*) FROM course_makeup_assignment AS makeup_assignment
+      INNER JOIN course_makeup_resolution AS makeup_resolution
+        ON makeup_resolution.id = makeup_assignment.resolution_id
+      WHERE makeup_assignment.target_kind = 'normal_class'
+        AND makeup_assignment.status = 'active'
+        AND makeup_resolution.status = 'active'
+        AND makeup_assignment.target_class_session_id = class_session.id
+        AND makeup_assignment.target_curriculum_lesson_id = lesson.id) AS activeMakeupAssignmentCount,
     MAX(slot.is_test, class_session.is_test, offering.is_test) AS isTest,
     COALESCE(slot.test_run_id, class_session.test_run_id, offering.test_run_id) AS testRunId
   FROM class_calendar_slot AS slot
@@ -401,6 +422,7 @@ async function planCancellation(
   env: WorkerEnv,
   occurrence: DailyOccurrenceRow,
   replacementDate: string | null,
+  replacementStartTime: string | null,
   at: Date,
 ): Promise<PlannedRevision> {
   if (occurrence.status !== "scheduled") throw new DayChangeError("invalid");
@@ -414,9 +436,11 @@ async function planCancellation(
   const context = await contextForClass(env, occurrence.classSessionId);
   const data = await commonPlanningData(env, context);
   const lock = await protectedThrough(env, context, data.slots, local.date);
+  const startTime = replacementStartTime || occurrence.startTime;
+  if (replacementDate && !validTime(startTime)) throw new DayChangeError("invalid");
   const replacementSlots: ExtraTeachingSlot[] = replacementDate ? [{
-    id: id(), localDate: replacementDate, startTime: occurrence.startTime,
-    endTime: occurrence.endTime, reasonLabel: "Орлуулах хичээл",
+    id: id(), localDate: replacementDate, startTime,
+    endTime: addMinutes(startTime, durationMinutes(occurrence.startTime, occurrence.endTime)), reasonLabel: "Орлуулах хичээл",
   }] : [];
   try {
     const result = reflowCancelledFutureSchedule({
@@ -429,12 +453,15 @@ async function planCancellation(
       lockedThroughSequence: lock,
       cancelSlotId: occurrence.slotId,
       replacementSlots,
+      allowGeneratedTail: false,
     });
     return {
       context,
+      previousSlots: data.slots,
       slots: result.slots,
       overrides: data.overrides,
       changedFutureLessonAssignments: result.changedFutureLessonAssignments,
+      unscheduledLessons: result.unscheduledLessons,
       protectedThroughSequence: lock,
       warningLabels: warningLabels(result.slots, {
         schoolCalendarPeriods: data.schoolCalendarPeriods,
@@ -451,10 +478,11 @@ async function planCancellationForOccurrence(
   env: WorkerEnv,
   occurrence: DailyOccurrenceRow,
   replacementDate: string | null,
+  replacementStartTime: string | null,
   at: Date,
 ): Promise<PlannedRevision> {
   try {
-    return await planCancellation(env, occurrence, replacementDate, at);
+    return await planCancellation(env, occurrence, replacementDate, replacementStartTime, at);
   } catch (caught) {
     if (caught instanceof DayChangeError && !caught.blockingClassLabel) {
       throw new DayChangeError(caught.code, `${occurrence.offeringTitle} · ${occurrence.classLabel}`);
@@ -524,9 +552,11 @@ async function planExtras(
   }).length;
   return {
     context,
+    previousSlots: data.slots,
     slots: rebuilt,
     overrides: data.overrides,
     changedFutureLessonAssignments: changed,
+    unscheduledLessons: [],
     protectedThroughSequence: lock,
     warningLabels: warningLabels(rebuilt, {
       schoolCalendarPeriods: data.schoolCalendarPeriods,
@@ -559,16 +589,17 @@ async function plansForAction(
   const kind = clean(input.kind);
   const sourceDate = clean(input.sourceDate, 10);
   const replacementDate = clean(input.replacementDate, 10) || null;
+  const replacementStartTime = clean(input.replacementStartTime, 5) || null;
   if (kind === "single-cancel") {
     const occurrence = await env.DB.prepare(`${OCCURRENCE_SELECT} AND slot.id = ? GROUP BY slot.id, lesson.id`)
       .bind(clean(input.slotId)).first<DailyOccurrenceRow>();
     if (!occurrence) throw new DayChangeError("not_found");
-    const plan = await planCancellationForOccurrence(env, occurrence, replacementDate, at);
+    const plan = await planCancellationForOccurrence(env, occurrence, replacementDate, replacementStartTime, at);
     return {
       action: replacementDate ? "course_occurrence_moved" : "course_occurrence_cancelled",
       subjectId: occurrence.slotId,
       plans: [plan],
-      metadata: { sourceDate: occurrence.localDate, replacementDate, classSessionIds: [occurrence.classSessionId] },
+      metadata: { sourceDate: occurrence.localDate, replacementDate, replacementStartTime, classSessionIds: [occurrence.classSessionId] },
     };
   }
   if (kind === "day-cancel" || kind === "day-move") {
@@ -577,13 +608,13 @@ async function plansForAction(
     if (!occurrences.length) throw new DayChangeError("not_found");
     ensureDistinctClasses(occurrences);
     const plans = await Promise.all(occurrences.map((entry) => planCancellationForOccurrence(
-      env, entry, kind === "day-move" ? replacementDate : null, at,
+      env, entry, kind === "day-move" ? replacementDate : null, replacementStartTime, at,
     )));
     return {
       action: kind === "day-move" ? "course_day_moved" : "course_day_cancelled",
       subjectId: sourceDate,
       plans,
-      metadata: { sourceDate, replacementDate: kind === "day-move" ? replacementDate : null, classSessionIds: occurrences.map((entry) => entry.classSessionId) },
+      metadata: { sourceDate, replacementDate: kind === "day-move" ? replacementDate : null, replacementStartTime, classSessionIds: occurrences.map((entry) => entry.classSessionId) },
     };
   }
   if (kind === "day-replace") {
@@ -680,14 +711,24 @@ export async function previewDailyChange(
 ) {
   requireManage(actor);
   const planned = await plansForAction(env, input, at);
+  await assertOneRoomAvailability(env, planned.plans);
+  const scheduleLockVersion = await currentScheduleLockVersion(env);
   return {
+    previewFingerprint: schedulePreviewFingerprint(input, planned.plans, scheduleLockVersion),
     affectedClassCount: planned.plans.length,
     changedLessonCount: planned.plans.reduce((total, plan) => total + plan.changedFutureLessonAssignments, 0),
+    unscheduledLessons: planned.plans.flatMap((plan) => plan.unscheduledLessons.map((lesson) => ({
+      classLabel: plan.context.classLabel,
+      offeringTitle: plan.context.offeringTitle,
+      lessonSequence: lesson.sequenceNumber,
+      lessonTitle: lesson.title,
+    }))),
     classes: planned.plans.map((plan) => ({
       classSessionId: plan.context.classSessionId,
       classLabel: plan.context.classLabel,
       offeringTitle: plan.context.offeringTitle,
     })),
+    changes: planned.plans.flatMap(changedLessonAssignments),
     warnings: [...new Set(planned.plans.flatMap((plan) => plan.warningLabels))],
   };
 }
@@ -697,22 +738,54 @@ export async function applyDailyChange(
   actor: StaffPrincipal,
   input: Record<string, unknown>,
   at = new Date(),
-): Promise<{ revisionIds: string[] }> {
+): Promise<{ revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }> }> {
   requireManage(actor);
+  const idempotencyId = operationId(input.operationId);
+  const previewFingerprint = clean(input.previewFingerprint, 4000);
+  if (!idempotencyId || !previewFingerprint) throw new DayChangeError("invalid");
+  const scheduleLockVersion = scheduleLockVersionFromFingerprint(previewFingerprint);
+  if (scheduleLockVersion === null) throw new DayChangeError("invalid");
+  const requestFingerprint = JSON.stringify({
+    previewFingerprint,
+    kind: clean(input.kind), slotId: clean(input.slotId), sourceDate: clean(input.sourceDate, 10),
+    replacementDate: clean(input.replacementDate, 10), replacementStartTime: clean(input.replacementStartTime, 5),
+    classSessionId: clean(input.classSessionId), localDate: clean(input.localDate, 10), startTime: clean(input.startTime, 5),
+  });
+  const existing = await existingOperation(env, idempotencyId);
+  if (existing) {
+    if (existing.requestFingerprint !== requestFingerprint) throw new DayChangeError("conflict");
+    return JSON.parse(existing.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }> };
+  }
+  if (!(await previewFingerprintIsCurrent(env, previewFingerprint))) throw new DayChangeError("conflict");
   const planned = await plansForAction(env, input, at);
+  if (schedulePreviewFingerprint(input, planned.plans, scheduleLockVersion) !== previewFingerprint) throw new DayChangeError("conflict");
+  await assertOneRoomAvailability(env, planned.plans);
   const time = now();
   const statements: D1PreparedStatement[] = [];
-  const revisionIds: string[] = [];
-  for (const plan of planned.plans) {
-    const built = insertRevisionStatements(env, plan, time);
-    statements.push(...built.statements);
-    revisionIds.push(built.newRevisionId);
-  }
+  const builtRevisions = planned.plans.map((plan) => insertRevisionStatements(env, plan, time));
+  const revisionIds = builtRevisions.map((built) => built.newRevisionId);
   const flags = {
     isTest: planned.plans.some((plan) => plan.context.isTest) ? 1 : 0,
     testRunId: planned.plans.every((plan) => plan.context.testRunId === planned.plans[0].context.testRunId)
       ? planned.plans[0].context.testRunId : null,
   };
+  const unscheduledLessons = planned.plans.flatMap((plan) => plan.unscheduledLessons.map((lesson) => ({
+    classLabel: plan.context.classLabel,
+    offeringTitle: plan.context.offeringTitle,
+    lessonSequence: lesson.sequenceNumber,
+    lessonTitle: lesson.title,
+  })));
+  const resultPayload = { revisionIds, unscheduledLessons };
+  statements.push(env.DB.prepare(`INSERT INTO course_day_change_operation (
+    operation_id, request_fingerprint, schedule_lock_version, action, subject_id, result_json,
+    created_by_staff_account_id, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    idempotencyId, requestFingerprint, scheduleLockVersion, planned.action, planned.subjectId, JSON.stringify(resultPayload),
+    actor.staffAccountId, flags.isTest, flags.testRunId, time, time,
+  ));
+  for (const built of builtRevisions) {
+    statements.push(...built.statements);
+  }
   statements.push(audit(env, actor, planned.action, planned.subjectId, {
     ...planned.metadata,
     revisionIds,
@@ -721,7 +794,7 @@ export async function applyDailyChange(
   try {
     const result = await env.DB.batch(statements);
     const publishResults = result.filter((_entry, index) => {
-      let cursor = 0;
+      let cursor = 1;
       for (const plan of planned.plans) {
         const planLength = insertRevisionStatementsLength(plan);
         const publishIndex = cursor + planLength - 1;
@@ -734,12 +807,148 @@ export async function applyDailyChange(
   } catch (caught) {
     if (caught instanceof DayChangeError) throw caught;
     const message = caught instanceof Error ? caught.message : String(caught);
-    if (/UNIQUE constraint|published|draft/i.test(message)) throw new DayChangeError("conflict");
+    if (/UNIQUE constraint|published|draft/i.test(message)) {
+      const replay = await existingOperation(env, idempotencyId);
+      if (replay?.requestFingerprint === requestFingerprint) return JSON.parse(replay.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }> };
+      throw new DayChangeError("conflict");
+    }
     throw caught;
   }
-  return { revisionIds };
+  return resultPayload;
 }
 
 function insertRevisionStatementsLength(plan: PlannedRevision): number {
   return 1 + plan.overrides.length + plan.slots.length + 2;
+}
+
+function schedulePreviewFingerprint(input: Record<string, unknown>, plans: readonly PlannedRevision[], scheduleLockVersion: number): string {
+  return JSON.stringify({
+    kind: clean(input.kind),
+    slotId: clean(input.slotId),
+    sourceDate: clean(input.sourceDate, 10),
+    replacementDate: clean(input.replacementDate, 10),
+    replacementStartTime: clean(input.replacementStartTime, 5),
+    classSessionId: clean(input.classSessionId),
+    localDate: clean(input.localDate, 10),
+    startTime: clean(input.startTime, 5),
+    scheduleLockVersion,
+    plans: plans.map((plan) => ({
+      classSessionId: plan.context.classSessionId,
+      revisionId: plan.context.revisionId,
+      revisionUpdatedAt: plan.context.revisionUpdatedAt,
+    })),
+  });
+}
+
+async function previewFingerprintIsCurrent(env: WorkerEnv, value: string): Promise<boolean> {
+  try {
+    const parsed = JSON.parse(value) as { scheduleLockVersion?: number; plans?: Array<{ classSessionId?: string; revisionId?: string; revisionUpdatedAt?: string }> };
+    if (!Array.isArray(parsed.plans) || !parsed.plans.length) return false;
+    const scheduleLockVersion = parsed.scheduleLockVersion;
+    if (typeof scheduleLockVersion !== "number" || !Number.isInteger(scheduleLockVersion) || scheduleLockVersion < 0
+      || scheduleLockVersion !== await currentScheduleLockVersion(env)) return false;
+    for (const plan of parsed.plans) {
+      if (!plan.classSessionId || !plan.revisionId || !plan.revisionUpdatedAt) return false;
+      const current = await env.DB.prepare(`SELECT revision.id AS revisionId, revision.updated_at AS revisionUpdatedAt
+        FROM class_calendar_revision AS revision
+        INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+        WHERE calendar.class_session_id = ? AND revision.status = 'published'`).bind(plan.classSessionId).first<{
+          revisionId: string; revisionUpdatedAt: string;
+        }>();
+      if (!current || current.revisionId !== plan.revisionId || current.revisionUpdatedAt !== plan.revisionUpdatedAt) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleLockVersionFromFingerprint(value: string): number | null {
+  try {
+    const parsed = JSON.parse(value) as { scheduleLockVersion?: number };
+    return Number.isInteger(parsed.scheduleLockVersion) && (parsed.scheduleLockVersion ?? -1) >= 0
+      ? parsed.scheduleLockVersion! : null;
+  } catch {
+    return null;
+  }
+}
+
+async function currentScheduleLockVersion(env: WorkerEnv): Promise<number> {
+  const row = await env.DB.prepare(`SELECT version FROM course_schedule_change_lock WHERE singleton = 1`).first<{ version: number }>();
+  if (!row || !Number.isInteger(row.version) || row.version < 0) throw new DayChangeError("conflict");
+  return row.version;
+}
+
+function changedLessonAssignments(plan: PlannedRevision) {
+  const before = new Map(plan.previousSlots
+    .filter((slot) => slot.status === "scheduled" && slot.lesson)
+    .map((slot) => [slot.lesson!.id, slot]));
+  const after = new Map(plan.slots
+    .filter((slot) => slot.status === "scheduled" && slot.lesson)
+    .map((slot) => [slot.lesson!.id, slot]));
+  const lessonIds = new Set([...before.keys(), ...after.keys()]);
+  return [...lessonIds].map((lessonId) => {
+    const previous = before.get(lessonId) ?? null;
+    const next = after.get(lessonId) ?? null;
+    if (previous?.id === next?.id && previous?.localDate === next?.localDate
+      && previous?.startTime === next?.startTime && previous?.endTime === next?.endTime) return null;
+    const lesson = next?.lesson ?? previous?.lesson;
+    if (!lesson) return null;
+    return {
+      classLabel: plan.context.classLabel,
+      offeringTitle: plan.context.offeringTitle,
+      lessonSequence: lesson.sequenceNumber,
+      lessonTitle: lesson.title,
+      before: previous ? { localDate: previous.localDate, startTime: previous.startTime, endTime: previous.endTime } : null,
+      after: next ? { localDate: next.localDate, startTime: next.startTime, endTime: next.endTime } : null,
+    };
+  }).filter(Boolean);
+}
+
+function addedOrMovedSlots(plan: PlannedRevision): CalendarSlot[] {
+  const before = new Map(plan.previousSlots.map((slot) => [slot.id, slot]));
+  return plan.slots.filter((slot) => {
+    if (slot.status !== "scheduled") return false;
+    const previous = before.get(slot.id);
+    return !previous || previous.status !== "scheduled"
+      || previous.localDate !== slot.localDate || previous.startTime !== slot.startTime || previous.endTime !== slot.endTime;
+  });
+}
+
+async function assertOneRoomAvailability(env: WorkerEnv, plans: readonly PlannedRevision[]): Promise<void> {
+  const candidates = plans.flatMap((plan) => addedOrMovedSlots(plan).map((slot) => ({ plan, slot })));
+  if (!candidates.length) return;
+  const affectedClassIds = new Set(plans.map((plan) => plan.context.classSessionId));
+  for (const candidate of candidates) {
+    const regular = await env.DB.prepare(`SELECT class_session.id AS classSessionId, class_session.display_label AS classLabel,
+        slot.id AS slotId, slot.local_date AS localDate, slot.start_time AS startTime, slot.end_time AS endTime
+      FROM class_calendar_slot AS slot
+      INNER JOIN class_calendar_revision AS revision
+        ON revision.id = slot.class_calendar_revision_id AND revision.status = 'published'
+      INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+      INNER JOIN class_session ON class_session.id = calendar.class_session_id
+      WHERE slot.status = 'scheduled' AND slot.local_date = ?
+        AND slot.start_time < ? AND slot.end_time > ?`).bind(
+      candidate.slot.localDate, candidate.slot.endTime, candidate.slot.startTime,
+    ).all<{ classSessionId: string; classLabel: string; slotId: string; localDate: string; startTime: string; endTime: string }>();
+    const overlapsExisting = regular.results.some((entry) => !affectedClassIds.has(entry.classSessionId));
+    const overlapsPlanned = plans.some((other) => other.context.classSessionId !== candidate.plan.context.classSessionId
+      && other.slots.some((slot) => slot.status === "scheduled" && slot.localDate === candidate.slot.localDate
+        && slot.startTime < candidate.slot.endTime && slot.endTime > candidate.slot.startTime));
+    if (overlapsExisting || overlapsPlanned) {
+      throw new DayChangeError("conflict", "Өөр ээлжит хичээл");
+    }
+    const special = await env.DB.prepare(`SELECT 1 AS value FROM course_makeup_special_occurrence
+      WHERE status = 'active' AND local_date = ? AND start_time < ? AND end_time > ? LIMIT 1`).bind(
+      candidate.slot.localDate, candidate.slot.endTime, candidate.slot.startTime,
+    ).first();
+    if (special) throw new DayChangeError("conflict", "Тусгай нөхөх хичээл");
+  }
+}
+
+async function existingOperation(env: WorkerEnv, id: string) {
+  return env.DB.prepare(`SELECT request_fingerprint AS requestFingerprint, result_json AS resultJson
+    FROM course_day_change_operation WHERE operation_id = ?`).bind(id).first<{
+    requestFingerprint: string; resultJson: string;
+  }>();
 }

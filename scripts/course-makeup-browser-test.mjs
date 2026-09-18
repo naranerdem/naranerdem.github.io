@@ -67,6 +67,8 @@ try {
   const today = localToday();
   const sourceDate = addDays(today, -7);
   const targetDate = today;
+  const dayChangeDate = addDays(today, 16);
+  const dayChangeReplacementDate = addDays(today, 18);
   const alternateDate = new Date(`${today}T00:00:00Z`).getUTCDay() === 0 ? addDays(today, -1) : addDays(today, 1);
   const confirmedAt = new Date(`${addDays(today, -30)}T00:00:00+08:00`).toISOString();
   execute(`
@@ -84,29 +86,38 @@ try {
     INSERT INTO curriculum_lesson (id, curriculum_program_id, sequence_number, title, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('lesson', 'program', 1, 'Ижил хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('lesson-2', 'program', 2, 'Дараагийн хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('lesson-3', 'program', 3, 'Өөр өдрийн хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('lesson-3', 'program', 3, 'Өөр өдрийн хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('lesson-4', 'program', 4, 'Орлуулах өдрийн хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     UPDATE curriculum_program SET status = 'published', published_at = ${sql(now)} WHERE id = 'program';
     UPDATE curriculum_program_family SET current_published_program_id = 'program' WHERE id = 'family';
     INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, starts_on, curriculum_program_id, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('offering', 'annual_course', 'Browser нөхөх сургалт', 'year', 'stage_1', '${sourceDate}', 'program', 1, 'paid', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-class', 'year', 'stage_1', 'Эх анги', 'Бямба', '10:00', '11:20', 10, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('target-class', 'year', 'stage_1', 'Зорилтот анги', 'Ням', '23:00', '23:59', 1, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('target-class', 'year', 'stage_1', 'Зорилтот анги', 'Ням', '23:00', '23:59', 1, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-class', 'year', 'stage_1', 'Өөрчлөлтийн анги', 'Даваа', '12:00', '13:20', 10, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at) VALUES
       ('source-class', 'weekly', '${sourceDate}', 'Бямба', '10:00', '11:20', ${sql(now)}, ${sql(now)}),
-      ('target-class', 'weekly', '${targetDate}', 'Ням', '23:00', '23:59', ${sql(now)}, ${sql(now)});
+      ('target-class', 'weekly', '${targetDate}', 'Ням', '23:00', '23:59', ${sql(now)}, ${sql(now)}),
+      ('day-change-class', 'weekly', '${sourceDate}', 'Даваа', '12:00', '13:20', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-calendar', 'source-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('target-calendar', 'target-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('target-calendar', 'target-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-calendar', 'day-change-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-revision', 'source-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('target-revision', 'target-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('target-revision', 'target-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-revision', 'day-change-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-slot', 'source-revision', '${sourceDate}', '10:00', '11:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('same-day-slot', 'target-revision', '${targetDate}', '22:00', '22:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('target-slot', 'target-revision', '${targetDate}', '23:00', '23:59', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('alternate-day-slot', 'target-revision', '${alternateDate}', '21:00', '21:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
-    UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id IN ('source-revision', 'target-revision');
+      ('alternate-day-slot', 'target-revision', '${alternateDate}', '21:00', '21:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-slot-1', 'day-change-revision', '${sourceDate}', '12:00', '13:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-slot', 'day-change-revision', '${dayChangeDate}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-slot-3', 'day-change-revision', '${addDays(dayChangeDate, 7)}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-slot-4', 'day-change-revision', '${addDays(dayChangeDate, 14)}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-4', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id IN ('source-revision', 'target-revision', 'day-change-revision');
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('guardian', 'Browser Асран', '99000000', '99000000', 'guardian@example.test', 'guardian@example.test', 'Тест', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
@@ -277,6 +288,29 @@ try {
   await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-after-booking-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-after-booking-mobile.png") });
+  console.log("make-up browser fixture: previewing and confirming a regular day change");
+  await page.goto(`${baseUrl}/staff/day-changes/?date=${dayChangeDate}&occurrence=day-change-slot`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.locator(".staff-day-selected").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Цуцлаад орлуулах цаг товлох", exact: true }).click();
+  await page.locator('[data-day-change-form] [name="replacementDate"]').fill(dayChangeReplacementDate);
+  await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("19:00");
+  await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.locator("#day-confirmation").waitFor({ state: "visible" });
+  await page.locator(".staff-day-preview-list").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#day-operation").isHidden(), true, "whole-day controls collapse while an individual lesson change is under review");
+  assert.equal(await page.locator("[name='replacementDate']").inputValue(), dayChangeReplacementDate, "the reviewed replacement date remains visible beside its confirmation");
+  await page.locator("#day-confirmation").scrollIntoViewIfNeeded();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-preview-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#day-confirmation").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-preview-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
+  await page.getByText("Өдрийн хуваарийн өөрчлөлтийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("#day-confirmation").isHidden(), true, "the reviewed regular change is applied once and clears its preview");
   console.log(`ok browser make-up capacity target availability and booking (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);

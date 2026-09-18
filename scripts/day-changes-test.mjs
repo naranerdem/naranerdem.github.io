@@ -41,7 +41,8 @@ class SqliteD1 {
   async batch(statements) {
     const changes = statements.map((statement, index) => `${bindSql(statement.sql, statement.values)};
 INSERT INTO _batch_changes VALUES (${index}, changes());`).join("\n");
-    const output = sqlite(`CREATE TEMP TABLE _batch_changes (idx INTEGER, changes INTEGER);
+    const output = sqlite(`.bail on
+CREATE TEMP TABLE _batch_changes (idx INTEGER, changes INTEGER);
 BEGIN IMMEDIATE;
 ${changes}
 COMMIT;
@@ -75,9 +76,10 @@ function currentSlot(database, classId, lessonId) {
 
 try {
   const page = readFileSync("src/pages/staff/day-changes.astro", "utf8");
-  assert.match(page, /Цуцлаад орлуулах өдөр нэмэх/, "individual cancellation explains the replacement-slot model");
-  assert.match(page, /name="replacementDate" type="date" \/>/, "an individual replacement date starts blank");
-  assert.match(page, /Энэ өдрийн бүх хичээл/, "the whole-day action describes its scope");
+  assert.match(page, /Ээлжит хичээл сонгох/, "the page starts from a selected regular lesson");
+  assert.match(page, /Цуцлаад орлуулах цаг товлох/, "individual cancellation explains the regular replacement-slot model");
+  assert.match(page, /replacementStartTime/, "an individual replacement can use a reviewed time as well as date");
+  assert.match(page, /Өдрийн бүх хичээл/, "the whole-day action describes its scope");
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   sqlite(migrations.map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
   const built = spawnSync(esbuild, ["src/server/staff/day-changes.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${bundlePath}`], { encoding: "utf8" });
@@ -113,7 +115,9 @@ try {
       ('lesson-1', 'program', 1, 'Нэгдүгээр хичээл', 'active', 1, 'day-change-test', '${now}', '${now}'),
       ('lesson-2', 'program', 2, 'Хоёрдугаар хичээл', 'active', 1, 'day-change-test', '${now}', '${now}'),
       ('lesson-3', 'program', 3, 'Гуравдугаар хичээл', 'active', 1, 'day-change-test', '${now}', '${now}'),
-      ('lesson-4', 'program', 4, 'Дөрөвдүгээр хичээл', 'active', 1, 'day-change-test', '${now}', '${now}');
+      ('lesson-4', 'program', 4, 'Дөрөвдүгээр хичээл', 'active', 1, 'day-change-test', '${now}', '${now}'),
+      ('lesson-5', 'program', 5, 'Тавдугаар хичээл', 'active', 1, 'day-change-test', '${now}', '${now}'),
+      ('lesson-6', 'program', 6, 'Зургаадугаар хичээл', 'active', 1, 'day-change-test', '${now}', '${now}');
     UPDATE curriculum_program SET status = 'published', published_at = '${now}' WHERE id = 'program';
     UPDATE curriculum_program_family SET current_published_program_id = 'program' WHERE id = 'family';
     INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, starts_on, curriculum_program_id, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
@@ -144,7 +148,9 @@ try {
       ('slot-${letter}-1', 'revision-${letter}', '${firstDate}', '${start}', '${end}', 'generated', 'scheduled', 'lesson-1', 1, 'day-change-test', '${now}', '${now}'),
       ('slot-${letter}-2', 'revision-${letter}', '${today}', '${start}', '${end}', 'generated', 'scheduled', 'lesson-2', 1, 'day-change-test', '${now}', '${now}'),
       ('slot-${letter}-3', 'revision-${letter}', '${sourceDate}', '${start}', '${end}', 'generated', 'scheduled', 'lesson-3', 1, 'day-change-test', '${now}', '${now}'),
-      ('slot-${letter}-4', 'revision-${letter}', '${thirdDate}', '${start}', '${end}', 'generated', 'scheduled', 'lesson-4', 1, 'day-change-test', '${now}', '${now}');
+      ('slot-${letter}-4', 'revision-${letter}', '${thirdDate}', '${start}', '${end}', 'generated', 'scheduled', 'lesson-4', 1, 'day-change-test', '${now}', '${now}'),
+      ('slot-${letter}-5', 'revision-${letter}', '${addDays(today, 21)}', '${start}', '${end}', 'generated', 'scheduled', 'lesson-5', 1, 'day-change-test', '${now}', '${now}'),
+      ('slot-${letter}-6', 'revision-${letter}', '${addDays(today, 28)}', '${start}', '${end}', 'generated', 'scheduled', 'lesson-6', 1, 'day-change-test', '${now}', '${now}');
     UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id = 'revision-${letter}';`);
   }
   sqlite(`
@@ -176,12 +182,24 @@ try {
       VALUES ('makeup-assignment', 'makeup-resolution', 'normal_class', 'class-b', 'lesson-3', 'active', 'teacher-staff', '${now}', 1, 'day-change-test', '${now}', '${now}');
   `);
 
+  let operationSequence = 1;
+  const nextOperationId = () => `00000000-0000-4000-8000-${String(operationSequence++).padStart(12, "0")}`;
+  async function applyReviewed(input, operationId = nextOperationId()) {
+    const preview = await service.previewDailyChange(runtime, actor(), input);
+    const result = await service.applyDailyChange(runtime, actor(), {
+      ...input,
+      previewFingerprint: preview.previewFingerprint,
+      operationId,
+    });
+    return { preview, result, operationId };
+  }
+
   await assert.rejects(() => service.getDailyChangesOverview(runtime, actor("accountant"), sourceDate), /Daily schedule/, "accountant cannot access daily changes");
   const initialOverview = await service.getDailyChangesOverview(runtime, actor(), sourceDate);
   assert.equal(initialOverview.occurrences.filter((entry) => entry.localDate === sourceDate && entry.status === "scheduled").length, 3);
   const initialRevisionCount = count(database, "class_calendar_revision");
   await assert.rejects(
-    () => service.applyDailyChange(runtime, actor(), { kind: "day-cancel", sourceDate }),
+    () => applyReviewed({ kind: "day-cancel", sourceDate }),
     (caught) => caught instanceof service.DayChangeError
       && caught.code === "attendance_protected"
       && /В анги/.test(caught.blockingClassLabel),
@@ -205,7 +223,13 @@ try {
   sqlite(`UPDATE course_makeup_attendance SET attendance_status = NULL, updated_at = '${now}' WHERE id = 'makeup-attendance';`);
   const preview = await service.previewDailyChange(runtime, actor(), { kind: "day-move", sourceDate, replacementDate });
   assert.equal(preview.affectedClassCount, 3, "whole-day preview lists every affected class");
-  await service.applyDailyChange(runtime, actor(), { kind: "day-move", sourceDate, replacementDate });
+  assert.ok(preview.changes.some((entry) => entry.lessonTitle === "Гуравдугаар хичээл" && entry.before && entry.after), "the preview names the regular lesson and its before/after occurrence");
+  const dayMoveOperationId = nextOperationId();
+  const dayMoveResult = await service.applyDailyChange(runtime, actor(), { kind: "day-move", sourceDate, replacementDate, previewFingerprint: preview.previewFingerprint, operationId: dayMoveOperationId });
+  const dayMoveReplay = await service.applyDailyChange(runtime, actor(), { kind: "day-move", sourceDate, replacementDate, previewFingerprint: preview.previewFingerprint, operationId: dayMoveOperationId });
+  assert.equal(dayMoveResult.revisionIds.length, 3, "the committed operation returns every published revision to a retry after a lost response");
+  assert.deepEqual(dayMoveReplay, dayMoveResult, "replaying the same reviewed operation returns its original result without another revision");
+  assert.equal(count(database, "course_day_change_operation", `operation_id = ${quote(dayMoveOperationId)}`), 1, "one reviewed operation has one durable replay record");
   assert.equal(count(database, "class_calendar_revision", "status = 'published'"), 4, "every class retains exactly one current revision including unrelated make-up source");
   assert.equal(count(database, "class_calendar_revision", "status = 'superseded'"), 3, "all three original day revisions remain historical");
   for (const classId of classes) assert.equal(currentSlot(database, classId, "lesson-3").localDate, replacementDate, `${classId} lesson 3 moved atomically`);
@@ -214,30 +238,73 @@ try {
   assert.equal(count(database, "course_attendance", "attendance_status IS NOT NULL"), 0, "calendar operation does not mutate attendance");
 
   const classAReplacementSlot = currentSlot(database, "class-a", "lesson-3");
-  await service.applyDailyChange(runtime, actor(), { kind: "single-cancel", slotId: classAReplacementSlot.id });
+  const cancelledWithoutReplacement = await applyReviewed({ kind: "single-cancel", slotId: classAReplacementSlot.id });
   assert.equal(currentSlot(database, "class-a", "lesson-3").localDate, thirdDate, "single cancellation reflows the affected class only");
+  assert.equal(currentSlot(database, "class-a", "lesson-4").localDate, addDays(today, 21), "the next named lesson keeps chronological order after cancellation");
+  assert.equal(currentSlot(database, "class-a", "lesson-5").localDate, addDays(today, 28), "later named lessons retain their order after cancellation");
+  assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE revision.status = 'published' AND calendar.class_session_id = 'class-a') AND curriculum_lesson_id = 'lesson-6' AND status = 'scheduled'`), 0, "cancellation without a replacement leaves the final lesson unscheduled instead of inventing another date");
+  assert.deepEqual(cancelledWithoutReplacement.preview.unscheduledLessons.map((entry) => entry.lessonTitle), ["Зургаадугаар хичээл"], "the reviewed preview names the final unscheduled lesson");
+  assert.deepEqual(cancelledWithoutReplacement.result.unscheduledLessons.map((entry) => entry.lessonTitle), ["Зургаадугаар хичээл"], "the durable operation result preserves the unscheduled lesson outcome");
   assert.equal(currentSlot(database, "class-b", "lesson-3").localDate, replacementDate, "single cancellation leaves peers unchanged");
   const singleCurrent = database.query("SELECT revision.id FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-a' AND revision.status = 'published'")[0];
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(singleCurrent.id)} AND local_date = ${quote(replacementDate)} AND status = 'cancelled'`), 1, "cancelled occurrence is retained in the new revision");
 
   const extraDate = addDays(sourceDate, 4);
-  await service.applyDailyChange(runtime, actor(), { kind: "extra", classSessionId: "class-a", localDate: extraDate });
+  await applyReviewed({ kind: "extra", classSessionId: "class-a", localDate: extraDate });
   assert.equal(currentSlot(database, "class-a", "lesson-3").localDate, extraDate, "extra day is ordered without submitting a lesson number");
 
   const dayCancelPreview = await service.previewDailyChange(runtime, actor(), { kind: "day-cancel", sourceDate: thirdDate });
   assert.equal(dayCancelPreview.affectedClassCount, 3);
-  await service.applyDailyChange(runtime, actor(), { kind: "day-cancel", sourceDate: thirdDate });
+  await applyReviewed({ kind: "day-cancel", sourceDate: thirdDate });
   assert.equal(count(database, "class_calendar_slot", `local_date = ${quote(thirdDate)} AND status = 'cancelled' AND class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision WHERE revision.status = 'published')`), 3, "whole-day cancellation writes every class together");
-  await service.applyDailyChange(runtime, actor(), { kind: "day-replace", sourceDate: thirdDate, replacementDate: laterReplacement });
+  await applyReviewed({ kind: "day-replace", sourceDate: thirdDate, replacementDate: laterReplacement });
   for (const classId of classes) assert.ok(database.query(`SELECT 1 AS value FROM class_calendar_slot AS slot INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE revision.status = 'published' AND calendar.class_session_id = ? AND slot.local_date = ? AND slot.status = 'scheduled'`, [classId, laterReplacement]).length, `${classId} receives the all-class replacement slot`);
   assert.equal(count(database, "audit_event", "action IN ('course_day_moved', 'course_occurrence_cancelled', 'course_extra_day_added', 'course_day_cancelled', 'course_day_replacement_added')"), 5, "daily operations create one coarse audit event each");
 
+  const staleSlot = currentSlot(database, "class-b", "lesson-4");
+  const staleInput = { kind: "single-cancel", slotId: staleSlot.id };
+  const stalePreview = await service.previewDailyChange(runtime, actor(), staleInput);
+  await applyReviewed({ kind: "single-cancel", slotId: currentSlot(database, "class-b", "lesson-3").id });
+  await assert.rejects(
+    () => service.applyDailyChange(runtime, actor(), { ...staleInput, previewFingerprint: stalePreview.previewFingerprint, operationId: nextOperationId() }),
+    (caught) => caught instanceof service.DayChangeError && caught.code === "conflict",
+    "a preview bound to the superseded calendar revision is rejected without a second change",
+  );
+  const roomConflictSlot = currentSlot(database, "class-a", "lesson-4");
+  const roomConflictDate = addDays(roomConflictSlot.localDate, 2);
+  sqlite(`INSERT INTO course_makeup_special_occurrence (
+    id, curriculum_lesson_id, local_date, start_time, end_time, capacity, status,
+    created_by_staff_account_id, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('special-room-conflict', 'lesson-1', '${roomConflictDate}', '13:00', '14:20', 4, 'active',
+    'teacher-staff', 1, 'day-change-test', '${now}', '${now}');`);
+  await assert.rejects(
+    () => service.previewDailyChange(runtime, actor(), { kind: "single-cancel", slotId: roomConflictSlot.id, replacementDate: roomConflictDate, replacementStartTime: "13:00" }),
+    (caught) => caught instanceof service.DayChangeError && caught.code === "conflict" && /Тусгай нөхөх/.test(caught.blockingClassLabel),
+    "a new regular replacement slot cannot overlap an active special make-up in the one room",
+  );
+
+  const raceDate = addDays(today, 60);
+  const raceLeft = { kind: "single-cancel", slotId: currentSlot(database, "class-a", "lesson-5").id, replacementDate: raceDate, replacementStartTime: "20:00" };
+  const raceRight = { kind: "single-cancel", slotId: currentSlot(database, "class-c", "lesson-5").id, replacementDate: raceDate, replacementStartTime: "20:00" };
+  const [raceLeftPreview, raceRightPreview] = await Promise.all([
+    service.previewDailyChange(runtime, actor(), raceLeft),
+    service.previewDailyChange(runtime, actor(), raceRight),
+  ]);
+  const beforeRaceRevisions = count(database, "class_calendar_revision");
+  const [raceLeftResult, raceRightResult] = await Promise.allSettled([
+    service.applyDailyChange(runtime, actor(), { ...raceLeft, previewFingerprint: raceLeftPreview.previewFingerprint, operationId: nextOperationId() }),
+    service.applyDailyChange(runtime, actor(), { ...raceRight, previewFingerprint: raceRightPreview.previewFingerprint, operationId: nextOperationId() }),
+  ]);
+  assert.equal([raceLeftResult, raceRightResult].filter((entry) => entry.status === "fulfilled").length, 1, "two reviewed regular changes for the same room cannot both commit");
+  assert.equal([raceLeftResult, raceRightResult].filter((entry) => entry.status === "rejected" && entry.reason instanceof service.DayChangeError && entry.reason.code === "conflict").length, 1, "the losing room claim is rejected as stale instead of applying a partial revision");
+  assert.equal(count(database, "class_calendar_revision"), beforeRaceRevisions + 1, "only the winning change publishes a calendar revision");
+
   const rendered = readFileSync("dist/staff/day-changes/index.html", "utf8");
   assert.match(page, /Өдрийг бүхэлд нь цуцлах/);
-  assert.match(page, /Өдрийг шилжүүлэх/);
-  assert.match(page, /Орлуулах өдөр оруулах/);
-  assert.match(page, /Нэмэлт өдөр оруулах/);
-  assert.match(page, /changedLessonCount/, "teacher sees consequence count before saving");
+  assert.match(page, /Өдрийг цуцлаад орлуулах өдөр товлох/);
+  assert.match(page, /Тусгай нөхөх хичээл/, "independent special make-ups remain outside the regular reflow flow");
+  assert.match(page, /preview\.changes/, "teacher sees the named lesson before/after consequences before saving");
+  assert.match(page, /preview\.unscheduledLessons/, "teacher sees a final lesson that remains unscheduled after cancellation");
   assert.doesNotMatch(page, /и-мэйл|Messenger|мэдэгдэл илгээ/, "daily schedule changes send no communication");
   assert.doesNotMatch(rendered, /А анги|Хоёрдугаар хичээл/, "static daily page includes no private fixture data");
 
