@@ -1790,8 +1790,28 @@ textarea:focus {
   margin-top: 1rem;
 }
 
+.staff-agenda-week-navigation,
+.staff-agenda-date-navigation {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+}
+
+.staff-agenda-week-navigation {
+  justify-content: space-between;
+  min-width: min(100%, 31rem);
+}
+
+.staff-agenda-date-navigation {
+  margin-left: auto;
+}
+
 .staff-agenda-controls strong {
   font-size: 0.95rem;
+}
+
+.staff-agenda-mobile-label {
+  display: none;
 }
 
 .staff-agenda-week {
@@ -1833,6 +1853,13 @@ textarea:focus {
   width: 100%;
   font-size: 0.85rem;
   padding-bottom: 0.5rem;
+}
+
+.staff-agenda-day-indicator {
+  color: var(--muted);
+  display: none;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .staff-agenda-entry small,
@@ -4061,6 +4088,11 @@ textarea:focus {
     line-height: 1.1;
   }
 
+  .staff-attendance-page-heading {
+    align-items: center;
+    flex-direction: row;
+  }
+
   .staff-window-date-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -4173,15 +4205,48 @@ textarea:focus {
 
 @media (max-width: 31rem) {
   .staff-agenda-heading,
-  .staff-agenda-controls,
   .staff-agenda-detail-heading,
   .staff-agenda-roster li {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .staff-agenda-controls .staff-text-action {
-    align-self: flex-start;
+  .staff-agenda-controls {
+    align-items: stretch;
+    display: grid;
+    gap: 0.55rem;
+    margin-top: 0.75rem;
+  }
+
+  .staff-agenda-week-navigation,
+  .staff-agenda-date-navigation {
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .staff-agenda-date-navigation {
+    margin-left: 0;
+  }
+
+  .staff-agenda-week-navigation .button,
+  .staff-agenda-date-navigation .button {
+    min-height: 2.5rem;
+  }
+
+  .staff-agenda-date input {
+    inline-size: min(10.5rem, 48vw);
+  }
+
+  .staff-agenda-mobile-label {
+    display: inline;
+  }
+
+  .staff-agenda-day-indicator {
+    display: inline;
+  }
+
+  .staff-agenda-desktop-label {
+    display: none;
   }
 
   .staff-agenda-week {
@@ -4192,16 +4257,8 @@ textarea:focus {
     padding-bottom: 0.2rem;
   }
 
-  .staff-agenda-day[data-open="false"] .staff-agenda-entries {
+  .staff-agenda-day:not(.empty)[data-open="false"] .staff-agenda-entries {
     display: none;
-  }
-
-  .staff-agenda-day[data-open="false"]::after {
-    color: var(--muted);
-    content: "Дэлгэрүүлэх";
-    display: block;
-    font-size: 0.85rem;
-    margin-top: 0.35rem;
   }
 
   .staff-tool-grid {

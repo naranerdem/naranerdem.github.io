@@ -67,6 +67,7 @@ try {
   const today = localToday();
   const sourceDate = addDays(today, -7);
   const targetDate = today;
+  const alternateDate = new Date(`${today}T00:00:00Z`).getUTCDay() === 0 ? addDays(today, -1) : addDays(today, 1);
   const confirmedAt = new Date(`${addDays(today, -30)}T00:00:00+08:00`).toISOString();
   execute(`
     INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
@@ -81,7 +82,9 @@ try {
     INSERT INTO curriculum_program (id, program_family_id, academic_year_id, stage_code, revision_number, display_name, program_kind, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('program', 'family', 'year', 'stage_1', 1, 'Browser нөхөх хөтөлбөр', 'annual_course', 'draft', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO curriculum_lesson (id, curriculum_program_id, sequence_number, title, status, is_test, test_run_id, created_at, updated_at)
-      VALUES ('lesson', 'program', 1, 'Ижил хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      VALUES ('lesson', 'program', 1, 'Ижил хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('lesson-2', 'program', 2, 'Дараагийн хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('lesson-3', 'program', 3, 'Өөр өдрийн хичээл', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     UPDATE curriculum_program SET status = 'published', published_at = ${sql(now)} WHERE id = 'program';
     UPDATE curriculum_program_family SET current_published_program_id = 'program' WHERE id = 'family';
     INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, starts_on, curriculum_program_id, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
@@ -100,7 +103,9 @@ try {
       ('target-revision', 'target-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-slot', 'source-revision', '${sourceDate}', '10:00', '11:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('target-slot', 'target-revision', '${targetDate}', '23:00', '23:59', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('same-day-slot', 'target-revision', '${targetDate}', '22:00', '22:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('target-slot', 'target-revision', '${targetDate}', '23:00', '23:59', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('alternate-day-slot', 'target-revision', '${alternateDate}', '21:00', '21:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id IN ('source-revision', 'target-revision');
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('guardian', 'Browser Асран', '99000000', '99000000', 'guardian@example.test', 'guardian@example.test', 'Тест', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
@@ -230,18 +235,37 @@ try {
   await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=target-slot/);
   await page.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).waitFor({ state: "visible" });
   assert.match(await page.locator(".staff-attendance-makeup-source").innerText(), /Тасалсан хичээл · \d{2}\/\d{2}/, "the selected attendance roster keeps a compact missed-lesson link");
-  assert.equal(await page.locator("#attendance-list [role='tab']").count(), 1, "the attendance selector keeps one time-only tab for the dated occurrence");
+  assert.equal(await page.locator("#attendance-list [role='tab']").count(), 2, "the attendance selector keeps time-only tabs for each dated occurrence");
+  const selectedTabBounds = await page.locator("#attendance-list [role='tab'][aria-selected='true']").evaluate((selected) => {
+    const strip = selected.parentElement.getBoundingClientRect();
+    const tab = selected.getBoundingClientRect();
+    return { stripLeft: strip.left, stripRight: strip.right, tabLeft: tab.left, tabRight: tab.right };
+  });
+  assert.ok(selectedTabBounds.tabLeft >= selectedTabBounds.stripLeft && selectedTabBounds.tabRight <= selectedTabBounds.stripRight, "the selected time tab is visible inside its horizontal strip");
   await page.goBack();
   await page.locator("#staff-home").waitFor({ state: "visible" });
   await page.setViewportSize({ width: 390, height: 844 });
-  console.log("make-up browser fixture: collapsing and reopening the target day");
+  console.log("make-up browser fixture: switching and collapsing the mobile day accordion");
+  assert.equal(await page.locator(`[data-agenda-day='${targetDate}']`).getAttribute("data-open"), "true", "returning from attendance restores the previously expanded day");
+  await page.locator(`[data-agenda-day-toggle='${alternateDate}']`).click();
+  assert.equal(await page.locator(`[data-agenda-day='${targetDate}']`).getAttribute("data-open"), "false", "opening another day closes the prior day");
+  assert.equal(await page.locator(`[data-agenda-day='${alternateDate}']`).getAttribute("data-open"), "true", "the chosen day opens");
+  assert.equal(await page.locator(`[data-agenda-day='${targetDate}'] [data-agenda-occurrence='target-slot']`).isVisible(), false, "collapsed mobile days do not expose their lesson cards");
+  await page.locator(`[data-agenda-day-toggle='${alternateDate}']`).click();
+  assert.equal(await page.locator(`[data-agenda-day='${alternateDate}']`).getAttribute("data-open"), "false", "an open day can be collapsed");
+  assert.equal(await page.locator(".staff-agenda-day.empty [data-agenda-day-toggle]").count(), 0, "empty days have no expansion controls");
+  assert.equal(await page.locator(".staff-agenda-day.empty").getByText("Хичээлгүй", { exact: true }).count() > 0, true, "empty days show their state below the heading separator");
   await page.locator(`[data-agenda-day-toggle='${targetDate}']`).click();
-  assert.equal(await page.locator("#staff-agenda [data-agenda-occurrence='target-slot']").count(), 1, "collapsing a day retains one stable lesson link");
-  await page.locator(`[data-agenda-day-toggle='${targetDate}']`).click();
-  await page.locator("#staff-agenda [data-agenda-occurrence='target-slot']").click();
-  await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=target-slot/);
-  await page.goBack();
+  assert.equal(await page.locator(`[data-agenda-day='${targetDate}']`).getAttribute("data-open"), "true", "reopening a day restores its lesson cards");
+  await page.locator(`[data-agenda-day-toggle='${alternateDate}']`).click();
+  const returnLink = page.locator("#staff-agenda [data-agenda-occurrence='alternate-day-slot']");
+  assert.match(await returnLink.getAttribute("href"), new RegExp(`homeDay=${alternateDate}`), "direct attendance links carry the current home view for the supported return action");
+  await returnLink.click();
+  await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=alternate-day-slot/);
+  assert.match(await page.locator("#attendance-back").getAttribute("href"), new RegExp(`day=${alternateDate}`), "attendance retains the validated home return target");
+  await page.locator("#attendance-back").click();
   await page.locator("#staff-home").waitFor({ state: "visible" });
+  assert.equal(await page.locator(`[data-agenda-day='${alternateDate}']`).getAttribute("data-open"), "true", "the supported return action restores the expanded day identity");
   console.log("make-up browser fixture: navigating to an explicit empty week");
   await page.locator("#staff-agenda [data-agenda-week='next']").click();
   await waitForRenderedCount(page, "#staff-agenda [data-agenda-day]", 7, "explicit week navigation");

@@ -357,13 +357,17 @@ try {
   assert.doesNotMatch(source, /Хадгалах<\/button>/, "attendance has no page-level save action");
   assert.doesNotMatch(source, /Ноорог|Нийтлэх|Хувилбар/, "attendance has no calendar draft terminology");
   assert.doesNotMatch(source, /window\.confirm/, "bulk attendance uses an in-page Mongolian confirmation");
-  assert.match(staffHome, /href="\/staff\/attendance\/\?date=\$\{encodeURIComponent\(entry\.localDate\)\}&occurrence=\$\{encodeURIComponent\(entry\.occurrenceId\)\}"/, "the home agenda uses direct exact-occurrence attendance links");
+  assert.match(staffHome, /href="\/staff\/attendance\/\?date=\$\{encodeURIComponent\(entry\.localDate\)\}&occurrence=\$\{encodeURIComponent\(entry\.occurrenceId\)\}&homeWeek=/, "the home agenda uses direct exact-occurrence attendance links with a scoped return state");
   assert.doesNotMatch(staffHome, /staff-agenda-detail|data-home-attendance|Ирцийн хуудас нээх/, "home keeps roster actions on the attendance page");
   assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Бүртгэл, төлбөр[\s\S]*?Нөхөх хичээл[\s\S]*?Хичээлийн хуваарь[\s\S]*?СУРГАЛТЫН ТОХИРГОО/, "staff home keeps daily work, the agenda, and existing setup tools in order");
   assert.match(source, /role="tab"[\s\S]*?\$\{escape\(entry\.startTime\)\}–\$\{escape\(entry\.endTime\)\}/, "attendance selection uses time-only tabs while retaining slot identity in the link");
   assert.match(source, /Тасалсан хичээл/, "make-up attendees retain a compact missed-lesson link");
   assert.match(source, /staff-attendance-identity/, "roster identity and attendance controls use separate layout regions");
   assert.match(staffHome, /staff-agenda-day-heading[\s\S]*?<strong>\$\{weekday\(day\)\}/, "each agenda day renders its heading before its entries");
+  assert.match(staffHome, /expandedDay/, "the home agenda persists one expanded day identity");
+  assert.doesNotMatch(staffHome, /expandedDays/, "mobile agenda state cannot retain multiple expanded days");
+  assert.match(source, /selector\.scrollLeft/, "the selected attendance time tab is brought into view within its strip");
+  assert.doesNotMatch(styles, /content: "Дэлгэрүүлэх"/, "the mobile agenda uses the heading indicator instead of a duplicate expansion prompt");
   assert.doesNotMatch(source, /Эх тасалсан/, "deprecated missed-lesson wording is not shown");
   assert.doesNotMatch(staffHome, /Таны ажиллах хэсэг/, "staff home has no redundant capability list");
   assert.doesNotMatch(renderedAttendance, /Анударь|Билгүүн|Тест амралт/, "the static attendance page ships no roster or curriculum data");

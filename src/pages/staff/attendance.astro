@@ -22,7 +22,7 @@ import "../../styles/global.css";
       <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
       <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Ирц</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
-        <div class="staff-page-heading"><h1>Ирц</h1><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <div class="staff-page-heading staff-attendance-page-heading"><h1>Ирц</h1><a id="attendance-back" class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <form id="attendance-date-form" class="staff-attendance-date-form">
           <label class="visually-hidden" for="attendance-date">Өдөр сонгох</label>
@@ -46,8 +46,23 @@ import "../../styles/global.css";
       import { escape, formatDate, getAttendanceDay, hasAttendanceAccess, postAttendanceAction } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
+      const safeHomeDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : "";
+      const homeReturn = new URLSearchParams();
+      const homeWeek = safeHomeDate(params.get("homeWeek"));
+      const homeDate = safeHomeDate(params.get("homeDate"));
+      const homeDay = safeHomeDate(params.get("homeDay"));
+      if (homeWeek) homeReturn.set("week", homeWeek);
+      if (homeDate) homeReturn.set("date", homeDate);
+      if (homeDay) homeReturn.set("day", homeDay);
+      const returnTo = homeReturn.size ? `/staff/?${homeReturn.toString()}` : "/staff/";
       const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "", refreshVersion: 0 };
       const q = (selector) => document.querySelector(selector);
+      q("#attendance-back").href = returnTo;
+      q("#attendance-back").addEventListener("click", (event) => {
+        if (returnTo === "/staff/") return;
+        event.preventDefault();
+        window.location.assign(returnTo);
+      });
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
       const isFuture = () => state.data && state.data.localDate > state.data.today;
@@ -80,6 +95,9 @@ import "../../styles/global.css";
         if (!entries.length) { container.innerHTML = `<p class="staff-empty">Энэ өдөр хичээлгүй.</p>`; return; }
         const invalid = state.invalidOccurrence ? `<p class="staff-error">Сонгосон хичээл энэ өдөр байхгүй байна. Өөр цаг сонгоно уу.</p>` : "";
         container.innerHTML = `${invalid}<div class="staff-attendance-selector" role="tablist" aria-label="Хичээлийн цаг">${entries.map((entry) => `<a class="staff-attendance-tab ${entry.slotId === state.selectedSlotId ? "selected" : ""}" role="tab" aria-selected="${entry.slotId === state.selectedSlotId}" href="/staff/attendance/?date=${encodeURIComponent(state.date)}&occurrence=${encodeURIComponent(entry.slotId)}" data-open-occurrence="${escape(entry.slotId)}">${escape(entry.startTime)}–${escape(entry.endTime)}</a>`).join("")}</div>`;
+        const selected = container.querySelector(".staff-attendance-tab.selected");
+        const selector = container.querySelector(".staff-attendance-selector");
+        if (selected && selector) requestAnimationFrame(() => { selector.scrollLeft = Math.max(0, selected.offsetLeft - (selector.clientWidth - selected.offsetWidth) / 2); });
       }
 
       function canChangeOccurrence(event) {
