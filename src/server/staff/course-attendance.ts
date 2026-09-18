@@ -372,8 +372,9 @@ export async function getCourseAttendanceDay(
     holidayLabel: occurrence.holidayLabel,
     ...await occurrenceSummary(env, occurrence, at),
   })));
-  const selected = selectedSlotId && result.results.some((occurrence) => occurrence.slotId === selectedSlotId)
-    ? await selectedOccurrenceWithRoster(env, selectedSlotId)
+  const resolvedSlotId = selectedSlotId || result.results[0]?.slotId || "";
+  const selected = resolvedSlotId && result.results.some((occurrence) => occurrence.slotId === resolvedSlotId)
+    ? await selectedOccurrenceWithRoster(env, resolvedSlotId)
     : null;
   return {
     localDate,

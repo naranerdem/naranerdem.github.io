@@ -77,20 +77,18 @@ import "../styles/global.css";
       </section>
 
       <section id="staff-home" class="staff-state" hidden aria-labelledby="staff-home-title">
-        <p class="eyebrow">Ажилтны хэсэг</p>
-        <h1 id="staff-home-title">Сайн байна уу</h1>
+        <h1 id="staff-home-title">Ажилтны хэсэг</h1>
         <p id="staff-welcome" class="staff-muted"></p>
         <nav id="staff-tool-links" aria-label="Ажиллах хэрэгсэл" hidden>
-          <section class="staff-tool-section" data-tool-section aria-labelledby="staff-daily-title">
+          <section class="staff-tool-section" data-tool-section aria-label="Өдөр тутмын ажил">
             <p class="eyebrow">Өдөр тутмын ажил</p>
-            <h2 id="staff-daily-title">Өнөөдөр</h2>
             <div class="staff-tool-grid staff-tool-grid-daily">
               <a class="staff-tool-link staff-tool-primary" data-capability="payment.view" href="/staff/payments/"><strong>Бүртгэл, төлбөр</strong><span id="staff-payment-summary">Бүртгэл, эхний төлбөр, хүлээлгийн жагсаалт</span></a>
               <a class="staff-tool-link" data-capability="makeup.view" href="/staff/makeups/"><strong>Нөхөх хичээл</strong><span>Тасалсан хичээлийг шийдэх, товлох</span></a>
             </div>
           </section>
           <section id="staff-agenda-section" class="staff-tool-section staff-home-agenda" data-tool-section aria-labelledby="staff-agenda-title">
-            <div class="staff-agenda-heading"><div><p class="eyebrow">Хичээлийн хуваарь</p><h2 id="staff-agenda-title">Ойрын хичээлүүд</h2></div><a class="staff-text-action" data-capability="calendar.manage" href="/staff/day-changes/">Өдрийн өөрчлөлт</a></div>
+            <div class="staff-agenda-heading"><p id="staff-agenda-title" class="eyebrow">Хичээлийн хуваарь</p><a class="staff-text-action" data-capability="calendar.manage" href="/staff/day-changes/">Өдрийн өөрчлөлт</a></div>
             <div id="staff-agenda" data-capability="attendance.view" aria-live="polite"><p class="staff-muted">Хичээлийн хуваарийг ачаалж байна.</p></div>
           </section>
           <section id="staff-setup-section" class="staff-tool-section staff-tool-section-secondary" data-tool-section aria-labelledby="staff-setup-title">
@@ -120,7 +118,7 @@ import "../styles/global.css";
 
     <script>
       // @ts-nocheck
-      import { escape, formatDate, getAttendanceDay, postAttendanceAction } from "../scripts/staff-setup.js";
+      import { escape, formatDate } from "../scripts/staff-setup.js";
       const states = [...document.querySelectorAll(".staff-state")];
       const loginForm = document.getElementById("staff-login-form");
       const emailInput = document.getElementById("staff-email");
@@ -132,7 +130,8 @@ import "../styles/global.css";
       let staffLoginConfig = { emailLoginEnabled: false, turnstileSiteKey: null };
       let staffTurnstileWidget = null;
       const agenda = document.getElementById("staff-agenda");
-      const agendaState = { data: null, week: "", selectedDate: "", selectedId: "", selected: null, loading: false, expandedDays: new Set() };
+      const agendaParams = new URLSearchParams(location.search);
+      const agendaState = { data: null, week: agendaParams.get("week") || "", selectedDate: agendaParams.get("date") || "", loading: false, expandedDays: new Set() };
 
       const isoDay = (value) => new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10);
       const addDays = (value, days) => {
@@ -141,32 +140,23 @@ import "../styles/global.css";
         return isoDay(date.toISOString().slice(0, 10));
       };
       const weekday = (value) => ["Ням", "Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба"][new Date(`${value}T00:00:00Z`).getUTCDay()];
-
-      function agendaEntry(entry, selected) {
-        const attendees = entry.kind === "lesson" ? `Үндсэн ${entry.ordinaryCount} · Нөхөх ${entry.makeupCount}` : entry.kind === "special_makeup" ? `Нөхөх ${entry.makeupCount}` : "Цуцлагдсан";
-        const action = entry.kind === "lesson"
-          ? `<button class="staff-agenda-entry" type="button" data-agenda-open="${escape(entry.occurrenceId)}" aria-expanded="${selected}"><span>${escape(entry.startTime)}–${escape(entry.endTime)}</span><strong>${escape(entry.classLabel)}</strong><small>${entry.lessonSequence ? `${escape(entry.lessonSequence)}. ` : ""}${escape(entry.lessonTitle)}</small><small>${escape(attendees)}</small></button>`
-          : `<a class="staff-agenda-entry ${entry.kind}" href="${entry.kind === "cancelled" ? `/staff/day-changes/?date=${encodeURIComponent(entry.localDate)}` : "/staff/makeups/"}"><span>${escape(entry.startTime)}–${escape(entry.endTime)}</span><strong>${escape(entry.kind === "cancelled" ? "Цуцалсан хичээл" : "Тусгай нөхөх хичээл")}</strong><small>${escape(entry.lessonTitle)}</small><small>${escape(attendees)}</small></a>`;
-        return action;
+      const shortDate = (value) => {
+        const date = new Date(`${value}T00:00:00Z`);
+        return `${String(date.getUTCMonth() + 1).padStart(2, "0")}/${String(date.getUTCDate()).padStart(2, "0")}`;
+      };
+      function syncAgendaUrl() {
+        const next = new URLSearchParams(location.search);
+        if (agendaState.week) next.set("week", agendaState.week); else next.delete("week");
+        if (agendaState.selectedDate) next.set("date", agendaState.selectedDate); else next.delete("date");
+        history.replaceState(null, "", `${location.pathname}${next.size ? `?${next.toString()}` : ""}`);
       }
 
-      function selectedAgendaDetail() {
-        const selected = agendaState.selected;
-        if (!selected) return "";
-        if (selected.entry.kind !== "lesson") return `<div class="staff-agenda-detail"><p class="staff-muted">Энэ хичээл одоогоор ирц бүртгэх тусдаа урсгалгүй.</p></div>`;
-        if (selected.loading) return `<div class="staff-agenda-detail"><p class="staff-muted">Ирцийн жагсаалтыг ачаалж байна.</p></div>`;
-        if (selected.error) return `<div class="staff-agenda-detail"><p class="staff-error">${escape(selected.error)}</p></div>`;
-        const occurrence = selected.data?.selected;
-        if (!occurrence) return `<div class="staff-agenda-detail"><p class="staff-empty">Энэ хичээлийн ирцийн мэдээлэл олдсонгүй.</p></div>`;
-        const isFuture = occurrence.localDate > selected.data.today;
-        const mutationError = selected.mutationError ? `<p class="staff-error">${escape(selected.mutationError)}</p>` : "";
-        const roster = occurrence.roster.map((row) => {
-          const source = row.attendanceKind === "makeup" && row.makeupSource
-            ? `<small><span class="staff-kind-label">Нөхөх</span> Эх тасалсан: ${escape(formatDate(row.makeupSource.localDate))} · ${escape(row.makeupSource.lessonTitle || "")}</small>` : "";
-          const controls = isFuture ? "" : `<div class="staff-agenda-attendance-controls"><button type="button" class="button secondary" data-home-attendance="present" data-enrollment="${escape(row.enrollmentId)}" data-assignment="${escape(row.makeupAssignmentId || "")}" ${row.recordedAttendanceStatus === "present" ? "disabled" : ""}>Ирсэн</button><button type="button" class="button secondary" data-home-attendance="late" data-enrollment="${escape(row.enrollmentId)}" data-assignment="${escape(row.makeupAssignmentId || "")}" ${row.recordedAttendanceStatus === "late" ? "disabled" : ""}>Хоцорсон</button></div>`;
-          return `<li><div><strong>${escape(row.displayName)}</strong>${source}</div>${controls}</li>`;
-        }).join("");
-        return `<div class="staff-agenda-detail"><div class="staff-agenda-detail-heading"><div><strong>${escape(occurrence.offeringTitle)}</strong><p>${escape(occurrence.lessonSequence)}. ${escape(occurrence.lessonTitle)} · Үндсэн ${Math.max(0, occurrence.rosterCount - occurrence.roster.filter((row) => row.attendanceKind === "makeup").length)} · Нөхөх ${occurrence.roster.filter((row) => row.attendanceKind === "makeup").length}</p></div><a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(occurrence.localDate)}&occurrence=${encodeURIComponent(occurrence.slotId)}">Ирцийн хуудас нээх</a></div>${mutationError}${roster ? `<ul class="staff-agenda-roster">${roster}</ul>` : `<p class="staff-empty">Бүртгэлтэй сурагч алга.</p>`}</div>`;
+      function agendaEntry(entry) {
+        const attendees = entry.kind === "lesson" ? `Үндсэн ${entry.ordinaryCount} · Нөхөх ${entry.makeupCount}` : entry.kind === "special_makeup" ? `Нөхөх ${entry.makeupCount}` : "Цуцлагдсан";
+        const action = entry.kind === "lesson"
+          ? `<a class="staff-agenda-entry" data-agenda-occurrence="${escape(entry.occurrenceId)}" href="/staff/attendance/?date=${encodeURIComponent(entry.localDate)}&occurrence=${encodeURIComponent(entry.occurrenceId)}"><span>${escape(entry.startTime)}–${escape(entry.endTime)}</span><strong>${escape(entry.classLabel)}</strong><small>${entry.lessonSequence ? `${escape(entry.lessonSequence)}. ` : ""}${escape(entry.lessonTitle)}</small><small>${escape(attendees)}</small></a>`
+          : `<a class="staff-agenda-entry ${entry.kind}" href="${entry.kind === "cancelled" ? `/staff/day-changes/?date=${encodeURIComponent(entry.localDate)}` : "/staff/makeups/"}"><span>${escape(entry.startTime)}–${escape(entry.endTime)}</span><strong>${escape(entry.kind === "cancelled" ? "Цуцалсан хичээл" : "Тусгай нөхөх хичээл")}</strong><small>${escape(entry.lessonTitle)}</small><small>${escape(attendees)}</small></a>`;
+        return action;
       }
 
       function renderAgenda() {
@@ -175,12 +165,10 @@ import "../styles/global.css";
         const days = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
         const daysMarkup = days.map((day) => {
           const entriesForDay = entries.filter((entry) => entry.localDate === day);
-          const selectedHere = agendaState.selected?.entry?.localDate === day;
-          const details = selectedHere ? selectedAgendaDetail() : "";
           const open = agendaState.expandedDays.has(day);
-          return `<section class="staff-agenda-day ${day === today ? "today" : ""}" data-agenda-day="${day}" data-open="${open}"><button class="staff-agenda-day-heading" type="button" data-agenda-day-toggle="${day}" aria-expanded="${open}"><strong>${weekday(day)} · ${formatDate(day)}</strong><span>${entriesForDay.length ? `${entriesForDay.length} хичээл` : "Хичээлгүй"}</span></button>${entriesForDay.length ? `<div class="staff-agenda-entries">${entriesForDay.map((entry) => agendaEntry(entry, agendaState.selectedId === entry.occurrenceId)).join("")}</div>${details}` : (day === today ? `<p class="staff-muted">Энэ долоо хоногт хичээлгүй. ${entries.find((entry) => entry.localDate > day) ? `Дараагийн хичээл: ${formatDate(entries.find((entry) => entry.localDate > day).localDate)}.` : ""}</p>` : "")}</section>`;
+          return `<section class="staff-agenda-day ${day === today ? "today" : ""}" data-agenda-day="${day}" data-open="${open}"><button class="staff-agenda-day-heading" type="button" data-agenda-day-toggle="${day}" aria-expanded="${open}"><strong>${weekday(day)} · ${shortDate(day)}</strong><span>${entriesForDay.length ? "" : "Хичээлгүй"}</span></button>${entriesForDay.length ? `<div class="staff-agenda-entries">${entriesForDay.map(agendaEntry).join("")}</div>` : (day === today ? `<p class="staff-muted">Энэ долоо хоногт хичээлгүй. ${entries.find((entry) => entry.localDate > day) ? `Дараагийн хичээл: ${formatDate(entries.find((entry) => entry.localDate > day).localDate)}.` : ""}</p>` : "")}</section>`;
         }).join("");
-        agenda.innerHTML = `<div class="staff-agenda-controls"><button type="button" class="button secondary" data-agenda-week="previous" aria-label="Өмнөх долоо хоног">Өмнөх 7 хоног</button><strong>${formatDate(weekStart)}–${formatDate(addDays(weekStart, 6))}</strong><button type="button" class="button secondary" data-agenda-week="next" aria-label="Дараагийн долоо хоног">Дараагийн 7 хоног</button><label class="staff-agenda-date">Огноо <input type="date" value="${escape(agendaState.selectedDate || today)}" data-agenda-date /></label><button type="button" class="staff-text-action" data-agenda-week="today">Өнөөдөр</button></div><div class="staff-agenda-week">${daysMarkup}</div>`;
+        agenda.innerHTML = `<div class="staff-agenda-controls"><button type="button" class="button secondary" data-agenda-week="previous" aria-label="Өмнөх долоо хоног">Өмнөх 7 хоног</button><strong>${formatDate(weekStart)}–${formatDate(addDays(weekStart, 6))}</strong><button type="button" class="button secondary" data-agenda-week="next" aria-label="Дараагийн 7 хоног">Дараагийн 7 хоног</button><label class="staff-agenda-date"><span class="screen-reader-text">Огноо сонгох</span><input type="date" aria-label="Огноо сонгох" value="${escape(agendaState.selectedDate || today)}" data-agenda-date /></label><button type="button" class="staff-text-action" data-agenda-week="today">Өнөөдөр</button></div><div class="staff-agenda-week">${daysMarkup}</div>`;
       }
 
       async function loadAgenda(week = "", selectedDate = "") {
@@ -193,9 +181,8 @@ import "../styles/global.css";
           agendaState.data = await response.json();
           agendaState.week = agendaState.data.weekStart;
           agendaState.selectedDate = selectedDate || agendaState.selectedDate || agendaState.data.today;
-          agendaState.selectedId = "";
-          agendaState.selected = null;
           agendaState.expandedDays = new Set([agendaState.data.today]);
+          syncAgendaUrl();
           renderAgenda();
         } catch (error) {
           agenda.innerHTML = `<p class="staff-error">${escape(error.message || "Хичээлийн хуваарийг авч чадсангүй.")}</p>`;
@@ -204,20 +191,6 @@ import "../styles/global.css";
         }
       }
 
-      async function openAgendaEntry(entryId) {
-        const entry = agendaState.data?.entries.find((candidate) => candidate.occurrenceId === entryId);
-        if (!entry || entry.kind !== "lesson") return;
-        if (agendaState.selectedId === entryId) { agendaState.selectedId = ""; agendaState.selected = null; renderAgenda(); return; }
-        agendaState.selectedId = entryId;
-        agendaState.selected = { entry, loading: true, data: null, error: "" };
-        renderAgenda();
-        try {
-          const data = await getAttendanceDay(entry.localDate, entry.occurrenceId);
-          if (agendaState.selectedId === entryId) { agendaState.selected = { entry, loading: false, data, error: "", mutationError: "" }; renderAgenda(); }
-        } catch (error) {
-          if (agendaState.selectedId === entryId) { agendaState.selected = { entry, loading: false, data: null, error: error.message || "Ирцийн мэдээллийг авч чадсангүй." }; renderAgenda(); }
-        }
-      }
 
       agenda?.addEventListener("click", async (event) => {
         const target = event.target.closest("button");
@@ -233,22 +206,9 @@ import "../styles/global.css";
           const day = target.dataset.agendaDayToggle;
           if (agendaState.expandedDays.has(day)) {
             agendaState.expandedDays.delete(day);
-            if (agendaState.selected?.entry?.localDate === day) { agendaState.selectedId = ""; agendaState.selected = null; }
           } else agendaState.expandedDays.add(day);
           renderAgenda();
           return;
-        }
-        if (target.dataset.agendaOpen) { await openAgendaEntry(target.dataset.agendaOpen); return; }
-        if (target.dataset.homeAttendance && agendaState.selected?.data?.selected) {
-          target.disabled = true;
-          try {
-            await postAttendanceAction("attendance.mark", { slotId: agendaState.selected.data.selected.slotId, enrollmentId: target.dataset.enrollment, makeupAssignmentId: target.dataset.assignment || undefined, status: target.dataset.homeAttendance });
-            const data = await getAttendanceDay(agendaState.selected.entry.localDate, agendaState.selected.entry.occurrenceId);
-            if (agendaState.selectedId === agendaState.selected.entry.occurrenceId) { agendaState.selected.data = data; agendaState.selected.mutationError = ""; renderAgenda(); }
-          } catch (error) {
-            target.disabled = false;
-            if (agendaState.selected) { agendaState.selected.mutationError = error.message || "Ирцийг хадгалж чадсангүй."; renderAgenda(); }
-          }
         }
       });
       agenda?.addEventListener("change", async (event) => {
@@ -331,7 +291,7 @@ import "../styles/global.css";
         toolLinks.hidden = false;
         show("staff-home");
         updatePaymentSummary(session.capabilities || []);
-        if (capabilities.includes("attendance.view")) void loadAgenda();
+        if (capabilities.includes("attendance.view")) void loadAgenda(agendaState.week, agendaState.selectedDate);
       }
 
       async function updatePaymentSummary(capabilities) {

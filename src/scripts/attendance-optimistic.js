@@ -36,6 +36,10 @@ export function createOptimisticRosterMutator({ onChange, onError }) {
       return pendingEnrollmentIds.has(enrollmentId);
     },
 
+    hasPending() {
+      return pendingEnrollmentIds.size > 0;
+    },
+
     async mutate(entry, next, request) {
       if (pendingEnrollmentIds.has(entry.enrollmentId)) return false;
 

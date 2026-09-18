@@ -175,6 +175,10 @@ try {
   const beforeClassEnd = new Date(`${today}T09:30:00+08:00`);
   const afterClassEnd = new Date(`${today}T12:00:00+08:00`);
   const day = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today", beforeClassEnd);
+  const defaultDay = await attendance.getCourseAttendanceDay(runtime, actor(), today, "", beforeClassEnd);
+  assert.equal(defaultDay.selected.slotId, "slot-today", "an absent occurrence selects the first chronological lesson");
+  const staleDay = await attendance.getCourseAttendanceDay(runtime, actor(), today, "stale-slot", beforeClassEnd);
+  assert.equal(staleDay.selected, null, "a stale supplied occurrence never falls through to a different roster");
   assert.equal(day.occurrences.length, 1, "daily attendance lists scheduled course occurrences only");
   assert.equal(day.occurrences[0].rosterCount, 2, "daily occurrence list includes its compact roster count");
   assert.equal(day.occurrences[0].markedCount, 0, "daily occurrence list includes its compact marked count");
@@ -353,8 +357,12 @@ try {
   assert.doesNotMatch(source, /Хадгалах<\/button>/, "attendance has no page-level save action");
   assert.doesNotMatch(source, /Ноорог|Нийтлэх|Хувилбар/, "attendance has no calendar draft terminology");
   assert.doesNotMatch(source, /window\.confirm/, "bulk attendance uses an in-page Mongolian confirmation");
-  assert.match(staffHome, /\/staff\/attendance\/\?date=\$\{encodeURIComponent\(occurrence\.localDate\)\}/, "the home agenda preserves direct dated attendance deep links");
-  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Бүртгэл, төлбөр[\s\S]*?Нөхөх хичээл[\s\S]*?Ойрын хичээлүүд[\s\S]*?СУРГАЛТЫН ТОХИРГОО/, "staff home keeps daily work, the agenda, and existing setup tools in order");
+  assert.match(staffHome, /href="\/staff\/attendance\/\?date=\$\{encodeURIComponent\(entry\.localDate\)\}&occurrence=\$\{encodeURIComponent\(entry\.occurrenceId\)\}"/, "the home agenda uses direct exact-occurrence attendance links");
+  assert.doesNotMatch(staffHome, /staff-agenda-detail|data-home-attendance|Ирцийн хуудас нээх/, "home keeps roster actions on the attendance page");
+  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Бүртгэл, төлбөр[\s\S]*?Нөхөх хичээл[\s\S]*?Хичээлийн хуваарь[\s\S]*?СУРГАЛТЫН ТОХИРГОО/, "staff home keeps daily work, the agenda, and existing setup tools in order");
+  assert.match(source, /role="tab"[\s\S]*?\$\{escape\(entry\.startTime\)\}–\$\{escape\(entry\.endTime\)\}/, "attendance selection uses time-only tabs while retaining slot identity in the link");
+  assert.match(source, /Тасалсан хичээл:/, "make-up attendees name their missed source lesson clearly");
+  assert.doesNotMatch(source, /Эх тасалсан/, "deprecated missed-lesson wording is not shown");
   assert.doesNotMatch(staffHome, /Таны ажиллах хэсэг/, "staff home has no redundant capability list");
   assert.doesNotMatch(renderedAttendance, /Анударь|Билгүүн|Тест амралт/, "the static attendance page ships no roster or curriculum data");
 

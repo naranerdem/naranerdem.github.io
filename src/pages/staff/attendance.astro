@@ -22,16 +22,14 @@ import "../../styles/global.css";
       <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
       <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Ирц</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
-        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Ирц</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <div class="staff-page-heading"><h1>Ирц</h1><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <form id="attendance-date-form" class="staff-attendance-date-form">
-          <label>Өдөр <input id="attendance-date" type="date" required /></label>
+          <label class="visually-hidden" for="attendance-date">Өдөр сонгох</label>
+          <input id="attendance-date" type="date" aria-label="Өдөр сонгох" required />
           <button id="attendance-today" class="button secondary" type="button">Өнөөдөр</button>
         </form>
-        <section aria-labelledby="attendance-list-title">
-          <h2 id="attendance-list-title" class="staff-list-heading">Энэ өдрийн хичээлүүд</h2>
-          <div id="attendance-list" class="staff-attendance-list"></div>
-        </section>
+        <nav id="attendance-list" class="staff-attendance-list" aria-label="Өдрийн хичээл сонгох"></nav>
         <section id="attendance-detail" class="staff-attendance-detail" hidden></section>
       </section>
     </main>
@@ -48,7 +46,7 @@ import "../../styles/global.css";
       import { escape, formatDate, getAttendanceDay, hasAttendanceAccess, postAttendanceAction } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
-      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "" };
+      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "", refreshVersion: 0 };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -63,9 +61,14 @@ import "../../styles/global.css";
       });
 
       async function refresh() {
-        state.data = await getAttendanceDay(state.date, state.selectedSlotId);
-        state.date = state.data.localDate;
-        if (state.selectedSlotId && !state.data.selected) state.selectedSlotId = "";
+        const version = ++state.refreshVersion;
+        const requestedSlotId = state.selectedSlotId;
+        const data = await getAttendanceDay(state.date, requestedSlotId);
+        if (version !== state.refreshVersion) return;
+        state.data = data;
+        state.date = data.localDate;
+        state.invalidOccurrence = Boolean(requestedSlotId && !data.selected);
+        if (data.selected) state.selectedSlotId = data.selected.slotId;
         q("#attendance-date").value = state.date;
         history.replaceState(null, "", dateQuery());
         render();
@@ -75,13 +78,15 @@ import "../../styles/global.css";
         const container = q("#attendance-list");
         const entries = state.data.occurrences || [];
         if (!entries.length) { container.innerHTML = `<p class="staff-empty">Энэ өдөр хичээлгүй.</p>`; return; }
-        container.innerHTML = entries.map((entry) => `<article class="staff-attendance-occurrence ${entry.slotId === state.selectedSlotId ? "selected" : ""}"><div><strong>${escape(entry.startTime)}–${escape(entry.endTime)} · ${escape(entry.offeringTitle)}</strong><p>${entry.lessonSequence}. ${escape(entry.lessonTitle)}</p><p>${entry.progressCount} / ${entry.rosterCount} ${entry.occurrenceEnded ? "ирц бүрдсэн · Дууссан" : "тэмдэглэсэн"}${entry.holidayLabel ? ` · <span class="staff-calendar-warning-inline">${escape(entry.holidayLabel)}</span>` : ""}</p></div><button class="button secondary" type="button" data-open-occurrence="${escape(entry.slotId)}">Нээх</button></article>`).join("");
-        container.querySelectorAll("[data-open-occurrence]").forEach((button) => button.onclick = () => {
-          state.selectedSlotId = button.dataset.openOccurrence;
-          state.bulkConfirm = false;
-          state.rowErrorEnrollmentId = "";
-          refresh().then(() => q("#attendance-detail").scrollIntoView({ behavior: "smooth", block: "start" }));
-        });
+        const invalid = state.invalidOccurrence ? `<p class="staff-error">Сонгосон хичээл энэ өдөр байхгүй байна. Өөр цаг сонгоно уу.</p>` : "";
+        container.innerHTML = `${invalid}<div class="staff-attendance-selector" role="tablist" aria-label="Хичээлийн цаг">${entries.map((entry) => `<a class="staff-attendance-tab ${entry.slotId === state.selectedSlotId ? "selected" : ""}" role="tab" aria-selected="${entry.slotId === state.selectedSlotId}" href="/staff/attendance/?date=${encodeURIComponent(state.date)}&occurrence=${encodeURIComponent(entry.slotId)}" data-open-occurrence="${escape(entry.slotId)}">${escape(entry.startTime)}–${escape(entry.endTime)}</a>`).join("")}</div>`;
+      }
+
+      function canChangeOccurrence(event) {
+        if (!state.bulkPending && !optimistic.hasPending()) return true;
+        event?.preventDefault();
+        message("Ирцийг хадгалж дууссаны дараа өөр хичээл сонгоно уу.");
+        return false;
       }
 
       function attendanceControls(entry) {
@@ -110,8 +115,8 @@ import "../../styles/global.css";
         const sourceParts = [`${source?.lessonSequence ? `${source.lessonSequence}. ` : ""}${source?.lessonTitle || ""}`.trim(), formatDate(source?.localDate), source?.classLabel].filter(Boolean);
         const sourceText = sourceParts.join(" · ");
         const sourceLink = source?.slotId && source?.localDate
-          ? `<a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(source.localDate)}&occurrence=${encodeURIComponent(source.slotId)}">Эх тасалсан: ${escape(sourceText)}</a>`
-          : `Эх тасалсан: ${escape(sourceText)}`;
+          ? `<a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(source.localDate)}&occurrence=${encodeURIComponent(source.slotId)}">Тасалсан хичээл: ${escape(sourceText)}</a>`
+          : `Тасалсан хичээл: ${escape(sourceText)}`;
         const makeup = entry.attendanceKind === "makeup" ? `<p class="staff-muted"><span class="staff-kind-label">Нөхөх</span> ${sourceLink}</p>` : "";
         return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div>${makeup}<div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${error}</div></article>`;
       }
@@ -152,7 +157,7 @@ import "../../styles/global.css";
         const detail = q("#attendance-detail"); const selected = state.data.selected;
         if (!selected) { detail.hidden = true; detail.innerHTML = ""; return; }
         detail.hidden = false;
-        detail.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(formatDate(selected.localDate))} · ${escape(selected.startTime)}–${escape(selected.endTime)}</p><h2>${escape(selected.offeringTitle)}</h2><p>${selected.lessonSequence}. ${escape(selected.lessonTitle)}</p>${selected.holidayLabel ? `<p class="staff-calendar-warning">Анхааруулга: ${escape(selected.holidayLabel)} хугацаанд.</p>` : ""}</div><button id="close-attendance" class="button secondary" type="button">Хаах</button></div><div id="attendance-summary" class="staff-attendance-summary"></div>${selected.rosterCount ? `<div class="staff-attendance-roster">${selected.roster.map(rosterRow).join("")}</div>` : `<p class="staff-empty">Бүртгэлтэй сурагч алга.</p>`}`;
+        detail.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(formatDate(selected.localDate))} · ${escape(selected.startTime)}–${escape(selected.endTime)}</p><h2>${escape(selected.offeringTitle)}</h2><p>${escape(selected.classLabel)} · ${selected.lessonSequence}. ${escape(selected.lessonTitle)}</p>${selected.holidayLabel ? `<p class="staff-calendar-warning">Анхааруулга: ${escape(selected.holidayLabel)} хугацаанд.</p>` : ""}</div></div><div id="attendance-summary" class="staff-attendance-summary"></div>${selected.rosterCount ? `<div class="staff-attendance-roster">${selected.roster.map(rosterRow).join("")}</div>` : `<p class="staff-empty">Бүртгэлтэй сурагч алга.</p>`}`;
         renderSummary();
       }
 
@@ -203,7 +208,6 @@ import "../../styles/global.css";
       q("#attendance-detail").addEventListener("click", (event) => {
         const target = event.target.closest("button");
         if (!target || target.disabled) return;
-        if (target.id === "close-attendance") { state.selectedSlotId = ""; state.bulkConfirm = false; refresh(); return; }
         if (target.id === "attendance-bulk-present") { state.bulkConfirm = true; renderSummary(); return; }
         if (target.id === "attendance-bulk-cancel") { state.bulkConfirm = false; renderSummary(); return; }
         if (target.id === "attendance-bulk-confirm") { bulkPresent(); return; }
@@ -217,10 +221,14 @@ import "../../styles/global.css";
         if (target.matches("[data-toggle-notice]")) toggleNotice(target.dataset.toggleNotice, target.checked);
       });
 
+      q("#attendance-list").addEventListener("click", (event) => {
+        const target = event.target.closest("[data-open-occurrence]");
+        if (!target || !canChangeOccurrence(event)) return;
+      });
       function render() { renderList(); renderDetail(); }
-      q("#attendance-date-form").onsubmit = (event) => { event.preventDefault(); state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.bulkConfirm = false; refresh(); };
-      q("#attendance-date").onchange = () => { state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.bulkConfirm = false; refresh(); };
-      q("#attendance-today").onclick = () => { state.date = state.data.today; state.selectedSlotId = ""; state.bulkConfirm = false; refresh(); };
+      q("#attendance-date-form").onsubmit = (event) => { event.preventDefault(); if (!canChangeOccurrence(event)) return; state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
+      q("#attendance-date").onchange = (event) => { if (!canChangeOccurrence(event)) { q("#attendance-date").value = state.date; return; } state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
+      q("#attendance-today").onclick = (event) => { if (!canChangeOccurrence(event)) return; state.date = state.data.today; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
       (async () => { if (!(await hasAttendanceAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
     </script>
   </body>
