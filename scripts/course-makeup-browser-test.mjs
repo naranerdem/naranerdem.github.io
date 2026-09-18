@@ -95,19 +95,23 @@ try {
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-class', 'year', 'stage_1', 'Эх анги', 'Бямба', '10:00', '11:20', 10, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('target-class', 'year', 'stage_1', 'Зорилтот анги', 'Ням', '23:00', '23:59', 1, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('day-change-class', 'year', 'stage_1', 'Өөрчлөлтийн анги', 'Даваа', '12:00', '13:20', 10, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('day-change-class', 'year', 'stage_1', 'Өөрчлөлтийн анги', 'Даваа', '12:00', '13:20', 10, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-second-class', 'year', 'stage_1', 'Хоёр дахь өөрчлөлтийн анги', 'Даваа', '15:00', '16:20', 10, 'available', 'offering', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at) VALUES
       ('source-class', 'weekly', '${sourceDate}', 'Бямба', '10:00', '11:20', ${sql(now)}, ${sql(now)}),
       ('target-class', 'weekly', '${targetDate}', 'Ням', '23:00', '23:59', ${sql(now)}, ${sql(now)}),
-      ('day-change-class', 'weekly', '${sourceDate}', 'Даваа', '12:00', '13:20', ${sql(now)}, ${sql(now)});
+      ('day-change-class', 'weekly', '${sourceDate}', 'Даваа', '12:00', '13:20', ${sql(now)}, ${sql(now)}),
+      ('day-change-second-class', 'weekly', '${sourceDate}', 'Даваа', '15:00', '16:20', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-calendar', 'source-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('target-calendar', 'target-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('day-change-calendar', 'day-change-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('day-change-calendar', 'day-change-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-second-calendar', 'day-change-second-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-revision', 'source-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('target-revision', 'target-calendar', 'program', 1, 'draft', '${targetDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('day-change-revision', 'day-change-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      ('day-change-revision', 'day-change-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-second-revision', 'day-change-second-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-slot', 'source-revision', '${sourceDate}', '10:00', '11:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('same-day-slot', 'target-revision', '${targetDate}', '22:00', '22:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
@@ -116,8 +120,9 @@ try {
       ('day-change-slot-1', 'day-change-revision', '${sourceDate}', '12:00', '13:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('day-change-slot', 'day-change-revision', '${dayChangeDate}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('day-change-slot-3', 'day-change-revision', '${addDays(dayChangeDate, 7)}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('day-change-slot-4', 'day-change-revision', '${addDays(dayChangeDate, 14)}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-4', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
-    UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id IN ('source-revision', 'target-revision', 'day-change-revision');
+      ('day-change-slot-4', 'day-change-revision', '${addDays(dayChangeDate, 14)}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-4', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('day-change-second-slot', 'day-change-second-revision', '${dayChangeDate}', '15:00', '16:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id IN ('source-revision', 'target-revision', 'day-change-revision', 'day-change-second-revision');
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('guardian', 'Browser Асран', '99000000', '99000000', 'guardian@example.test', 'guardian@example.test', 'Тест', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
@@ -292,6 +297,49 @@ try {
   await page.goto(`${baseUrl}/staff/day-changes/?date=${dayChangeDate}&occurrence=day-change-slot`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   await page.locator(".staff-day-selected").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-day-slot]").count(), 2, "the fixture exposes two distinct time-only occurrences for local selection coverage");
+  let selectionReads = 0;
+  const countSelectionReads = async (route) => {
+    if (route.request().method() === "GET") selectionReads += 1;
+    await route.continue();
+  };
+  await page.route("**/api/staff/day-changes*", countSelectionReads);
+  await page.getByRole("button", { name: "15:00–16:20", exact: true }).click();
+  await page.locator(".staff-day-selected").getByText("Хоёр дахь өөрчлөлтийн анги").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "12:00–13:20", exact: true }).click();
+  await page.locator(".staff-day-selected").getByText("Өөрчлөлтийн анги").waitFor({ state: "visible" });
+  assert.equal(selectionReads, 0, "switching loaded time-only occurrences is immediate local state, not a stale network refresh");
+  await page.unroute("**/api/staff/day-changes*", countSelectionReads);
+
+  let releaseDayRead;
+  let delayedDayRead = false;
+  const dayReadStarted = new Promise((resolve) => { releaseDayRead = resolve; });
+  let allowDayRead;
+  const dayReadGate = new Promise((resolve) => { allowDayRead = resolve; });
+  const delayDayRead = async (route) => {
+    if (route.request().method() === "GET") {
+      if (!delayedDayRead) {
+        delayedDayRead = true;
+        releaseDayRead();
+      }
+      await dayReadGate;
+    }
+    await route.continue();
+  };
+  await page.route("**/api/staff/day-changes*", delayDayRead);
+  await page.locator("#day-date").fill(addDays(dayChangeDate, 7));
+  await page.locator("#day-date").dispatchEvent("change");
+  await dayReadStarted;
+  await page.getByText("Ачаалж байна…", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator(".staff-day-selected").count(), 0, "a loading date never leaves the prior class's actionable workspace beneath it");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(".staff-day-loading").screenshot({ path: path.join(screenshotDir, "day-change-loading-mobile.png") });
+  allowDayRead();
+  await page.locator(".staff-day-selected").getByText("Өөр өдрийн хичээл").waitFor({ state: "visible" });
+  await page.unroute("**/api/staff/day-changes*", delayDayRead);
+  await page.goto(`${baseUrl}/staff/day-changes/?date=${dayChangeDate}&occurrence=day-change-slot`);
+  await page.locator(".staff-day-selected").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
+
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: path.join(screenshotDir, "day-change-idle-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -343,9 +391,20 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator('[data-day-change-form] [name="replacementDate"]').press("Enter");
   assert.equal(previewPosts, 1, "a busy day-change form ignores a repeated Enter submission");
+  await page.locator("[data-day-change-form]").getByRole("button", { name: "Болих", exact: true }).click();
+  assert.equal(await page.locator("#day-confirmation").isHidden(), true, "abandoning an in-flight preview immediately restores the selected lesson without a mutation");
+  const stalePreviewResponse = page.waitForResponse((response) => response.request().method() === "POST"
+    && response.url().includes("/api/staff/day-changes")
+    && response.request().postData()?.includes("day-change.preview"));
   allowPreview();
-  await page.locator("#day-confirmation").waitFor({ state: "visible" });
+  await stalePreviewResponse;
   await page.unroute("**/api/staff/day-changes", delayDayPreview);
+  assert.equal(await page.locator("#day-confirmation").isHidden(), true, "an abandoned delayed preview cannot resurrect its review state");
+  await page.getByRole("button", { name: "Цуцлаад орлуулах цаг товлох", exact: true }).click();
+  await page.locator('[data-day-change-form] [name="replacementDate"]').fill(dayChangeReplacementDate);
+  await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("19:00");
+  await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await page.locator("#day-confirmation").waitFor({ state: "visible" });
   assert.equal(await page.locator("[data-day-change-form]").count(), 0,
     "the reviewed operation replaces its editable form instead of leaving a competing preview button");
   await page.locator(".staff-day-preview-list").getByText("Дараагийн хичээл").waitFor({ state: "visible" });
@@ -353,8 +412,18 @@ try {
   await page.getByRole("button", { name: "Засах", exact: true }).click();
   assert.equal(await page.locator("[name='replacementDate']").inputValue(), dayChangeReplacementDate,
     "editing restores the reviewed replacement date");
+  await page.waitForFunction(() => document.activeElement?.matches('[data-day-change-form] [name="replacementDate"]'));
+  assert.equal(await page.locator('[data-day-change-form] [name="replacementDate"]').evaluate((node) => document.activeElement === node), true,
+    "editing returns focus to the restored replacement form");
   await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("18:30");
   assert.equal(await page.locator("#day-confirmation").isHidden(), true, "editing a reviewed replacement invalidates its stale preview");
+  await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("19:00");
+  await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await page.locator("#day-confirmation").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Болих", exact: true }).click();
+  assert.equal(await page.locator("#day-confirmation").isHidden(), true, "abandoning a reviewed preview makes no schedule mutation");
+  await page.getByRole("button", { name: "Цуцлаад орлуулах цаг товлох", exact: true }).click();
+  await page.locator('[data-day-change-form] [name="replacementDate"]').fill(dayChangeReplacementDate);
   await page.locator('[data-day-change-form] [name="replacementStartTime"]').fill("19:00");
   await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
   await page.locator("#day-confirmation").waitFor({ state: "visible" });
