@@ -86,14 +86,19 @@ import "../../styles/global.css";
         if (!entry) return "";
         const blocked = entry.attendanceCount > 0;
         const reviewing = reviewingSelected(entry);
-        const replacementScheduled = Boolean(entry.replacementScheduled)
-          || state.savedReplacements.some((replacement) => replacement.sourceSlotId === entry.slotId);
+        const replacementScheduled = Boolean(entry.replacement)
+          || state.savedReplacements.some((replacement) => replacement.source
+            && replacement.source.classSessionId === entry.classSessionId
+            && replacement.source.localDate === entry.localDate
+            && replacement.source.startTime === entry.startTime
+            && replacement.source.endTime === entry.endTime
+            && replacement.source.curriculumLessonId === entry.curriculumLessonId);
         const status = entry.status === "cancelled" ? `<span class="staff-day-cancelled">Цуцалсан</span>` : blocked ? `<span class="staff-muted">Ирц тэмдэглэсэн</span>` : "";
         const makeup = entry.activeMakeupAssignmentCount ? `<p class="staff-muted">Энэ нэртэй хичээлд ${entry.activeMakeupAssignmentCount} идэвхтэй нөхөх товлолт байна. Огноо шилжвэл хичээлийн таних тэмдэг хэвээр үлдэнэ.</p>` : "";
         const controls = reviewing ? "" : entry.status === "scheduled" && !blocked
           ? `<div class="staff-day-action-choices" role="group" aria-label="Өөрчлөлтийн төрөл"><button class="staff-day-action-choice ${state.action === "single-cancel" ? "selected" : ""}" type="button" data-day-action="single-cancel" aria-pressed="${state.action === "single-cancel"}" ${busy() ? "disabled" : ""}>Энэ хичээлийг цуцлах</button><button class="staff-day-action-choice ${state.action === "single-replace" ? "selected" : ""}" type="button" data-day-action="single-replace" aria-pressed="${state.action === "single-replace"}" ${busy() ? "disabled" : ""}>Цуцлаад орлуулах цаг товлох</button></div>`
           : entry.status === "cancelled" && !replacementScheduled ? `<div class="staff-day-action-choices" role="group" aria-label="Өөрчлөлтийн төрөл"><button class="staff-day-action-choice ${state.action === "cancelled-replace" ? "selected" : ""}" type="button" data-day-action="cancelled-replace" aria-pressed="${state.action === "cancelled-replace"}" ${busy() ? "disabled" : ""}>Орлуулах ээлжит цаг оруулах</button></div>`
-            : entry.status === "cancelled" ? `<p class="staff-muted">Энэ цуцлагдсан цагт орлуулах ээлжит цаг аль хэдийн товлогдсон.</p>` : "";
+            : entry.status === "cancelled" ? `<p class="staff-muted">Энэ цуцлагдсан цагт орлуулах ээлжит цаг аль хэдийн товлогдсон.${entry.replacement?.slotId ? "" : " Орлуулах цагийг хянаж шалгана уу."}</p>` : "";
         const form = reviewing ? "" : state.action === "single-cancel" ? replacementForm(entry, false)
           : state.action === "single-replace" ? replacementForm(entry, true)
             : state.action === "cancelled-replace" && !replacementScheduled ? `<form class="staff-compact-form staff-day-change-form" data-day-change-form data-change-kind="extra" ${state.pending === "preview" ? 'aria-busy="true"' : ""}><p class="staff-muted">Цуцлагдсан хичээлийн оронд нэг ээлжит цаг нэмнэ. Дараагийн нэртэй хичээлүүд цагийн дарааллаар таарна.</p><div class="staff-day-change-fields"><label>Орлуулах өдөр<input name="localDate" type="date" value="${escape(state.actionValues.localDate || "")}" required ${busy() ? "disabled" : ""} /></label><label>Эхлэх цаг<input name="startTime" type="time" value="${escape(state.actionValues.startTime || entry.startTime)}" required ${busy() ? "disabled" : ""} /></label></div><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" data-day-preview-submit ${busy() ? "disabled" : ""}>Урьдчилан харах</button><button class="button secondary" type="button" data-day-action="" ${busy() ? "disabled" : ""}>Болих</button></div>${feedback()}</form>` : "";

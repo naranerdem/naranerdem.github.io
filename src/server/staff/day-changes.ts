@@ -44,9 +44,38 @@ interface DailyOccurrenceRow {
   classLabel: string;
   attendanceCount: number;
   activeMakeupAssignmentCount: number;
-  replacementScheduled: number;
+  replacement?: CurrentReplacement | null;
   isTest: number;
   testRunId: string | null;
+}
+
+interface ReplacementSource {
+  slotId: string;
+  classSessionId: string;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  curriculumLessonId: string;
+}
+
+interface ReplacementTarget {
+  classSessionId: string;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+}
+
+interface CurrentReplacement extends ReplacementTarget {
+  slotId: string | null;
+  lessonSequence: number | null;
+  lessonTitle: string | null;
+}
+
+interface DailyChangePlan {
+  action: string;
+  subjectId: string;
+  plans: PlannedRevision[];
+  metadata: Record<string, unknown>;
 }
 
 interface CalendarContextRow {
@@ -240,11 +269,6 @@ const OCCURRENCE_SELECT = `SELECT slot.id AS slotId,
         AND makeup_resolution.status = 'active'
         AND makeup_assignment.target_class_session_id = class_session.id
         AND makeup_assignment.target_curriculum_lesson_id = lesson.id) AS activeMakeupAssignmentCount,
-    EXISTS(SELECT 1 FROM class_calendar_slot AS replacement
-      WHERE replacement.class_calendar_revision_id = revision.id
-        AND replacement.status = 'scheduled'
-        AND replacement.slot_source = 'manual_extra'
-        AND replacement.curriculum_lesson_id = lesson.id) AS replacementScheduled,
     MAX(slot.is_test, class_session.is_test, offering.is_test) AS isTest,
     COALESCE(slot.test_run_id, class_session.test_run_id, offering.test_run_id) AS testRunId
   FROM class_calendar_slot AS slot
@@ -260,6 +284,149 @@ const OCCURRENCE_SELECT = `SELECT slot.id AS slotId,
   WHERE offering.status = 'active'
     AND offering.kind IN ('annual_course', 'summer_course')
     AND slot.status IN ('scheduled', 'cancelled')`;
+
+function replacementSource(occurrence: DailyOccurrenceRow): ReplacementSource {
+  return {
+    slotId: occurrence.slotId,
+    classSessionId: occurrence.classSessionId,
+    localDate: occurrence.localDate,
+    startTime: occurrence.startTime,
+    endTime: occurrence.endTime,
+    curriculumLessonId: occurrence.curriculumLessonId,
+  };
+}
+
+function replacementSourceKey(source: Omit<ReplacementSource, "slotId">): string {
+  return [source.classSessionId, source.localDate, source.startTime, source.endTime, source.curriculumLessonId].join("|");
+}
+
+function replacementSourceFrom(value: unknown): ReplacementSource | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  const slotId = clean(source.slotId);
+  const classSessionId = clean(source.classSessionId);
+  const localDate = clean(source.localDate, 10);
+  const startTime = clean(source.startTime, 5);
+  const endTime = clean(source.endTime, 5);
+  const curriculumLessonId = clean(source.curriculumLessonId);
+  if (!slotId || !classSessionId || !validDate(localDate) || !validTime(startTime) || !validTime(endTime) || !curriculumLessonId) return null;
+  return { slotId, classSessionId, localDate, startTime, endTime, curriculumLessonId };
+}
+
+function replacementTargetFrom(value: unknown): ReplacementTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const target = value as Record<string, unknown>;
+  const classSessionId = clean(target.classSessionId);
+  const localDate = clean(target.localDate, 10);
+  const startTime = clean(target.startTime, 5);
+  const endTime = clean(target.endTime, 5);
+  if (!classSessionId || !validDate(localDate) || !validTime(startTime) || !validTime(endTime)) return null;
+  return { classSessionId, localDate, startTime, endTime };
+}
+
+function recordedReplacementFromResult(value: unknown): { source: ReplacementSource; target: ReplacementTarget } | null {
+  if (!value || typeof value !== "object") return null;
+  const replacements = (value as Record<string, unknown>).replacements;
+  if (!Array.isArray(replacements)) return null;
+  for (const replacement of replacements) {
+    if (!replacement || typeof replacement !== "object") continue;
+    const entry = replacement as Record<string, unknown>;
+    const source = replacementSourceFrom(entry.source);
+    const target = replacementTargetFrom(entry.target);
+    if (source && target) return { source, target };
+  }
+  return null;
+}
+
+function legacyReplacementIds(value: unknown): { sourceSlotId: string; targetSlotId: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const replacements = (value as Record<string, unknown>).replacements;
+  if (!Array.isArray(replacements)) return null;
+  for (const replacement of replacements) {
+    if (!replacement || typeof replacement !== "object") continue;
+    const entry = replacement as Record<string, unknown>;
+    const sourceSlotId = clean(entry.sourceSlotId);
+    const targetSlotId = clean(entry.slotId);
+    if (sourceSlotId && targetSlotId) return { sourceSlotId, targetSlotId };
+  }
+  return null;
+}
+
+async function legacyReplacementFromIds(
+  env: WorkerEnv,
+  ids: { sourceSlotId: string; targetSlotId: string },
+): Promise<{ source: ReplacementSource; target: ReplacementTarget } | null> {
+  const source = await env.DB.prepare(`SELECT slot.id AS slotId, calendar.class_session_id AS classSessionId,
+      slot.local_date AS localDate, slot.start_time AS startTime, slot.end_time AS endTime,
+      COALESCE(slot.curriculum_lesson_id, cancelled_lesson.id) AS curriculumLessonId
+    FROM class_calendar_slot AS slot
+    INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id
+    INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+    LEFT JOIN curriculum_lesson AS cancelled_lesson
+      ON cancelled_lesson.curriculum_program_id = revision.curriculum_program_id
+      AND cancelled_lesson.sequence_number = slot.cancelled_lesson_sequence
+    WHERE slot.id = ?`).bind(ids.sourceSlotId).first<ReplacementSource>();
+  const target = await env.DB.prepare(`SELECT calendar.class_session_id AS classSessionId,
+      slot.local_date AS localDate, slot.start_time AS startTime, slot.end_time AS endTime
+    FROM class_calendar_slot AS slot
+    INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id
+    INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+    WHERE slot.id = ? AND slot.slot_source = 'manual_extra'`).bind(ids.targetSlotId).first<ReplacementTarget>();
+  if (!source || !target || !source.curriculumLessonId) return null;
+  return { source, target };
+}
+
+async function recordedReplacementForSource(
+  env: WorkerEnv,
+  source: ReplacementSource,
+): Promise<{ source: ReplacementSource; target: ReplacementTarget } | null> {
+  const rows = await env.DB.prepare(`SELECT result_json AS resultJson
+    FROM course_day_change_operation
+    WHERE action IN ('course_occurrence_moved', 'course_occurrence_replacement_added')`).all<{ resultJson: string }>();
+  for (const row of rows.results) {
+    try {
+      const result = JSON.parse(row.resultJson);
+      const replacement = recordedReplacementFromResult(result);
+      if (replacement && replacementSourceKey(replacement.source) === replacementSourceKey(source)) return replacement;
+      const legacyIds = legacyReplacementIds(result);
+      if (!legacyIds) continue;
+      const legacyReplacement = await legacyReplacementFromIds(env, legacyIds);
+      if (legacyReplacement && replacementSourceKey(legacyReplacement.source) === replacementSourceKey(source)) return legacyReplacement;
+    } catch {
+      // A malformed historical result cannot establish a replacement association.
+    }
+  }
+  return null;
+}
+
+async function currentReplacementForTarget(env: WorkerEnv, target: ReplacementTarget): Promise<CurrentReplacement> {
+  const row = await env.DB.prepare(`SELECT slot.id AS slotId,
+      lesson.sequence_number AS lessonSequence, lesson.title AS lessonTitle
+    FROM class_calendar_slot AS slot
+    INNER JOIN class_calendar_revision AS revision
+      ON revision.id = slot.class_calendar_revision_id AND revision.status = 'published'
+    INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+    LEFT JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
+    WHERE calendar.class_session_id = ? AND slot.status = 'scheduled' AND slot.slot_source = 'manual_extra'
+      AND slot.local_date = ? AND slot.start_time = ? AND slot.end_time = ?`).bind(
+    target.classSessionId, target.localDate, target.startTime, target.endTime,
+  ).first<{ slotId: string; lessonSequence: number | null; lessonTitle: string | null }>();
+  return {
+    ...target,
+    slotId: row?.slotId ?? null,
+    lessonSequence: row?.lessonSequence ?? null,
+    lessonTitle: row?.lessonTitle ?? null,
+  };
+}
+
+async function replacementsForOccurrences(env: WorkerEnv, occurrences: DailyOccurrenceRow[]): Promise<Map<string, CurrentReplacement>> {
+  const replacements = new Map<string, CurrentReplacement>();
+  for (const occurrence of occurrences.filter((entry) => entry.status === "cancelled")) {
+    const recorded = await recordedReplacementForSource(env, replacementSource(occurrence));
+    if (recorded) replacements.set(replacementSourceKey(recorded.source), await currentReplacementForTarget(env, recorded.target));
+  }
+  return replacements;
+}
 
 export async function getDailyChangesOverview(
   env: WorkerEnv,
@@ -293,7 +460,17 @@ export async function getDailyChangesOverview(
     ORDER BY offering.title, class_session.display_label`).all<{
       classSessionId: string; classLabel: string; offeringTitle: string; startTime: string; endTime: string;
     }>();
-  return { today: local.date, selectedDate: date, throughDate: through, occurrences: result.results, classes: classes.results };
+  const replacements = await replacementsForOccurrences(env, result.results);
+  return {
+    today: local.date,
+    selectedDate: date,
+    throughDate: through,
+    occurrences: result.results.map((entry) => ({
+      ...entry,
+      replacement: replacements.get(replacementSourceKey(replacementSource(entry))) ?? null,
+    })),
+    classes: classes.results,
+  };
 }
 
 async function contextForClass(env: WorkerEnv, classSessionId: string): Promise<CalendarContextRow> {
@@ -591,7 +768,7 @@ async function plansForAction(
   env: WorkerEnv,
   input: Record<string, unknown>,
   at: Date,
-): Promise<{ action: string; subjectId: string; plans: PlannedRevision[]; metadata: Record<string, unknown> }> {
+): Promise<DailyChangePlan> {
   const kind = clean(input.kind);
   const sourceDate = clean(input.sourceDate, 10);
   const replacementDate = clean(input.replacementDate, 10) || null;
@@ -605,7 +782,13 @@ async function plansForAction(
       action: replacementDate ? "course_occurrence_moved" : "course_occurrence_cancelled",
       subjectId: occurrence.slotId,
       plans: [plan],
-      metadata: { sourceDate: occurrence.localDate, replacementDate, replacementStartTime, classSessionIds: [occurrence.classSessionId] },
+      metadata: {
+        sourceDate: occurrence.localDate,
+        replacementDate,
+        replacementStartTime,
+        classSessionIds: [occurrence.classSessionId],
+        sourceOccurrence: replacementDate ? replacementSource(occurrence) : null,
+      },
     };
   }
   if (kind === "day-cancel" || kind === "day-move") {
@@ -654,11 +837,8 @@ async function plansForAction(
     const source = await env.DB.prepare(`${OCCURRENCE_SELECT} AND slot.id = ? GROUP BY slot.id, lesson.id`)
       .bind(sourceSlotId).first<DailyOccurrenceRow>();
     if (!source || source.status !== "cancelled" || source.classSessionId !== classSessionId) throw new DayChangeError("invalid");
+    if (await recordedReplacementForSource(env, replacementSource(source))) throw new DayChangeError("conflict");
     const context = await contextForClass(env, classSessionId);
-    const data = await commonPlanningData(env, context);
-    if (data.slots.some((slot) => slot.status === "scheduled"
-      && slot.slotSource === "manual_extra"
-      && slot.lesson?.id === source.curriculumLessonId)) throw new DayChangeError("conflict");
     const startTime = clean(input.startTime, 5) || context.startTime;
     const endTime = clean(input.endTime, 5) || addMinutes(startTime, durationMinutes(context.startTime, context.endTime));
     const plan = await planExtras(env, context, [{ id: id(), localDate, startTime, endTime, reasonLabel: clean(input.note) || "Нэмэлт өдөр" }], at);
@@ -666,14 +846,15 @@ async function plansForAction(
       action: "course_occurrence_replacement_added",
       subjectId: sourceSlotId,
       plans: [plan],
-      metadata: { classSessionIds: [classSessionId], localDate, sourceSlotId },
+      metadata: { classSessionIds: [classSessionId], localDate, sourceSlotId, sourceOccurrence: replacementSource(source) },
     };
   }
   throw new DayChangeError("invalid");
 }
 
 interface AppliedReplacement {
-  sourceSlotId: string | null;
+  source: ReplacementSource | null;
+  target: ReplacementTarget;
   slotId: string;
   classSessionId: string;
   classLabel: string;
@@ -685,22 +866,27 @@ interface AppliedReplacement {
 }
 
 function appliedReplacements(
-  planned: { plans: PlannedRevision[] },
+  planned: DailyChangePlan,
   input: Record<string, unknown>,
   builtRevisions: Array<{ slotIds: Map<string, string> }>,
 ): AppliedReplacement[] {
   const kind = clean(input.kind);
   const replacementDate = kind === "extra" ? clean(input.localDate, 10) : clean(input.replacementDate, 10);
   if (!replacementDate) return [];
-  const sourceSlotId = kind === "single-cancel" ? clean(input.slotId) || null
-    : kind === "extra" ? clean(input.sourceSlotId) || null : null;
+  const source = replacementSourceFrom(planned.metadata.sourceOccurrence);
   return planned.plans.flatMap((plan, index) => {
     const previousIds = new Set(plan.previousSlots.map((slot) => slot.id));
     return plan.slots.filter((slot) => slot.status === "scheduled"
       && slot.slotSource === "manual_extra"
       && slot.localDate === replacementDate
       && !previousIds.has(slot.id)).map((slot) => ({
-      sourceSlotId,
+      source,
+      target: {
+        classSessionId: plan.context.classSessionId,
+        localDate: slot.localDate,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+      },
       slotId: builtRevisions[index].slotIds.get(slot.id) || slot.id,
       classSessionId: plan.context.classSessionId,
       classLabel: plan.context.classLabel,
