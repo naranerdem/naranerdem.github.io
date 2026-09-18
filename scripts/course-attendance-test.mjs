@@ -353,8 +353,8 @@ try {
   assert.doesNotMatch(source, /Хадгалах<\/button>/, "attendance has no page-level save action");
   assert.doesNotMatch(source, /Ноорог|Нийтлэх|Хувилбар/, "attendance has no calendar draft terminology");
   assert.doesNotMatch(source, /window\.confirm/, "bulk attendance uses an in-page Mongolian confirmation");
-  assert.match(staffHome, /href="\/staff\/attendance\/"/, "staff home links to daily attendance");
-  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Ирц[\s\S]*?Нөхөх хичээл[\s\S]*?Өдрийн өөрчлөлт[\s\S]*?Сургалтын тохиргоо/, "staff home keeps the complete daily workflow before setup tools");
+  assert.match(staffHome, /\/staff\/attendance\/\?date=\$\{encodeURIComponent\(occurrence\.localDate\)\}/, "the home agenda preserves direct dated attendance deep links");
+  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Бүртгэл, төлбөр[\s\S]*?Нөхөх хичээл[\s\S]*?Ойрын хичээлүүд[\s\S]*?СУРГАЛТЫН ТОХИРГОО/, "staff home keeps daily work, the agenda, and existing setup tools in order");
   assert.doesNotMatch(staffHome, /Таны ажиллах хэсэг/, "staff home has no redundant capability list");
   assert.doesNotMatch(renderedAttendance, /Анударь|Билгүүн|Тест амралт/, "the static attendance page ships no roster or curriculum data");
 

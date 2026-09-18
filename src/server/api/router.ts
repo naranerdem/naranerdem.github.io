@@ -145,6 +145,7 @@ import {
   getDailyChangesOverview,
   previewDailyChange,
 } from "../staff/day-changes";
+import { getTeacherHomeAgenda, TeacherHomeAgendaError } from "../staff/teacher-home-agenda";
 import {
   ProgramCalendarError,
   cancelFutureCalendarSlot,
@@ -1633,6 +1634,28 @@ export async function handleApiRequest(
       return json({ ok: true, ...result }, 200, { "Cache-Control": "no-store" });
     } catch (caught) {
       return courseAttendanceError(caught);
+    }
+  }
+
+  if (path === "/api/staff/home-agenda") {
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    const denied = await requireStaffCapability(request, env, "attendance.view");
+    if (denied) return denied;
+    const principal = await staffPrincipalForRequest(request, env);
+    if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+    try {
+      return json(await getTeacherHomeAgenda(
+        env,
+        principal,
+        new URL(request.url).searchParams.get("week") || "",
+      ), 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      if (caught instanceof TeacherHomeAgendaError) {
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request",
+          caught.code === "forbidden" ? "Энэ хэсгийг нээх эрх алга." : "Долоо хоногийн огноог шалгана уу.",
+          caught.code === "forbidden" ? 403 : 400, { "Cache-Control": "no-store" });
+      }
+      throw caught;
     }
   }
 

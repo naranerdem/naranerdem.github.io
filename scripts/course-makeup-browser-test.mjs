@@ -9,7 +9,7 @@ import { chromium } from "@playwright/test";
 // Disposable Worker/D1 coverage for the rendered teacher make-up workflow.
 // The staff cookie is a regular hashed local session, never a production bypass.
 const persistDir = mkdtempSync(path.join(tmpdir(), "naranerdem-makeup-browser-"));
-const screenshotDir = path.join(tmpdir(), "naranerdem-makeup-capacity-screens");
+const screenshotDir = process.env.MAKEUP_BROWSER_SCREENSHOT_DIR || path.join(tmpdir(), "naranerdem-makeup-capacity-screens");
 mkdirSync(screenshotDir, { recursive: true });
 const rawSessionToken = randomUUID();
 const sessionHash = createHash("sha256").update(rawSessionToken).digest("hex");
@@ -49,8 +49,19 @@ async function waitForWorker() {
   }
   throw new Error(`Local Worker did not become ready: ${String(lastError)}\n${workerOutput}`);
 }
+async function waitForRenderedCount(page, selector, expected, label) {
+  const deadline = Date.now() + 5_000;
+  let actual = -1;
+  while (Date.now() < deadline) {
+    actual = await page.locator(selector).count();
+    if (actual === expected) return;
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`${label}: expected ${expected} rendered element(s), found ${actual}`);
+}
 
 try {
+  console.log("make-up browser fixture: applying local schema");
   runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "local migrations");
   const now = new Date().toISOString();
   const today = localToday();
@@ -109,16 +120,43 @@ try {
       VALUES ('target-hold', 'hold-child', 'target-class', 'initial_payment', 'active', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
   `);
 
+  console.log("make-up browser fixture: starting local Worker");
   worker = spawn(process.execPath, [wranglerCli, "dev", "--env", "staging", "--local", "--persist-to", persistDir,
     "--ip", "127.0.0.1", "--port", String(port), "--var", `APP_ORIGIN:${baseUrl}`], { stdio: ["ignore", "pipe", "pipe"] });
   worker.stdout.on("data", (chunk) => { workerOutput += String(chunk); });
   worker.stderr.on("data", (chunk) => { workerOutput += String(chunk); });
   await waitForWorker();
 
+  console.log("make-up browser fixture: exercising rendered staff workflow");
   browser = await chromium.launch({ headless: true });
   context = await browser.newContext();
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   const page = await context.newPage();
+  console.log("make-up browser fixture: opening teacher home");
+  await page.goto(`${baseUrl}/staff/`);
+  await page.locator("#staff-home").waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Бүртгэл, төлбөр" }).waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Нөхөх хичээл" }).waitFor({ state: "visible" });
+  await page.locator("#staff-agenda [data-agenda-open='target-slot']").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#staff-agenda [data-agenda-open='target-slot']").count(), 1, "home renders one stable card for the dated lesson occurrence");
+  await page.locator("#staff-agenda [data-agenda-open='target-slot']").click();
+  await page.getByText("Бүртгэлтэй сурагч алга.", { exact: true }).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-before-booking-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-before-booking-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  execute(`UPDATE teacher_dashboard_preferences SET show_setup_section = 0, updated_at = ${sql(now)} WHERE singleton = 1;`);
+  await page.reload();
+  await page.locator("#staff-home").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#staff-setup-section").isHidden(), true, "the existing hidden-settings preference hides the complete setup section without exposing replacement shortcuts");
+  await page.screenshot({ path: path.join(screenshotDir, "teacher-home-settings-hidden.png") });
+  execute(`UPDATE teacher_dashboard_preferences SET show_setup_section = 1, updated_at = ${sql(now)} WHERE singleton = 1;`);
+  await page.reload();
+  await page.locator("#staff-setup-section").waitFor({ state: "visible" });
+
+  console.log("make-up browser fixture: checking make-up availability");
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Нөхөх", exact: true }).click();
@@ -141,6 +179,7 @@ try {
   assert.equal(assignments.scheduled.length, 1, "the rendered normal-target action creates one active assignment");
   assert.equal(assignments.scheduled[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
 
+  console.log("make-up browser fixture: checking destination attendance");
   await page.goto(`${baseUrl}/staff/attendance/?date=${today}&occurrence=target-slot`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   await page.getByText("Browser Нөхөх", { exact: true }).waitFor({ state: "visible" });
@@ -163,6 +202,37 @@ try {
   assert.equal(destination.selected.rosterCount, 1, "destination attendance summary counts the displayed make-up attendee");
   assert.equal(destination.selected.roster[0].attendanceKind, "makeup", "destination attendee remains visibly distinct from an ordinary enrollment");
   assert.equal(destination.selected.roster[0].makeupSource.lessonTitle, "Ижил хичээл", "destination attendee retains the source missed-lesson linkage");
+  console.log("make-up browser fixture: reconciling agenda counts");
+  await page.goto(`${baseUrl}/staff/`);
+  await page.locator("#staff-home").waitFor({ state: "visible" });
+  await page.locator("#staff-agenda [data-agenda-open='target-slot']").waitFor({ state: "visible" });
+  await page.locator("#staff-agenda [data-agenda-open='target-slot']").click();
+  await page.waitForTimeout(1_000);
+  assert.equal(await page.getByText("Browser Нөхөх", { exact: true }).count(), 1, "the agenda detail renders the booked make-up attendee once");
+  assert.match(await page.locator("#staff-agenda .staff-agenda-detail").innerText(), /Үндсэн 0 · Нөхөх 1/, "the agenda detail keeps ordinary and make-up counts distinct");
+  assert.equal(await page.locator("#staff-agenda [data-agenda-open='target-slot']").count(), 1, "reopening and responsive detail rendering do not duplicate an occurrence card");
+  console.log("make-up browser fixture: closing selected home lesson");
+  await page.locator("#staff-agenda [data-agenda-open='target-slot']").click();
+  assert.equal(await page.locator("#staff-agenda .staff-agenda-detail").count(), 0, "closing the selected occurrence removes its in-place detail");
+  await page.setViewportSize({ width: 390, height: 844 });
+  console.log("make-up browser fixture: collapsing and reopening the target day");
+  await page.locator(`[data-agenda-day-toggle='${targetDate}']`).click();
+  assert.equal(await page.locator("#staff-agenda .staff-agenda-detail").count(), 0, "collapsing a day leaves no stranded detail panel");
+  await page.locator(`[data-agenda-day-toggle='${targetDate}']`).click();
+  await page.locator("#staff-agenda [data-agenda-open='target-slot']").click();
+  await page.getByText("Browser Нөхөх", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("#staff-agenda [data-agenda-open='target-slot']").count(), 1, "mobile reopen keeps one dated occurrence card");
+  console.log("make-up browser fixture: navigating to an explicit empty week");
+  await page.locator("#staff-agenda [data-agenda-week='next']").click();
+  await waitForRenderedCount(page, "#staff-agenda [data-agenda-day]", 7, "explicit week navigation");
+  assert.equal(await page.locator("#staff-agenda [data-agenda-open]").count(), 0, "an explicitly selected empty week remains an empty agenda instead of a loading or error state");
+  console.log("make-up browser fixture: returning to the current week");
+  await page.locator("#staff-agenda [data-agenda-week='today']").click();
+  await waitForRenderedCount(page, "#staff-agenda [data-agenda-open='target-slot']", 1, "returning to the current week");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-after-booking-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#staff-agenda").screenshot({ path: path.join(screenshotDir, "teacher-home-agenda-after-booking-mobile.png") });
   console.log(`ok browser make-up capacity target availability and booking (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);

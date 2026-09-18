@@ -1750,6 +1750,189 @@ textarea:focus {
   padding-top: 1.25rem;
 }
 
+.staff-section-label {
+  color: var(--muted);
+  font-size: 0.76rem !important;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin: 0 !important;
+}
+
+.staff-home-agenda {
+  border-top: 1px solid var(--line);
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+}
+
+.staff-agenda-heading,
+.staff-agenda-controls,
+.staff-agenda-day-heading,
+.staff-agenda-detail-heading,
+.staff-agenda-roster li {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  justify-content: space-between;
+}
+
+.staff-agenda-heading h2 {
+  margin: 0.15rem 0 0;
+}
+
+.staff-agenda-controls {
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.staff-agenda-controls strong {
+  font-size: 0.95rem;
+}
+
+.staff-agenda-week {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.8rem;
+}
+
+@media (min-width: 50rem) {
+  .staff-shell:has(#staff-home:not([hidden])) {
+    width: min(100%, 70rem);
+  }
+
+  .staff-agenda-week {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 72rem) {
+  .staff-agenda-week {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+}
+
+.staff-agenda-day {
+  border-top: 2px solid var(--line);
+  min-width: 0;
+  padding-top: 0.5rem;
+}
+
+.staff-agenda-day.today {
+  border-color: var(--blue);
+}
+
+.staff-agenda-day-heading {
+  align-items: baseline;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.staff-agenda-day-heading span,
+.staff-agenda-entry small,
+.staff-agenda-detail p {
+  color: var(--muted);
+}
+
+.staff-agenda-entries {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+}
+
+.staff-agenda-entry {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  gap: 0.15rem;
+  min-height: 0;
+  padding: 0.55rem;
+  text-align: left;
+  text-decoration: none;
+  width: 100%;
+}
+
+.staff-agenda-entry:hover,
+.staff-agenda-entry:focus-visible {
+  border-color: var(--blue);
+  outline: 3px solid rgba(7, 58, 175, 0.16);
+  outline-offset: 1px;
+}
+
+.staff-agenda-entry > span {
+  color: var(--blue-deep);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.staff-agenda-entry strong {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.staff-agenda-entry small {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.staff-agenda-entry.cancelled {
+  border-style: dashed;
+}
+
+.staff-agenda-detail {
+  border-top: 1px solid var(--line);
+  margin-top: 0.6rem;
+  padding-top: 0.65rem;
+}
+
+.staff-agenda-detail-heading {
+  align-items: flex-start;
+}
+
+.staff-agenda-detail-heading p {
+  font-size: 0.9rem;
+  margin: 0.2rem 0 0;
+}
+
+.staff-agenda-roster {
+  display: grid;
+  gap: 0.45rem;
+  list-style: none;
+  margin: 0.7rem 0 0;
+  padding: 0;
+}
+
+.staff-agenda-roster li {
+  align-items: flex-start;
+  border-top: 1px solid var(--line);
+  padding-top: 0.45rem;
+}
+
+.staff-agenda-roster li small {
+  color: var(--muted);
+  display: block;
+  margin-top: 0.15rem;
+}
+
+.staff-agenda-attendance-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.staff-agenda-attendance-controls .button {
+  min-height: 2rem;
+  padding: 0.35rem 0.5rem;
+}
+
 .staff-tool-grid-daily {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -3936,6 +4119,38 @@ textarea:focus {
 }
 
 @media (max-width: 31rem) {
+  .staff-agenda-heading,
+  .staff-agenda-controls,
+  .staff-agenda-detail-heading,
+  .staff-agenda-roster li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .staff-agenda-controls .staff-text-action {
+    align-self: flex-start;
+  }
+
+  .staff-agenda-week {
+    grid-template-columns: 1fr;
+  }
+
+  .staff-agenda-day {
+    padding-bottom: 0.2rem;
+  }
+
+  .staff-agenda-day[data-open="false"] .staff-agenda-entries {
+    display: none;
+  }
+
+  .staff-agenda-day[data-open="false"]::after {
+    color: var(--muted);
+    content: "Дэлгэрүүлэх";
+    display: block;
+    font-size: 0.85rem;
+    margin-top: 0.35rem;
+  }
+
   .staff-tool-grid {
     grid-template-columns: 1fr;
   }
