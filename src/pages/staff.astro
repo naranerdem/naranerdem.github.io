@@ -194,7 +194,7 @@ import "../styles/global.css";
             : `<p class="staff-agenda-empty">Хичээлгүй</p>${emptySummary}`;
           const heading = expandable
             ? `<button class="staff-agenda-day-heading" type="button" data-agenda-day-toggle="${day}" aria-expanded="${open}"><strong>${weekday(day)} · ${shortDate(day)}</strong><span class="staff-agenda-day-indicator" aria-hidden="true">${open ? "−" : "+"}</span></button>`
-            : `<div class="staff-agenda-day-heading"><strong>${weekday(day)} · ${shortDate(day)}</strong></div>`;
+            : `<div class="staff-agenda-day-heading"><strong>${weekday(day)} · ${shortDate(day)}</strong><span class="staff-agenda-empty-inline">Хичээлгүй</span></div>`;
           return `<section class="staff-agenda-day ${day === today ? "today" : ""} ${expandable ? "" : "empty"}" data-agenda-day="${day}" data-open="${open}">${heading}<div class="staff-agenda-entries">${content}</div></section>`;
         }).join("");
         const weekEnd = addDays(weekStart, 6);

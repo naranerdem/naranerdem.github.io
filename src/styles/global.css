@@ -1883,6 +1883,10 @@ textarea:focus {
   margin: 0;
 }
 
+.staff-agenda-empty-inline {
+  display: none;
+}
+
 .staff-agenda-entry {
   background: transparent;
   border: 1px solid var(--line);
@@ -4258,6 +4262,17 @@ textarea:focus {
   }
 
   .staff-agenda-day:not(.empty)[data-open="false"] .staff-agenda-entries {
+    display: none;
+  }
+
+  .staff-agenda-day.empty .staff-agenda-empty-inline {
+    color: var(--muted);
+    display: inline;
+    font-size: 0.85rem;
+    font-weight: 400;
+  }
+
+  .staff-agenda-day.empty .staff-agenda-entries {
     display: none;
   }
 
