@@ -413,6 +413,29 @@ try {
   await page.screenshot({ path: path.join(screenshotDir, "day-change-result-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: path.join(screenshotDir, "day-change-result-mobile.png") });
+  console.log("make-up browser fixture: confirming an automatic regular schedule completion");
+  const automaticCancellationDate = addDays(dayChangeDate, 7);
+  await page.goto(`${baseUrl}/staff/day-changes/?date=${automaticCancellationDate}`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.locator(".staff-day-selected").getByText("Өөр өдрийн хичээл").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Энэ хичээлийг цуцлах", exact: true }).click();
+  await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await page.locator("#day-confirmation").waitFor({ state: "visible" });
+  await page.getByText("Шинэ ээлжит цаг:", { exact: false }).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-automatic-preview-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#day-confirmation").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-automatic-preview-mobile.png") });
+  await page.getByRole("button", { name: "Цуцлахыг баталгаажуулах", exact: true }).click();
+  await page.getByText("Хичээлийн бүрэн дарааллыг хадгалах эцсийн ээлжит цаг нэмэгдлээ.", { exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Нэмэгдсэн хичээл рүү очих", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("button", { name: "Орлуулах ээлжит цаг оруулах", exact: true }).count(), 0,
+    "an automatically completed cancellation does not offer another manual replacement");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-automatic-result-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(screenshotDir, "day-change-automatic-result-mobile.png") });
   console.log(`ok browser make-up capacity target availability and booking (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);

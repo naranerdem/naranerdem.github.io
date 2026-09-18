@@ -3810,8 +3810,9 @@ textarea:focus {
 
 .staff-day-change-fields {
   display: grid;
-  gap: 0.65rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(9rem, 1fr));
+  max-width: 31rem;
 }
 
 .staff-day-change-fields label {
@@ -3819,6 +3820,13 @@ textarea:focus {
   gap: 0.25rem;
   font-size: 0.82rem;
   font-weight: 750;
+  min-width: 0;
+}
+
+.staff-day-change-fields input {
+  box-sizing: border-box;
+  inline-size: 100%;
+  min-inline-size: 0;
 }
 
 .staff-day-special-link {
@@ -3893,6 +3901,28 @@ textarea:focus {
 .staff-day-confirmation ul {
   margin: 0.45rem 0;
   padding-left: 1.1rem;
+}
+
+.staff-day-preview-class + .staff-day-preview-class {
+  border-top: 1px solid var(--line);
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+}
+
+.staff-day-preview-class h3 {
+  color: var(--blue-deep);
+  font-size: 0.95rem;
+  margin: 0 0 0.35rem;
+}
+
+.staff-day-preview-class details {
+  margin-top: 0.6rem;
+}
+
+.staff-day-preview-class summary {
+  color: var(--blue-deep);
+  cursor: pointer;
+  font-weight: 750;
 }
 
 .staff-day-result {

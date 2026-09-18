@@ -274,61 +274,42 @@ try {
   assert.equal(currentSlot(database, "class-a", "lesson-3").localDate, thirdDate, "single cancellation reflows the affected class only");
   assert.equal(currentSlot(database, "class-a", "lesson-4").localDate, addDays(today, 21), "the next named lesson keeps chronological order after cancellation");
   assert.equal(currentSlot(database, "class-a", "lesson-5").localDate, addDays(today, 28), "later named lessons retain their order after cancellation");
-  assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE revision.status = 'published' AND calendar.class_session_id = 'class-a') AND curriculum_lesson_id = 'lesson-6' AND status = 'scheduled'`), 0, "cancellation without a replacement leaves the final lesson unscheduled instead of inventing another date");
-  assert.deepEqual(cancelledWithoutReplacement.preview.unscheduledLessons.map((entry) => entry.lessonTitle), ["Зургаадугаар хичээл"], "the reviewed preview names the final unscheduled lesson");
-  assert.deepEqual(cancelledWithoutReplacement.result.unscheduledLessons.map((entry) => entry.lessonTitle), ["Зургаадугаар хичээл"], "the durable operation result preserves the unscheduled lesson outcome");
+  assert.equal(currentSlot(database, "class-a", "lesson-6").localDate, addDays(today, 35), "cancellation appends the next regular occurrence so the final named lesson remains scheduled");
+  assert.deepEqual(cancelledWithoutReplacement.preview.unscheduledLessons, [], "the reviewed preview has no silently dropped final lesson");
+  assert.deepEqual(cancelledWithoutReplacement.result.unscheduledLessons, [], "the durable operation has no unscheduled curriculum remainder");
+  assert.equal(cancelledWithoutReplacement.preview.automaticEndAdditions.length, 1, "the reviewed preview identifies the required automatic final regular slot");
+  assert.equal(cancelledWithoutReplacement.result.automaticEndAdditions.length, 1, "the committed result records one automatic final regular slot");
+  assert.equal(cancelledWithoutReplacement.result.automaticEndAdditions[0].lessonTitle, "Зургаадугаар хичээл", "the automatic slot carries the final named lesson");
   assert.equal(currentSlot(database, "class-b", "lesson-3").localDate, replacementDate, "single cancellation leaves peers unchanged");
   const singleCurrent = database.query("SELECT revision.id FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-a' AND revision.status = 'published'")[0];
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(singleCurrent.id)} AND local_date = ${quote(replacementDate)} AND status = 'cancelled'`), 1, "cancelled occurrence is retained in the new revision");
   const cancelledSourceSlot = database.query(`SELECT id, local_date AS localDate FROM class_calendar_slot
     WHERE class_calendar_revision_id = ${quote(singleCurrent.id)}
-      AND status = 'cancelled' AND cancelled_lesson_sequence = 3`)[0];
+      AND status = 'cancelled' AND cancelled_lesson_sequence = 3
+      AND local_date = ${quote(replacementDate)}`)[0];
   const reflowOnlyOverview = await service.getDailyChangesOverview(runtime, actor(), cancelledSourceSlot.localDate);
-  assert.equal(reflowOnlyOverview.occurrences.find((entry) => entry.slotId === cancelledSourceSlot.id)?.replacement, null,
-    "reflowing a named lesson onto a surviving regular slot does not claim that an explicit replacement was scheduled");
-
-  const extraDate = addDays(sourceDate, 4);
-  const replacementResult = await applyReviewed({ kind: "extra", sourceSlotId: cancelledSourceSlot.id, classSessionId: "class-a", localDate: extraDate });
-  assert.equal(currentSlot(database, "class-a", "lesson-3").localDate, extraDate, "extra day is ordered without submitting a lesson number");
-  assert.equal(replacementResult.result.replacements.length, 1, "the durable result identifies the authoritative replacement occurrence");
-  assert.equal(replacementResult.result.replacements[0].localDate, extraDate, "the result keeps the committed replacement date");
-  const legacyReplacementResult = {
-    ...replacementResult.result,
-    replacements: replacementResult.result.replacements.map((entry) => ({
-      sourceSlotId: entry.source.slotId,
-      slotId: entry.slotId,
-      classSessionId: entry.classSessionId,
-      classLabel: entry.classLabel,
-      localDate: entry.localDate,
-      startTime: entry.startTime,
-      endTime: entry.endTime,
-      lessonSequence: entry.lessonSequence,
-      lessonTitle: entry.lessonTitle,
-    })),
-  };
-  sqlite(`UPDATE course_day_change_operation SET result_json = ${quote(JSON.stringify(legacyReplacementResult))}
-    WHERE operation_id = ${quote(replacementResult.operationId)};`);
-  const currentCancelledSource = database.query(`SELECT id, local_date AS localDate FROM class_calendar_slot
-    WHERE class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision
-      INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
-      WHERE revision.status = 'published' AND calendar.class_session_id = 'class-a')
-      AND status = 'cancelled' AND cancelled_lesson_sequence = 3`)[0];
-  const replacedOverview = await service.getDailyChangesOverview(runtime, actor(), currentCancelledSource.localDate);
-  assert.ok(replacedOverview.occurrences.find((entry) => entry.slotId === currentCancelledSource.id)?.replacement?.slotId,
-    "the cancelled source exposes its recorded legacy replacement state after refresh");
+  const automaticCompletion = reflowOnlyOverview.occurrences.find((entry) => entry.slotId === cancelledSourceSlot.id)?.automaticEndAddition;
+  assert.ok(automaticCompletion?.slotId, "the cancelled source exposes its recorded automatic completion after refresh");
+  assert.deepEqual({ localDate: automaticCompletion.localDate, startTime: automaticCompletion.startTime, lessonSequence: automaticCompletion.lessonSequence }, {
+    localDate: addDays(today, 35), startTime: "10:00", lessonSequence: 6,
+  }, "the recorded automatic completion identifies the actual generated final slot");
   await assert.rejects(
-    () => service.previewDailyChange(runtime, actor(), { kind: "extra", sourceSlotId: currentCancelledSource.id, classSessionId: "class-a", localDate: laterReplacement }),
+    () => service.previewDailyChange(runtime, actor(), { kind: "extra", sourceSlotId: cancelledSourceSlot.id, classSessionId: "class-a", localDate: laterReplacement }),
     (caught) => caught instanceof service.DayChangeError && caught.code === "conflict",
-    "a cancelled occurrence with a replacement cannot receive a second replacement through a crafted request",
+    "a cancelled occurrence already completed by its automatic final slot cannot receive a second replacement through a crafted request",
   );
 
   const dayCancelPreview = await service.previewDailyChange(runtime, actor(), { kind: "day-cancel", sourceDate: thirdDate });
   assert.equal(dayCancelPreview.affectedClassCount, 3);
   await applyReviewed({ kind: "day-cancel", sourceDate: thirdDate });
   assert.equal(count(database, "class_calendar_slot", `local_date = ${quote(thirdDate)} AND status = 'cancelled' AND class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision WHERE revision.status = 'published')`), 3, "whole-day cancellation writes every class together");
-  await applyReviewed({ kind: "day-replace", sourceDate: thirdDate, replacementDate: laterReplacement });
-  for (const classId of classes) assert.ok(database.query(`SELECT 1 AS value FROM class_calendar_slot AS slot INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE revision.status = 'published' AND calendar.class_session_id = ? AND slot.local_date = ? AND slot.status = 'scheduled'`, [classId, laterReplacement]).length, `${classId} receives the all-class replacement slot`);
-  assert.equal(count(database, "audit_event", "action IN ('course_day_moved', 'course_occurrence_cancelled', 'course_occurrence_replacement_added', 'course_day_cancelled', 'course_day_replacement_added')"), 5, "daily operations create one coarse audit event each");
+  assert.equal(dayCancelPreview.automaticEndAdditions.length, 3, "whole-day cancellation previews one required end slot for each affected class");
+  await assert.rejects(
+    () => service.previewDailyChange(runtime, actor(), { kind: "day-replace", sourceDate: thirdDate, replacementDate: laterReplacement }),
+    (caught) => caught instanceof service.DayChangeError && caught.code === "conflict",
+    "a later legacy-style day replacement cannot add a second slot after automatic completion",
+  );
+  assert.equal(count(database, "audit_event", "action IN ('course_day_moved', 'course_occurrence_cancelled', 'course_occurrence_replacement_added', 'course_day_cancelled', 'course_day_replacement_added')"), 3, "daily operations create one coarse audit event each");
 
   const provenanceSource = currentSlot(database, "class-a", "lesson-4");
   const survivingAfterSource = currentSlot(database, "class-a", "lesson-5");
@@ -365,6 +346,15 @@ try {
   assert.deepEqual({ localDate: currentReplacement.localDate, startTime: currentReplacement.startTime, endTime: currentReplacement.endTime, lessonSequence: currentReplacement.lessonSequence }, {
     localDate: provenanceTargetDate, startTime: "06:00", endTime: "07:20", lessonSequence: 5,
   }, "the recorded replacement stays associated with the added slot while its current lesson assignment is resolved from the latest revision");
+  const currentAutomaticSource = database.query(`SELECT id, local_date AS localDate FROM class_calendar_slot
+    WHERE class_calendar_revision_id IN (SELECT revision.id FROM class_calendar_revision AS revision
+      INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+      WHERE revision.status = 'published' AND calendar.class_session_id = 'class-a')
+      AND status = 'cancelled' AND cancelled_lesson_sequence = 3
+      AND local_date = ${quote(replacementDate)}`)[0];
+  const automaticAfterRevision = await service.getDailyChangesOverview(runtime, actor(), currentAutomaticSource.localDate);
+  assert.ok(automaticAfterRevision.occurrences.find((entry) => entry.slotId === currentAutomaticSource.id)?.automaticEndAddition?.slotId,
+    "the automatic completion association resolves to the current generated occurrence after later revisions");
   await assert.rejects(
     () => service.previewDailyChange(runtime, actor(), {
       kind: "extra", sourceSlotId: currentProvenanceSource.id, classSessionId: "class-a", localDate: addDays(provenanceTargetDate, 2),
@@ -401,13 +391,13 @@ try {
   const rendered = readFileSync("dist/staff/day-changes/index.html", "utf8");
   assert.match(page, /Өдрийг бүхэлд нь цуцлах/);
   assert.match(page, /Өдрийг цуцлаад орлуулах өдөр товлох/);
-  assert.match(page, /Тусгай нөхөх хичээл/, "independent special make-ups remain outside the regular reflow flow");
+  assert.match(page, /href="\/staff\/makeups\/"/, "independent special make-ups retain their direct route outside the regular reflow flow");
   assert.match(page, /preview\.changes/, "teacher sees the named lesson before/after consequences before saving");
-  assert.match(page, /preview\.unscheduledLessons/, "teacher sees a final lesson that remains unscheduled after cancellation");
+  assert.match(page, /automaticEndAdditions/, "teacher sees each required automatic final regular slot before saving");
   assert.doesNotMatch(page, /и-мэйл|Messenger|мэдэгдэл илгээ/, "daily schedule changes send no communication");
   assert.doesNotMatch(rendered, /А анги|Хоёрдугаар хичээл/, "static daily page includes no private fixture data");
 
-  console.log("ok atomic daily cancellation, move, replacement, extra slots, attendance protection, and make-up reflow following");
+  console.log("ok atomic daily cancellation, automatic curriculum completion, replacement provenance, attendance protection, and make-up reflow following");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

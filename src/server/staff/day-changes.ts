@@ -45,6 +45,7 @@ interface DailyOccurrenceRow {
   attendanceCount: number;
   activeMakeupAssignmentCount: number;
   replacement?: CurrentReplacement | null;
+  automaticEndAddition?: CurrentAutomaticEndAddition | null;
   isTest: number;
   testRunId: string | null;
 }
@@ -70,6 +71,8 @@ interface CurrentReplacement extends ReplacementTarget {
   lessonSequence: number | null;
   lessonTitle: string | null;
 }
+
+interface CurrentAutomaticEndAddition extends CurrentReplacement {}
 
 interface DailyChangePlan {
   action: string;
@@ -428,6 +431,85 @@ async function replacementsForOccurrences(env: WorkerEnv, occurrences: DailyOccu
   return replacements;
 }
 
+function cancelledSourceForPlan(plan: PlannedRevision): ReplacementSource | null {
+  const cancelled = plan.slots.find((slot) => slot.status === "cancelled"
+    && plan.previousSlots.some((previous) => previous.id === slot.id && previous.status === "scheduled" && previous.lesson));
+  const previous = cancelled && plan.previousSlots.find((slot) => slot.id === cancelled.id);
+  if (!previous?.lesson) return null;
+  return {
+    slotId: previous.id,
+    classSessionId: plan.context.classSessionId,
+    localDate: previous.localDate,
+    startTime: previous.startTime,
+    endTime: previous.endTime,
+    curriculumLessonId: previous.lesson.id,
+  };
+}
+
+function automaticEndAdditionFrom(value: unknown): { source: ReplacementSource; target: ReplacementTarget } | null {
+  if (!value || typeof value !== "object") return null;
+  const source = replacementSourceFrom((value as Record<string, unknown>).source);
+  const target = replacementTargetFrom((value as Record<string, unknown>).target);
+  return source && target ? { source, target } : null;
+}
+
+async function recordedAutomaticEndAdditionForSource(
+  env: WorkerEnv,
+  source: ReplacementSource,
+): Promise<{ source: ReplacementSource; target: ReplacementTarget } | null> {
+  const rows = await env.DB.prepare(`SELECT result_json AS resultJson
+    FROM course_day_change_operation
+    WHERE action IN ('course_occurrence_cancelled', 'course_day_cancelled')`).all<{ resultJson: string }>();
+  for (const row of rows.results) {
+    try {
+      const additions = JSON.parse(row.resultJson)?.automaticEndAdditions;
+      if (!Array.isArray(additions)) continue;
+      for (const addition of additions) {
+        const recorded = automaticEndAdditionFrom(addition);
+        if (recorded && replacementSourceKey(recorded.source) === replacementSourceKey(source)) return recorded;
+      }
+    } catch {
+      // A malformed historical result cannot establish an automatic completion association.
+    }
+  }
+  return null;
+}
+
+async function currentAutomaticEndAdditionForTarget(
+  env: WorkerEnv,
+  target: ReplacementTarget,
+): Promise<CurrentAutomaticEndAddition> {
+  const row = await env.DB.prepare(`SELECT slot.id AS slotId,
+      lesson.sequence_number AS lessonSequence, lesson.title AS lessonTitle
+    FROM class_calendar_slot AS slot
+    INNER JOIN class_calendar_revision AS revision
+      ON revision.id = slot.class_calendar_revision_id AND revision.status = 'published'
+    INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+    LEFT JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
+    WHERE calendar.class_session_id = ? AND slot.status = 'scheduled' AND slot.slot_source = 'generated'
+      AND slot.local_date = ? AND slot.start_time = ? AND slot.end_time = ?`).bind(
+    target.classSessionId, target.localDate, target.startTime, target.endTime,
+  ).first<{ slotId: string; lessonSequence: number | null; lessonTitle: string | null }>();
+  return {
+    ...target,
+    slotId: row?.slotId ?? null,
+    lessonSequence: row?.lessonSequence ?? null,
+    lessonTitle: row?.lessonTitle ?? null,
+  };
+}
+
+async function automaticEndAdditionsForOccurrences(
+  env: WorkerEnv,
+  occurrences: DailyOccurrenceRow[],
+): Promise<Map<string, CurrentAutomaticEndAddition>> {
+  const additions = new Map<string, CurrentAutomaticEndAddition>();
+  for (const occurrence of occurrences.filter((entry) => entry.status === "cancelled")) {
+    const recorded = await recordedAutomaticEndAdditionForSource(env, replacementSource(occurrence));
+    if (recorded) additions.set(replacementSourceKey(recorded.source), await currentAutomaticEndAdditionForTarget(env, recorded.target));
+  }
+  return additions;
+}
+
 export async function getDailyChangesOverview(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -460,7 +542,10 @@ export async function getDailyChangesOverview(
     ORDER BY offering.title, class_session.display_label`).all<{
       classSessionId: string; classLabel: string; offeringTitle: string; startTime: string; endTime: string;
     }>();
-  const replacements = await replacementsForOccurrences(env, result.results);
+  const [replacements, automaticEndAdditions] = await Promise.all([
+    replacementsForOccurrences(env, result.results),
+    automaticEndAdditionsForOccurrences(env, result.results),
+  ]);
   return {
     today: local.date,
     selectedDate: date,
@@ -468,6 +553,7 @@ export async function getDailyChangesOverview(
     occurrences: result.results.map((entry) => ({
       ...entry,
       replacement: replacements.get(replacementSourceKey(replacementSource(entry))) ?? null,
+      automaticEndAddition: automaticEndAdditions.get(replacementSourceKey(replacementSource(entry))) ?? null,
     })),
     classes: classes.results,
   };
@@ -636,7 +722,7 @@ async function planCancellation(
       lockedThroughSequence: lock,
       cancelSlotId: occurrence.slotId,
       replacementSlots,
-      allowGeneratedTail: false,
+      allowGeneratedTail: true,
     });
     return {
       context,
@@ -787,7 +873,7 @@ async function plansForAction(
         replacementDate,
         replacementStartTime,
         classSessionIds: [occurrence.classSessionId],
-        sourceOccurrence: replacementDate ? replacementSource(occurrence) : null,
+        sourceOccurrence: replacementSource(occurrence),
       },
     };
   }
@@ -803,7 +889,13 @@ async function plansForAction(
       action: kind === "day-move" ? "course_day_moved" : "course_day_cancelled",
       subjectId: sourceDate,
       plans,
-      metadata: { sourceDate, replacementDate: kind === "day-move" ? replacementDate : null, replacementStartTime, classSessionIds: occurrences.map((entry) => entry.classSessionId) },
+      metadata: {
+        sourceDate,
+        replacementDate: kind === "day-move" ? replacementDate : null,
+        replacementStartTime,
+        classSessionIds: occurrences.map((entry) => entry.classSessionId),
+        sourceOccurrences: occurrences.map(replacementSource),
+      },
     };
   }
   if (kind === "day-replace") {
@@ -811,6 +903,12 @@ async function plansForAction(
     const occurrences = await occurrencesOnDate(env, sourceDate, "cancelled");
     if (!occurrences.length) throw new DayChangeError("not_found");
     ensureDistinctClasses(occurrences);
+    for (const occurrence of occurrences) {
+      if (await recordedReplacementForSource(env, replacementSource(occurrence))
+        || await recordedAutomaticEndAdditionForSource(env, replacementSource(occurrence))) {
+        throw new DayChangeError("conflict", `${occurrence.offeringTitle} · ${occurrence.classLabel}`);
+      }
+    }
     const plans = await Promise.all(occurrences.map(async (entry) => {
       try {
         const context = await contextForClass(env, entry.classSessionId);
@@ -837,7 +935,8 @@ async function plansForAction(
     const source = await env.DB.prepare(`${OCCURRENCE_SELECT} AND slot.id = ? GROUP BY slot.id, lesson.id`)
       .bind(sourceSlotId).first<DailyOccurrenceRow>();
     if (!source || source.status !== "cancelled" || source.classSessionId !== classSessionId) throw new DayChangeError("invalid");
-    if (await recordedReplacementForSource(env, replacementSource(source))) throw new DayChangeError("conflict");
+    if (await recordedReplacementForSource(env, replacementSource(source))
+      || await recordedAutomaticEndAdditionForSource(env, replacementSource(source))) throw new DayChangeError("conflict");
     const context = await contextForClass(env, classSessionId);
     const startTime = clean(input.startTime, 5) || context.startTime;
     const endTime = clean(input.endTime, 5) || addMinutes(startTime, durationMinutes(context.startTime, context.endTime));
@@ -865,6 +964,19 @@ interface AppliedReplacement {
   lessonTitle: string | null;
 }
 
+interface AppliedAutomaticEndAddition {
+  source: ReplacementSource;
+  target: ReplacementTarget;
+  slotId: string;
+  classSessionId: string;
+  classLabel: string;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  lessonSequence: number | null;
+  lessonTitle: string | null;
+}
+
 function appliedReplacements(
   planned: DailyChangePlan,
   input: Record<string, unknown>,
@@ -880,6 +992,35 @@ function appliedReplacements(
       && slot.slotSource === "manual_extra"
       && slot.localDate === replacementDate
       && !previousIds.has(slot.id)).map((slot) => ({
+      source,
+      target: {
+        classSessionId: plan.context.classSessionId,
+        localDate: slot.localDate,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+      },
+      slotId: builtRevisions[index].slotIds.get(slot.id) || slot.id,
+      classSessionId: plan.context.classSessionId,
+      classLabel: plan.context.classLabel,
+      localDate: slot.localDate,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      lessonSequence: slot.lesson?.sequenceNumber ?? null,
+      lessonTitle: slot.lesson?.title ?? null,
+    }));
+  });
+}
+
+function appliedAutomaticEndAdditions(
+  planned: DailyChangePlan,
+  builtRevisions: Array<{ slotIds: Map<string, string> }>,
+): AppliedAutomaticEndAddition[] {
+  return planned.plans.flatMap((plan, index) => {
+    const source = cancelledSourceForPlan(plan);
+    if (!source) return [];
+    const previousIds = new Set(plan.previousSlots.map((slot) => slot.id));
+    return plan.slots.filter((slot) => slot.status === "scheduled"
+      && slot.slotSource === "generated" && !previousIds.has(slot.id)).map((slot) => ({
       source,
       target: {
         classSessionId: plan.context.classSessionId,
@@ -972,6 +1113,27 @@ export async function previewDailyChange(
       offeringTitle: plan.context.offeringTitle,
     })),
     changes: planned.plans.flatMap(changedLessonAssignments),
+    automaticEndAdditions: planned.plans.flatMap((plan) => {
+      const source = cancelledSourceForPlan(plan);
+      if (!source) return [];
+      const previousIds = new Set(plan.previousSlots.map((slot) => slot.id));
+      return plan.slots.filter((slot) => slot.status === "scheduled"
+        && slot.slotSource === "generated" && !previousIds.has(slot.id)).map((slot) => ({
+        source,
+        target: {
+          classSessionId: plan.context.classSessionId,
+          localDate: slot.localDate,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+        },
+        classLabel: plan.context.classLabel,
+        localDate: slot.localDate,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        lessonSequence: slot.lesson?.sequenceNumber ?? null,
+        lessonTitle: slot.lesson?.title ?? null,
+      }));
+    }),
     warnings: [...new Set(planned.plans.flatMap((plan) => plan.warningLabels))],
   };
 }
@@ -981,7 +1143,7 @@ export async function applyDailyChange(
   actor: StaffPrincipal,
   input: Record<string, unknown>,
   at = new Date(),
-): Promise<{ revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[] }> {
+): Promise<{ revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[]; automaticEndAdditions: AppliedAutomaticEndAddition[] }> {
   requireManage(actor);
   const idempotencyId = operationId(input.operationId);
   const previewFingerprint = clean(input.previewFingerprint, 4000);
@@ -997,7 +1159,7 @@ export async function applyDailyChange(
   const existing = await existingOperation(env, idempotencyId);
   if (existing) {
     if (existing.requestFingerprint !== requestFingerprint) throw new DayChangeError("conflict");
-    return JSON.parse(existing.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[] };
+    return JSON.parse(existing.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[]; automaticEndAdditions: AppliedAutomaticEndAddition[] };
   }
   if (!(await previewFingerprintIsCurrent(env, previewFingerprint))) throw new DayChangeError("conflict");
   const planned = await plansForAction(env, input, at);
@@ -1018,7 +1180,12 @@ export async function applyDailyChange(
     lessonSequence: lesson.sequenceNumber,
     lessonTitle: lesson.title,
   })));
-  const resultPayload = { revisionIds, unscheduledLessons, replacements: appliedReplacements(planned, input, builtRevisions) };
+  const resultPayload = {
+    revisionIds,
+    unscheduledLessons,
+    replacements: appliedReplacements(planned, input, builtRevisions),
+    automaticEndAdditions: appliedAutomaticEndAdditions(planned, builtRevisions),
+  };
   statements.push(env.DB.prepare(`INSERT INTO course_day_change_operation (
     operation_id, request_fingerprint, schedule_lock_version, action, subject_id, result_json,
     created_by_staff_account_id, is_test, test_run_id, created_at, updated_at
@@ -1033,6 +1200,7 @@ export async function applyDailyChange(
     ...planned.metadata,
     revisionIds,
     changedLessonCount: planned.plans.reduce((total, plan) => total + plan.changedFutureLessonAssignments, 0),
+    automaticEndAdditions: resultPayload.automaticEndAdditions,
   }, flags, time));
   try {
     const result = await env.DB.batch(statements);
@@ -1052,7 +1220,7 @@ export async function applyDailyChange(
     const message = caught instanceof Error ? caught.message : String(caught);
     if (/UNIQUE constraint|published|draft/i.test(message)) {
       const replay = await existingOperation(env, idempotencyId);
-      if (replay?.requestFingerprint === requestFingerprint) return JSON.parse(replay.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[] };
+      if (replay?.requestFingerprint === requestFingerprint) return JSON.parse(replay.resultJson) as { revisionIds: string[]; unscheduledLessons: Array<{ classLabel: string; offeringTitle: string; lessonSequence: number; lessonTitle: string }>; replacements: AppliedReplacement[]; automaticEndAdditions: AppliedAutomaticEndAddition[] };
       throw new DayChangeError("conflict");
     }
     throw caught;
@@ -1079,6 +1247,10 @@ function schedulePreviewFingerprint(input: Record<string, unknown>, plans: reado
       classSessionId: plan.context.classSessionId,
       revisionId: plan.context.revisionId,
       revisionUpdatedAt: plan.context.revisionUpdatedAt,
+      automaticEndAdditions: appliedAutomaticEndAdditions({ action: "", subjectId: "", plans: [plan], metadata: {} }, [{ slotIds: new Map() }]).map((entry) => ({
+        source: entry.source,
+        target: entry.target,
+      })),
     })),
   });
 }

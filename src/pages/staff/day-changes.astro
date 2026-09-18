@@ -22,26 +22,25 @@ import "../../styles/global.css";
       <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
       <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Өдрийн өөрчлөлт</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
-        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Өдрийн өөрчлөлт</h1><p class="staff-muted">Ээлжит хичээлийг цуцлах, орлуулах цаг оруулах, дараагийн хичээлүүдийн огноог хянах</p></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Өдрийн өөрчлөлт</h1><p class="staff-muted">Ээлжит хичээлийг цуцлах, орлуулах цаг оруулах, дараагийн хичээлүүдийн огноог хянах</p></div><div class="staff-inline-actions"><a class="button secondary" href="/staff/makeups/">Нөхөлт</a><a class="staff-back-link" href="/staff/">Буцах</a></div></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <form id="day-date-form" class="staff-attendance-date-form"><label>Өдөр<input id="day-date" type="date" required /></label><button id="day-today" class="button secondary" type="button">Өнөөдөр</button></form>
         <section aria-labelledby="day-list-title"><h2 id="day-list-title" class="staff-list-heading">Ээлжит хичээл сонгох</h2><div id="day-list" class="staff-day-list"></div></section>
         <section id="day-operation" class="staff-day-operation"></section>
         <section id="day-confirmation" class="staff-day-confirmation" hidden></section>
-        <p class="staff-muted staff-day-special-link">Тусгай нөхөх хичээл нь ээлжит дарааллыг шилжүүлэхгүй. <a href="/staff/makeups/">Нөхөх хичээл рүү очих</a></p>
       </section>
     </main>
     <script>
       // @ts-nocheck
       import { escape, formatDate, getDailyChanges, hasDayChangeAccess, postDailyChange, setStaffButtonBusy } from "../../scripts/staff-setup.js";
 
-      const state = { data: null, date: "", selectedSlotId: "", action: "", pending: "", confirmation: null, operationId: "", actionValues: {}, requestEpoch: 0, feedback: null, savedUnscheduledLessons: [], savedReplacements: [] };
+      const state = { data: null, date: "", selectedSlotId: "", action: "", pending: "", confirmation: null, operationId: "", actionValues: {}, requestEpoch: 0, feedback: null, savedUnscheduledLessons: [], savedReplacements: [], savedAutomaticEndAdditions: [] };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
       const busy = () => Boolean(state.pending);
       const feedback = (placement = "form") => state.feedback && (!state.confirmation || placement === "confirmation") ? `<p class="staff-action-status ${state.feedback.tone === "error" ? "staff-action-error" : ""}" role="status" aria-live="polite">${escape(state.feedback.text)}</p>` : "";
-      const clearOutcome = () => { state.feedback = null; state.savedUnscheduledLessons = []; state.savedReplacements = []; };
+      const clearOutcome = () => { state.feedback = null; state.savedUnscheduledLessons = []; state.savedReplacements = []; state.savedAutomaticEndAdditions = []; };
       const invalidateRequest = () => { state.requestEpoch += 1; state.pending = ""; };
       const resetReview = () => { state.confirmation = null; state.operationId = ""; clearOutcome(); };
 
@@ -79,26 +78,33 @@ import "../../styles/global.css";
         const values = state.actionValues;
         const replacementDate = values.replacementDate || "";
         const replacementStartTime = values.replacementStartTime || entry.startTime;
-        return `<form class="staff-compact-form staff-day-change-form" data-day-change-form data-change-kind="single-cancel" ${state.pending === "preview" ? 'aria-busy="true"' : ""}><p class="staff-muted">${replacement ? "Цуцлагдсан цагийн оронд нэг ээлжит цаг нэмнэ. Дараагийн нэртэй хичээлүүд цагийн дарааллаар дахин таарна." : "Энэ хичээлийн цагийг цуцална. Дараагийн нэртэй хичээлүүд боломжит ээлжит цагт шилжинэ."}</p>${replacement ? `<div class="staff-day-change-fields"><label>Орлуулах өдөр<input name="replacementDate" type="date" value="${escape(replacementDate)}" required ${busy() ? "disabled" : ""} /></label><label>Эхлэх цаг<input name="replacementStartTime" type="time" value="${escape(replacementStartTime)}" required ${busy() ? "disabled" : ""} /></label></div>` : ""}<div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" data-day-preview-submit ${busy() ? "disabled" : ""}>Урьдчилан харах</button><button class="button secondary" type="button" data-day-action="" ${busy() ? "disabled" : ""}>Болих</button></div>${feedback()}</form>`;
+        return `<form class="staff-compact-form staff-day-change-form" data-day-change-form data-change-kind="single-cancel" ${state.pending === "preview" ? 'aria-busy="true"' : ""}><p class="staff-muted">${replacement ? "Цуцлагдсан цагийн оронд нэг ээлжит цаг нэмнэ. Хичээлүүд цагийн дарааллаар товлогдоно." : "Энэ хичээлийн цагийг цуцална. Бүх хичээл арагшаа шилжих ба жилийн төгсгөлд нэг шинэ өдөр нэмэгдэнэ."}</p>${replacement ? `<div class="staff-day-change-fields"><label>Орлуулах өдөр<input name="replacementDate" type="date" value="${escape(replacementDate)}" required ${busy() ? "disabled" : ""} /></label><label>Эхлэх цаг<input name="replacementStartTime" type="time" value="${escape(replacementStartTime)}" required ${busy() ? "disabled" : ""} /></label></div>` : ""}<div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" data-day-preview-submit ${busy() ? "disabled" : ""}>Урьдчилан харах</button><button class="button secondary" type="button" data-day-action="" ${busy() ? "disabled" : ""}>Болих</button></div>${feedback()}</form>`;
       }
 
       function selectedLessonWorkspace(entry) {
         if (!entry) return "";
         const blocked = entry.attendanceCount > 0;
         const reviewing = reviewingSelected(entry);
-        const replacementScheduled = Boolean(entry.replacement)
+        const replacementScheduled = Boolean(entry.replacement || entry.automaticEndAddition)
           || state.savedReplacements.some((replacement) => replacement.source
             && replacement.source.classSessionId === entry.classSessionId
             && replacement.source.localDate === entry.localDate
             && replacement.source.startTime === entry.startTime
             && replacement.source.endTime === entry.endTime
             && replacement.source.curriculumLessonId === entry.curriculumLessonId);
+        const automaticCompletion = Boolean(entry.automaticEndAddition)
+          || state.savedAutomaticEndAdditions.some((addition) => addition.source
+            && addition.source.classSessionId === entry.classSessionId
+            && addition.source.localDate === entry.localDate
+            && addition.source.startTime === entry.startTime
+            && addition.source.endTime === entry.endTime
+            && addition.source.curriculumLessonId === entry.curriculumLessonId);
         const status = entry.status === "cancelled" ? `<span class="staff-day-cancelled">Цуцалсан</span>` : blocked ? `<span class="staff-muted">Ирц тэмдэглэсэн</span>` : "";
         const makeup = entry.activeMakeupAssignmentCount ? `<p class="staff-muted">Энэ нэртэй хичээлд ${entry.activeMakeupAssignmentCount} идэвхтэй нөхөх товлолт байна. Огноо шилжвэл хичээлийн таних тэмдэг хэвээр үлдэнэ.</p>` : "";
         const controls = reviewing ? "" : entry.status === "scheduled" && !blocked
           ? `<div class="staff-day-action-choices" role="group" aria-label="Өөрчлөлтийн төрөл"><button class="staff-day-action-choice ${state.action === "single-cancel" ? "selected" : ""}" type="button" data-day-action="single-cancel" aria-pressed="${state.action === "single-cancel"}" ${busy() ? "disabled" : ""}>Энэ хичээлийг цуцлах</button><button class="staff-day-action-choice ${state.action === "single-replace" ? "selected" : ""}" type="button" data-day-action="single-replace" aria-pressed="${state.action === "single-replace"}" ${busy() ? "disabled" : ""}>Цуцлаад орлуулах цаг товлох</button></div>`
           : entry.status === "cancelled" && !replacementScheduled ? `<div class="staff-day-action-choices" role="group" aria-label="Өөрчлөлтийн төрөл"><button class="staff-day-action-choice ${state.action === "cancelled-replace" ? "selected" : ""}" type="button" data-day-action="cancelled-replace" aria-pressed="${state.action === "cancelled-replace"}" ${busy() ? "disabled" : ""}>Орлуулах ээлжит цаг оруулах</button></div>`
-            : entry.status === "cancelled" ? `<p class="staff-muted">Энэ цуцлагдсан цагт орлуулах ээлжит цаг аль хэдийн товлогдсон.${entry.replacement?.slotId ? "" : " Орлуулах цагийг хянаж шалгана уу."}</p>` : "";
+            : entry.status === "cancelled" ? `<p class="staff-muted">${automaticCompletion ? "Хичээлийн бүрэн дарааллыг хадгалах эцсийн ээлжит цаг автоматаар нэмэгдсэн." : "Энэ цуцлагдсан цагт орлуулах ээлжит цаг аль хэдийн товлогдсон."}${(entry.replacement || entry.automaticEndAddition)?.slotId ? "" : " Орлуулах цагийг хянаж шалгана уу."}</p>` : "";
         const form = reviewing ? "" : state.action === "single-cancel" ? replacementForm(entry, false)
           : state.action === "single-replace" ? replacementForm(entry, true)
             : state.action === "cancelled-replace" && !replacementScheduled ? `<form class="staff-compact-form staff-day-change-form" data-day-change-form data-change-kind="extra" ${state.pending === "preview" ? 'aria-busy="true"' : ""}><p class="staff-muted">Цуцлагдсан хичээлийн оронд нэг ээлжит цаг нэмнэ. Дараагийн нэртэй хичээлүүд цагийн дарааллаар таарна.</p><div class="staff-day-change-fields"><label>Орлуулах өдөр<input name="localDate" type="date" value="${escape(state.actionValues.localDate || "")}" required ${busy() ? "disabled" : ""} /></label><label>Эхлэх цаг<input name="startTime" type="time" value="${escape(state.actionValues.startTime || entry.startTime)}" required ${busy() ? "disabled" : ""} /></label></div><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" data-day-preview-submit ${busy() ? "disabled" : ""}>Урьдчилан харах</button><button class="button secondary" type="button" data-day-action="" ${busy() ? "disabled" : ""}>Болих</button></div>${feedback()}</form>` : "";
@@ -111,7 +117,7 @@ import "../../styles/global.css";
         const scheduled = entries.filter((entry) => entry.status === "scheduled");
         const list = scheduled.map((entry) => `<li>${escape(entry.classLabel)} · ${escape(entry.startTime)}–${escape(entry.endTime)} · ${entry.lessonSequence}. ${escape(entry.lessonTitle)}</li>`).join("");
         const reviewingWhole = state.confirmation && ["day-cancel", "day-move"].includes(state.confirmation.payload.kind);
-        const form = reviewingWhole ? "" : state.action === "day-cancel" ? `<form class="staff-compact-form staff-day-change-form" data-day-change-form data-change-kind="day-cancel" ${state.pending === "preview" ? 'aria-busy="true"' : ""}><p class="staff-muted">Энэ өдрийн доорх бүх ээлжит хичээлийн цаг цуцлагдана. Хичээл бүрийн дарааллын үр дүнг урьдчилан харна.</p><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" data-day-preview-submit ${busy() ? "disabled" : ""}>Урьдчилан харах</button><button class="button secondary" type="button" data-day-action="" ${busy() ? "disabled" : ""}>Болих</button></div>${feedback()}</form>`
+        const form = reviewingWhole ? "" : state.action === "day-cancel" ? `<form class="staff-compact-form staff-day-change-form" data-day-change-form data-change-kind="day-cancel" ${state.pending === "preview" ? 'aria-busy="true"' : ""}><p class="staff-muted">Энэ өдрийн ээлжит цагууд цуцлагдана. Анги бүрийн бүрэн дарааллыг хадгалах эцсийн шинэ өдрүүдийг урьдчилан харна.</p><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" data-day-preview-submit ${busy() ? "disabled" : ""}>Урьдчилан харах</button><button class="button secondary" type="button" data-day-action="" ${busy() ? "disabled" : ""}>Болих</button></div>${feedback()}</form>`
           : state.action === "day-move" ? `<form class="staff-compact-form staff-day-change-form" data-day-change-form data-change-kind="day-move" ${state.pending === "preview" ? 'aria-busy="true"' : ""}><p class="staff-muted">Энэ өдрийн ээлжит хичээлүүдийг цуцлаад сонгосон өдөрт орлуулна. Дараагийн нэртэй хичээлүүдийн огноог урьдчилан харна.</p><div class="staff-day-change-fields"><label>Орлуулах өдөр<input name="replacementDate" type="date" value="${escape(state.actionValues.replacementDate || "")}" required ${busy() ? "disabled" : ""} /></label></div><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" data-day-preview-submit ${busy() ? "disabled" : ""}>Урьдчилан харах</button><button class="button secondary" type="button" data-day-action="" ${busy() ? "disabled" : ""}>Болих</button></div>${feedback()}</form>` : "";
         const reviewingIndividual = state.confirmation && ["single-cancel", "extra"].includes(state.confirmation.payload.kind);
         q("#day-operation").hidden = Boolean(reviewingIndividual);
@@ -127,8 +133,21 @@ import "../../styles/global.css";
         const preview = confirmation.preview;
         const shifted = preview.changedLessonCount ? ` Дараагийн ${preview.changedLessonCount} хичээлийн огноо эсвэл цаг шилжинэ.` : "";
         container.hidden = false;
-        const replacement = confirmation.payload.replacementDate ? " Цуцлагдсан цагийн оронд шинэ ээлжит цаг нэмэгдэнэ; нэртэй хичээлүүд цагийн дарааллаар дахин таарна." : "";
-        const changes = preview.changes.map((entry) => `<li><strong>${escape(entry.classLabel)} · ${entry.lessonSequence}. ${escape(entry.lessonTitle)}</strong><br /><span class="staff-muted">${entry.before ? `${formatDate(entry.before.localDate)} · ${escape(entry.before.startTime)}–${escape(entry.before.endTime)}` : "Шинээр нэмнэ"} → ${entry.after ? `${formatDate(entry.after.localDate)} · ${escape(entry.after.startTime)}–${escape(entry.after.endTime)}` : entry.before ? "Товлоогүй" : "Цуцална"}</span></li>`).join("");
+        const automatic = preview.automaticEndAdditions || [];
+        const replacement = confirmation.payload.replacementDate ? " Цуцлагдсан цагийн оронд шинэ ээлжит цаг нэмэгдэнэ; нэртэй хичээлүүд цагийн дарааллаар дахин таарна." : automatic.length ? " Жилийн төгсгөлд шаардлагатай ээлжит цаг автоматаар нэмэгдэнэ." : "";
+        const describeChange = (entry) => `<strong>${entry.lessonSequence}. ${escape(entry.lessonTitle)}</strong><br /><span class="staff-muted">${entry.before ? `${formatDate(entry.before.localDate)} · ${escape(entry.before.startTime)}–${escape(entry.before.endTime)}` : "Шинээр нэмнэ"} → ${entry.after ? `${formatDate(entry.after.localDate)} · ${escape(entry.after.startTime)}–${escape(entry.after.endTime)}` : entry.before ? "Товлоогүй" : "Цуцална"}</span>`;
+        const byClass = new Map();
+        for (const entry of preview.changes || []) { const list = byClass.get(entry.classLabel) || []; list.push(entry); byClass.set(entry.classLabel, list); }
+        const compactChanges = [...byClass.entries()].map(([classLabel, entries]) => {
+          const first = entries[0]; const last = entries[entries.length - 1];
+          const classAdditions = automatic.filter((entry) => entry.classLabel === classLabel);
+          const primary = first ? `<li>${describeChange(first)}</li>` : "";
+          const final = last && last !== first ? `<p class="staff-muted">Сүүлийн өөрчлөлт: ${describeChange(last)}</p>` : "";
+          const additions = classAdditions.map((entry) => `<p class="staff-muted"><strong>Шинэ ээлжит цаг:</strong> ${formatDate(entry.localDate)} · ${escape(entry.startTime)}–${escape(entry.endTime)}${entry.lessonSequence ? ` · ${entry.lessonSequence}. ${escape(entry.lessonTitle || "")}` : ""}</p>`).join("");
+          const remaining = entries.slice(1, -1);
+          const detail = remaining.length ? `<details><summary>Бүх өөрчлөлтийг харах (${remaining.length})</summary><ul class="staff-day-preview-list">${remaining.map((entry) => `<li>${describeChange(entry)}</li>`).join("")}</ul></details>` : "";
+          return `<section class="staff-day-preview-class"><h3>${escape(classLabel)}</h3><ul class="staff-day-preview-list">${primary}</ul>${additions}${final}${detail}</section>`;
+        }).join("");
         const unscheduled = preview.unscheduledLessons?.length ? `<p class="staff-calendar-warning">Дараах хичээл одоогоор товлогдоогүй: ${preview.unscheduledLessons.map((entry) => `${escape(entry.classLabel)} · ${entry.lessonSequence}. ${escape(entry.lessonTitle)}`).join(", ")}.</p>` : "";
         const cancelled = ["single-cancel", "day-cancel", "day-move"].includes(confirmation.payload.kind)
           ? "Сонгосон ээлжит хичээлийн цаг цуцлагдана."
@@ -137,7 +156,7 @@ import "../../styles/global.css";
         const finalLabel = destructive ? (confirmation.payload.kind === "day-cancel" ? "Өдрийг цуцлах" : "Цуцлахыг баталгаажуулах")
           : confirmation.payload.kind === "extra" ? "Орлуулах ээлжит цагийг хадгалах"
             : confirmation.payload.kind === "day-move" ? "Орлуулах өдрийг хадгалах" : "Орлуулах цагийг хадгалах";
-        container.innerHTML = `<h2>${escape(confirmation.title)}</h2><p><strong>${cancelled}</strong>${shifted}${replacement}</p>${changes ? `<ul class="staff-day-preview-list">${changes}</ul>` : ""}${unscheduled}${preview.warnings.length ? `<p class="staff-calendar-warning">Анхааруулга: ${preview.warnings.map(escape).join(", ")}</p>` : ""}<div class="staff-inline-actions"><button id="day-confirm-edit" class="button secondary" type="button" ${busy() ? "disabled" : ""}>Засах</button><button id="day-confirm-save" class="button ${destructive ? "danger" : "primary"}" type="button" data-day-confirm-label="${escape(finalLabel)}" ${busy() ? "disabled" : ""}>${escape(finalLabel)}</button></div>${feedback("confirmation")}`;
+        container.innerHTML = `<h2>${escape(confirmation.title)}</h2><p><strong>${cancelled}</strong>${shifted}${replacement}</p>${compactChanges}${unscheduled}${preview.warnings.length ? `<p class="staff-calendar-warning">Анхааруулга: ${preview.warnings.map(escape).join(", ")}</p>` : ""}<div class="staff-inline-actions"><button id="day-confirm-edit" class="button secondary" type="button" ${busy() ? "disabled" : ""}>Засах</button><button id="day-confirm-save" class="button ${destructive ? "danger" : "primary"}" type="button" data-day-confirm-label="${escape(finalLabel)}" ${busy() ? "disabled" : ""}>${escape(finalLabel)}</button></div>${feedback("confirmation")}`;
         container.scrollIntoView({ behavior: "smooth", block: "start" });
       }
 
@@ -152,6 +171,9 @@ import "../../styles/global.css";
         const selected = selectedOccurrence();
         if (state.savedReplacements.length) {
           q("#day-list").insertAdjacentHTML("beforeend", `<section class="staff-day-result" role="status"><strong>Орлуулах ээлжит цаг товлогдлоо.</strong>${state.savedReplacements.map((entry) => `<p>${escape(entry.classLabel)} · ${formatDate(entry.localDate)} · ${escape(entry.startTime)}–${escape(entry.endTime)}${entry.lessonSequence ? ` · ${entry.lessonSequence}. ${escape(entry.lessonTitle || "")}` : ""}<br /><a href="/staff/attendance/?date=${encodeURIComponent(entry.localDate)}&occurrence=${encodeURIComponent(entry.slotId)}">Орлуулах хичээл рүү очих</a></p>`).join("")}</section>`);
+        }
+        if (state.savedAutomaticEndAdditions.length) {
+          q("#day-list").insertAdjacentHTML("beforeend", `<section class="staff-day-result" role="status"><strong>Хичээлийн бүрэн дарааллыг хадгалах эцсийн ээлжит цаг нэмэгдлээ.</strong>${state.savedAutomaticEndAdditions.map((entry) => `<p>${escape(entry.classLabel)} · ${formatDate(entry.localDate)} · ${escape(entry.startTime)}–${escape(entry.endTime)}${entry.lessonSequence ? ` · ${entry.lessonSequence}. ${escape(entry.lessonTitle || "")}` : ""}<br /><a href="/staff/attendance/?date=${encodeURIComponent(entry.localDate)}&occurrence=${encodeURIComponent(entry.slotId)}">Нэмэгдсэн хичээл рүү очих</a></p>`).join("")}</section>`);
         }
         if (state.savedUnscheduledLessons.length && selected) {
           q("#day-list").insertAdjacentHTML("beforeend", `<p class="staff-calendar-warning"><strong>Өөрчлөлт хадгалагдсан.</strong> Дараах хичээл одоогоор товлогдоогүй: ${state.savedUnscheduledLessons.map((entry) => `${escape(entry.classLabel)} · ${entry.lessonSequence}. ${escape(entry.lessonTitle)}`).join(", ")}.</p>`);
@@ -181,7 +203,7 @@ import "../../styles/global.css";
         try {
           const result = await postDailyChange("day-change.apply", { ...state.confirmation.payload, previewFingerprint: state.confirmation.preview.previewFingerprint, operationId: state.operationId ||= crypto.randomUUID() });
           if (requestEpoch !== state.requestEpoch) return;
-          state.confirmation = null; state.operationId = ""; state.action = ""; state.actionValues = {}; state.savedUnscheduledLessons = result.unscheduledLessons || []; state.savedReplacements = result.replacements || [];
+          state.confirmation = null; state.operationId = ""; state.action = ""; state.actionValues = {}; state.savedUnscheduledLessons = result.unscheduledLessons || []; state.savedReplacements = result.replacements || []; state.savedAutomaticEndAdditions = result.automaticEndAdditions || [];
           const success = "Өдрийн хуваарийн өөрчлөлтийг хадгаллаа.";
           state.feedback = { text: "Өөрчлөлт хадгалагдлаа.", tone: "success" };
           try { await refresh(success); }

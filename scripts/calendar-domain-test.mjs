@@ -33,6 +33,11 @@ function active(slots) {
   return slots.filter((slot) => slot.status === "scheduled");
 }
 
+function addDays(value, days) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
 function byLesson(slots, sequenceNumber) {
   const slot = active(slots).find((candidate) => candidate.lesson?.sequenceNumber === sequenceNumber);
   assert.ok(slot, `lesson ${sequenceNumber} has a slot`);
@@ -219,6 +224,20 @@ try {
   assert.equal(holidays.find((slot) => slot.status === "scheduled")?.lesson?.sequenceNumber, 1, "the next active date receives Lesson 1 after a no-class date");
   assert.equal(byLesson(holidays, 30).localDate, "2027-05-16");
   assert.notEqual(byLesson(baseline, 30).localDate, byLesson(holidays, 30).localDate, "holidays extend the tail instead of dropping lessons");
+
+  const thirtyLessonBaseline = generateCalendarSchedule({
+    lessons: lessons(30, "tail-reflow"), firstCandidateDate: "2026-10-04", habitualWeekday: "Ням", startTime: "10:00", endTime: "11:20",
+  });
+  const tailClosureDate = addDays(byLesson(thirtyLessonBaseline, 30).localDate, 7);
+  const tailClosure = { id: "tail-closure", label: "Туршилтын амралт", startsOn: tailClosureDate, endsOn: tailClosureDate, excludeFromGeneration: true, warnOnOverlap: false };
+  const thirtyLessonCancellation = reflowCancelledFutureSchedule({
+    lessons: lessons(30, "tail-reflow"), firstCandidateDate: "2026-10-04", habitualWeekday: "Ням", startTime: "10:00", endTime: "11:20",
+    schoolCalendarPeriods: [tailClosure], existingSlots: thirtyLessonBaseline, lockedThroughSequence: 0,
+    cancelSlotId: byLesson(thirtyLessonBaseline, 30).id,
+  });
+  assertCompleteProgram(thirtyLessonCancellation.slots, 30);
+  assert.equal(thirtyLessonCancellation.slots.find((slot) => slot.localDate === tailClosureDate)?.status, "no_class", "automatic completion keeps a closure as an explicit non-teaching occurrence");
+  assert.equal(byLesson(thirtyLessonCancellation.slots, 30).localDate, addDays(tailClosureDate, 7), "automatic completion skips a configured closure and appends the next valid recurring slot");
 
   const restored = generateCalendarSchedule({
     lessons: lessons(5, "restore"),
