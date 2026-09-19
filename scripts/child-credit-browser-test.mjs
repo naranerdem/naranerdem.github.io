@@ -33,7 +33,8 @@ async function capturePaymentPanel(page, name) {
 }
 
 function runWrangler(args, label) {
-  const result = spawnSync(process.execPath, [wranglerCli, ...args], { encoding: "utf8" });
+  // Wrangler's complete migration ledger now exceeds Node's default 1 MiB buffer.
+  const result = spawnSync(process.execPath, [wranglerCli, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`${label} failed\n${result.stdout}\n${result.stderr}`);
   return result;
 }
@@ -1846,7 +1847,7 @@ try {
     && response.request().method() === "POST");
   await laterForm.locator('button[type="submit"]').click();
   await paymentStarted;
-  await laterForm.getByText("Төлбөр бүртгэж байна…", { exact: true }).waitFor({ state: "visible" });
+  await laterForm.locator('[data-action-feedback]').getByText("Төлбөр бүртгэж байна…", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await laterForm.getByRole("button", { name: "Төлбөр бүртгэж байна…", exact: true }).isDisabled(), true,
     "the payment form immediately announces and locks its specific receipt action");
   await laterForm.locator('input[name="amount"]').press("Enter");
