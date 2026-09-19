@@ -3,7 +3,7 @@ import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { getClassCapacityProjections } from "../services/class-capacity";
 
 export class CourseMakeupError extends Error {
-  constructor(public readonly code: "forbidden" | "invalid" | "not_found" | "not_eligible" | "capacity" | "conflict") {
+  constructor(public readonly code: "forbidden" | "invalid" | "not_found" | "not_eligible" | "capacity" | "conflict" | "attendance_recorded") {
     super("Course make-up operation failed.");
     this.name = "CourseMakeupError";
   }
@@ -678,6 +678,24 @@ async function activeAssignment(env: WorkerEnv, assignmentId: string): Promise<A
   return assignment;
 }
 
+async function hasRecordedSpecialAttendance(
+  env: WorkerEnv,
+  input: { assignmentId?: string; specialOccurrenceId?: string },
+): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT 1 AS value
+    FROM course_makeup_special_attendance AS attendance
+    INNER JOIN course_makeup_assignment AS assignment
+      ON assignment.id = attendance.course_makeup_assignment_id
+    WHERE attendance.attendance_status IS NOT NULL
+      AND (? = '' OR assignment.id = ?)
+      AND (? = '' OR assignment.target_special_occurrence_id = ?)
+    LIMIT 1`).bind(
+    input.assignmentId ?? "", input.assignmentId ?? "",
+    input.specialOccurrenceId ?? "", input.specialOccurrenceId ?? "",
+  ).first<{ value: number }>();
+  return Boolean(row?.value);
+}
+
 export async function cancelCourseMakeupAssignment(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -686,6 +704,9 @@ export async function cancelCourseMakeupAssignment(
 ): Promise<void> {
   requireCapability(actor, "makeup.manage");
   const assignment = await activeAssignment(env, clean(input.assignmentId));
+  if (assignment.targetKind === "special" && await hasRecordedSpecialAttendance(env, { assignmentId: assignment.assignmentId })) {
+    throw new CourseMakeupError("attendance_recorded");
+  }
   const local = localDateTime(at);
   if (assignment.targetLocalDate
     && (assignment.targetLocalDate < local.date
@@ -720,6 +741,9 @@ export async function cancelSpecialCourseMakeupOccurrence(
     specialOccurrenceId,
   ).first<{ id: string; curriculumLessonId: string; localDate: string; startTime: string; isTest: number; testRunId: string | null }>();
   if (!special) throw new CourseMakeupError("not_found");
+  if (await hasRecordedSpecialAttendance(env, { specialOccurrenceId })) {
+    throw new CourseMakeupError("attendance_recorded");
+  }
   const local = localDateTime(at);
   if (special.localDate < local.date || (special.localDate === local.date && special.startTime <= local.time)) {
     throw new CourseMakeupError("conflict");

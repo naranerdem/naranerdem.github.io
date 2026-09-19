@@ -128,12 +128,32 @@ try {
       VALUES ('guardian', 'Browser Асран', '99000000', '99000000', 'guardian@example.test', 'guardian@example.test', 'Тест', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('student', 'Browser Маш Урт', 'Нөхөх Оролцогчийн Нэр', 'not_specified', '2015-01-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-student-a', 'Тусгай Нөхөх', 'Анударь', 'not_specified', '2015-04-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-student-b', 'Тусгай Нөхөх', 'Билгүүн', 'not_specified', '2015-05-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('prereg', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('application', 'prereg', 'student', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-prereg-a', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-prereg-b', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-application-a', 'special-prereg-a', 'special-student-a', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-application-b', 'special-prereg-b', 'special-student-b', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('source-enrollment', 'application', 'student', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-enrollment-a', 'special-application-a', 'special-student-a', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-enrollment-b', 'special-application-b', 'special-student-b', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO course_makeup_special_occurrence (id, curriculum_lesson_id, local_date, start_time, end_time, capacity, status, created_by_staff_account_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-occurrence', 'lesson', '${targetDate}', '14:00', '15:20', 2, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO course_makeup_resolution (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id, decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-resolution-a', 'special-enrollment-a', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-resolution-b', 'special-enrollment-b', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO course_makeup_assignment (id, resolution_id, target_kind, target_special_occurrence_id, target_curriculum_lesson_id, status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-assignment-a', 'special-resolution-a', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-assignment-b', 'special-resolution-b', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('hold-draft', '${"a".repeat(64)}', 'year', 'Hold Guardian', 'parent', '99000001', 'hold@example.test', 'hold@example.test', 'Тест', 'single', 'v1', 'v1', 'awaiting_initial_payment', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
@@ -203,8 +223,9 @@ try {
   await page.getByRole("button", { name: "Энд нөхөх", exact: true }).click();
   await page.getByText("Нөхөх хичээлийг товлолоо.").waitFor({ state: "visible" });
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
-  assert.equal(assignments.scheduled.length, 1, "the rendered normal-target action creates one active assignment");
-  assert.equal(assignments.scheduled[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
+  const normalAssignment = assignments.scheduled.filter((entry) => entry.targetKind === "normal_class");
+  assert.equal(normalAssignment.length, 1, "the rendered normal-target action creates one active normal-class assignment alongside the seeded special bookings");
+  assert.equal(normalAssignment[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
 
   execute(`
     UPDATE class_session SET capacity = 2 WHERE id = 'target-class';
@@ -252,13 +273,49 @@ try {
   await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=target-slot/);
   await page.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).waitFor({ state: "visible" });
   assert.match(await page.locator(".staff-attendance-makeup-source").innerText(), /Тасалсан хичээл · \d{2}\/\d{2}/, "the selected attendance roster keeps a compact missed-lesson link");
-  assert.equal(await page.locator("#attendance-list [role='tab']").count(), 2, "the attendance selector keeps time-only tabs for each dated occurrence");
+  assert.equal(await page.locator("#attendance-list [role='tab']").count(), 3, "the attendance selector keeps time-only tabs for each dated regular or special occurrence");
   const selectedTabBounds = await page.locator("#attendance-list [role='tab'][aria-selected='true']").evaluate((selected) => {
     const strip = selected.parentElement.getBoundingClientRect();
     const tab = selected.getBoundingClientRect();
     return { stripLeft: strip.left, stripRight: strip.right, tabLeft: tab.left, tabRight: tab.right };
   });
   assert.ok(selectedTabBounds.tabLeft >= selectedTabBounds.stripLeft && selectedTabBounds.tabRight <= selectedTabBounds.stripRight, "the selected time tab is visible inside its horizontal strip");
+  await page.goBack();
+  await page.locator("#staff-home").waitFor({ state: "visible" });
+  console.log("make-up browser fixture: recording special-session attendance from the agenda");
+  const specialAgendaLink = page.locator("#staff-agenda [data-agenda-occurrence='special-occurrence']");
+  await specialAgendaLink.waitFor({ state: "visible" });
+  assert.equal(await specialAgendaLink.count(), 1, "the home agenda renders one special-session occurrence");
+  assert.match(await specialAgendaLink.innerText(), /Нөхөх 2/, "special-session agenda counts only booked make-up attendees");
+  await specialAgendaLink.click();
+  await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=special-occurrence/);
+  await page.getByText("Тусгай Нөхөх Анударь", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Тусгай Нөхөх Билгүүн", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-attendance-row]").count(), 2, "a special session does not add ordinary class enrollments to its attendance roster");
+  assert.equal(await page.getByText("Нөхөх", { exact: true }).count(), 2, "each special-session attendee is visibly labelled as a make-up attendee");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "special-makeup-attendance-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "special-makeup-attendance-mobile.png") });
+  await page.locator("[data-attendance-row='special-enrollment-a'] [data-attendance-control='present']").check();
+  await page.getByText("Ирцийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.locator("[data-attendance-row='special-enrollment-a'] [data-attendance-control='late']").check();
+  await page.getByText("Ирцийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.locator("[data-attendance-row='special-enrollment-b'] [data-attendance-control='present']").check();
+  await page.getByText("Ирцийг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.reload();
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-attendance-row='special-enrollment-a'] [data-attendance-control='late']").isChecked(), true,
+    "a corrected special-session mark survives reload");
+  assert.equal(await page.locator("[data-attendance-row='special-enrollment-b'] [data-attendance-control='present']").isChecked(), true,
+    "each special-session attendee persists independently");
+  const specialAttendance = await page.evaluate(async () => (await fetch(`/api/staff/attendance?date=${encodeURIComponent(location.search.match(/date=([^&]+)/)?.[1] || "")}&occurrence=special-occurrence`, { credentials: "same-origin" })).json());
+  assert.equal(specialAttendance.selected.occurrenceKind, "special", "the attendance endpoint retains a stable special occurrence identity");
+  assert.equal(specialAttendance.selected.rosterCount, 2, "saved marks do not remove special-session attendees from their expected roster");
+  assert.equal(specialAttendance.selected.roster.filter((entry) => entry.attendanceKind === "ordinary").length, 0, "special attendance has no inferred ordinary roster rows");
+  assert.ok(specialAttendance.selected.roster.every((entry) => entry.makeupSource?.slotId === "source-slot"), "each special attendee retains the original missed-lesson link");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "special-makeup-attendance-saved-mobile.png") });
   await page.goBack();
   await page.locator("#staff-home").waitFor({ state: "visible" });
   await page.setViewportSize({ width: 390, height: 844 });

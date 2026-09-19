@@ -271,6 +271,23 @@ absence, assignment, and any recorded destination attendance remain history.
 This keeps ordinary roster membership, expected make-up attendees, and capacity
 reservations as distinct operational quantities.
 
+An active independent special make-up occurrence uses the same protected
+attendance page, but it has no regular class roster. Its expected attendees are
+only the active, assigned special make-up bookings for that exact occurrence;
+they remain visibly labelled `Нөхөх` and retain a compact link to the original
+missed lesson. Their marks live separately in
+`course_makeup_special_attendance`, keyed to the durable assignment and special
+occurrence, with append-only correction history. Saving a mark does not complete
+or remove the assignment, so the learner remains on the expected roster after a
+reload. The source absence and the regular curriculum sequence stay unchanged.
+Cancelled or invalidated bookings disappear from the expected roster only when
+they have no recorded special-session mark. A recorded mark blocks ordinary
+unbooking, special-session cancellation, and source-attendance correction that
+would invalidate its assignment; the history remains auditable rather than
+being silently retargeted or erased. Special-session attendance is not a
+regular calendar-slot mark and therefore does not protect or reflow the regular
+curriculum sequence.
+
 `course_absence_notice` is deliberately distinct from attendance and currently
 has only the teacher-created `staff_manual` source. It may have an optional
 note, can be corrected or cancelled without hard deletion, and never changes an
@@ -299,6 +316,14 @@ it does not rewrite bookings or attendance history. Apply it before deploying
 the matching Worker: an older Worker may still display a target based on its
 obsolete read projection, while the new guard correctly rejects an overbooked
 insert.
+
+Migration `0058_course_makeup_special_attendance.sql` adds the separate special
+attendance and append-only history tables, validation/cancellation triggers,
+and lookup indexes. It is additive and preserves normal make-up attendance and
+existing special bookings. Apply it before deploying a Worker that can render
+or record special-session attendance. Once any special-session mark exists, an
+older Worker is not a safe rollback target because it lacks the corresponding
+roster and cancellation protections.
 
 `/staff/day-changes/` handles one-class cancellation, all-class course closure,
 reviewed replacement dates/times, whole-day moves, and class-specific extra

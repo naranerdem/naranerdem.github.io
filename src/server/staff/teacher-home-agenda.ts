@@ -150,7 +150,14 @@ export async function getTeacherHomeAgenda(
       lesson.title AS lessonTitle,
       special.note AS cancelledLabel,
       0 AS ordinaryCount,
-      (SELECT COUNT(*) FROM course_makeup_assignment WHERE target_special_occurrence_id = special.id AND status = 'active') AS makeupCount
+      (SELECT COUNT(DISTINCT resolution.source_enrollment_id)
+        FROM course_makeup_assignment AS assignment
+        INNER JOIN course_makeup_resolution AS resolution ON resolution.id = assignment.resolution_id
+        WHERE assignment.target_special_occurrence_id = special.id
+          AND assignment.target_kind = 'special'
+          AND assignment.status = 'active'
+          AND resolution.status = 'active'
+          AND resolution.decision = 'assigned') AS makeupCount
     FROM course_makeup_special_occurrence AS special
     INNER JOIN curriculum_lesson AS lesson ON lesson.id = special.curriculum_lesson_id
     WHERE special.status = 'active' AND special.local_date BETWEEN ? AND ?

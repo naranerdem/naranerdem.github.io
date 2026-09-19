@@ -314,6 +314,16 @@ assignment can exist for a source. Raw unchecked attendance is not copied into
 these tables: the service derives effective absence after occurrence end and
 requires a teacher decision.
 
+Migration `0058_course_makeup_special_attendance.sql` adds attendance for an
+already-bookable special make-up occurrence without creating a regular calendar
+slot or Enrollment. `course_makeup_special_attendance` is unique by durable
+special assignment and validates that the active assignment, active resolution,
+special occurrence, and local date still agree. Its correction table is
+append-only. Triggers reject cancelling a marked special assignment or special
+occurrence, and prevent a canonical learner from receiving a second active
+booking in the same special occurrence, including after a target reassignment.
+Normal `course_makeup_attendance` remains unchanged.
+
 Future schema design should keep these distinctions explicit:
 
 - attendance bookkeeping and prior absence notice: editable operational records attached to a concrete occurrence, with auditable correction history.

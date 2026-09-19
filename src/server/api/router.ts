@@ -443,6 +443,7 @@ function courseAttendanceError(caught: unknown): Response {
   if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
   if (caught.code === "not_found") return error("invalid_request", "Сонгосон хичээл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "not_enrolled") return error("invalid_request", "Энэ сурагч тухайн хичээлийн бүртгэлтэй жагсаалтад алга.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "makeup_attendance_recorded") return error("invalid_request", "Нөхөх хичээлийн ирц тэмдэглэгдсэн тул эх таслалтыг ингэж өөрчлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "future_occurrence") return error("invalid_request", "Ирцийг хичээл болох өдрөөс эхэлж тэмдэглэнэ.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
@@ -455,6 +456,7 @@ function courseMakeupError(caught: unknown): Response {
   if (caught.code === "not_found") return error("not_found", "Сонгосон нөхөх хичээл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "not_eligible") return error("invalid_request", "Энэ таслалт нөхөх хичээлд одоогоор тохирохгүй байна.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "capacity") return error("invalid_request", "Сонгосон хичээлийн сул суудал дүүрсэн байна.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "attendance_recorded") return error("invalid_request", "Тэмдэглэсэн ирцтэй нөхөх хичээлийг цуцлах боломжгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Мэдээлэл өөрчлөгдсөн байна. Жагсаалтаа шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }

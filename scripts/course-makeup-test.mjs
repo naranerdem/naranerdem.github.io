@@ -250,6 +250,20 @@ try {
   assert.equal(special.assignmentCount, 2, "one special occurrence accepts several same-lesson students");
   assert.equal(count(database, "course_makeup_assignment", `target_special_occurrence_id = ${quote(special.specialOccurrenceId)} AND status = 'active'`), 2);
   await assert.rejects(() => makeups.assignCourseMakeupToSpecialOccurrence(runtime, actor(), { ...source(1), specialOccurrenceId: special.specialOccurrenceId }, afterSourceEnd), /Course make-up/, "special occurrence capacity is enforced");
+  const attendedSpecialAssignment = database.query(`SELECT id FROM course_makeup_assignment
+    WHERE target_special_occurrence_id = ${quote(special.specialOccurrenceId)} AND status = 'active'
+    ORDER BY id LIMIT 1`)[0].id;
+  sqlite(`INSERT INTO course_makeup_special_attendance (
+    id, course_makeup_assignment_id, special_occurrence_id, attendance_status, scheduled_local_date,
+    first_recorded_at, updated_at, recorded_by_staff_account_id, updated_by_staff_account_id,
+    is_test, test_run_id, created_at
+  ) VALUES ('attended-special-mark', ${quote(attendedSpecialAssignment)}, ${quote(special.specialOccurrenceId)}, 'present', '${targetDate}',
+    '${now}', '${now}', 'teacher-staff', 'teacher-staff', 1, 'makeup-test', '${now}');`);
+  await assert.rejects(() => makeups.cancelCourseMakeupAssignment(runtime, actor(), { assignmentId: attendedSpecialAssignment }, afterSourceEnd),
+    /Course make-up/, "the service rejects unbooking a special assignment with recorded attendance");
+  await assert.rejects(() => makeups.cancelSpecialCourseMakeupOccurrence(runtime, actor(), { specialOccurrenceId: special.specialOccurrenceId }, afterSourceEnd),
+    /Course make-up/, "the service rejects cancelling a special session with recorded attendance");
+  sqlite(`UPDATE course_makeup_special_attendance SET attendance_status = NULL WHERE id = 'attended-special-mark';`);
   await makeups.cancelSpecialCourseMakeupOccurrence(runtime, actor(), { specialOccurrenceId: special.specialOccurrenceId }, afterSourceEnd);
   assert.equal(count(database, "course_makeup_assignment", `target_special_occurrence_id = ${quote(special.specialOccurrenceId)} AND status = 'cancelled'`), 2, "special cancellation retains assignment history");
   overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);

@@ -97,7 +97,9 @@ function count(database, table, where = "1 = 1") {
 
 try {
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
-  sqlite(migrations.map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
+  const specialAttendanceMigration = "0058_course_makeup_special_attendance.sql";
+  sqlite(migrations.filter((file) => file !== specialAttendanceMigration)
+    .map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
   for (const [source, output] of [["src/server/staff/course-attendance.ts", attendanceBundle], ["src/server/staff/program-calendar.ts", calendarBundle], ["src/server/staff/registration-cancellation.ts", cancellationBundle]]) {
     const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
@@ -170,7 +172,34 @@ try {
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('enrollment-a', 'application-a', 'student-a', 'year', 'class-a', 'confirmed', '${confirmedAt}', 1, 'attendance-test', '${now}', '${now}'),
         ('enrollment-b', 'application-b', 'student-b', 'year', 'class-a', 'confirmed', '${confirmedAt}', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO course_makeup_resolution (
+      id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('legacy-makeup-resolution', 'enrollment-b', 'class-a', 'lesson-1', 'assigned', 'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO course_makeup_assignment (
+      id, resolution_id, target_kind, target_class_session_id, target_curriculum_lesson_id,
+      status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('legacy-makeup-assignment', 'legacy-makeup-resolution', 'normal_class', 'class-b', 'lesson-1',
+      'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO course_makeup_attendance (
+      id, course_makeup_assignment_id, attendance_status, recorded_calendar_slot_id, scheduled_local_date,
+      first_recorded_at, updated_at, recorded_by_staff_account_id, updated_by_staff_account_id,
+      is_test, test_run_id, created_at
+    ) VALUES ('legacy-makeup-attendance', 'legacy-makeup-assignment', 'present', 'slot-makeup-target', '${past}',
+      '${now}', '${now}', 'teacher-staff', 'teacher-staff', 1, 'attendance-test', '${now}');
+    INSERT INTO course_makeup_attendance_change (
+      id, course_makeup_attendance_id, previous_status, new_status, changed_by_staff_account_id,
+      changed_at, is_test, test_run_id, created_at
+    ) VALUES ('legacy-makeup-attendance-change', 'legacy-makeup-attendance', NULL, 'present', 'teacher-staff',
+      '${now}', 1, 'attendance-test', '${now}');
   `);
+  const legacyNormalHistory = count(database, "course_makeup_attendance_change", "course_makeup_attendance_id = 'legacy-makeup-attendance'");
+  sqlite(readFileSync(path.join("migrations", specialAttendanceMigration), "utf8"));
+  assert.equal(database.query("SELECT attendance_status AS status FROM course_makeup_attendance WHERE id = 'legacy-makeup-attendance'")[0].status, "present", "0058 preserves a normal make-up mark from the released schema");
+  assert.equal(count(database, "course_makeup_attendance_change", "course_makeup_attendance_id = 'legacy-makeup-attendance'"), legacyNormalHistory, "0058 preserves normal make-up correction history from the released schema");
+  assert.equal(count(database, "course_makeup_special_attendance"), 0, "0058 does not create special-session attendance rows during upgrade");
+  sqlite(`UPDATE course_makeup_assignment SET status = 'cancelled', cancelled_at = '${now}', cancelled_by_staff_account_id = 'teacher-staff', cancellation_reason = 'teacher_reopened', updated_at = '${now}' WHERE id = 'legacy-makeup-assignment';
+    UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}' WHERE id = 'legacy-makeup-resolution';`);
 
   const beforeClassEnd = new Date(`${today}T09:30:00+08:00`);
   const afterClassEnd = new Date(`${today}T12:00:00+08:00`);
@@ -260,6 +289,91 @@ try {
     UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}' WHERE id = 'makeup-resolution';`);
   const cancelledMakeupDestination = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-makeup-target", afterClassEnd);
   assert.equal(cancelledMakeupDestination.selected.rosterCount, 0, "cancelled make-up assignments leave the target roster while preserving their audit history");
+
+  const specialDate = addCivilDays(past, -1);
+  sqlite(`
+    INSERT INTO course_makeup_special_occurrence (
+      id, curriculum_lesson_id, local_date, start_time, end_time, capacity,
+      status, created_by_staff_account_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES
+      ('special-attendance', 'lesson-1', '${specialDate}', '14:00', '15:20', 2,
+        'active', 'teacher-staff', 1, 'attendance-test', '${now}', '${now}'),
+      ('special-empty', 'lesson-1', '${specialDate}', '16:00', '17:20', 2,
+        'active', 'teacher-staff', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO course_makeup_resolution (
+      id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES
+      ('special-resolution-a', 'enrollment-a', 'class-a', 'lesson-1', 'assigned', 'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}'),
+      ('special-resolution-b', 'enrollment-b', 'class-a', 'lesson-1', 'assigned', 'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO course_makeup_assignment (
+      id, resolution_id, target_kind, target_special_occurrence_id, target_curriculum_lesson_id,
+      status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES
+      ('special-assignment-a', 'special-resolution-a', 'special', 'special-attendance', 'lesson-1',
+        'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}'),
+      ('special-assignment-b', 'special-resolution-b', 'special', 'special-attendance', 'lesson-1',
+        'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
+  `);
+  const specialDay = await attendance.getCourseAttendanceDay(runtime, actor(), specialDate, "special-attendance", afterClassEnd);
+  assert.equal(specialDay.selected.occurrenceKind, "special", "a special occurrence resolves through the ordinary attendance endpoint");
+  assert.equal(specialDay.selected.rosterCount, 2, "only the two booked learners appear in the special-session roster");
+  assert.equal(specialDay.selected.roster.filter((entry) => entry.attendanceKind === "makeup").length, 2, "special-session attendees retain make-up identification");
+  assert.equal(new Set(specialDay.selected.roster.map((entry) => entry.studentId)).size, 2, "each special-session attendee appears once");
+  assert.equal(specialDay.selected.roster[0].makeupSource.lessonTitle, "Өнгөрсөн хичээл", "special attendance retains the source missed-lesson link");
+  sqlite(`
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('same-student-prereg', 'guardian', 'year', 'completed', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('same-student-application', 'same-student-prereg', 'student-a', 5, 'new', 'enrolled', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('same-student-enrollment', 'same-student-application', 'student-a', 'year', 'class-b', 'confirmed', '${confirmedAt}', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO course_makeup_resolution (
+      id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('same-student-special-resolution', 'same-student-enrollment', 'class-b', 'lesson-1', 'assigned', 'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
+  `);
+  assert.throws(() => sqlite(`INSERT INTO course_makeup_assignment (
+    id, resolution_id, target_kind, target_special_occurrence_id, target_curriculum_lesson_id,
+    status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('same-student-special-assignment', 'same-student-special-resolution', 'special', 'special-attendance', 'lesson-1',
+    'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');`), /learner already booked/, "a learner with two enrollments cannot occupy a special session twice");
+  sqlite(`UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}' WHERE id = 'same-student-special-resolution';`);
+  const emptySpecial = await attendance.getCourseAttendanceDay(runtime, actor(), specialDate, "special-empty", afterClassEnd);
+  assert.equal(emptySpecial.selected.rosterCount, 0, "an unbooked special session does not infer attendees from an associated class");
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "special-attendance", enrollmentId: "enrollment-a", makeupAssignmentId: "special-assignment-a", status: "present",
+  });
+  assert.equal((await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "special-attendance", enrollmentId: "enrollment-a", makeupAssignmentId: "special-assignment-a", status: "present",
+  })).changed, false, "replaying a special attendance mark does not create another result");
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "special-attendance", enrollmentId: "enrollment-a", makeupAssignmentId: "special-assignment-a", status: "late",
+  });
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "special-attendance", enrollmentId: "enrollment-b", makeupAssignmentId: "special-assignment-b", status: "late",
+  });
+  assert.equal(count(database, "course_makeup_special_attendance"), 2, "special marks are stored once per booked assignment without rewriting ordinary attendance");
+  assert.equal(count(database, "course_makeup_attendance", "course_makeup_assignment_id LIKE 'special-%'"), 0, "special marks do not contaminate normal make-up attendance");
+  assert.equal(count(database, "course_makeup_special_attendance_change", "course_makeup_special_attendance_id = (SELECT id FROM course_makeup_special_attendance WHERE course_makeup_assignment_id = 'special-assignment-a')"), 2, "special mark corrections retain append-only history");
+  assert.throws(() => sqlite(`UPDATE course_makeup_assignment SET status = 'cancelled' WHERE id = 'special-assignment-a';`), /cannot cancel attended special make-up assignment/, "database blocks unbooking an attended special assignment");
+  assert.throws(() => sqlite(`UPDATE course_makeup_special_occurrence SET status = 'cancelled' WHERE id = 'special-attendance';`), /cannot cancel attended special make-up occurrence/, "database blocks cancelling an attended special session");
+  const specialReloaded = await attendance.getCourseAttendanceDay(runtime, actor(), specialDate, "special-attendance", afterClassEnd);
+  assert.equal(specialReloaded.selected.roster.find((entry) => entry.enrollmentId === "enrollment-a").recordedAttendanceStatus, "late", "special attendance persists through a fresh roster read");
+  assert.equal(specialReloaded.selected.roster.find((entry) => entry.enrollmentId === "enrollment-b").recordedAttendanceStatus, "late", "each booked learner retains the correct special-session mark");
+  assert.equal(count(database, "course_attendance", "enrollment_id IN ('enrollment-a', 'enrollment-b') AND curriculum_lesson_id = 'lesson-1'"), 0, "special attendance preserves the original source absence independently");
+  await assert.rejects(() => attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "slot-past", enrollmentId: "enrollment-a", status: "present",
+  }), /Course attendance operation failed/, "a recorded special make-up blocks invalidating its source absence");
+  await attendance.clearCourseAttendance(runtime, actor(), {
+    slotId: "special-attendance", enrollmentId: "enrollment-b", makeupAssignmentId: "special-assignment-b",
+  });
+  sqlite(`
+    UPDATE course_makeup_assignment SET status = 'cancelled', cancelled_at = '${now}', cancelled_by_staff_account_id = 'teacher-staff', cancellation_reason = 'teacher_reopened', updated_at = '${now}' WHERE id = 'special-assignment-b';
+    UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}' WHERE id = 'special-resolution-b';
+  `);
+  const cancelledSpecial = await attendance.getCourseAttendanceDay(runtime, actor(), specialDate, "special-attendance", afterClassEnd);
+  assert.equal(cancelledSpecial.selected.rosterCount, 1, "a cancelled unmarked booking leaves the special-session expected roster while the recorded attendee remains");
 
   await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-past", enrollmentId: "enrollment-a", status: "absent" });
   sqlite(`INSERT INTO registration_draft (
