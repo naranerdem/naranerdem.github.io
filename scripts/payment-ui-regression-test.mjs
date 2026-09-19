@@ -37,6 +37,8 @@ assert.match(page, /Төлбөр бүртгэгдлээ\. Суудал удах�
 assert.match(page, /function reconcileActionFeedback\(\)/, "the payment detail reconciles interim feedback with the authoritative finalization result");
 assert.match(page, /item\.canonicalEnrollmentId && feedback\.text === "Төлбөр бүртгэгдлээ\. Суудал удахгүй баталгаажна\."/, "a completed canonical enrollment replaces only the stale grace-period status");
 assert.match(page, /"Суудал баталгаажлаа\."/, "the teacher receives an explicit final seat-confirmation status after the grace refresh");
+assert.match(page, /result\.finalizedImmediately[\s\S]*Төлбөр бүртгэгдэж, суудал баталгаажлаа\./,
+  "a zero-minute finalization reports the completed state rather than a correction-window wait");
 assert.match(page, /Boolean\(form\.elements\.approveSeat\?\.checked && !form\.elements\.approveSeat\?\.disabled\)/, "a disabled sufficient state cannot submit a stale incomplete-payment override");
 assert.match(page, /const alreadyApproved = !seat;/, "later payments remain usable when no seat-approval control is rendered");
 assert.match(page, /const laterOutstanding = item\.laterInstallmentId/, "the confirmed-record projection calculates the later installment's effective outstanding balance");

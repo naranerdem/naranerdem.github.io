@@ -1304,7 +1304,9 @@ import "../../styles/global.css";
         try {
           state.paymentDrafts[draftKey].idempotencyKey ||= `manual:${item.paymentRequestId}:${installmentId}:${await secureStaffUuidV4()}`;
           const result = await post({ action: "payment.record", paymentRequestId: item.paymentRequestId, allocations: [{ installmentId, amountMnt }], source, receivedAt, approveSeatConfirmation: approveSeat, proceedWithoutFamilyCredit, remainingPaymentDueAt: remainingDueAt, idempotencyKey: state.paymentDrafts[draftKey].idempotencyKey });
-          setActionFeedback(item.registrationDraftChildId, "payment", result.seatApprovalRequested ? "Төлбөр бүртгэгдлээ. Суудал удахгүй баталгаажна." : "Төлбөр бүртгэгдлээ");
+          setActionFeedback(item.registrationDraftChildId, "payment", result.finalizedImmediately
+            ? "Төлбөр бүртгэгдэж, суудал баталгаажлаа."
+            : result.seatApprovalRequested ? "Төлбөр бүртгэгдлээ. Суудал удахгүй баталгаажна." : "Төлбөр бүртгэгдлээ");
           try { await refresh("", { anchorChildId: item.registrationDraftChildId }); delete state.paymentDrafts[draftKey]; }
           catch { setActionFeedback(item.registrationDraftChildId, "payment", "Төлбөр бүртгэгдлээ. Жагсаалтыг шинэчилж чадсангүй; дахин дарахаас өмнө Шинэчлэхийг сонгоно уу."); }
         } catch (error) {
