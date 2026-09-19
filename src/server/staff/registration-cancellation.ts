@@ -5,7 +5,7 @@ import { getClassCapacityProjections } from "../services/class-capacity";
 import { releaseAdditionalAdmissionCreditReservations } from "../services/child-credit-ledger";
 import { invalidatePendingConditionalFamilyQuotesForChild } from "../services/conditional-family-discounts";
 
-export type RegistrationCancellationReason = "guardian_request" | "payment_overdue" | "other";
+export type RegistrationCancellationReason = "guardian_request" | "payment_overdue" | "duplicate_registration" | "other";
 
 export class RegistrationCancellationError extends Error {
   constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "confirmation_in_progress" | "additional_admission_pending" | "withdrawal_required" | "reinstatement_blocked") {
@@ -47,7 +47,7 @@ function note(value: unknown): string {
 }
 
 function reason(value: unknown): RegistrationCancellationReason | null {
-  return value === "guardian_request" || value === "payment_overdue" || value === "other" ? value : null;
+  return value === "guardian_request" || value === "payment_overdue" || value === "duplicate_registration" || value === "other" ? value : null;
 }
 
 async function rowForChild(env: WorkerEnv, childId: string): Promise<CancellationRow | null> {
@@ -182,15 +182,19 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
   registrationDraftChildId: string;
   reason: unknown;
   note?: unknown;
+  retainedRegistrationDraftChildId?: unknown;
 }, nowDate = new Date()) {
   if (!hasStaffCapability(actor, "registration.manage")) throw new RegistrationCancellationError("forbidden");
   const cancellationReason = reason(input.reason);
   const cancellationNote = note(input.note);
+  const retainedRegistrationDraftChildId = typeof input.retainedRegistrationDraftChildId === "string"
+    ? input.retainedRegistrationDraftChildId.trim() : "";
   if (!input.registrationDraftChildId || !cancellationReason || (cancellationReason === "other" && !cancellationNote)) {
     throw new RegistrationCancellationError("invalid");
   }
   const row = await rowForChild(env, input.registrationDraftChildId);
   if (!row || !row.classSessionId) throw new RegistrationCancellationError("not_found");
+  if (retainedRegistrationDraftChildId && retainedRegistrationDraftChildId === row.childId) throw new RegistrationCancellationError("invalid");
   if (row.childStatus === "cancelled") return { cancelled: false, idempotent: true, classSessionId: row.classSessionId, creditCount: 0 };
   if (await hasAttendanceHistory(env, row.enrollmentId)) throw new RegistrationCancellationError("withdrawal_required");
 
@@ -297,7 +301,11 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
       metadata_json, environment, is_test, test_run_id, created_at) VALUES (?, ?, 'staff', ?, 'registration_cancelled',
       'registration_draft_child', ?, ?, ?, ?, ?, ?)`)
       .bind(crypto.randomUUID(), now, actor.staffAccountId, row.childId,
-        JSON.stringify({ reason: cancellationReason, note: cancellationNote || null, prior: {
+        JSON.stringify({ reason: cancellationReason, note: cancellationNote || null,
+          retainedRegistrationDraftChildId: cancellationReason === "duplicate_registration" && retainedRegistrationDraftChildId
+            ? retainedRegistrationDraftChildId : null,
+          parentCancellationNotificationSuppressed: cancellationReason === "duplicate_registration",
+          prior: {
           childStatus: row.childStatus, draftStatus: row.draftStatus, enrollmentStatus: row.enrollmentStatus,
         }, creditCount: credits.length }), env.APP_ENV, row.isTest, row.testRunId, now),
     ...credits.map((credit) => env.DB.prepare(`INSERT OR IGNORE INTO payment_credit (

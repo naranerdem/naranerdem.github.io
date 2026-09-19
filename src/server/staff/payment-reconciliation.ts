@@ -114,7 +114,7 @@ export async function updatePaymentConfirmationGraceSetting(env: WorkerEnv, acto
   graceMinutes: number; expectedUpdatedAt: string;
 }): Promise<PaymentConfirmationGraceSetting> {
   if (!hasStaffCapability(actor, "admin.settings.manage")) throw new PaymentReconciliationError("forbidden");
-  if (!Number.isInteger(input.graceMinutes) || input.graceMinutes < 1 || input.graceMinutes > 60 || !input.expectedUpdatedAt) {
+  if (!Number.isInteger(input.graceMinutes) || input.graceMinutes < 0 || input.graceMinutes > 60 || !input.expectedUpdatedAt) {
     throw new PaymentReconciliationError("invalid");
   }
   const now = new Date().toISOString();
@@ -851,7 +851,13 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   await env.DB.batch(statements);
   await Promise.all([...new Set(installments.map((item) => item.registrationDraftChildId))]
     .map((childId) => recalculateDiscountAwardBalances(env.DB, childId, now)));
-  return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial, seatApprovalRequested };
+  // Zero is an intentional operational setting, not a missing value. Use the
+  // same fenced finalizer used by the scheduler so it records the durable
+  // confirmation, promotion, and notification outcome before this request
+  // returns. Positive grace values retain the existing scheduled path.
+  const finalizedImmediately = grace.graceMinutes === 0;
+  if (finalizedImmediately) await finalizeDuePaymentConfirmations(env, nowDate);
+  return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial, seatApprovalRequested, finalizedImmediately };
 }
 
 export async function confirmSeatForSufficientPayment(

@@ -138,7 +138,7 @@ assert.match(page, /staff-cancellation-confirmation/, "cancellation has a locall
 assert.match(page, /id="registration-cancel-dialog"/, "the final cancellation action opens the established accessible dialog surface");
 assert.match(page, /data-registration-cancel-dismiss[^>]*>Болих/, "the cancellation dialog starts with a safe explicit dismissal action");
 assert.match(page, /data-registration-cancel-confirm[^>]*>Бүртгэлийг цуцлах/, "only the dialog's explicit confirmation can cancel the record");
-assert.match(page, /openCancellationConfirmation\(\{ childId, reason, note, childName: item\.childName/, "the dialog binds the stable child identity, selected reason, and current record details before any mutation");
+assert.match(page, /openCancellationConfirmation\(\{ childId, reason, note, retainedRegistrationDraftChildId, childName: item\.childName/, "the dialog binds the stable child identity, selected duplicate reference, reason, and current record details before any mutation");
 assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлбөрийн түүх хадгалагдана\./, "the dialog accurately describes a consuming record without promising a release for every record");
 assert.match(page, /Энэ бүртгэл цуцлагдана\. Төлбөрийн түүх хадгалагдана\./, "a non-consuming record has a separate truthful cancellation consequence");
 assert.doesNotMatch(page, /Энэ яг бүртгэлийг цуцалж/, "the redundant cancellation wording is removed");

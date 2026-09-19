@@ -1257,6 +1257,7 @@ export async function handleApiRequest(
           registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
           reason: payload.reason,
           note: payload.note,
+          retainedRegistrationDraftChildId: payload.retainedRegistrationDraftChildId,
         }) }, 200, { "Cache-Control": "no-store" });
       }
       if (payload.action === "registration.reinstate") {

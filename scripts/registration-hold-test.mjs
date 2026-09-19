@@ -1248,6 +1248,26 @@ try {
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${autoSingleChild.id}' AND status = 'active'`), 0,
     "one-time automatic promotion transfers the original seat reservation exactly once");
 
+  database.query(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 0`);
+  const immediateInput = submission("class-priced");
+  immediateInput.children[0].givenName = "Шууд баталгаажуулах";
+  const immediateDraft = await createRegistrationDraft(env(database), immediateInput, new Date(iso(-3)));
+  const immediateRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [immediateDraft.draftId])[0];
+  const immediateQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()));
+  const immediateItem = immediateQueue.items.find((item) => item.paymentRequestId === immediateRequest.id);
+  const immediatePayment = await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: immediateRequest.id,
+    allocations: [{ installmentId: immediateItem.installmentId, amountMnt: Number(immediateItem.expectedAmountMnt) }],
+    source: 'staff_manual_bank', idempotencyKey: 'zero-grace-immediate-confirmation',
+  }, new Date('2026-08-13T09:15:00.000Z'));
+  assert.equal(immediatePayment.finalizedImmediately, true,
+    "zero minutes invokes the durable payment finalizer within the recording request");
+  const immediateChild = database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE registration_draft_id = ?`, [immediateDraft.draftId])[0];
+  assert.ok(immediateChild.enrollmentId, "zero grace promotes the ordinary paid child without a scheduler visit");
+  assert.equal(database.query(`SELECT status FROM payment_confirmation WHERE received_payment_id = ?`, [immediatePayment.id])[0].status, 'finalized',
+    "zero grace leaves a finalized, not tentative, confirmation");
+  database.query(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 5`);
+
   const onePaymentPreview = await getAdditionalClassPreview(env(database), registrationStaff, {
     registrationDraftChildId: autoSingleChild.id, targetClassSessionId: "class-second-offering", paymentPlanCode: "single", proposeBaseDiscount: true,
   }, new Date(iso()));
