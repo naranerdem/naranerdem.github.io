@@ -22,7 +22,8 @@ let context;
 let workerOutput = "";
 
 function runWrangler(args, label) {
-  const result = spawnSync(process.execPath, [wranglerCli, ...args], { encoding: "utf8" });
+  // The complete local migration ledger exceeds Node's default subprocess buffer.
+  const result = spawnSync(process.execPath, [wranglerCli, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`${label} failed\n${result.stdout}\n${result.stderr}`);
 }
 function sql(value) { return `'${String(value).replaceAll("'", "''")}'`; }

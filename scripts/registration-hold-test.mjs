@@ -9,7 +9,9 @@ import { spawnSync } from "node:child_process";
 const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-registration-holds-"));
 const databasePath = path.join(tempDir, "registration.sqlite3");
 const esbuild = path.resolve("node_modules/esbuild/bin/esbuild");
-const releasedRuntimeRoot = "/private/tmp/naranerdem-release-8e86";
+// Keep the released-runtime comparison explicit, while allowing release
+// verification to point at its preserved checkout when needed.
+const releasedRuntimeRoot = process.env.NARANERDEM_RELEASED_RUNTIME_ROOT || "/private/tmp/naranerdem-release-8e86-runtime";
 
 function bundle(source, output) {
   const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });

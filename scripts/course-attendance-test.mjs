@@ -138,10 +138,10 @@ try {
       VALUES ('offering', 'annual_course', 'Ирцийн жилийн сургалт', 'year', 'stage_1', '${addCivilDays(today, -14)}', 'program', 1, 'paid', 'active', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('class-a', 'year', 'stage_1', 'Тест анги', '${weekday}', '10:00', '11:20', 10, 'closed', 'offering', 1, 'attendance-test', '${now}', '${now}'),
-        ('class-b', 'year', 'stage_1', 'Өөр тест анги', 'Ням', '10:00', '11:20', 10, 'available', 'offering', 1, 'attendance-test', '${now}', '${now}');
+        ('class-b', 'year', 'stage_1', 'Өөр тест анги', 'Ням', '14:00', '15:20', 10, 'available', 'offering', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at)
       VALUES ('class-a', 'weekly', '${past}', '${weekday}', '10:00', '11:20', '${now}', '${now}'),
-        ('class-b', 'weekly', '${past}', 'Ням', '10:00', '11:20', '${now}', '${now}');
+        ('class-b', 'weekly', '${past}', 'Ням', '14:00', '15:20', '${now}', '${now}');
     INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('calendar-a', 'class-a', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}'),
         ('calendar-b', 'class-b', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}');
@@ -152,7 +152,7 @@ try {
       VALUES ('slot-past', 'revision-a', '${past}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}'),
         ('slot-today', 'revision-a', '${today}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-2', 1, 'attendance-test', '${now}', '${now}'),
         ('slot-future', 'revision-a', '${future}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-3', 1, 'attendance-test', '${now}', '${now}'),
-        ('slot-makeup-target', 'revision-b', '${past}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}');
+        ('slot-makeup-target', 'revision-b', '${past}', '14:00', '15:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}');
     UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id IN ('revision-a', 'revision-b');
     INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, exclude_from_generation, warn_on_overlap, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('today-holiday', 'year', 'Тест амралт', '${today}', '${today}', 0, 'warn_only', 0, 1, 'active', 1, 'attendance-test', '${now}', '${now}');
