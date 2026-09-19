@@ -365,6 +365,7 @@ async function recordPartialCashPayment(page, childId) {
 async function recordCashPayment(page, childId, amount, {
   expectedAmount = amount,
   proceedWithoutFamilyCredit = false,
+  successText = "Төлбөр бүртгэгдлээ",
 } = {}) {
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
   const row = page.locator(`[data-registration-child="${childId}"]`);
@@ -402,8 +403,38 @@ async function recordCashPayment(page, childId, amount, {
       WHERE payment_installment.registration_draft_child_id = ${sql(childId)} AND payment_installment.installment_kind = 'initial'`);
     throw new Error(`cash payment failed: ${await response.text()}\n${JSON.stringify(diagnostic)}`);
   }
-  await row.getByText("Төлбөр бүртгэгдлээ").waitFor({ state: "visible" });
+  await row.getByText(successText).waitFor({ state: "visible" });
   return submitted;
+}
+
+async function captureDuplicateAndZeroGraceStates(page) {
+  execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 0");
+  const settledChildId = await fillIntake(page, "ZeroGraceCapture", "single");
+  await recordCashPayment(page, settledChildId, 1000, { successText: "Төлбөр бүртгэгдэж, суудал баталгаажлаа." });
+  const settledRow = page.locator(`[data-registration-child="${settledChildId}"]`);
+  await settledRow.getByText("Төлбөр бүртгэгдэж, суудал баталгаажлаа.").waitFor({ state: "visible" });
+  await capturePaymentPanel(page, "zero-grace-confirmed.png");
+
+  const unpaidChildId = await fillIntake(page, "DuplicateCapture", "two_installment");
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(unpaidChildId)}`);
+  const unpaidRow = page.locator(`[data-registration-child="${unpaidChildId}"]`);
+  await unpaidRow.waitFor({ state: "visible" });
+  assert.equal(await unpaidRow.locator(".staff-later-payment-form").count(), 0,
+    "an unpaid initial installment never exposes the later-payment form");
+  const cancellation = unpaidRow.locator("[data-registration-cancel-form]");
+  const cancellationDisclosure = cancellation.locator("xpath=ancestor::details[1]");
+  if (!(await cancellationDisclosure.evaluate((element) => element.open))) await cancellationDisclosure.locator("summary").click();
+  await cancellation.locator('select[name="reason"]').selectOption("duplicate_registration");
+  await cancellation.locator('input[name="retainedRegistrationDraftChildId"]').fill(settledChildId);
+  await cancellation.locator('button[type="submit"]').click();
+  const dialog = page.locator("#registration-cancel-dialog");
+  await dialog.waitFor({ state: "visible" });
+  assert.match(await dialog.innerText(), /Давхар бүртгэл/, "the confirmation names the selected duplicate reason");
+  await capturePaymentPanel(page, "duplicate-cancellation-confirmation.png");
+  await dialog.locator("[data-registration-cancel-dismiss]").click();
+  assert.equal((await dbJson(`SELECT status FROM registration_draft_child WHERE id = ${sql(unpaidChildId)}`))[0]?.status,
+    "awaiting_initial_payment", "dismissing the duplicate-cancellation confirmation leaves the unpaid record unchanged");
+  execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 5");
 }
 
 async function recordApprovedPartialCashPayment(page, childId, amount) {
@@ -869,6 +900,8 @@ try {
   await context.tracing.start({ screenshots: true, snapshots: true });
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   page = await context.newPage();
+
+  if (process.env.PAYMENT_PANEL_CAPTURE_STATES === "1") await captureDuplicateAndZeroGraceStates(page);
 
   if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
     const uxContext = await browser.newContext({ viewport: { width: 1200, height: 900 } });

@@ -315,7 +315,8 @@ try {
     ["class-roomy", 3, "available", "12:00"],
     ["class-full-preferred", 1, "full", "14:00"],
     ["class-priced", 10, "available", "16:00"],
-   ["class-second-offering", 10, "available", "17:00"],
+    ["class-zero-grace", 1, "available", "16:30"],
+    ["class-second-offering", 10, "available", "17:00"],
    ["class-legacy-status", 10, "available", "17:30"],
     ["class-award-source", 10, "available", "18:00"],
     ["class-award-target", 10, "available", "18:30"],
@@ -1249,7 +1250,7 @@ try {
     "one-time automatic promotion transfers the original seat reservation exactly once");
 
   database.query(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 0`);
-  const immediateInput = submission("class-priced");
+  const immediateInput = submission("class-zero-grace");
   immediateInput.children[0].givenName = "Шууд баталгаажуулах";
   const immediateDraft = await createRegistrationDraft(env(database), immediateInput, new Date(iso(-3)));
   const immediateRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [immediateDraft.draftId])[0];
