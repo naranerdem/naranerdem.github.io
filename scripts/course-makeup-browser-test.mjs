@@ -68,6 +68,8 @@ try {
   const today = localToday();
   const sourceDate = addDays(today, -7);
   const targetDate = today;
+  const pastDate = addDays(today, -1);
+  const rescheduleDate = addDays(today, 9);
   const dayChangeDate = addDays(today, 16);
   const dayChangeReplacementDate = addDays(today, 18);
   const alternateDate = new Date(`${today}T00:00:00Z`).getUTCDay() === 0 ? addDays(today, -1) : addDays(today, 1);
@@ -130,30 +132,55 @@ try {
       VALUES ('student', 'Browser Маш Урт', 'Нөхөх Оролцогчийн Нэр', 'not_specified', '2015-01-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-student-a', 'Тусгай Нөхөх', 'Анударь', 'not_specified', '2015-04-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-student-b', 'Тусгай Нөхөх', 'Билгүүн', 'not_specified', '2015-05-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-student-b', 'Тусгай Нөхөх', 'Билгүүн', 'not_specified', '2015-05-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-student-review', 'Ирц Шалгах', 'Энхрий', 'not_specified', '2015-06-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-student-reschedule', 'Өдөр Цаг', 'Өөрчлөх', 'not_specified', '2015-07-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('prereg', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('application', 'prereg', 'student', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-prereg-a', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-prereg-b', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-prereg-b', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-prereg-review', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-prereg-reschedule', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-application-a', 'special-prereg-a', 'special-student-a', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-application-b', 'special-prereg-b', 'special-student-b', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-application-b', 'special-prereg-b', 'special-student-b', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-application-review', 'special-prereg-review', 'special-student-review', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-application-reschedule', 'special-prereg-reschedule', 'special-student-reschedule', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('source-enrollment', 'application', 'student', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-enrollment-a', 'special-application-a', 'special-student-a', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-enrollment-b', 'special-application-b', 'special-student-b', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-enrollment-b', 'special-application-b', 'special-student-b', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-enrollment-review', 'special-application-review', 'special-student-review', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-enrollment-reschedule', 'special-application-reschedule', 'special-student-reschedule', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO course_makeup_special_occurrence (id, curriculum_lesson_id, local_date, start_time, end_time, capacity, status, created_by_staff_account_id, is_test, test_run_id, created_at, updated_at)
-      VALUES ('special-occurrence', 'lesson', '${targetDate}', '14:00', '15:20', 2, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      VALUES ('special-occurrence', 'lesson', '${targetDate}', '14:00', '15:20', 2, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('review-special-occurrence', 'lesson', '${pastDate}', '14:00', '15:20', 1, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('reschedule-special-occurrence', 'lesson', '${rescheduleDate}', '14:00', '15:20', 1, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO course_makeup_resolution (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id, decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-resolution-a', 'special-enrollment-a', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-resolution-b', 'special-enrollment-b', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-resolution-b', 'special-enrollment-b', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-resolution-review', 'special-enrollment-review', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-resolution-reschedule', 'special-enrollment-reschedule', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO course_makeup_case (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id, current_resolution_id, state, is_test, test_run_id, created_at, updated_at)
+      VALUES ('special-case-a', 'special-enrollment-a', 'source-class', 'lesson', 'special-resolution-a', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-case-b', 'special-enrollment-b', 'source-class', 'lesson', 'special-resolution-b', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-case-review', 'special-enrollment-review', 'source-class', 'lesson', 'special-resolution-review', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-case-reschedule', 'special-enrollment-reschedule', 'source-class', 'lesson', 'special-resolution-reschedule', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    UPDATE course_makeup_resolution SET case_id = CASE id
+      WHEN 'special-resolution-a' THEN 'special-case-a'
+      WHEN 'special-resolution-b' THEN 'special-case-b'
+      WHEN 'special-resolution-review' THEN 'special-case-review'
+      WHEN 'special-resolution-reschedule' THEN 'special-case-reschedule'
+    END WHERE id IN ('special-resolution-a', 'special-resolution-b', 'special-resolution-review', 'special-resolution-reschedule');
     INSERT INTO course_makeup_assignment (id, resolution_id, target_kind, target_special_occurrence_id, target_curriculum_lesson_id, status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-assignment-a', 'special-resolution-a', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-assignment-b', 'special-resolution-b', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-assignment-b', 'special-resolution-b', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-assignment-review', 'special-resolution-review', 'special', 'review-special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-assignment-reschedule', 'special-resolution-reschedule', 'special', 'reschedule-special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('hold-draft', '${"a".repeat(64)}', 'year', 'Hold Guardian', 'parent', '99000001', 'hold@example.test', 'hold@example.test', 'Тест', 'single', 'v1', 'v1', 'awaiting_initial_payment', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
@@ -206,6 +233,12 @@ try {
   console.log("make-up browser fixture: checking make-up availability");
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.getByRole("heading", { name: "Шийдэх зүйл", exact: true }).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#makeup-open-list").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#makeup-open-list").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "Нөхөх", exact: true }).click();
   await page.getByText("Тохирох энгийн анги одоогоор алга.").waitFor({ state: "visible" });
   assert.equal(await page.getByRole("button", { name: "Энд нөхөх", exact: true }).count(), 0, "a capacity-consuming hold hides the unavailable normal target");
@@ -264,6 +297,38 @@ try {
   assert.equal(destination.selected.roster.filter((entry) => entry.attendanceKind === "makeup").length, 1, "destination attendee remains visibly distinct from an ordinary enrollment");
   assert.equal(destination.selected.roster.filter((entry) => entry.attendanceKind === "ordinary").length, 1, "destination roster retains the ordinary attendee");
   assert.equal(destination.selected.roster.find((entry) => entry.attendanceKind === "makeup").makeupSource.lessonTitle, "Ижил хичээл", "destination attendee retains the source missed-lesson linkage");
+  console.log("make-up browser fixture: inspecting case history, attendance review, and special reschedule preview");
+  await page.goto(`${baseUrl}/staff/makeups/`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.getByRole("heading", { name: "Ирц шалгах", exact: true }).waitFor({ state: "visible" });
+  await page.getByText(/Ирц Шалгах Энхрий/).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#makeup-review-list").screenshot({ path: path.join(screenshotDir, "makeup-attendance-review-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#makeup-review-list").screenshot({ path: path.join(screenshotDir, "makeup-attendance-review-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("[data-open-special-reschedule='reschedule-special-occurrence']").click();
+  await page.locator("#special-reschedule-form").waitFor({ state: "visible" });
+  await page.locator("#special-reschedule-form [name='localDate']").fill(addDays(rescheduleDate, 1));
+  await page.locator("#special-reschedule-form [name='startTime']").fill("16:00");
+  await page.locator("#special-reschedule-form [name='endTime']").fill("17:20");
+  await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await page.getByRole("heading", { name: "Өдөр, цаг өөрчлөх", exact: true }).waitFor({ state: "visible" });
+  await page.getByText(/1 сурагчийн тов/).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "special-reschedule-preview-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "special-reschedule-preview-mobile.png") });
+  await page.getByRole("button", { name: "Болих", exact: true }).click();
+  await page.locator("#makeup-detail").waitFor({ state: "hidden" });
+  await page.getByRole("heading", { name: "Түүх", exact: true }).waitFor({ state: "visible" });
+  await page.locator("#makeup-history-title").locator("..").locator("details").evaluate((details) => { details.open = true; });
+  await page.getByText(/Browser Маш Урт Нөхөх Оролцогчийн Нэр/).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#makeup-history-list").screenshot({ path: path.join(screenshotDir, "makeup-history-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#makeup-history-list").screenshot({ path: path.join(screenshotDir, "makeup-history-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
   console.log("make-up browser fixture: reconciling agenda counts");
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });

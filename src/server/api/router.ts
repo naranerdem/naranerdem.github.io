@@ -136,6 +136,9 @@ import {
   CourseMakeupError,
   createSpecialCourseMakeupOccurrence,
   getCourseMakeupOverview,
+  previewSpecialCourseMakeupReschedule,
+  reconcileCourseMakeupCase,
+  rescheduleSpecialCourseMakeupOccurrence,
   resolveCourseMakeupAsNotNeeded,
   reopenCourseMakeupResolution,
 } from "../staff/course-makeups";
@@ -457,6 +460,7 @@ function courseMakeupError(caught: unknown): Response {
   if (caught.code === "not_eligible") return error("invalid_request", "Энэ таслалт нөхөх хичээлд одоогоор тохирохгүй байна.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "capacity") return error("invalid_request", "Сонгосон хичээлийн сул суудал дүүрсэн байна.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "attendance_recorded") return error("invalid_request", "Тэмдэглэсэн ирцтэй нөхөх хичээлийг цуцлах боломжгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "stale") return error("invalid_request", "Хуваарь өөрчлөгдсөн байна. Урьдчилан харалтаа шинэчлээд дахин батална уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Мэдээлэл өөрчлөгдсөн байна. Жагсаалтаа шинэчлээд дахин оролдоно уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
@@ -1709,8 +1713,17 @@ export async function handleApiRequest(
         case "makeup.special-create":
           result = await createSpecialCourseMakeupOccurrence(env, principal, payload);
           break;
+        case "makeup.special-reschedule-preview":
+          result = await previewSpecialCourseMakeupReschedule(env, principal, payload);
+          break;
+        case "makeup.special-reschedule":
+          result = await rescheduleSpecialCourseMakeupOccurrence(env, principal, payload);
+          break;
         case "makeup.assignment-cancel":
           await cancelCourseMakeupAssignment(env, principal, payload);
+          break;
+        case "makeup.case-reconcile":
+          await reconcileCourseMakeupCase(env, principal, payload);
           break;
         case "makeup.special-cancel":
           await cancelSpecialCourseMakeupOccurrence(env, principal, payload);

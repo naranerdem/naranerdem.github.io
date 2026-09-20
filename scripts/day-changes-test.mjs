@@ -79,7 +79,7 @@ try {
   assert.match(page, /Ээлжит хичээл сонгох/, "the page starts from a selected regular lesson");
   assert.match(page, /Цуцлаад орлуулах цаг товлох/, "individual cancellation explains the regular replacement-slot model");
   assert.match(page, /replacementStartTime/, "an individual replacement can use a reviewed time as well as date");
-  assert.match(page, /Өдрийн бүх хичээл/, "the whole-day action describes its scope");
+  assert.match(page, /Өдрийн бүх ээлжит хичээл/, "the whole-day action describes its regular-session-only scope");
   assert.match(page, /day-confirm-abandon/, "a reviewed operation can be abandoned without treating it as a schedule mutation");
   assert.match(page, /Дахин оролдох/, "a failed day read leaves a clear recovery action");
   assert.match(page, /Сонгосон ээлжит хичээлийн цаг цуцлагдаж,/, "the replacement preview uses the approved concrete cancellation explanation");

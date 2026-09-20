@@ -83,14 +83,10 @@ function count(database, table, where = "1 = 1") {
 
 try {
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
-  sqlite(migrations.map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
+  const lifecycleMigration = migrations.find((file) => file === "0059_course_makeup_case_lifecycle.sql");
+  assert.ok(lifecycleMigration, "the lifecycle migration is present");
+  sqlite(migrations.filter((file) => file < lifecycleMigration).map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
-  for (const [source, output] of [["src/server/staff/course-makeups.ts", makeupBundle], ["src/server/staff/course-attendance.ts", attendanceBundle]]) {
-    const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
-    if (result.status !== 0) throw new Error(`esbuild failed for ${source}\n${result.stderr}`);
-  }
-  const makeups = await import(pathToFileURL(makeupBundle).href);
-  const attendance = await import(pathToFileURL(attendanceBundle).href);
   const database = new SqliteD1();
   const runtime = { APP_ENV: "staging", REGISTRATION_WRITE_ENABLED: "false", EMAIL_ENABLED: "false", AUTH_EMAIL_ENABLED: "false", STAFF_AUTH_EMAIL_ENABLED: "false", DB: database };
   const now = new Date().toISOString();
@@ -169,7 +165,26 @@ try {
       VALUES ('attendance-3', 'enrollment-3', 'source-class', 'lesson-1', 'present', 'source-slot', '${sourceDate}', '${now}', '${now}', 'teacher-staff', 'teacher-staff', 1, 'makeup-test', '${now}');
     INSERT INTO course_absence_notice (id, enrollment_id, class_session_id, curriculum_lesson_id, notice_source, status, note, recorded_calendar_slot_id, scheduled_local_date, created_by_staff_account_id, updated_by_staff_account_id, created_at, updated_at, is_test, test_run_id)
       VALUES ('notice-2', 'enrollment-2', 'source-class', 'lesson-1', 'staff_manual', 'active', NULL, 'source-slot', '${sourceDate}', 'teacher-staff', 'teacher-staff', '${now}', '${now}', 1, 'makeup-test');
+    INSERT INTO course_makeup_resolution (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id, decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('legacy-no-makeup', 'enrollment-3', 'source-class', 'lesson-1', 'no_makeup', 'active', 'teacher-staff', '${now}', 1, 'makeup-test', '${now}', '${now}');
   `);
+
+  sqlite(readFileSync(path.join("migrations", lifecycleMigration), "utf8"));
+  const migratedCase = JSON.parse(sqlite(`SELECT makeup_case.state, resolution.case_id AS caseId
+    FROM course_makeup_case AS makeup_case
+    INNER JOIN course_makeup_resolution AS resolution ON resolution.id = makeup_case.current_resolution_id
+    WHERE resolution.id = 'legacy-no-makeup';`, true));
+  assert.equal(migratedCase.length, 1, "0059 creates one case for one historical source decision");
+  assert.equal(migratedCase[0].state, "closed", "0059 preserves a legacy no-makeup decision without inventing attendance");
+  assert.ok(migratedCase[0].caseId, "0059 links the legacy resolution to its durable case");
+  assert.equal(sqlite("PRAGMA foreign_key_check;"), "", "0059 preserves legacy make-up foreign keys");
+
+  for (const [source, output] of [["src/server/staff/course-makeups.ts", makeupBundle], ["src/server/staff/course-attendance.ts", attendanceBundle]]) {
+    const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
+    if (result.status !== 0) throw new Error(`esbuild failed for ${source}\n${result.stderr}`);
+  }
+  const makeups = await import(pathToFileURL(makeupBundle).href);
+  const attendance = await import(pathToFileURL(attendanceBundle).href);
 
   const source = (number) => ({ enrollmentId: `enrollment-${number}`, classSessionId: "source-class", curriculumLessonId: "lesson-1" });
   function createDraftSeat(label) {
@@ -244,8 +259,12 @@ try {
   await attendance.clearCourseAttendance(runtime, actor(), { slotId: "source-slot", enrollmentId: "enrollment-2" });
   assert.ok((await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd)).unresolved.some((entry) => entry.enrollmentId === "enrollment-2"), "later effective absence receives a new review instead of stale no-makeup intent");
 
+  await assert.rejects(() => makeups.createSpecialCourseMakeupOccurrence(runtime, actor(), {
+    sources: [source(4)], localDate: targetDate, startTime: "14:00", endTime: "15:20", capacity: 1,
+  }, afterSourceEnd), /Course make-up/, "special-session creation shares the one-room check with regular teaching slots");
+
   const special = await makeups.createSpecialCourseMakeupOccurrence(runtime, actor(), {
-    sources: [source(4), source(5)], localDate: targetDate, startTime: "17:00", endTime: "18:00", capacity: 2, note: "Тусгай тест",
+    sources: [source(4), source(5)], localDate: targetDate, startTime: "18:00", endTime: "19:00", capacity: 2, note: "Тусгай тест",
   }, afterSourceEnd);
   assert.equal(special.assignmentCount, 2, "one special occurrence accepts several same-lesson students");
   assert.equal(count(database, "course_makeup_assignment", `target_special_occurrence_id = ${quote(special.specialOccurrenceId)} AND status = 'active'`), 2);
@@ -268,6 +287,93 @@ try {
   assert.equal(count(database, "course_makeup_assignment", `target_special_occurrence_id = ${quote(special.specialOccurrenceId)} AND status = 'cancelled'`), 2, "special cancellation retains assignment history");
   overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
   assert.ok(overview.unresolved.some((entry) => entry.enrollmentId === "enrollment-4") && overview.unresolved.some((entry) => entry.enrollmentId === "enrollment-5"), "special cancellation makes source absences unresolved again");
+
+  // A completed destination is represented by its explicit mark, never merely
+  // by elapsed time. Retired attempts remain attached to the same source case.
+  sqlite(`
+    INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('review-target', 'year', 'stage_1', 'Ирцийн зорилт', 'Даваа', '00:00', '01:00', 3, 'available', 'offering', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at)
+      VALUES ('review-target', 'weekly', '${today}', 'Даваа', '00:00', '01:00', '${now}', '${now}');
+    INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('review-target-calendar', 'review-target', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at)
+      VALUES ('review-target-revision', 'review-target-calendar', 'program', 1, 'draft', '${today}', 0, 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('review-target-slot', 'review-target-revision', '${today}', '00:00', '01:00', 'manual_extra', 'scheduled', 'lesson-1', 1, 'makeup-test', '${now}', '${now}');
+    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id = 'review-target-revision';
+  `);
+  const firstAttempt = await makeups.assignCourseMakeupToNormalClass(runtime, actor(), { ...source(2), targetClassSessionId: 'review-target' }, afterSourceEnd);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, new Date(`${today}T12:00:00+08:00`));
+  assert.ok(overview.attendanceReview.some((entry) => entry.assignmentId === firstAttempt.assignmentId), "an ended unmarked destination requires attendance review");
+  await attendance.recordCourseAttendance(runtime, actor(), { slotId: 'review-target-slot', enrollmentId: 'enrollment-2', makeupAssignmentId: firstAttempt.assignmentId, status: 'absent' });
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, new Date(`${today}T12:00:00+08:00`));
+  assert.ok(overview.unresolved.some((entry) => entry.enrollmentId === 'enrollment-2'), "a recorded missed make-up returns the same source to an explicit action choice");
+  await makeups.resolveCourseMakeupAsNotNeeded(runtime, actor(), source(2), afterSourceEnd);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, new Date(`${today}T12:00:00+08:00`));
+  const closedAfterMiss = overview.noMakeup.find((entry) => entry.enrollmentId === 'enrollment-2');
+  assert.ok(closedAfterMiss, "staff can explicitly close a case after a recorded missed make-up without deleting its attempt");
+  await makeups.reopenCourseMakeupResolution(runtime, actor(), { resolutionId: closedAfterMiss.resolutionId });
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, new Date(`${today}T12:00:00+08:00`));
+  assert.ok(overview.unresolved.some((entry) => entry.enrollmentId === 'enrollment-2'), "reopening a closed missed make-up case restores an explicit booking decision");
+  const secondAttempt = await makeups.assignCourseMakeupToNormalClass(runtime, actor(), { ...source(2), targetClassSessionId: 'target-class' }, afterSourceEnd);
+  assert.equal(count(database, 'course_makeup_case', "source_enrollment_id = 'enrollment-2' AND source_class_session_id = 'source-class' AND source_curriculum_lesson_id = 'lesson-1'"), 1, "rebooking retains one durable source case");
+  await attendance.recordCourseAttendance(runtime, actor(), { slotId: 'review-target-slot', enrollmentId: 'enrollment-2', makeupAssignmentId: firstAttempt.assignmentId, status: 'present' });
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
+  assert.equal(overview.scheduled.find((entry) => entry.assignmentId === secondAttempt.assignmentId)?.state, 'reconciliation', "a corrected earlier absence does not silently duplicate fulfilment after rebooking");
+  await makeups.cancelCourseMakeupAssignment(runtime, actor(), { assignmentId: secondAttempt.assignmentId }, afterSourceEnd);
+  assert.equal(database.query("SELECT state FROM course_makeup_case WHERE source_enrollment_id = 'enrollment-2'")[0].state, 'resolved', "cancelling an unmarked later attempt restores the truthful completed outcome");
+  assert.equal(database.query(`SELECT attendance_status AS status FROM course_makeup_attendance WHERE course_makeup_assignment_id = ${quote(firstAttempt.assignmentId)}`)[0].status, 'present', "retired attempt attendance remains immutable history");
+
+  const rescheduled = await makeups.createSpecialCourseMakeupOccurrence(runtime, actor(), {
+    sources: [source(5)], localDate: addCivilDays(targetDate, 2), startTime: '18:00', endTime: '19:00', capacity: 1,
+  }, afterSourceEnd);
+  const reschedulePreview = await makeups.previewSpecialCourseMakeupReschedule(runtime, actor(), {
+    specialOccurrenceId: rescheduled.specialOccurrenceId, localDate: addCivilDays(targetDate, 3), startTime: '19:00', endTime: '20:00',
+  }, afterSourceEnd);
+  const operationId = '11111111-1111-4111-8111-111111111111';
+  const rescheduleInput = {
+    specialOccurrenceId: rescheduled.specialOccurrenceId, expectedUpdatedAt: reschedulePreview.expectedUpdatedAt,
+    localDate: reschedulePreview.next.localDate, startTime: reschedulePreview.next.startTime, endTime: reschedulePreview.next.endTime, operationId,
+  };
+  const moved = await makeups.rescheduleSpecialCourseMakeupOccurrence(runtime, actor(), rescheduleInput, afterSourceEnd);
+  const replayedMove = await makeups.rescheduleSpecialCourseMakeupOccurrence(runtime, actor(), rescheduleInput, afterSourceEnd);
+  assert.deepEqual(replayedMove, moved, "a lost-response retry returns the original special-session move");
+  assert.equal(database.query(`SELECT local_date AS localDate, start_time AS startTime, end_time AS endTime FROM course_makeup_special_occurrence WHERE id = ${quote(rescheduled.specialOccurrenceId)}`)[0].startTime, '19:00', "whole-session rescheduling preserves its occurrence identity while moving the time");
+  assert.equal(count(database, 'course_makeup_assignment', `target_special_occurrence_id = ${quote(rescheduled.specialOccurrenceId)} AND status = 'active'`), 1, "whole-session rescheduling retains booked learners once");
+  const concurrentPreview = await makeups.previewSpecialCourseMakeupReschedule(runtime, actor(), {
+    specialOccurrenceId: rescheduled.specialOccurrenceId, localDate: addCivilDays(targetDate, 5), startTime: '20:00', endTime: '21:00',
+  }, afterSourceEnd);
+  const competingMoves = await Promise.allSettled([
+    makeups.rescheduleSpecialCourseMakeupOccurrence(runtime, actor(), {
+      specialOccurrenceId: rescheduled.specialOccurrenceId, expectedUpdatedAt: concurrentPreview.expectedUpdatedAt,
+      localDate: concurrentPreview.next.localDate, startTime: concurrentPreview.next.startTime, endTime: concurrentPreview.next.endTime,
+      operationId: '22222222-2222-4222-8222-222222222222',
+    }, afterSourceEnd),
+    makeups.rescheduleSpecialCourseMakeupOccurrence(runtime, actor(), {
+      specialOccurrenceId: rescheduled.specialOccurrenceId, expectedUpdatedAt: concurrentPreview.expectedUpdatedAt,
+      localDate: addCivilDays(targetDate, 6), startTime: '21:00', endTime: '22:00',
+      operationId: '33333333-3333-4333-8333-333333333333',
+    }, afterSourceEnd),
+  ]);
+  assert.equal(competingMoves.filter((entry) => entry.status === 'fulfilled').length, 1, "competing special-session moves commit only one room-time claim");
+  assert.equal(competingMoves.filter((entry) => entry.status === 'rejected').length, 1, "the conflicting special-session move leaves no partial schedule operation");
+  await assert.rejects(() => makeups.previewSpecialCourseMakeupReschedule(runtime, actor(), {
+    specialOccurrenceId: rescheduled.specialOccurrenceId, expectedUpdatedAt: reschedulePreview.expectedUpdatedAt,
+    localDate: addCivilDays(targetDate, 4), startTime: '20:00', endTime: '21:00',
+  }, afterSourceEnd), /Course make-up/, "a stale special-session preview is rejected");
+  await assert.rejects(() => makeups.previewSpecialCourseMakeupReschedule(runtime, actor(), {
+    specialOccurrenceId: rescheduled.specialOccurrenceId, localDate: targetDate, startTime: '14:00', endTime: '15:20',
+  }, afterSourceEnd), /Course make-up/, "special-session rescheduling cannot overlap a published regular slot");
+  const blockedDate = addCivilDays(targetDate, 4);
+  sqlite(`INSERT INTO academic_year_break (
+    id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots,
+    exclude_from_generation, status, is_test, test_run_id, created_at, updated_at
+  ) VALUES ('special-reschedule-break', 'year', 'Туршилтын амралт', '${blockedDate}', '${blockedDate}', 1,
+    1, 'active', 1, 'makeup-test', '${now}', '${now}');`);
+  await assert.rejects(() => makeups.previewSpecialCourseMakeupReschedule(runtime, actor(), {
+    specialOccurrenceId: rescheduled.specialOccurrenceId, localDate: blockedDate, startTime: '19:00', endTime: '20:00',
+  }, afterSourceEnd), /Course make-up/, "special-session rescheduling rejects an applicable closure date");
 
   const followed = await makeups.assignCourseMakeupToNormalClass(runtime, actor(), { ...source(1), targetClassSessionId: "target-class" }, afterSourceEnd);
   sqlite(`
@@ -403,7 +509,7 @@ try {
   assert.doesNotMatch(page, /урилга|Messenger|и-мэйл илгээ/, "make-up planning does not claim communication");
   assert.doesNotMatch(built, /Тест Нэг|Ижил хичээл/, "static make-up page contains no student or private lesson fixture");
 
-  console.log("ok effective-absence make-up review, shared-capacity normal targets, stale booking rejection, special sessions, correction invalidation, and reflow following");
+  console.log("ok make-up case lifecycle, attendance review, rebooking reconciliation, shared capacity, special-session rescheduling, and calendar reflow following");
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }

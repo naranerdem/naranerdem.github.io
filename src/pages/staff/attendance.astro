@@ -116,7 +116,8 @@ import "../../styles/global.css";
         const effective = effectiveAttendanceStatus(status, state.data.selected.occurrenceEnded);
         const assignment = entry.makeupAssignmentId ? ` data-makeup-assignment="${escape(entry.makeupAssignmentId)}"` : "";
         const control = (value, label) => `<label class="staff-attendance-check ${checked[value] ? "selected" : ""}"><input type="checkbox" data-attendance-control="${value}" data-enrollment="${escape(entry.enrollmentId)}"${assignment} ${checked[value] ? "checked" : ""} ${pending ? "disabled" : ""} />${label}</label>`;
-        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}</div>`;
+        const absent = entry.attendanceKind === "makeup" ? `<button type="button" class="staff-text-action" data-attendance-absent="${escape(entry.enrollmentId)}"${pending ? " disabled" : ""}>Ирээгүй</button>` : "";
+        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}${absent}</div>`;
       }
 
       function noticeControls(entry) {
@@ -234,6 +235,7 @@ import "../../styles/global.css";
         if (target.id === "attendance-bulk-present") { state.bulkConfirm = true; renderSummary(); return; }
         if (target.id === "attendance-bulk-cancel") { state.bulkConfirm = false; renderSummary(); return; }
         if (target.id === "attendance-bulk-confirm") { bulkPresent(); return; }
+        if (target.dataset.attendanceAbsent) { setAttendance(target.dataset.attendanceAbsent, "absent"); return; }
       });
       q("#attendance-detail").addEventListener("change", (event) => {
         const target = event.target;

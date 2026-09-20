@@ -515,6 +515,32 @@ async function makeupAttendanceForAssignment(
     FROM ${table} WHERE course_makeup_assignment_id = ?`).bind(assignmentId).first<AttendanceRow>();
 }
 
+function makeupCaseStateStatement(
+  env: WorkerEnv,
+  assignmentId: string,
+  status: CourseAttendanceStatus | null,
+  time: string,
+): D1PreparedStatement {
+  return env.DB.prepare(`UPDATE course_makeup_case
+    SET state = CASE
+      WHEN current_resolution_id = (
+        SELECT resolution_id FROM course_makeup_assignment WHERE id = ?
+      ) THEN CASE
+        WHEN ? IN ('present', 'late') THEN 'resolved'
+        ELSE 'open'
+      END
+      WHEN ? IN ('present', 'late') THEN 'reconciliation'
+      ELSE state
+    END,
+    updated_at = ?
+    WHERE id = (
+      SELECT resolution.case_id
+      FROM course_makeup_assignment AS assignment
+      INNER JOIN course_makeup_resolution AS resolution ON resolution.id = assignment.resolution_id
+      WHERE assignment.id = ?
+    )`).bind(assignmentId, status, status, time, assignmentId);
+}
+
 function makeupAttendanceStatements(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -566,6 +592,7 @@ function makeupAttendanceStatements(
         from: existing?.attendanceStatus ?? null,
         to: status,
       }, occurrence, time),
+      makeupCaseStateStatement(env, entry.makeupAssignmentId, status, time),
     );
     return statements;
   }
@@ -608,6 +635,7 @@ function makeupAttendanceStatements(
       from: existing?.attendanceStatus ?? null,
       to: status,
     }, occurrence, time),
+    makeupCaseStateStatement(env, entry.makeupAssignmentId, status, time),
   );
   return statements;
 }
@@ -639,6 +667,19 @@ function invalidateActiveMakeupStatements(
         AND source_curriculum_lesson_id = ? AND status = 'active'`).bind(
       time, actor.staffAccountId, time,
       enrollmentId, occurrence.classSessionId, occurrence.curriculumLessonId,
+    ),
+    env.DB.prepare(`UPDATE course_makeup_case
+      SET current_resolution_id = NULL, state = 'open', updated_at = ?
+      WHERE source_enrollment_id = ? AND source_class_session_id = ?
+        AND source_curriculum_lesson_id = ?
+        AND current_resolution_id IN (
+          SELECT id FROM course_makeup_resolution
+          WHERE source_enrollment_id = ? AND source_class_session_id = ?
+            AND source_curriculum_lesson_id = ? AND status = 'invalidated'
+            AND invalidated_at = ?
+        )`).bind(
+      time, enrollmentId, occurrence.classSessionId, occurrence.curriculumLessonId,
+      enrollmentId, occurrence.classSessionId, occurrence.curriculumLessonId, time,
     ),
   ];
 }

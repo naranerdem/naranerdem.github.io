@@ -3678,6 +3678,32 @@ textarea:focus {
   padding: 0.35rem 0.6rem;
 }
 
+.staff-makeup-student-list {
+  display: grid;
+  gap: 0.2rem;
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+}
+
+.staff-makeup-student-list li {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.staff-makeup-reconciliation {
+  margin-top: 0.5rem;
+}
+
+.staff-makeup-reconciliation form {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.45rem;
+  max-width: 28rem;
+}
+
 .staff-makeup-detail {
   border-block: 1px solid var(--line);
   margin-top: 1.1rem;

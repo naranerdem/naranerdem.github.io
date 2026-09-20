@@ -3,7 +3,7 @@ import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { getClassCapacityProjections } from "../services/class-capacity";
 
 export class CourseMakeupError extends Error {
-  constructor(public readonly code: "forbidden" | "invalid" | "not_found" | "not_eligible" | "capacity" | "conflict" | "attendance_recorded") {
+  constructor(public readonly code: "forbidden" | "invalid" | "not_found" | "not_eligible" | "capacity" | "conflict" | "attendance_recorded" | "stale") {
     super("Course make-up operation failed.");
     this.name = "CourseMakeupError";
   }
@@ -61,27 +61,43 @@ interface SpecialTargetRow {
 interface AssignmentRow {
   assignmentId: string;
   resolutionId: string;
+  caseId: string;
+  caseState: "open" | "closed" | "resolved" | "reconciliation";
   targetKind: "normal_class" | "special";
   sourceEnrollmentId: string;
   sourceClassSessionId: string;
   sourceCurriculumLessonId: string;
+  sourceLocalDate: string | null;
+  sourceStartTime: string | null;
+  sourceEndTime: string | null;
+  sourceClassLabel: string | null;
   studentName: string;
   lessonSequence: number;
   lessonTitle: string;
   targetClassSessionId: string | null;
   targetSpecialOccurrenceId: string | null;
+  targetSlotId: string | null;
   targetLocalDate: string | null;
   targetStartTime: string | null;
   targetEndTime: string | null;
   targetOfferingTitle: string | null;
   targetStageCode: string | null;
   specialNote: string | null;
+  destinationAttendanceStatus: "present" | "late" | "absent" | null;
   isTest: number;
   testRunId: string | null;
 }
 
 interface NoMakeupRow extends SourceRow {
   resolutionId: string;
+}
+
+interface CaseRow {
+  id: string;
+  currentResolutionId: string | null;
+  state: "open" | "closed" | "resolved" | "reconciliation";
+  isTest: number;
+  testRunId: string | null;
 }
 
 function id(): string { return crypto.randomUUID(); }
@@ -112,6 +128,16 @@ function validDate(value: string): boolean {
 }
 
 function validTime(value: string): boolean { return /^([01]\d|2[0-3]):[0-5]\d$/.test(value); }
+function durationMinutes(startTime: string, endTime: string): number {
+  const [startHour, startMinute] = startTime.split(":").map(Number);
+  const [endHour, endMinute] = endTime.split(":").map(Number);
+  return endHour * 60 + endMinute - startHour * 60 - startMinute;
+}
+function operationId(value: unknown): string | null {
+  const candidate = clean(value, 80);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate)
+    ? candidate : null;
+}
 function addMinutes(startTime: string, minutes: number): string {
   const [hours, mins] = startTime.split(":").map(Number);
   const total = hours * 60 + mins + minutes;
@@ -198,19 +224,79 @@ const SOURCE_SELECT = `
     AND notice.class_session_id = class_session.id
     AND notice.curriculum_lesson_id = lesson.id
     AND notice.status = 'active'
-  LEFT JOIN course_makeup_resolution AS active_resolution
-    ON active_resolution.source_enrollment_id = enrollment.id
-    AND active_resolution.source_class_session_id = class_session.id
-    AND active_resolution.source_curriculum_lesson_id = lesson.id
-    AND active_resolution.status = 'active'
   WHERE slot.status = 'scheduled'
     AND offering.kind IN ('annual_course', 'summer_course')
     AND enrollment.confirmed_at IS NOT NULL
     AND julianday(enrollment.confirmed_at) <= julianday(slot.local_date || ' 23:59:59', '-8 hours')
     AND (enrollment.cancelled_at IS NULL
       OR julianday(enrollment.cancelled_at) >= julianday(slot.local_date || ' 00:00:00', '-8 hours'))
-    AND (attendance.attendance_status IS NULL OR attendance.attendance_status = 'absent')
-    AND active_resolution.id IS NULL`;
+    AND (attendance.attendance_status IS NULL OR attendance.attendance_status = 'absent')`;
+
+function sourceKey(source: SourceIdentity): string {
+  return `${source.enrollmentId}|${source.classSessionId}|${source.curriculumLessonId}`;
+}
+
+async function caseRows(env: WorkerEnv): Promise<Map<string, CaseRow>> {
+  const result = await env.DB.prepare(`SELECT id, source_enrollment_id AS enrollmentId,
+      source_class_session_id AS classSessionId, source_curriculum_lesson_id AS curriculumLessonId,
+      current_resolution_id AS currentResolutionId, state,
+      is_test AS isTest, test_run_id AS testRunId
+    FROM course_makeup_case`).all<CaseRow & SourceIdentity>();
+  return new Map(result.results.map((entry) => [sourceKey(entry), entry]));
+}
+
+async function caseForSource(env: WorkerEnv, source: SourceIdentity): Promise<CaseRow | null> {
+  return env.DB.prepare(`SELECT id, current_resolution_id AS currentResolutionId, state,
+      is_test AS isTest, test_run_id AS testRunId
+    FROM course_makeup_case
+    WHERE source_enrollment_id = ? AND source_class_session_id = ? AND source_curriculum_lesson_id = ?`).bind(
+    source.enrollmentId, source.classSessionId, source.curriculumLessonId,
+  ).first<CaseRow>();
+}
+
+async function currentAttemptState(
+  env: WorkerEnv,
+  caseRow: CaseRow | null,
+  at = new Date(),
+): Promise<"needs_action" | "scheduled" | "attendance_review" | "resolved" | "closed" | "reconciliation"> {
+  if (!caseRow) return "needs_action";
+  if (caseRow.state === "closed") return "closed";
+  if (caseRow.state === "reconciliation") return "reconciliation";
+  if (!caseRow.currentResolutionId) return caseRow.state === "resolved" ? "resolved" : "needs_action";
+  const row = await env.DB.prepare(`SELECT resolution.decision, assignment.id AS assignmentId,
+      COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) AS attendanceStatus,
+      COALESCE(slot.local_date, special.local_date) AS localDate,
+      COALESCE(slot.start_time, special.start_time) AS startTime,
+      COALESCE(slot.end_time, special.end_time) AS endTime
+    FROM course_makeup_resolution AS resolution
+    LEFT JOIN course_makeup_assignment AS assignment
+      ON assignment.resolution_id = resolution.id AND assignment.status = 'active'
+    LEFT JOIN class_calendar AS calendar ON calendar.class_session_id = assignment.target_class_session_id
+    LEFT JOIN class_calendar_revision AS revision
+      ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS slot
+      ON slot.class_calendar_revision_id = revision.id
+      AND slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id AND slot.status = 'scheduled'
+    LEFT JOIN course_makeup_special_occurrence AS special
+      ON special.id = assignment.target_special_occurrence_id AND special.status = 'active'
+    LEFT JOIN course_makeup_attendance AS normal_attendance
+      ON normal_attendance.course_makeup_assignment_id = assignment.id
+    LEFT JOIN course_makeup_special_attendance AS special_attendance
+      ON special_attendance.course_makeup_assignment_id = assignment.id
+    WHERE resolution.id = ? AND resolution.status = 'active'`).bind(caseRow.currentResolutionId).first<{
+      decision: "no_makeup" | "assigned"; assignmentId: string | null;
+      attendanceStatus: "present" | "late" | "absent" | null;
+      localDate: string | null; startTime: string | null; endTime: string | null;
+    }>();
+  if (!row) return caseRow.state === "resolved" ? "resolved" : "needs_action";
+  if (row.decision === "no_makeup") return "closed";
+  if (!row.assignmentId || !row.localDate || !row.startTime || !row.endTime) return "needs_action";
+  if (row.attendanceStatus === "present" || row.attendanceStatus === "late") return "resolved";
+  if (row.attendanceStatus === "absent") return "needs_action";
+  const local = localDateTime(at);
+  return row.localDate < local.date || (row.localDate === local.date && row.endTime <= local.time)
+    ? "attendance_review" : "scheduled";
+}
 
 async function unresolvedSources(env: WorkerEnv, at = new Date()): Promise<SourceRow[]> {
   const local = localDateTime(at);
@@ -220,7 +306,11 @@ async function unresolvedSources(env: WorkerEnv, at = new Date()): Promise<Sourc
     ORDER BY slot.local_date DESC, slot.start_time, program.display_name,
       lesson.sequence_number, student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE`)
     .bind(local.date, local.date, local.time).all<SourceRow>();
-  return result.results;
+  const cases = await caseRows(env);
+  const states = await Promise.all(result.results.map(async (source) => ({
+    source, state: await currentAttemptState(env, cases.get(sourceKey(source)) ?? null, at),
+  })));
+  return states.filter((entry) => entry.state === "needs_action").map((entry) => entry.source);
 }
 
 async function unresolvedSource(
@@ -236,7 +326,9 @@ async function unresolvedSource(
     source.enrollmentId, source.classSessionId, source.curriculumLessonId,
     local.date, local.date, local.time,
   ).first<SourceRow>();
-  if (!row) throw new CourseMakeupError("not_eligible");
+  if (!row || await currentAttemptState(env, await caseForSource(env, row), at) !== "needs_action") {
+    throw new CourseMakeupError("not_eligible");
+  }
   return row;
 }
 
@@ -323,32 +415,94 @@ async function specialTargets(
   })).filter((target) => target.remainingCapacity > 0);
 }
 
-async function scheduledAssignments(env: WorkerEnv): Promise<Array<AssignmentRow & { state: "scheduled" | "needs_reassignment" }>> {
+async function assertSpecialAvailability(
+  env: WorkerEnv,
+  lessonId: string,
+  localDate: string,
+  startTime: string,
+  endTime: string,
+  excludeSpecialOccurrenceId = "",
+): Promise<void> {
+  const closed = await env.DB.prepare(`SELECT 1 AS value
+    FROM curriculum_lesson AS lesson
+    INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
+    INNER JOIN academic_year_break AS school_break ON school_break.academic_year_id = program.academic_year_id
+    WHERE lesson.id = ? AND school_break.status = 'active'
+      AND school_break.starts_on <= ? AND school_break.ends_on >= ?
+      AND school_break.excludes_habitual_slots = 1 AND school_break.exclude_from_generation = 1
+    LIMIT 1`).bind(lessonId, localDate, localDate).first<{ value: number }>();
+  if (closed) throw new CourseMakeupError("conflict");
+  const conflict = await env.DB.prepare(`SELECT 1 AS value
+    WHERE EXISTS (
+      SELECT 1 FROM course_makeup_special_occurrence
+      WHERE status = 'active' AND id <> ? AND local_date = ?
+        AND start_time < ? AND end_time > ?
+    ) OR EXISTS (
+      SELECT 1 FROM class_calendar_slot AS slot
+      INNER JOIN class_calendar_revision AS revision
+        ON revision.id = slot.class_calendar_revision_id AND revision.status = 'published'
+      WHERE slot.status = 'scheduled' AND slot.local_date = ?
+        AND slot.start_time < ? AND slot.end_time > ?
+    )`).bind(
+      excludeSpecialOccurrenceId, localDate, endTime, startTime,
+      localDate, endTime, startTime,
+    ).first<{ value: number }>();
+  if (conflict) throw new CourseMakeupError("conflict");
+}
+
+async function scheduledAssignments(
+  env: WorkerEnv,
+  at = new Date(),
+): Promise<Array<AssignmentRow & { state: "scheduled" | "needs_reassignment" | "attendance_review" | "resolved" | "needs_action" | "reconciliation" }>> {
   const result = await env.DB.prepare(`SELECT assignment.id AS assignmentId,
       resolution.id AS resolutionId,
+      makeup_case.id AS caseId, makeup_case.state AS caseState,
       assignment.target_kind AS targetKind,
       resolution.source_enrollment_id AS sourceEnrollmentId,
       resolution.source_class_session_id AS sourceClassSessionId,
       resolution.source_curriculum_lesson_id AS sourceCurriculumLessonId,
+      source_slot.local_date AS sourceLocalDate,
+      source_slot.start_time AS sourceStartTime,
+      source_slot.end_time AS sourceEndTime,
+      CASE source_class.stage_code
+        WHEN 'stage_1' THEN '1-р шат'
+        WHEN 'stage_2' THEN '2-р шат'
+        WHEN 'stage_3' THEN '3-р шат'
+        ELSE source_class.stage_code
+      END || ' · ' || COALESCE(source_meeting.weekly_weekday, source_class.weekday)
+        || ' ' || source_slot.start_time || '–' || source_slot.end_time AS sourceClassLabel,
       student.surname || ' ' || student.given_name AS studentName,
       lesson.sequence_number AS lessonSequence,
       lesson.title AS lessonTitle,
       assignment.target_class_session_id AS targetClassSessionId,
       assignment.target_special_occurrence_id AS targetSpecialOccurrenceId,
+      target_slot.id AS targetSlotId,
       COALESCE(target_slot.local_date, special.local_date) AS targetLocalDate,
       COALESCE(target_slot.start_time, special.start_time) AS targetStartTime,
       COALESCE(target_slot.end_time, special.end_time) AS targetEndTime,
       target_offering.title AS targetOfferingTitle,
       target_class.stage_code AS targetStageCode,
       special.note AS specialNote,
+      COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) AS destinationAttendanceStatus,
       assignment.is_test AS isTest,
       assignment.test_run_id AS testRunId
     FROM course_makeup_assignment AS assignment
     INNER JOIN course_makeup_resolution AS resolution
       ON resolution.id = assignment.resolution_id AND resolution.status = 'active'
+    INNER JOIN course_makeup_case AS makeup_case
+      ON makeup_case.current_resolution_id = resolution.id
     INNER JOIN enrollment ON enrollment.id = resolution.source_enrollment_id
     INNER JOIN student ON student.id = enrollment.student_id
     INNER JOIN curriculum_lesson AS lesson ON lesson.id = resolution.source_curriculum_lesson_id
+    INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
+    LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
+    LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
+    LEFT JOIN class_calendar_revision AS source_revision
+      ON source_revision.class_calendar_id = source_calendar.id AND source_revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS source_slot
+      ON source_slot.class_calendar_revision_id = source_revision.id
+      AND source_slot.curriculum_lesson_id = resolution.source_curriculum_lesson_id
+      AND source_slot.status = 'scheduled'
     LEFT JOIN class_session AS target_class ON target_class.id = assignment.target_class_session_id
     LEFT JOIN activity_offering AS target_offering ON target_offering.id = target_class.activity_offering_id
     LEFT JOIN class_calendar AS target_calendar ON target_calendar.class_session_id = target_class.id
@@ -360,12 +514,88 @@ async function scheduledAssignments(env: WorkerEnv): Promise<Array<AssignmentRow
       AND target_slot.status = 'scheduled'
     LEFT JOIN course_makeup_special_occurrence AS special
       ON special.id = assignment.target_special_occurrence_id AND special.status = 'active'
+    LEFT JOIN course_makeup_attendance AS normal_attendance
+      ON normal_attendance.course_makeup_assignment_id = assignment.id
+    LEFT JOIN course_makeup_special_attendance AS special_attendance
+      ON special_attendance.course_makeup_assignment_id = assignment.id
     WHERE assignment.status = 'active'
     ORDER BY targetLocalDate, targetStartTime, lesson.sequence_number, studentName`).all<AssignmentRow>();
-  return result.results.map((entry) => ({
-    ...entry,
-    state: entry.targetLocalDate ? "scheduled" as const : "needs_reassignment" as const,
-  }));
+  const local = localDateTime(at);
+  return result.results.map((entry) => {
+    const state = entry.caseState === "reconciliation" ? "reconciliation"
+      : entry.destinationAttendanceStatus === "present" || entry.destinationAttendanceStatus === "late" ? "resolved"
+      : entry.destinationAttendanceStatus === "absent" ? "needs_action"
+      : !entry.targetLocalDate ? "needs_reassignment"
+      : entry.targetLocalDate < local.date || (entry.targetLocalDate === local.date && (entry.targetEndTime ?? "") <= local.time)
+        ? "attendance_review" : "scheduled";
+    return { ...entry, state };
+  });
+}
+
+async function historicalAttempts(env: WorkerEnv): Promise<Array<{
+  caseId: string; caseState: string; resolutionId: string; assignmentId: string | null;
+  decision: "no_makeup" | "assigned"; resolutionStatus: "active" | "invalidated";
+  studentName: string; lessonSequence: number; lessonTitle: string;
+  sourceLocalDate: string | null; sourceClassLabel: string | null;
+  targetKind: "normal_class" | "special" | null; targetLocalDate: string | null;
+  targetStartTime: string | null; targetEndTime: string | null;
+  destinationAttendanceStatus: "present" | "late" | "absent" | null;
+  isCurrent: number;
+}>> {
+  const result = await env.DB.prepare(`SELECT makeup_case.id AS caseId, makeup_case.state AS caseState,
+      resolution.id AS resolutionId, assignment.id AS assignmentId, resolution.decision,
+      resolution.status AS resolutionStatus,
+      student.surname || ' ' || student.given_name AS studentName,
+      lesson.sequence_number AS lessonSequence, lesson.title AS lessonTitle,
+      source_slot.local_date AS sourceLocalDate,
+      CASE source_class.stage_code
+        WHEN 'stage_1' THEN '1-р шат'
+        WHEN 'stage_2' THEN '2-р шат'
+        WHEN 'stage_3' THEN '3-р шат'
+        ELSE source_class.stage_code
+      END || ' · ' || COALESCE(source_meeting.weekly_weekday, source_class.weekday)
+        || ' ' || source_slot.start_time || '–' || source_slot.end_time AS sourceClassLabel,
+      assignment.target_kind AS targetKind,
+      COALESCE(target_slot.local_date, special.local_date) AS targetLocalDate,
+      COALESCE(target_slot.start_time, special.start_time) AS targetStartTime,
+      COALESCE(target_slot.end_time, special.end_time) AS targetEndTime,
+      COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) AS destinationAttendanceStatus,
+      CASE WHEN makeup_case.current_resolution_id = resolution.id THEN 1 ELSE 0 END AS isCurrent
+    FROM course_makeup_case AS makeup_case
+    INNER JOIN course_makeup_resolution AS resolution ON resolution.case_id = makeup_case.id
+    INNER JOIN enrollment ON enrollment.id = resolution.source_enrollment_id
+    INNER JOIN student ON student.id = enrollment.student_id
+    INNER JOIN curriculum_lesson AS lesson ON lesson.id = resolution.source_curriculum_lesson_id
+    INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
+    LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
+    LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
+    LEFT JOIN class_calendar_revision AS source_revision
+      ON source_revision.class_calendar_id = source_calendar.id AND source_revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS source_slot
+      ON source_slot.class_calendar_revision_id = source_revision.id
+      AND source_slot.curriculum_lesson_id = resolution.source_curriculum_lesson_id AND source_slot.status = 'scheduled'
+    LEFT JOIN course_makeup_assignment AS assignment ON assignment.resolution_id = resolution.id
+    LEFT JOIN class_calendar AS target_calendar ON target_calendar.class_session_id = assignment.target_class_session_id
+    LEFT JOIN class_calendar_revision AS target_revision
+      ON target_revision.class_calendar_id = target_calendar.id AND target_revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS target_slot
+      ON target_slot.class_calendar_revision_id = target_revision.id
+      AND target_slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id AND target_slot.status = 'scheduled'
+    LEFT JOIN course_makeup_special_occurrence AS special ON special.id = assignment.target_special_occurrence_id
+    LEFT JOIN course_makeup_attendance AS normal_attendance ON normal_attendance.course_makeup_assignment_id = assignment.id
+    LEFT JOIN course_makeup_special_attendance AS special_attendance ON special_attendance.course_makeup_assignment_id = assignment.id
+    WHERE resolution.id <> COALESCE(makeup_case.current_resolution_id, '')
+      OR (makeup_case.state = 'closed' AND resolution.id = makeup_case.current_resolution_id)
+    ORDER BY sourceLocalDate DESC, lesson.sequence_number, studentName, resolution.decided_at DESC`).all<{
+      caseId: string; caseState: string; resolutionId: string; assignmentId: string | null;
+      decision: "no_makeup" | "assigned"; resolutionStatus: "active" | "invalidated";
+      studentName: string; lessonSequence: number; lessonTitle: string;
+      sourceLocalDate: string | null; sourceClassLabel: string | null;
+      targetKind: "normal_class" | "special" | null; targetLocalDate: string | null;
+      targetStartTime: string | null; targetEndTime: string | null;
+      destinationAttendanceStatus: "present" | "late" | "absent" | null; isCurrent: number;
+    }>();
+  return result.results;
 }
 
 async function noMakeupResolutions(env: WorkerEnv, at = new Date()): Promise<NoMakeupRow[]> {
@@ -403,6 +633,8 @@ async function noMakeupResolutions(env: WorkerEnv, at = new Date()): Promise<NoM
       AND notice.class_session_id = class_session.id
       AND notice.curriculum_lesson_id = lesson.id
       AND notice.status = 'active'
+    INNER JOIN course_makeup_case AS makeup_case
+      ON makeup_case.current_resolution_id = resolution.id
     WHERE resolution.status = 'active' AND resolution.decision = 'no_makeup'
       AND (slot.local_date < ? OR (slot.local_date = ? AND slot.end_time <= ?))
     ORDER BY slot.local_date DESC, slot.start_time, program.display_name,
@@ -437,6 +669,8 @@ export async function getCourseMakeupOverview(
 ) {
   requireCapability(actor, "makeup.view");
   const unresolved = await unresolvedSources(env, at);
+  const attempts = await scheduledAssignments(env, at);
+  const history = await historicalAttempts(env);
   let selected = null;
   if (selectedInput?.enrollmentId || selectedInput?.classSessionId || selectedInput?.curriculumLessonId) {
     const source = await unresolvedSource(env, sourceIdentity(selectedInput), at);
@@ -448,7 +682,10 @@ export async function getCourseMakeupOverview(
   }
   return {
     unresolved: unresolved.map(serializeSource),
-    scheduled: await scheduledAssignments(env),
+    scheduled: attempts.filter((entry) => entry.state === "scheduled" || entry.state === "needs_reassignment" || entry.state === "reconciliation"),
+    attendanceReview: attempts.filter((entry) => entry.state === "attendance_review"),
+    history: [...attempts.filter((entry) => entry.state === "resolved"), ...history],
+    missed: attempts.filter((entry) => entry.state === "needs_action"),
     noMakeup: (await noMakeupResolutions(env, at)).map((entry) => ({
       ...serializeSource(entry), resolutionId: entry.resolutionId,
     })),
@@ -460,6 +697,7 @@ function resolutionInsert(
   env: WorkerEnv,
   actor: StaffPrincipal,
   source: SourceRow,
+  caseId: string,
   resolutionId: string,
   decision: "no_makeup" | "assigned",
   note: string | null,
@@ -467,12 +705,47 @@ function resolutionInsert(
 ): D1PreparedStatement {
   return env.DB.prepare(`INSERT INTO course_makeup_resolution (
     id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
-    decision, status, note, decided_by_staff_account_id, decided_at,
+    case_id, decision, status, note, decided_by_staff_account_id, decided_at,
     is_test, test_run_id, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`).bind(
+  ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`).bind(
     resolutionId, source.enrollmentId, source.classSessionId, source.curriculumLessonId,
-    decision, note, actor.staffAccountId, time, source.isTest, source.testRunId, time, time,
+    caseId, decision, note, actor.staffAccountId, time, source.isTest, source.testRunId, time, time,
   );
+}
+
+function caseInsert(
+  env: WorkerEnv,
+  source: SourceRow,
+  caseId: string,
+  currentResolutionId: string | null,
+  state: "open" | "closed" | "resolved" | "reconciliation",
+  time: string,
+): D1PreparedStatement {
+  return env.DB.prepare(`INSERT INTO course_makeup_case (
+    id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+    current_resolution_id, state, is_test, test_run_id, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    caseId, source.enrollmentId, source.classSessionId, source.curriculumLessonId,
+    currentResolutionId, state, source.isTest, source.testRunId, time, time,
+  );
+}
+
+function caseCurrentUpdate(
+  env: WorkerEnv,
+  caseId: string,
+  currentResolutionId: string | null,
+  state: "open" | "closed" | "resolved" | "reconciliation",
+  time: string,
+): D1PreparedStatement {
+  return env.DB.prepare(`UPDATE course_makeup_case
+    SET current_resolution_id = ?, state = ?, updated_at = ? WHERE id = ?`).bind(
+    currentResolutionId, state, time, caseId,
+  );
+}
+
+async function existingOrNewCase(env: WorkerEnv, source: SourceRow, proposedId: string): Promise<{ id: string; existing: boolean }> {
+  const existing = await caseForSource(env, source);
+  return existing ? { id: existing.id, existing: true } : { id: proposedId, existing: false };
 }
 
 function assignmentInsert(
@@ -503,7 +776,7 @@ async function safeBatch(env: WorkerEnv, statements: D1PreparedStatement[]): Pro
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : String(caught);
     if (/capacity is full/i.test(message)) throw new CourseMakeupError("capacity");
-    if (/UNIQUE constraint|one active/i.test(message)) throw new CourseMakeupError("conflict");
+    if (/UNIQUE constraint|one active|room time conflicts|schedule changed/i.test(message)) throw new CourseMakeupError("conflict");
     if (/same-lesson target|make-up source/i.test(message)) throw new CourseMakeupError("invalid");
     throw caught;
   }
@@ -518,10 +791,13 @@ export async function resolveCourseMakeupAsNotNeeded(
   requireCapability(actor, "makeup.manage");
   const source = await unresolvedSource(env, sourceIdentity(input), at);
   const resolutionId = id();
+  const caseRef = await existingOrNewCase(env, source, id());
   const time = now();
   const note = optionalText(input.note);
   await safeBatch(env, [
-    resolutionInsert(env, actor, source, resolutionId, "no_makeup", note, time),
+    ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+    resolutionInsert(env, actor, source, caseRef.id, resolutionId, "no_makeup", note, time),
+    caseCurrentUpdate(env, caseRef.id, resolutionId, "closed", time),
     audit(env, actor, "course_makeup_not_needed", "course_makeup_resolution", resolutionId, {
       sourceEnrollmentId: source.enrollmentId,
       sourceClassSessionId: source.classSessionId,
@@ -548,10 +824,13 @@ export async function reopenCourseMakeupResolution(
     }>();
   if (!resolution) throw new CourseMakeupError("not_found");
   const time = now();
+  const caseRef = await caseForSource(env, resolution);
+  if (!caseRef || caseRef.currentResolutionId !== resolution.id) throw new CourseMakeupError("not_found");
   await safeBatch(env, [
     env.DB.prepare(`UPDATE course_makeup_resolution SET status = 'invalidated',
       invalidated_at = ?, invalidated_by_staff_account_id = ?, invalidation_reason = 'assignment_cancelled',
       updated_at = ? WHERE id = ? AND status = 'active'`).bind(time, actor.staffAccountId, time, resolution.id),
+    caseCurrentUpdate(env, caseRef.id, null, "open", time),
     audit(env, actor, "course_makeup_no_makeup_reopened", "course_makeup_resolution", resolution.id, {
       sourceEnrollmentId: resolution.enrollmentId,
       sourceClassSessionId: resolution.classSessionId,
@@ -573,9 +852,12 @@ export async function assignCourseMakeupToNormalClass(
   if (!target) throw new CourseMakeupError("not_eligible");
   const resolutionId = id();
   const assignmentId = id();
+  const caseRef = await existingOrNewCase(env, source, id());
   const time = now();
   await safeBatch(env, [
-    resolutionInsert(env, actor, source, resolutionId, "assigned", null, time),
+    ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+    resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
+    caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
     assignmentInsert(env, actor, source, resolutionId, assignmentId, {
       kind: "normal_class", classSessionId: target.classSessionId,
     }, time),
@@ -602,9 +884,12 @@ export async function assignCourseMakeupToSpecialOccurrence(
   if (!target) throw new CourseMakeupError("not_eligible");
   const resolutionId = id();
   const assignmentId = id();
+  const caseRef = await existingOrNewCase(env, source, id());
   const time = now();
   await safeBatch(env, [
-    resolutionInsert(env, actor, source, resolutionId, "assigned", null, time),
+    ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+    resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
+    caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
     assignmentInsert(env, actor, source, resolutionId, assignmentId, { kind: "special", specialOccurrenceId }, time),
     audit(env, actor, "course_makeup_assigned", "course_makeup_assignment", assignmentId, {
       sourceEnrollmentId: source.enrollmentId,
@@ -643,8 +928,10 @@ export async function createSpecialCourseMakeupOccurrence(
   if (sources.some((source) => source.isTest !== provenance.isTest || source.testRunId !== provenance.testRunId)) {
     throw new CourseMakeupError("invalid");
   }
+  await assertSpecialAvailability(env, lessonId, localDate, startTime, endTime);
   const specialOccurrenceId = id();
   const time = now();
+  const caseRefs = await Promise.all(sources.map((source) => existingOrNewCase(env, source, id())));
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(`INSERT INTO course_makeup_special_occurrence (
       id, curriculum_lesson_id, local_date, start_time, end_time, capacity,
@@ -654,11 +941,14 @@ export async function createSpecialCourseMakeupOccurrence(
       optionalText(input.note), actor.staffAccountId, provenance.isTest, provenance.testRunId, time, time,
     ),
   ];
-  for (const source of sources) {
+  for (const [index, source] of sources.entries()) {
     const resolutionId = id();
     const assignmentId = id();
+    const caseRef = caseRefs[index];
     statements.push(
-      resolutionInsert(env, actor, source, resolutionId, "assigned", null, time),
+      ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+      resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
+      caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
       assignmentInsert(env, actor, source, resolutionId, assignmentId, { kind: "special", specialOccurrenceId }, time),
     );
   }
@@ -671,11 +961,155 @@ export async function createSpecialCourseMakeupOccurrence(
   return { specialOccurrenceId, assignmentCount: sources.length };
 }
 
+interface SpecialScheduleRow {
+  id: string;
+  curriculumLessonId: string;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  capacity: number;
+  note: string | null;
+  updatedAt: string;
+  isTest: number;
+  testRunId: string | null;
+}
+
+async function specialScheduleForChange(env: WorkerEnv, specialOccurrenceId: string, at = new Date()): Promise<SpecialScheduleRow> {
+  const special = await env.DB.prepare(`SELECT id, curriculum_lesson_id AS curriculumLessonId,
+      local_date AS localDate, start_time AS startTime, end_time AS endTime, capacity, note,
+      updated_at AS updatedAt, is_test AS isTest, test_run_id AS testRunId
+    FROM course_makeup_special_occurrence WHERE id = ? AND status = 'active'`).bind(
+    specialOccurrenceId,
+  ).first<SpecialScheduleRow>();
+  if (!special) throw new CourseMakeupError("not_found");
+  if (await hasRecordedSpecialAttendance(env, { specialOccurrenceId })) throw new CourseMakeupError("attendance_recorded");
+  const local = localDateTime(at);
+  if (special.localDate < local.date || (special.localDate === local.date && special.startTime <= local.time)) {
+    throw new CourseMakeupError("conflict");
+  }
+  return special;
+}
+
+async function specialSchedulePreview(
+  env: WorkerEnv,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ special: SpecialScheduleRow; localDate: string; startTime: string; endTime: string; attendees: Array<{ assignmentId: string; studentName: string }> }> {
+  const specialOccurrenceId = clean(input.specialOccurrenceId);
+  const special = await specialScheduleForChange(env, specialOccurrenceId, at);
+  const localDate = clean(input.localDate, 10);
+  const startTime = clean(input.startTime, 5);
+  const endTime = clean(input.endTime, 5) || addMinutes(startTime, durationMinutes(special.startTime, special.endTime));
+  const local = localDateTime(at);
+  if (!validDate(localDate) || !validTime(startTime) || !validTime(endTime) || endTime <= startTime
+    || localDate < local.date || (localDate === local.date && startTime <= local.time)) {
+    throw new CourseMakeupError("invalid");
+  }
+  if (clean(input.expectedUpdatedAt, 64) && clean(input.expectedUpdatedAt, 64) !== special.updatedAt) {
+    throw new CourseMakeupError("stale");
+  }
+  await assertSpecialAvailability(env, special.curriculumLessonId, localDate, startTime, endTime, special.id);
+  const attendees = await env.DB.prepare(`SELECT assignment.id AS assignmentId,
+      student.surname || ' ' || student.given_name AS studentName
+    FROM course_makeup_assignment AS assignment
+    INNER JOIN course_makeup_resolution AS resolution ON resolution.id = assignment.resolution_id
+    INNER JOIN enrollment ON enrollment.id = resolution.source_enrollment_id
+    INNER JOIN student ON student.id = enrollment.student_id
+    WHERE assignment.target_special_occurrence_id = ? AND assignment.status = 'active'
+    ORDER BY student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE, assignment.id`).bind(
+    special.id,
+  ).all<{ assignmentId: string; studentName: string }>();
+  return { special, localDate, startTime, endTime, attendees: attendees.results };
+}
+
+export async function previewSpecialCourseMakeupReschedule(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const preview = await specialSchedulePreview(env, input, at);
+  return {
+    specialOccurrenceId: preview.special.id,
+    expectedUpdatedAt: preview.special.updatedAt,
+    old: { localDate: preview.special.localDate, startTime: preview.special.startTime, endTime: preview.special.endTime },
+    next: { localDate: preview.localDate, startTime: preview.startTime, endTime: preview.endTime },
+    attendees: preview.attendees,
+  };
+}
+
+export async function rescheduleSpecialCourseMakeupOccurrence(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ specialOccurrenceId: string; localDate: string; startTime: string; endTime: string; attendeeCount: number }> {
+  requireCapability(actor, "makeup.manage");
+  const idempotencyKey = operationId(input.operationId);
+  if (!idempotencyKey) throw new CourseMakeupError("invalid");
+  const existing = await env.DB.prepare(`SELECT request_fingerprint AS requestFingerprint, result_json AS resultJson
+    FROM course_makeup_special_schedule_operation WHERE operation_id = ?`).bind(idempotencyKey).first<{
+      requestFingerprint: string; resultJson: string;
+    }>();
+  const fingerprint = JSON.stringify({
+    specialOccurrenceId: clean(input.specialOccurrenceId), expectedUpdatedAt: clean(input.expectedUpdatedAt, 64),
+    localDate: clean(input.localDate, 10), startTime: clean(input.startTime, 5), endTime: clean(input.endTime, 5),
+  });
+  if (existing) {
+    if (existing.requestFingerprint !== fingerprint) throw new CourseMakeupError("conflict");
+    return JSON.parse(existing.resultJson) as { specialOccurrenceId: string; localDate: string; startTime: string; endTime: string; attendeeCount: number };
+  }
+  const preview = await specialSchedulePreview(env, input, at);
+  const expectedUpdatedAt = clean(input.expectedUpdatedAt, 64);
+  if (!expectedUpdatedAt || expectedUpdatedAt !== preview.special.updatedAt) throw new CourseMakeupError("stale");
+  const result = {
+    specialOccurrenceId: preview.special.id, localDate: preview.localDate,
+    startTime: preview.startTime, endTime: preview.endTime, attendeeCount: preview.attendees.length,
+  };
+  const time = now();
+  await safeBatch(env, [
+    env.DB.prepare(`INSERT INTO course_makeup_special_schedule_operation (
+      operation_id, special_occurrence_id, expected_updated_at, request_fingerprint, result_json,
+      performed_by_staff_account_id, performed_at, is_test, test_run_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+      idempotencyKey, preview.special.id, expectedUpdatedAt, fingerprint, JSON.stringify(result),
+      actor.staffAccountId, time, preview.special.isTest, preview.special.testRunId, time,
+    ),
+    env.DB.prepare(`UPDATE course_makeup_special_occurrence
+      SET local_date = ?, start_time = ?, end_time = ?, updated_at = ?
+      WHERE id = ? AND status = 'active' AND updated_at = ?`).bind(
+      preview.localDate, preview.startTime, preview.endTime, time, preview.special.id, expectedUpdatedAt,
+    ),
+    audit(env, actor, "course_makeup_special_rescheduled", "course_makeup_special_occurrence", preview.special.id, {
+      operationId: idempotencyKey,
+      old: { localDate: preview.special.localDate, startTime: preview.special.startTime, endTime: preview.special.endTime },
+      next: { localDate: preview.localDate, startTime: preview.startTime, endTime: preview.endTime },
+      attendeeCount: preview.attendees.length,
+    }, preview.special, time),
+  ]);
+  return result;
+}
+
 async function activeAssignment(env: WorkerEnv, assignmentId: string): Promise<AssignmentRow> {
   const rows = await scheduledAssignments(env);
   const assignment = rows.find((entry) => entry.assignmentId === assignmentId);
   if (!assignment) throw new CourseMakeupError("not_found");
   return assignment;
+}
+
+async function caseHasCompletedOtherAttempt(env: WorkerEnv, caseId: string, resolutionId: string): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT 1 AS value
+    FROM course_makeup_resolution AS resolution
+    INNER JOIN course_makeup_assignment AS assignment ON assignment.resolution_id = resolution.id
+    LEFT JOIN course_makeup_attendance AS normal_attendance
+      ON normal_attendance.course_makeup_assignment_id = assignment.id
+    LEFT JOIN course_makeup_special_attendance AS special_attendance
+      ON special_attendance.course_makeup_assignment_id = assignment.id
+    WHERE resolution.case_id = ? AND resolution.id <> ?
+      AND COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) IN ('present', 'late')
+    LIMIT 1`).bind(caseId, resolutionId).first<{ value: number }>();
+  return Boolean(row?.value);
 }
 
 async function hasRecordedSpecialAttendance(
@@ -714,6 +1148,7 @@ export async function cancelCourseMakeupAssignment(
     throw new CourseMakeupError("conflict");
   }
   const time = now();
+  const completedElsewhere = await caseHasCompletedOtherAttempt(env, assignment.caseId, assignment.resolutionId);
   await safeBatch(env, [
     env.DB.prepare(`UPDATE course_makeup_assignment SET status = 'cancelled',
       cancelled_at = ?, cancelled_by_staff_account_id = ?, cancellation_reason = 'teacher_reopened',
@@ -721,9 +1156,42 @@ export async function cancelCourseMakeupAssignment(
     env.DB.prepare(`UPDATE course_makeup_resolution SET status = 'invalidated',
       invalidated_at = ?, invalidated_by_staff_account_id = ?, invalidation_reason = 'assignment_cancelled',
       updated_at = ? WHERE id = ? AND status = 'active'`).bind(time, actor.staffAccountId, time, assignment.resolutionId),
+    caseCurrentUpdate(env, assignment.caseId, null, completedElsewhere ? "resolved" : "open", time),
     audit(env, actor, "course_makeup_assignment_cancelled", "course_makeup_assignment", assignment.assignmentId, {
       sourceEnrollmentId: assignment.sourceEnrollmentId,
     }, assignment, time),
+  ]);
+}
+
+export async function reconcileCourseMakeupCase(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+): Promise<void> {
+  requireCapability(actor, "makeup.manage");
+  const caseId = clean(input.caseId);
+  const note = optionalText(input.note);
+  if (!note) throw new CourseMakeupError("invalid");
+  const makeupCase = await env.DB.prepare(`SELECT id, current_resolution_id AS currentResolutionId,
+      state, is_test AS isTest, test_run_id AS testRunId
+    FROM course_makeup_case WHERE id = ? AND state = 'reconciliation'`).bind(caseId).first<CaseRow>();
+  if (!makeupCase) throw new CourseMakeupError("not_found");
+  const current = makeupCase.currentResolutionId ? await env.DB.prepare(`SELECT assignment.id AS assignmentId,
+      COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) AS attendanceStatus
+    FROM course_makeup_resolution AS resolution
+    LEFT JOIN course_makeup_assignment AS assignment ON assignment.resolution_id = resolution.id AND assignment.status = 'active'
+    LEFT JOIN course_makeup_attendance AS normal_attendance ON normal_attendance.course_makeup_assignment_id = assignment.id
+    LEFT JOIN course_makeup_special_attendance AS special_attendance ON special_attendance.course_makeup_assignment_id = assignment.id
+    WHERE resolution.id = ?`).bind(makeupCase.currentResolutionId).first<{
+      assignmentId: string | null; attendanceStatus: "present" | "late" | "absent" | null;
+    }>() : null;
+  if (current?.assignmentId && !current.attendanceStatus) throw new CourseMakeupError("conflict");
+  const time = now();
+  await safeBatch(env, [
+    caseCurrentUpdate(env, makeupCase.id, makeupCase.currentResolutionId, "resolved", time),
+    audit(env, actor, "course_makeup_case_reconciled", "course_makeup_case", makeupCase.id, {
+      note, currentResolutionId: makeupCase.currentResolutionId,
+    }, makeupCase, time),
   ]);
 }
 
@@ -749,6 +1217,17 @@ export async function cancelSpecialCourseMakeupOccurrence(
     throw new CourseMakeupError("conflict");
   }
   const time = now();
+  const affectedCases = await env.DB.prepare(`SELECT makeup_case.id AS caseId,
+      makeup_case.current_resolution_id AS currentResolutionId, resolution.id AS resolutionId
+    FROM course_makeup_case AS makeup_case
+    INNER JOIN course_makeup_resolution AS resolution ON resolution.case_id = makeup_case.id
+    INNER JOIN course_makeup_assignment AS assignment ON assignment.resolution_id = resolution.id
+    WHERE assignment.target_special_occurrence_id = ? AND assignment.status = 'active'`).bind(
+    specialOccurrenceId,
+  ).all<{ caseId: string; currentResolutionId: string | null; resolutionId: string }>();
+  const caseStatements = affectedCases.results
+    .filter((entry) => entry.currentResolutionId === entry.resolutionId)
+    .map((entry) => caseCurrentUpdate(env, entry.caseId, null, "open", time));
   await safeBatch(env, [
     env.DB.prepare(`UPDATE course_makeup_assignment SET status = 'cancelled',
       cancelled_at = ?, cancelled_by_staff_account_id = ?,
@@ -768,6 +1247,7 @@ export async function cancelSpecialCourseMakeupOccurrence(
     env.DB.prepare(`UPDATE course_makeup_special_occurrence SET status = 'cancelled',
       cancelled_at = ?, cancelled_by_staff_account_id = ?, updated_at = ?
       WHERE id = ? AND status = 'active'`).bind(time, actor.staffAccountId, time, specialOccurrenceId),
+    ...caseStatements,
     audit(env, actor, "course_makeup_special_cancelled", "course_makeup_special_occurrence", specialOccurrenceId, {
       curriculumLessonId: special.curriculumLessonId,
     }, special, time),
