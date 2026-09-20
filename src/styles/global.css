@@ -3636,21 +3636,25 @@ textarea:focus {
 
 .staff-makeup-sections {
   display: grid;
-  gap: 0.7rem;
+  gap: 0;
 }
 
 .staff-makeup-section {
-  border-bottom: 1px solid var(--line);
+  border-top: 2px solid var(--line);
+  padding: 1rem 0;
 }
 
 .staff-makeup-section > summary {
-  align-items: baseline;
+  align-items: center;
+  color: var(--blue-deep);
   cursor: pointer;
   display: flex;
+  font-size: clamp(1.2rem, 2.8vw, 1.55rem);
   font-weight: 800;
+  line-height: 1.2;
   justify-content: space-between;
   list-style: none;
-  padding: 0.7rem 0;
+  padding: 0;
 }
 
 .staff-makeup-section > summary::-webkit-details-marker,
@@ -3658,36 +3662,51 @@ textarea:focus {
   display: none;
 }
 
-.staff-makeup-section > summary span:last-child {
-  color: var(--muted);
-  font-size: 0.84rem;
-  font-weight: 600;
+.staff-makeup-section-count {
+  color: var(--blue);
+  font-size: 0.82em;
+  font-weight: 750;
 }
 
 .staff-makeup-section-body {
-  padding: 0 0 0.7rem;
+  padding: 0.85rem 0 0;
 }
 
 .staff-makeup-group-body {
-  background: color-mix(in srgb, var(--surface) 84%, var(--line));
-  border-inline-start: 2px solid var(--line);
   display: grid;
-  gap: 0.3rem;
-  margin: 0.2rem 0 0.5rem 0.35rem;
-  padding: 0.35rem 0.7rem 0.5rem;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem 0.8rem;
+}
+
+.staff-makeup-group {
+  border-bottom: 1px solid var(--line);
+}
+
+.staff-makeup-group[open] {
+  background: #edf3ff;
+  border: 1px solid rgba(7, 58, 175, 0.32);
+  border-inline-start: 3px solid var(--blue);
+  border-radius: 6px;
+  margin: 0.2rem 0 0.75rem;
 }
 
 .staff-makeup-case {
-  align-items: start;
+  align-items: center;
+  border-top: 1px solid rgba(7, 58, 175, 0.14);
+  cursor: pointer;
   display: grid;
-  gap: 0.5rem;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  min-height: 42px;
-  padding: 0.25rem 0;
+  gap: 0.7rem;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  min-height: 44px;
+  padding: 0.45rem 0;
 }
 
 .staff-makeup-case input {
-  margin-top: 0.25rem;
+  block-size: 1.4rem;
+  inline-size: 1.4rem;
+  margin: 0;
+  min-block-size: 1.4rem;
+  min-inline-size: 1.4rem;
 }
 
 .staff-makeup-case span,
@@ -3711,13 +3730,24 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
-  padding-top: 0.45rem;
+  padding-top: 0.1rem;
 }
 
-.staff-makeup-group-actions > span {
+.staff-makeup-selection-info {
+  align-items: baseline;
+  border-top: 1px solid rgba(7, 58, 175, 0.2);
   color: var(--muted);
-  flex: 1 1 10rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.55rem;
   font-size: 0.8rem;
+  min-height: 2.5rem;
+  padding-top: 0.55rem;
+}
+
+.staff-makeup-selection-info strong {
+  color: var(--ink);
+  font-size: 0.92rem;
 }
 
 .staff-makeup-archive-case {
@@ -3727,7 +3757,7 @@ textarea:focus {
 
 .staff-makeup-group + .staff-makeup-group,
 .staff-makeup-scheduled-section {
-  margin-top: 1.25rem;
+  margin-top: 0;
 }
 
 .staff-makeup-group-heading {
@@ -3735,8 +3765,14 @@ textarea:focus {
   display: flex;
   justify-content: space-between;
   gap: 0.6rem;
-  border-bottom: 1px solid var(--line);
-  padding: 0.45rem 0;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0.65rem 0.75rem;
+}
+
+.staff-makeup-group-heading strong {
+  font-size: 0.98rem;
+  line-height: 1.3;
 }
 
 .staff-makeup-group-heading span {
@@ -3796,9 +3832,9 @@ textarea:focus {
 }
 
 .staff-makeup-detail {
-  border-block: 1px solid var(--line);
-  margin-top: 1.1rem;
-  padding: 1rem 0;
+  border-top: 1px solid rgba(7, 58, 175, 0.3);
+  margin-top: 0.25rem;
+  padding: 0.85rem 0 0.15rem;
 }
 
 .staff-makeup-targets h3 {
@@ -4649,7 +4685,7 @@ textarea:focus {
   }
 
   .staff-makeup-case {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: 1.5rem minmax(0, 1fr);
   }
 
   .staff-makeup-case .staff-text-action {
@@ -4658,7 +4694,6 @@ textarea:focus {
   }
 
   .staff-makeup-group-body {
-    margin-inline-start: 0.2rem;
     padding-inline: 0.55rem;
   }
 

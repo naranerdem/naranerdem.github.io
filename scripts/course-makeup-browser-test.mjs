@@ -247,7 +247,15 @@ try {
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   const initialGroup = await openMakeupSectionAndFirstGroup(page, "open");
-  await initialGroup.locator("[data-case-select][value^='source-enrollment|']").evaluate((input) => input.click());
+  const initialCheckbox = initialGroup.locator("[data-case-select][value^='source-enrollment|']");
+  const initialLabel = initialCheckbox.locator("xpath=ancestor::label");
+  const checkboxSize = await initialCheckbox.evaluate((input) => parseFloat(getComputedStyle(input).inlineSize));
+  assert.ok(checkboxSize >= 22 && checkboxSize <= 24,
+    "the make-up selection checkbox has a comfortably visible 22–24px control");
+  assert.ok(await initialLabel.evaluate((label) => label.getBoundingClientRect().height >= 44),
+    "the complete learner label has a 44px minimum touch target");
+  await initialLabel.locator("strong").click();
+  await page.waitForFunction((input) => input.checked, await initialCheckbox.elementHandle());
   assert.equal(await page.locator("[data-section='open'] [data-makeup-group]").first().evaluate((details) => details.open), true,
     "selection keeps the current expanded lesson group open while availability refreshes");
   await page.getByText("Тохирох дараагийн ээлжит цагуудын суудал дүүрсэн байна.", { exact: true }).waitFor({ state: "visible" });
@@ -263,16 +271,31 @@ try {
   await page.reload();
   await page.locator("#tool-app").waitFor({ state: "visible" });
   const refreshedGroup = await openMakeupSectionAndFirstGroup(page, "open");
-  await refreshedGroup.locator("[data-case-select][value^='source-enrollment|']").evaluate((input) => input.click());
+  const refreshedCheckbox = refreshedGroup.locator("[data-case-select][value^='source-enrollment|']");
+  await refreshedCheckbox.focus();
+  await page.keyboard.press("Space");
+  await page.waitForFunction((input) => input.checked, await refreshedCheckbox.elementHandle());
   await page.getByRole("button", { name: "Түр шилжих", exact: true }).waitFor({ state: "visible" });
-  await page.getByRole("button", { name: "Түр шилжих", exact: true }).click();
+  const normalButton = refreshedGroup.getByRole("button", { name: "Түр шилжих", exact: true });
+  await normalButton.click();
   await page.getByText("Сул суудал: 1").waitFor({ state: "visible" });
+  const inlineReview = refreshedGroup.locator("#makeup-detail");
+  assert.equal(await inlineReview.count(), 1, "the normal booking review stays inside its originating lesson group");
+  await page.waitForFunction((panel) => document.activeElement === panel, await inlineReview.elementHandle());
+  assert.equal(await inlineReview.evaluate((panel) => document.activeElement === panel), true,
+    "opening a review moves focus into the inline panel");
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "makeup-capacity-desktop.png") });
+  await inlineReview.screenshot({ path: path.join(screenshotDir, "makeup-capacity-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "makeup-capacity-mobile.png") });
+  await inlineReview.screenshot({ path: path.join(screenshotDir, "makeup-capacity-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
+  await inlineReview.getByRole("button", { name: "Болих", exact: true }).click();
+  await inlineReview.waitFor({ state: "hidden" });
+  await page.waitForFunction((button) => document.activeElement === button, await normalButton.elementHandle());
+  assert.equal(await normalButton.evaluate((button) => document.activeElement === button), true,
+    "closing an inline review returns focus to its initiating action");
+  await normalButton.click();
+  await inlineReview.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
   await page.getByText("Түр шилжих товыг хадгаллаа.").waitFor({ state: "visible" });
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   const normalAssignment = assignments.scheduled.filter((entry) => entry.targetKind === "normal_class");
@@ -421,7 +444,9 @@ try {
   await page.locator("#staff-home").waitFor({ state: "visible" });
   assert.equal(await page.locator(`[data-agenda-day='${alternateDate}']`).getAttribute("data-open"), "true", "the supported return action restores the expanded day identity");
   console.log("make-up browser fixture: navigating to an explicit empty week");
-  await page.locator("#staff-agenda [data-agenda-week='next']").click();
+  const explicitEmptyDate = addDays(today, 60);
+  await page.locator("#staff-agenda [data-agenda-date]").fill(explicitEmptyDate);
+  await page.locator("#staff-agenda [data-agenda-date]").dispatchEvent("change");
   await waitForRenderedCount(page, "#staff-agenda [data-agenda-day]", 7, "explicit week navigation");
   assert.equal(await page.locator("#staff-agenda [data-agenda-occurrence]").count(), 0, "an explicitly selected empty week remains an empty agenda instead of a loading or error state");
   console.log("make-up browser fixture: returning to the current week");
