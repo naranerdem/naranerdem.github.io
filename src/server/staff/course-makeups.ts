@@ -16,6 +16,8 @@ interface SourceIdentity {
 }
 
 interface SourceRow extends SourceIdentity {
+  academicYearId: string;
+  curriculumProgramId: string;
   studentId: string;
   surname: string;
   givenName: string;
@@ -96,8 +98,21 @@ interface CaseRow {
   id: string;
   currentResolutionId: string | null;
   state: "open" | "closed" | "resolved" | "reconciliation";
+  updatedAt: string;
   isTest: number;
   testRunId: string | null;
+}
+
+interface LessonStateRow {
+  id: string;
+  academicYearId: string;
+  curriculumProgramId: string;
+  curriculumLessonId: string;
+  status: "active" | "retired";
+  revision: number;
+  isTest: number;
+  testRunId: string | null;
+  updatedAt: string;
 }
 
 function id(): string { return crypto.randomUUID(); }
@@ -188,6 +203,8 @@ const SOURCE_SELECT = `
   SELECT enrollment.id AS enrollmentId,
     class_session.id AS classSessionId,
     lesson.id AS curriculumLessonId,
+    program.academic_year_id AS academicYearId,
+    program.id AS curriculumProgramId,
     student.id AS studentId,
     student.surname,
     student.given_name AS givenName,
@@ -236,17 +253,39 @@ function sourceKey(source: SourceIdentity): string {
   return `${source.enrollmentId}|${source.classSessionId}|${source.curriculumLessonId}`;
 }
 
+function lessonKey(source: Pick<SourceRow, "academicYearId" | "curriculumProgramId" | "curriculumLessonId">): string {
+  return `${source.academicYearId}|${source.curriculumProgramId}|${source.curriculumLessonId}`;
+}
+
+async function lessonStates(env: WorkerEnv): Promise<Map<string, LessonStateRow>> {
+  const result = await env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
+      curriculum_program_id AS curriculumProgramId, curriculum_lesson_id AS curriculumLessonId,
+      status, revision, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM course_makeup_lesson_state`).all<LessonStateRow>();
+  return new Map(result.results.map((state) => [lessonKey(state), state]));
+}
+
+async function lessonStateForSource(env: WorkerEnv, source: SourceRow): Promise<LessonStateRow | null> {
+  return env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
+      curriculum_program_id AS curriculumProgramId, curriculum_lesson_id AS curriculumLessonId,
+      status, revision, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM course_makeup_lesson_state
+    WHERE academic_year_id = ? AND curriculum_program_id = ? AND curriculum_lesson_id = ?`).bind(
+    source.academicYearId, source.curriculumProgramId, source.curriculumLessonId,
+  ).first<LessonStateRow>();
+}
+
 async function caseRows(env: WorkerEnv): Promise<Map<string, CaseRow>> {
   const result = await env.DB.prepare(`SELECT id, source_enrollment_id AS enrollmentId,
       source_class_session_id AS classSessionId, source_curriculum_lesson_id AS curriculumLessonId,
-      current_resolution_id AS currentResolutionId, state,
+      current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
       is_test AS isTest, test_run_id AS testRunId
     FROM course_makeup_case`).all<CaseRow & SourceIdentity>();
   return new Map(result.results.map((entry) => [sourceKey(entry), entry]));
 }
 
 async function caseForSource(env: WorkerEnv, source: SourceIdentity): Promise<CaseRow | null> {
-  return env.DB.prepare(`SELECT id, current_resolution_id AS currentResolutionId, state,
+  return env.DB.prepare(`SELECT id, current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
       is_test AS isTest, test_run_id AS testRunId
     FROM course_makeup_case
     WHERE source_enrollment_id = ? AND source_class_session_id = ? AND source_curriculum_lesson_id = ?`).bind(
@@ -298,7 +337,11 @@ async function currentAttemptState(
     ? "attendance_review" : "scheduled";
 }
 
-async function unresolvedSources(env: WorkerEnv, at = new Date()): Promise<SourceRow[]> {
+async function unresolvedSources(
+  env: WorkerEnv,
+  at = new Date(),
+  includeRetired = false,
+): Promise<SourceRow[]> {
   const local = localDateTime(at);
   const result = await env.DB.prepare(`${SOURCE_SELECT}
     AND (slot.local_date < ? OR (slot.local_date = ? AND slot.end_time <= ?))
@@ -310,7 +353,10 @@ async function unresolvedSources(env: WorkerEnv, at = new Date()): Promise<Sourc
   const states = await Promise.all(result.results.map(async (source) => ({
     source, state: await currentAttemptState(env, cases.get(sourceKey(source)) ?? null, at),
   })));
-  return states.filter((entry) => entry.state === "needs_action").map((entry) => entry.source);
+  const statesByLesson = await lessonStates(env);
+  return states.filter((entry) => entry.state === "needs_action"
+    && (includeRetired || statesByLesson.get(lessonKey(entry.source))?.status !== "retired"))
+    .map((entry) => entry.source);
 }
 
 async function unresolvedSource(
@@ -326,7 +372,8 @@ async function unresolvedSource(
     source.enrollmentId, source.classSessionId, source.curriculumLessonId,
     local.date, local.date, local.time,
   ).first<SourceRow>();
-  if (!row || await currentAttemptState(env, await caseForSource(env, row), at) !== "needs_action") {
+  if (!row || await currentAttemptState(env, await caseForSource(env, row), at) !== "needs_action"
+    || (await lessonStateForSource(env, row))?.status === "retired") {
     throw new CourseMakeupError("not_eligible");
   }
   return row;
@@ -534,6 +581,7 @@ async function scheduledAssignments(
 
 async function historicalAttempts(env: WorkerEnv): Promise<Array<{
   caseId: string; caseState: string; resolutionId: string; assignmentId: string | null;
+  academicYearId: string; curriculumProgramId: string; curriculumLessonId: string;
   decision: "no_makeup" | "assigned"; resolutionStatus: "active" | "invalidated";
   studentName: string; lessonSequence: number; lessonTitle: string;
   sourceLocalDate: string | null; sourceClassLabel: string | null;
@@ -546,7 +594,8 @@ async function historicalAttempts(env: WorkerEnv): Promise<Array<{
       resolution.id AS resolutionId, assignment.id AS assignmentId, resolution.decision,
       resolution.status AS resolutionStatus,
       student.surname || ' ' || student.given_name AS studentName,
-      lesson.sequence_number AS lessonSequence, lesson.title AS lessonTitle,
+      program.academic_year_id AS academicYearId, program.id AS curriculumProgramId,
+      lesson.id AS curriculumLessonId, lesson.sequence_number AS lessonSequence, lesson.title AS lessonTitle,
       source_slot.local_date AS sourceLocalDate,
       CASE source_class.stage_code
         WHEN 'stage_1' THEN '1-р шат'
@@ -566,6 +615,7 @@ async function historicalAttempts(env: WorkerEnv): Promise<Array<{
     INNER JOIN enrollment ON enrollment.id = resolution.source_enrollment_id
     INNER JOIN student ON student.id = enrollment.student_id
     INNER JOIN curriculum_lesson AS lesson ON lesson.id = resolution.source_curriculum_lesson_id
+    INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
     INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
     LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
     LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
@@ -588,6 +638,7 @@ async function historicalAttempts(env: WorkerEnv): Promise<Array<{
       OR (makeup_case.state = 'closed' AND resolution.id = makeup_case.current_resolution_id)
     ORDER BY sourceLocalDate DESC, lesson.sequence_number, studentName, resolution.decided_at DESC`).all<{
       caseId: string; caseState: string; resolutionId: string; assignmentId: string | null;
+      academicYearId: string; curriculumProgramId: string; curriculumLessonId: string;
       decision: "no_makeup" | "assigned"; resolutionStatus: "active" | "invalidated";
       studentName: string; lessonSequence: number; lessonTitle: string;
       sourceLocalDate: string | null; sourceClassLabel: string | null;
@@ -648,6 +699,8 @@ function serializeSource(source: SourceRow) {
     enrollmentId: source.enrollmentId,
     classSessionId: source.classSessionId,
     curriculumLessonId: source.curriculumLessonId,
+    academicYearId: source.academicYearId,
+    curriculumProgramId: source.curriculumProgramId,
     studentName: `${source.surname} ${source.givenName}`.trim(),
     sourceLocalDate: source.sourceLocalDate,
     sourceStartTime: source.sourceStartTime,
@@ -661,6 +714,39 @@ function serializeSource(source: SourceRow) {
   };
 }
 
+function serializeLessonGroup(source: SourceRow, entries: SourceRow[], state: LessonStateRow | undefined) {
+  return {
+    academicYearId: source.academicYearId,
+    curriculumProgramId: source.curriculumProgramId,
+    curriculumLessonId: source.curriculumLessonId,
+    title: `${source.programTitle} · ${source.lessonSequence}. ${source.lessonTitle}`,
+    lessonSequence: source.lessonSequence,
+    lessonTitle: source.lessonTitle,
+    programTitle: source.programTitle,
+    retired: state?.status === "retired",
+    retirementRevision: state?.revision ?? 0,
+    entries: entries.map(serializeSource),
+  };
+}
+
+function groupSourcesByLesson(
+  sources: SourceRow[],
+  states: Map<string, LessonStateRow>,
+  history: Awaited<ReturnType<typeof historicalAttempts>> = [],
+) {
+  const groups = new Map<string, SourceRow[]>();
+  for (const source of sources) {
+    const key = lessonKey(source);
+    const current = groups.get(key) ?? [];
+    current.push(source);
+    groups.set(key, current);
+  }
+  return [...groups.values()].map((entries) => ({
+    ...serializeLessonGroup(entries[0], entries, states.get(lessonKey(entries[0]))),
+    history: history.filter((attempt) => lessonKey(attempt) === lessonKey(entries[0])),
+  }));
+}
+
 export async function getCourseMakeupOverview(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -668,9 +754,16 @@ export async function getCourseMakeupOverview(
   at = new Date(),
 ) {
   requireCapability(actor, "makeup.view");
-  const unresolved = await unresolvedSources(env, at);
+  const allUnresolved = await unresolvedSources(env, at, true);
+  const states = await lessonStates(env);
+  const unresolved = allUnresolved.filter((source) => states.get(lessonKey(source))?.status !== "retired");
   const attempts = await scheduledAssignments(env, at);
   const history = await historicalAttempts(env);
+  const archived = groupSourcesByLesson(
+    allUnresolved.filter((source) => states.get(lessonKey(source))?.status === "retired"),
+    states,
+    history,
+  );
   let selected = null;
   if (selectedInput?.enrollmentId || selectedInput?.classSessionId || selectedInput?.curriculumLessonId) {
     const source = await unresolvedSource(env, sourceIdentity(selectedInput), at);
@@ -682,6 +775,7 @@ export async function getCourseMakeupOverview(
   }
   return {
     unresolved: unresolved.map(serializeSource),
+    groups: groupSourcesByLesson(unresolved, states),
     scheduled: attempts.filter((entry) => entry.state === "scheduled" || entry.state === "needs_reassignment" || entry.state === "reconciliation"),
     attendanceReview: attempts.filter((entry) => entry.state === "attendance_review"),
     history: [...attempts.filter((entry) => entry.state === "resolved"), ...history],
@@ -689,6 +783,7 @@ export async function getCourseMakeupOverview(
     noMakeup: (await noMakeupResolutions(env, at)).map((entry) => ({
       ...serializeSource(entry), resolutionId: entry.resolutionId,
     })),
+    archived,
     selected,
   };
 }
@@ -756,6 +851,426 @@ async function activeCurrentResolution(env: WorkerEnv, caseId: string): Promise<
     WHERE makeup_case.id = ?`).bind(caseId).first<{ id: string }>();
 }
 
+function sourceInputs(input: Record<string, unknown>): SourceIdentity[] {
+  if (!Array.isArray(input.sources) || input.sources.length < 1) throw new CourseMakeupError("invalid");
+  const unique = new Map<string, SourceIdentity>();
+  for (const value of input.sources) {
+    if (!value || typeof value !== "object") throw new CourseMakeupError("invalid");
+    const source = sourceIdentity(value as Record<string, unknown>);
+    unique.set(sourceKey(source), source);
+  }
+  return [...unique.values()].sort((left, right) => sourceKey(left).localeCompare(sourceKey(right)));
+}
+
+interface ReviewedLessonGroup {
+  sources: SourceRow[];
+  lessonState: LessonStateRow | null;
+  fingerprint: string;
+}
+
+async function reviewedLessonGroup(
+  env: WorkerEnv,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<ReviewedLessonGroup> {
+  const identities = sourceInputs(input);
+  const sources = await Promise.all(identities.map((source) => unresolvedSource(env, source, at)));
+  const key = lessonKey(sources[0]);
+  if (sources.some((source) => lessonKey(source) !== key)) throw new CourseMakeupError("invalid");
+  const lessonState = await lessonStateForSource(env, sources[0]);
+  if (lessonState?.status === "retired") throw new CourseMakeupError("not_eligible");
+  const cases = await Promise.all(sources.map((source) => caseForSource(env, source)));
+  const fingerprint = JSON.stringify({
+    lesson: key,
+    lessonState: lessonState ? { id: lessonState.id, status: lessonState.status, revision: lessonState.revision, updatedAt: lessonState.updatedAt } : null,
+    sources: sources.map((source, index) => ({
+      key: sourceKey(source),
+      caseId: cases[index]?.id ?? null,
+      currentResolutionId: cases[index]?.currentResolutionId ?? null,
+      state: cases[index]?.state ?? "new",
+      updatedAt: cases[index]?.updatedAt ?? null,
+    })),
+  });
+  return { sources, lessonState, fingerprint };
+}
+
+function expectedFingerprint(input: Record<string, unknown>, fingerprint: string): void {
+  if (clean(input.expectedFingerprint, 8000) !== fingerprint) throw new CourseMakeupError("stale");
+}
+
+async function commonNormalTargets(
+  env: WorkerEnv,
+  sources: SourceRow[],
+  at = new Date(),
+): Promise<Array<NormalTargetRow & { remainingCapacity: number; classLabel: string }>> {
+  const lists = await Promise.all(sources.map((source) => normalTargets(env, source, at)));
+  const common = new Map(lists[0].map((target) => [target.classSessionId, target]));
+  for (const list of lists.slice(1)) {
+    const allowed = new Set(list.map((target) => target.classSessionId));
+    for (const key of common.keys()) if (!allowed.has(key)) common.delete(key);
+  }
+  return [...common.values()].filter((target) => target.remainingCapacity >= sources.length);
+}
+
+function operationFingerprint(action: string, input: Record<string, unknown>, target: Record<string, unknown>) {
+  return JSON.stringify({
+    action,
+    expectedFingerprint: clean(input.expectedFingerprint, 8000),
+    target,
+    sources: sourceInputs(input).map(sourceKey),
+  });
+}
+
+async function existingLessonOperation<T>(
+  env: WorkerEnv,
+  operationIdValue: string,
+  fingerprint: string,
+): Promise<T | null> {
+  const existing = await env.DB.prepare(`SELECT request_fingerprint AS requestFingerprint, result_json AS resultJson
+    FROM course_makeup_lesson_operation WHERE operation_id = ?`).bind(operationIdValue).first<{
+      requestFingerprint: string; resultJson: string;
+    }>();
+  if (!existing) return null;
+  if (existing.requestFingerprint !== fingerprint) throw new CourseMakeupError("conflict");
+  return JSON.parse(existing.resultJson) as T;
+}
+
+function lessonOperationInsert(
+  env: WorkerEnv,
+  operationIdValue: string,
+  lessonStateId: string | null,
+  action: "retire" | "restore" | "assign_normal" | "create_special",
+  expectedRevision: number,
+  fingerprint: string,
+  result: Record<string, unknown>,
+  actor: StaffPrincipal,
+  source: { isTest: number; testRunId: string | null },
+  time: string,
+): D1PreparedStatement {
+  return env.DB.prepare(`INSERT INTO course_makeup_lesson_operation (
+    operation_id, lesson_state_id, action, expected_revision, request_fingerprint, result_json,
+    performed_by_staff_account_id, performed_at, is_test, test_run_id, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    operationIdValue, lessonStateId, action, expectedRevision, fingerprint, JSON.stringify(result),
+    actor.staffAccountId, time, source.isTest, source.testRunId, time,
+  );
+}
+
+export async function previewCourseMakeupGroupNormalBooking(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const group = await reviewedLessonGroup(env, input, at);
+  const targets = await commonNormalTargets(env, group.sources, at);
+  return {
+    fingerprint: group.fingerprint,
+    sources: group.sources.map(serializeSource),
+    targets: targets.map((target) => ({
+      classSessionId: target.classSessionId,
+      localDate: target.localDate,
+      startTime: target.startTime,
+      endTime: target.endTime,
+      classLabel: target.classLabel,
+      remainingCapacity: target.remainingCapacity,
+    })),
+  };
+}
+
+export async function assignCourseMakeupGroupToNormalClass(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ assignmentIds: string[]; targetClassSessionId: string }> {
+  requireCapability(actor, "makeup.manage");
+  const idempotencyKey = operationId(input.operationId);
+  if (!idempotencyKey) throw new CourseMakeupError("invalid");
+  const targetClassSessionId = clean(input.targetClassSessionId);
+  const fingerprint = operationFingerprint("assign_normal", input, { targetClassSessionId });
+  const replay = await existingLessonOperation<{ assignmentIds: string[]; targetClassSessionId: string }>(env, idempotencyKey, fingerprint);
+  if (replay) return replay;
+  const group = await reviewedLessonGroup(env, input, at);
+  expectedFingerprint(input, group.fingerprint);
+  const target = (await commonNormalTargets(env, group.sources, at)).find((candidate) => candidate.classSessionId === targetClassSessionId);
+  if (!target) throw new CourseMakeupError("capacity");
+  const time = now();
+  const caseRefs = await Promise.all(group.sources.map((source) => existingOrNewCase(env, source, id())));
+  const previous = await Promise.all(caseRefs.map((caseRef) => caseRef.existing ? activeCurrentResolution(env, caseRef.id) : Promise.resolve(null)));
+  const assignmentIds = group.sources.map(() => id());
+  const statements: D1PreparedStatement[] = [];
+  for (const [index, source] of group.sources.entries()) {
+    const caseRef = caseRefs[index];
+    const resolutionId = id();
+    statements.push(
+      ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+      ...retireCurrentAttempt(env, actor, previous[index]?.id ?? null, time),
+      resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
+      caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
+      assignmentInsert(env, actor, source, resolutionId, assignmentIds[index], { kind: "normal_class", classSessionId: targetClassSessionId }, time),
+    );
+  }
+  const result = { assignmentIds, targetClassSessionId };
+  statements.push(
+    lessonOperationInsert(env, idempotencyKey, group.lessonState?.id ?? null, "assign_normal", group.lessonState?.revision ?? 0, fingerprint, result, actor, group.sources[0], time),
+    audit(env, actor, "course_makeup_group_assigned", "course_makeup_lesson", group.sources[0].curriculumLessonId, {
+      operationId: idempotencyKey, targetClassSessionId, assignmentIds, sourceCount: group.sources.length,
+    }, group.sources[0], time),
+  );
+  await safeBatch(env, statements);
+  return result;
+}
+
+export async function previewCourseMakeupGroupSpecialBooking(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const group = await reviewedLessonGroup(env, input, at);
+  return {
+    fingerprint: group.fingerprint,
+    sources: group.sources.map(serializeSource),
+    minimumCapacity: group.sources.length,
+    defaultDurationMinutes: group.sources[0].defaultClassDurationMinutes ?? 80,
+  };
+}
+
+export async function createCourseMakeupGroupSpecialOccurrence(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ specialOccurrenceId: string; assignmentIds: string[] }> {
+  requireCapability(actor, "makeup.manage");
+  const idempotencyKey = operationId(input.operationId);
+  if (!idempotencyKey) throw new CourseMakeupError("invalid");
+  const target = {
+    localDate: clean(input.localDate, 10),
+    startTime: clean(input.startTime, 5),
+    endTime: clean(input.endTime, 5),
+    capacity: Number(input.capacity),
+    note: optionalText(input.note),
+  };
+  const fingerprint = operationFingerprint("create_special", input, target);
+  const replay = await existingLessonOperation<{ specialOccurrenceId: string; assignmentIds: string[] }>(env, idempotencyKey, fingerprint);
+  if (replay) return replay;
+  const group = await reviewedLessonGroup(env, input, at);
+  expectedFingerprint(input, group.fingerprint);
+  const endTime = target.endTime || addMinutes(target.startTime, group.sources[0].defaultClassDurationMinutes ?? 80);
+  const local = localDateTime(at);
+  if (!validDate(target.localDate) || !validTime(target.startTime) || !validTime(endTime) || endTime <= target.startTime
+    || !Number.isInteger(target.capacity) || target.capacity < group.sources.length || target.capacity > 100
+    || target.localDate < local.date || (target.localDate === local.date && target.startTime <= local.time)) {
+    throw new CourseMakeupError("invalid");
+  }
+  const provenance = group.sources[0];
+  if (group.sources.some((source) => source.isTest !== provenance.isTest || source.testRunId !== provenance.testRunId)) {
+    throw new CourseMakeupError("invalid");
+  }
+  await assertSpecialAvailability(env, provenance.curriculumLessonId, target.localDate, target.startTime, endTime);
+  const specialOccurrenceId = id();
+  const assignmentIds = group.sources.map(() => id());
+  const time = now();
+  const caseRefs = await Promise.all(group.sources.map((source) => existingOrNewCase(env, source, id())));
+  const previous = await Promise.all(caseRefs.map((caseRef) => caseRef.existing ? activeCurrentResolution(env, caseRef.id) : Promise.resolve(null)));
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`INSERT INTO course_makeup_special_occurrence (
+      id, curriculum_lesson_id, local_date, start_time, end_time, capacity,
+      status, note, created_by_staff_account_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`).bind(
+      specialOccurrenceId, provenance.curriculumLessonId, target.localDate, target.startTime, endTime, target.capacity,
+      target.note, actor.staffAccountId, provenance.isTest, provenance.testRunId, time, time,
+    ),
+  ];
+  for (const [index, source] of group.sources.entries()) {
+    const caseRef = caseRefs[index];
+    const resolutionId = id();
+    statements.push(
+      ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+      ...retireCurrentAttempt(env, actor, previous[index]?.id ?? null, time),
+      resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
+      caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
+      assignmentInsert(env, actor, source, resolutionId, assignmentIds[index], { kind: "special", specialOccurrenceId }, time),
+    );
+  }
+  const result = { specialOccurrenceId, assignmentIds };
+  statements.push(
+    lessonOperationInsert(env, idempotencyKey, group.lessonState?.id ?? null, "create_special", group.lessonState?.revision ?? 0, fingerprint, result, actor, provenance, time),
+    audit(env, actor, "course_makeup_group_special_created", "course_makeup_special_occurrence", specialOccurrenceId, {
+      operationId: idempotencyKey, assignmentIds, sourceCount: group.sources.length,
+    }, provenance, time),
+  );
+  await safeBatch(env, statements);
+  return result;
+}
+
+interface LessonGroupIdentity {
+  academicYearId: string;
+  curriculumProgramId: string;
+  curriculumLessonId: string;
+}
+
+function lessonGroupIdentity(input: Record<string, unknown>): LessonGroupIdentity {
+  const identity = {
+    academicYearId: clean(input.academicYearId),
+    curriculumProgramId: clean(input.curriculumProgramId),
+    curriculumLessonId: clean(input.curriculumLessonId),
+  };
+  if (!identity.academicYearId || !identity.curriculumProgramId || !identity.curriculumLessonId) {
+    throw new CourseMakeupError("invalid");
+  }
+  return identity;
+}
+
+async function unresolvedLessonGroup(
+  env: WorkerEnv,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ identity: LessonGroupIdentity; sources: SourceRow[]; state: LessonStateRow | null; fingerprint: string }> {
+  const identity = lessonGroupIdentity(input);
+  const sources = (await unresolvedSources(env, at, true)).filter((source) =>
+    source.academicYearId === identity.academicYearId
+    && source.curriculumProgramId === identity.curriculumProgramId
+    && source.curriculumLessonId === identity.curriculumLessonId,
+  );
+  const state = await env.DB.prepare(`SELECT id, academic_year_id AS academicYearId,
+      curriculum_program_id AS curriculumProgramId, curriculum_lesson_id AS curriculumLessonId,
+      status, revision, is_test AS isTest, test_run_id AS testRunId, updated_at AS updatedAt
+    FROM course_makeup_lesson_state
+    WHERE academic_year_id = ? AND curriculum_program_id = ? AND curriculum_lesson_id = ?`).bind(
+    identity.academicYearId, identity.curriculumProgramId, identity.curriculumLessonId,
+  ).first<LessonStateRow>();
+  const cases = await Promise.all(sources.map((source) => caseForSource(env, source)));
+  const fingerprint = JSON.stringify({
+    identity,
+    state: state ? { id: state.id, status: state.status, revision: state.revision, updatedAt: state.updatedAt } : null,
+    sources: sources.map((source, index) => ({
+      key: sourceKey(source), caseId: cases[index]?.id ?? null,
+      currentResolutionId: cases[index]?.currentResolutionId ?? null,
+      state: cases[index]?.state ?? "new", updatedAt: cases[index]?.updatedAt ?? null,
+    })),
+  });
+  return { identity, sources, state, fingerprint };
+}
+
+export async function previewCourseMakeupLessonRetirement(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const group = await unresolvedLessonGroup(env, input, at);
+  if (group.state?.status === "retired") throw new CourseMakeupError("not_eligible");
+  return { fingerprint: group.fingerprint, sources: group.sources.map(serializeSource), count: group.sources.length };
+}
+
+export async function retireCourseMakeupLesson(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ lessonStateId: string; retiredCount: number }> {
+  requireCapability(actor, "makeup.manage");
+  const idempotencyKey = operationId(input.operationId);
+  if (!idempotencyKey) throw new CourseMakeupError("invalid");
+  const identity = lessonGroupIdentity(input);
+  const operationRequest = JSON.stringify({ action: "retire", identity, expectedFingerprint: clean(input.expectedFingerprint, 8000) });
+  const replay = await existingLessonOperation<{ lessonStateId: string; retiredCount: number }>(env, idempotencyKey, operationRequest);
+  if (replay) return replay;
+  const group = await unresolvedLessonGroup(env, input, at);
+  expectedFingerprint(input, group.fingerprint);
+  if (group.state?.status === "retired") throw new CourseMakeupError("not_eligible");
+  const provenance = group.sources[0] ?? await env.DB.prepare(`SELECT program.academic_year_id AS academicYearId,
+      program.id AS curriculumProgramId, lesson.id AS curriculumLessonId,
+      0 AS isTest, NULL AS testRunId
+    FROM curriculum_lesson AS lesson INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
+    WHERE lesson.id = ? AND program.id = ? AND program.academic_year_id = ?`).bind(
+    identity.curriculumLessonId, identity.curriculumProgramId, identity.academicYearId,
+  ).first<Pick<SourceRow, "academicYearId" | "curriculumProgramId" | "curriculumLessonId" | "isTest" | "testRunId">>();
+  if (!provenance) throw new CourseMakeupError("not_found");
+  const time = now();
+  const lessonStateId = group.state?.id ?? id();
+  const previousRevision = group.state?.revision ?? 0;
+  const result = { lessonStateId, retiredCount: group.sources.length };
+  const cases = await Promise.all(group.sources.map((source) => caseForSource(env, source)));
+  const statements: D1PreparedStatement[] = [];
+  if (group.state) {
+    statements.push(env.DB.prepare(`UPDATE course_makeup_lesson_state
+      SET status = 'retired', revision = revision + 1, retired_by_staff_account_id = ?, retired_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'active' AND revision = ?`).bind(
+      actor.staffAccountId, time, time, group.state.id, previousRevision,
+    ));
+  } else {
+    statements.push(env.DB.prepare(`INSERT INTO course_makeup_lesson_state (
+      id, academic_year_id, curriculum_program_id, curriculum_lesson_id, status, revision,
+      retired_by_staff_account_id, retired_at, is_test, test_run_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'retired', 1, ?, ?, ?, ?, ?, ?)`).bind(
+      lessonStateId, identity.academicYearId, identity.curriculumProgramId, identity.curriculumLessonId,
+      actor.staffAccountId, time, provenance.isTest, provenance.testRunId, time, time,
+    ));
+  }
+  statements.push(
+    lessonOperationInsert(env, idempotencyKey, lessonStateId, "retire", previousRevision, operationRequest, result, actor, provenance, time),
+    ...cases.flatMap((caseRow) => caseRow ? [env.DB.prepare(`INSERT INTO course_makeup_lesson_retirement_case (
+      operation_id, course_makeup_case_id, created_at
+    ) VALUES (?, ?, ?)`).bind(idempotencyKey, caseRow.id, time)] : []),
+    audit(env, actor, "course_makeup_lesson_retired", "course_makeup_lesson_state", lessonStateId, {
+      ...identity, operationId: idempotencyKey, retiredCount: group.sources.length,
+    }, provenance, time),
+  );
+  await safeBatch(env, statements);
+  return result;
+}
+
+export async function previewCourseMakeupLessonRestore(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const group = await unresolvedLessonGroup(env, input, at);
+  if (group.state?.status !== "retired") throw new CourseMakeupError("not_eligible");
+  return { fingerprint: group.fingerprint, sources: group.sources.map(serializeSource), count: group.sources.length };
+}
+
+export async function restoreCourseMakeupLesson(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ lessonStateId: string; restoredCount: number }> {
+  requireCapability(actor, "makeup.manage");
+  const idempotencyKey = operationId(input.operationId);
+  if (!idempotencyKey) throw new CourseMakeupError("invalid");
+  const identity = lessonGroupIdentity(input);
+  const operationRequest = JSON.stringify({ action: "restore", identity, expectedFingerprint: clean(input.expectedFingerprint, 8000) });
+  const replay = await existingLessonOperation<{ lessonStateId: string; restoredCount: number }>(env, idempotencyKey, operationRequest);
+  if (replay) return replay;
+  const group = await unresolvedLessonGroup(env, input, at);
+  expectedFingerprint(input, group.fingerprint);
+  if (!group.state || group.state.status !== "retired") throw new CourseMakeupError("not_eligible");
+  const time = now();
+  const result = { lessonStateId: group.state.id, restoredCount: group.sources.length };
+  await safeBatch(env, [
+    env.DB.prepare(`UPDATE course_makeup_lesson_state
+      SET status = 'active', revision = revision + 1, restored_by_staff_account_id = ?, restored_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'retired' AND revision = ?`).bind(
+      actor.staffAccountId, time, time, group.state.id, group.state.revision,
+    ),
+    lessonOperationInsert(env, idempotencyKey, group.state.id, "restore", group.state.revision, operationRequest, result, actor, group.state, time),
+    audit(env, actor, "course_makeup_lesson_restored", "course_makeup_lesson_state", group.state.id, {
+      ...identity, operationId: idempotencyKey, restoredCount: group.sources.length,
+    }, group.state, time),
+  ]);
+  return result;
+}
+
 function retireCurrentAttempt(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -806,6 +1321,8 @@ async function safeBatch(env: WorkerEnv, statements: D1PreparedStatement[]): Pro
     const message = caught instanceof Error ? caught.message : String(caught);
     if (/capacity is full/i.test(message)) throw new CourseMakeupError("capacity");
     if (/UNIQUE constraint|one active|room time conflicts|schedule changed/i.test(message)) throw new CourseMakeupError("conflict");
+    if (/make-up lesson is retired/i.test(message)) throw new CourseMakeupError("not_eligible");
+    if (/make-up lesson state changed/i.test(message)) throw new CourseMakeupError("stale");
     if (/same-lesson target|make-up source/i.test(message)) throw new CourseMakeupError("invalid");
     throw caught;
   }

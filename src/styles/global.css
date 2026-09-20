@@ -3634,6 +3634,97 @@ textarea:focus {
   gap: 0;
 }
 
+.staff-makeup-sections {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.staff-makeup-section {
+  border-bottom: 1px solid var(--line);
+}
+
+.staff-makeup-section > summary {
+  align-items: baseline;
+  cursor: pointer;
+  display: flex;
+  font-weight: 800;
+  justify-content: space-between;
+  list-style: none;
+  padding: 0.7rem 0;
+}
+
+.staff-makeup-section > summary::-webkit-details-marker,
+.staff-makeup-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.staff-makeup-section > summary span:last-child {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.staff-makeup-section-body {
+  padding: 0 0 0.7rem;
+}
+
+.staff-makeup-group-body {
+  background: color-mix(in srgb, var(--surface) 84%, var(--line));
+  border-inline-start: 2px solid var(--line);
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.2rem 0 0.5rem 0.35rem;
+  padding: 0.35rem 0.7rem 0.5rem;
+}
+
+.staff-makeup-case {
+  align-items: start;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 42px;
+  padding: 0.25rem 0;
+}
+
+.staff-makeup-case input {
+  margin-top: 0.25rem;
+}
+
+.staff-makeup-case span,
+.staff-makeup-case small,
+.staff-makeup-archive-case {
+  min-width: 0;
+}
+
+.staff-makeup-case small,
+.staff-makeup-archive-case small,
+.staff-makeup-row small {
+  color: var(--muted);
+  display: block;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  margin-top: 0.15rem;
+}
+
+.staff-makeup-group-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding-top: 0.45rem;
+}
+
+.staff-makeup-group-actions > span {
+  color: var(--muted);
+  flex: 1 1 10rem;
+  font-size: 0.8rem;
+}
+
+.staff-makeup-archive-case {
+  border-bottom: 1px solid var(--line);
+  padding: 0.35rem 0;
+}
+
 .staff-makeup-group + .staff-makeup-group,
 .staff-makeup-scheduled-section {
   margin-top: 1.25rem;
@@ -4555,6 +4646,20 @@ textarea:focus {
   .staff-makeup-row > .staff-inline-actions,
   .staff-makeup-target > .button {
     justify-self: start;
+  }
+
+  .staff-makeup-case {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .staff-makeup-case .staff-text-action {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .staff-makeup-group-body {
+    margin-inline-start: 0.2rem;
+    padding-inline: 0.55rem;
   }
 
   .staff-day-row {

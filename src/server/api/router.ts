@@ -130,17 +130,25 @@ import {
 } from "../staff/course-attendance";
 import {
   assignCourseMakeupToNormalClass,
+  assignCourseMakeupGroupToNormalClass,
   assignCourseMakeupToSpecialOccurrence,
   cancelCourseMakeupAssignment,
   cancelSpecialCourseMakeupOccurrence,
   CourseMakeupError,
   createSpecialCourseMakeupOccurrence,
+  createCourseMakeupGroupSpecialOccurrence,
   getCourseMakeupOverview,
   previewSpecialCourseMakeupReschedule,
+  previewCourseMakeupGroupNormalBooking,
+  previewCourseMakeupGroupSpecialBooking,
+  previewCourseMakeupLessonRetirement,
+  previewCourseMakeupLessonRestore,
   reconcileCourseMakeupCase,
   rescheduleSpecialCourseMakeupOccurrence,
   resolveCourseMakeupAsNotNeeded,
   reopenCourseMakeupResolution,
+  retireCourseMakeupLesson,
+  restoreCourseMakeupLesson,
 } from "../staff/course-makeups";
 import {
   applyDailyChange,
@@ -1707,11 +1715,35 @@ export async function handleApiRequest(
         case "makeup.assign-normal":
           result = await assignCourseMakeupToNormalClass(env, principal, payload);
           break;
+        case "makeup.group-normal-preview":
+          result = await previewCourseMakeupGroupNormalBooking(env, principal, payload);
+          break;
+        case "makeup.group-normal-book":
+          result = await assignCourseMakeupGroupToNormalClass(env, principal, payload);
+          break;
         case "makeup.assign-special":
           result = await assignCourseMakeupToSpecialOccurrence(env, principal, payload);
           break;
         case "makeup.special-create":
           result = await createSpecialCourseMakeupOccurrence(env, principal, payload);
+          break;
+        case "makeup.group-special-preview":
+          result = await previewCourseMakeupGroupSpecialBooking(env, principal, payload);
+          break;
+        case "makeup.group-special-create":
+          result = await createCourseMakeupGroupSpecialOccurrence(env, principal, payload);
+          break;
+        case "makeup.lesson-retire-preview":
+          result = await previewCourseMakeupLessonRetirement(env, principal, payload);
+          break;
+        case "makeup.lesson-retire":
+          result = await retireCourseMakeupLesson(env, principal, payload);
+          break;
+        case "makeup.lesson-restore-preview":
+          result = await previewCourseMakeupLessonRestore(env, principal, payload);
+          break;
+        case "makeup.lesson-restore":
+          result = await restoreCourseMakeupLesson(env, principal, payload);
           break;
         case "makeup.special-reschedule-preview":
           result = await previewSpecialCourseMakeupReschedule(env, principal, payload);

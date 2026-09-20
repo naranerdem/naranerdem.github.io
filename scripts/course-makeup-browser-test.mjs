@@ -60,6 +60,16 @@ async function waitForRenderedCount(page, selector, expected, label) {
   }
   throw new Error(`${label}: expected ${expected} rendered element(s), found ${actual}`);
 }
+async function openMakeupSectionAndFirstGroup(page, section) {
+  const sectionNode = page.locator(`[data-section='${section}']`);
+  console.log(`make-up browser fixture: opening ${section} section`);
+  await sectionNode.evaluate((details) => { details.open = true; });
+  const group = sectionNode.locator("[data-makeup-group]").first();
+  await group.waitFor({ state: "attached" });
+  console.log(`make-up browser fixture: opening ${section} lesson group`);
+  await group.evaluate((details) => { details.open = true; });
+  return group;
+}
 
 try {
   console.log("make-up browser fixture: applying local schema");
@@ -131,14 +141,20 @@ try {
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('student', 'Browser Маш Урт', 'Нөхөх Оролцогчийн Нэр', 'not_specified', '2015-01-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('archive-student', 'Архив', 'Туршилт', 'not_specified', '2015-01-09', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-student-a', 'Тусгай Нөхөх', 'Анударь', 'not_specified', '2015-04-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-student-b', 'Тусгай Нөхөх', 'Билгүүн', 'not_specified', '2015-05-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-student-review', 'Ирц Шалгах', 'Энхрий', 'not_specified', '2015-06-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-student-reschedule', 'Өдөр Цаг', 'Өөрчлөх', 'not_specified', '2015-07-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('prereg', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('archive-prereg', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('application', 'prereg', 'student', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('archive-application', 'archive-prereg', 'archive-student', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-prereg-a', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-prereg-b', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
@@ -151,6 +167,8 @@ try {
         ('special-application-reschedule', 'special-prereg-reschedule', 'special-student-reschedule', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('source-enrollment', 'application', 'student', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('archive-enrollment', 'archive-application', 'archive-student', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-enrollment-a', 'special-application-a', 'special-student-a', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-enrollment-b', 'special-application-b', 'special-student-b', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
@@ -165,17 +183,9 @@ try {
         ('special-resolution-b', 'special-enrollment-b', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-resolution-review', 'special-enrollment-review', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-resolution-reschedule', 'special-enrollment-reschedule', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
-    INSERT INTO course_makeup_case (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id, current_resolution_id, state, is_test, test_run_id, created_at, updated_at)
-      VALUES ('special-case-a', 'special-enrollment-a', 'source-class', 'lesson', 'special-resolution-a', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-case-b', 'special-enrollment-b', 'source-class', 'lesson', 'special-resolution-b', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-case-review', 'special-enrollment-review', 'source-class', 'lesson', 'special-resolution-review', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-case-reschedule', 'special-enrollment-reschedule', 'source-class', 'lesson', 'special-resolution-reschedule', 'open', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
-    UPDATE course_makeup_resolution SET case_id = CASE id
-      WHEN 'special-resolution-a' THEN 'special-case-a'
-      WHEN 'special-resolution-b' THEN 'special-case-b'
-      WHEN 'special-resolution-review' THEN 'special-case-review'
-      WHEN 'special-resolution-reschedule' THEN 'special-case-reschedule'
-    END WHERE id IN ('special-resolution-a', 'special-resolution-b', 'special-resolution-review', 'special-resolution-reschedule');
+    -- The 0059 compatibility trigger adopts this released-Worker insert
+    -- shape into one durable case per source. Do not fabricate a duplicate
+    -- fixture case after the trigger has done its job.
     INSERT INTO course_makeup_assignment (id, resolution_id, target_kind, target_special_occurrence_id, target_curriculum_lesson_id, status, assigned_by_staff_account_id, assigned_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-assignment-a', 'special-resolution-a', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-assignment-b', 'special-resolution-b', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
@@ -233,19 +243,23 @@ try {
   console.log("make-up browser fixture: checking make-up availability");
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await page.getByRole("heading", { name: "Шийдэх зүйл", exact: true }).waitFor({ state: "visible" });
+  const initialGroup = await openMakeupSectionAndFirstGroup(page, "open");
+  await initialGroup.locator("[data-case-select][value^='source-enrollment|']").evaluate((input) => input.click());
+  await page.getByRole("button", { name: "Нөхөх", exact: true }).waitFor({ state: "visible" });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.locator("#makeup-open-list").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-desktop.png") });
+  await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator("#makeup-open-list").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-mobile.png") });
+  await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "Нөхөх", exact: true }).click();
-  await page.getByText("Тохирох энгийн анги одоогоор алга.").waitFor({ state: "visible" });
-  assert.equal(await page.getByRole("button", { name: "Энд нөхөх", exact: true }).count(), 0, "a capacity-consuming hold hides the unavailable normal target");
+  await page.getByText("Бүх сонгосон сурагчид багтах тохирох анги алга.").waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("button", { name: "Баталгаажуулах", exact: true }).count(), 0, "a capacity-consuming hold hides the unavailable normal target");
 
   execute(`UPDATE registration_capacity_hold SET status = 'released', released_at = ${sql(now)} WHERE id = 'target-hold';`);
   await page.reload();
   await page.locator("#tool-app").waitFor({ state: "visible" });
+  const refreshedGroup = await openMakeupSectionAndFirstGroup(page, "open");
+  await refreshedGroup.locator("[data-case-select][value^='source-enrollment|']").evaluate((input) => input.click());
   await page.getByRole("button", { name: "Нөхөх", exact: true }).click();
   await page.getByText("Сул суудал: 1").waitFor({ state: "visible" });
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -253,7 +267,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "makeup-capacity-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.getByRole("button", { name: "Энд нөхөх", exact: true }).click();
+  await page.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
   await page.getByText("Нөхөх хичээлийг товлолоо.").waitFor({ state: "visible" });
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   const normalAssignment = assignments.scheduled.filter((entry) => entry.targetKind === "normal_class");
@@ -300,13 +314,14 @@ try {
   console.log("make-up browser fixture: inspecting case history, attendance review, and special reschedule preview");
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await page.getByRole("heading", { name: "Ирц шалгах", exact: true }).waitFor({ state: "visible" });
+  await openMakeupSectionAndFirstGroup(page, "review");
   await page.getByText(/Ирц Шалгах Энхрий/).waitFor({ state: "visible" });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.locator("#makeup-review-list").screenshot({ path: path.join(screenshotDir, "makeup-attendance-review-desktop.png") });
+  await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-attendance-review-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator("#makeup-review-list").screenshot({ path: path.join(screenshotDir, "makeup-attendance-review-mobile.png") });
+  await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-attendance-review-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
+  await openMakeupSectionAndFirstGroup(page, "scheduled");
   await page.locator("[data-open-special-reschedule='reschedule-special-occurrence']").click();
   await page.locator("#special-reschedule-form").waitFor({ state: "visible" });
   await page.locator("#special-reschedule-form [name='localDate']").fill(addDays(rescheduleDate, 1));
@@ -321,14 +336,6 @@ try {
   await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "special-reschedule-preview-mobile.png") });
   await page.getByRole("button", { name: "Болих", exact: true }).click();
   await page.locator("#makeup-detail").waitFor({ state: "hidden" });
-  await page.getByRole("heading", { name: "Түүх", exact: true }).waitFor({ state: "visible" });
-  await page.locator("#makeup-history-title").locator("..").locator("details").evaluate((details) => { details.open = true; });
-  await page.getByText(/Browser Маш Урт Нөхөх Оролцогчийн Нэр/).waitFor({ state: "visible" });
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.locator("#makeup-history-list").screenshot({ path: path.join(screenshotDir, "makeup-history-desktop.png") });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator("#makeup-history-list").screenshot({ path: path.join(screenshotDir, "makeup-history-mobile.png") });
-  await page.setViewportSize({ width: 1280, height: 900 });
   console.log("make-up browser fixture: reconciling agenda counts");
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });
@@ -344,7 +351,8 @@ try {
     const tab = selected.getBoundingClientRect();
     return { stripLeft: strip.left, stripRight: strip.right, tabLeft: tab.left, tabRight: tab.right };
   });
-  assert.ok(selectedTabBounds.tabLeft >= selectedTabBounds.stripLeft && selectedTabBounds.tabRight <= selectedTabBounds.stripRight, "the selected time tab is visible inside its horizontal strip");
+  assert.ok(selectedTabBounds.tabLeft >= selectedTabBounds.stripLeft - 1 && selectedTabBounds.tabRight <= selectedTabBounds.stripRight + 1,
+    "the selected time tab is visible inside its horizontal strip without treating subpixel rounding as clipping");
   await page.goBack();
   await page.locator("#staff-home").waitFor({ state: "visible" });
   console.log("make-up browser fixture: recording special-session attendance from the agenda");
@@ -630,6 +638,24 @@ try {
   await page.screenshot({ path: path.join(screenshotDir, "day-change-automatic-result-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: path.join(screenshotDir, "day-change-automatic-result-mobile.png") });
+  console.log("make-up browser fixture: retiring and restoring one archived lesson group");
+  await page.goto(`${baseUrl}/staff/makeups/`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  const archiveSourceGroup = await openMakeupSectionAndFirstGroup(page, "open");
+  await archiveSourceGroup.getByRole("button", { name: "Дуусгах", exact: true }).click();
+  await page.locator("#makeup-detail").getByRole("button", { name: "Дуусгах", exact: true }).click();
+  await page.getByText("Хичээлийг архивт орууллаа.", { exact: true }).waitFor({ state: "visible" });
+  const archiveGroup = await openMakeupSectionAndFirstGroup(page, "archive");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-archive-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-archive-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await archiveGroup.getByRole("button", { name: "Архиваас гаргах", exact: true }).click();
+  await page.locator("#makeup-detail").getByRole("button", { name: "Архиваас гаргах", exact: true }).click();
+  await page.getByText("Хичээлийг дахин шийдэхээр нээлээ.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-section='open'] [data-makeup-group]").first().evaluate((node) => document.activeElement === node.querySelector("summary")), true,
+    "restoring an archived lesson focuses its reopened actionable group");
   console.log(`ok browser make-up capacity target availability and booking (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);

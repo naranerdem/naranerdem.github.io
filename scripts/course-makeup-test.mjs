@@ -84,7 +84,9 @@ function count(database, table, where = "1 = 1") {
 try {
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   const lifecycleMigration = migrations.find((file) => file === "0059_course_makeup_case_lifecycle.sql");
+  const lessonRetirementMigration = migrations.find((file) => file === "0060_course_makeup_lesson_retirement.sql");
   assert.ok(lifecycleMigration, "the lifecycle migration is present");
+  assert.ok(lessonRetirementMigration, "the lesson-retirement migration is present");
   sqlite(migrations.filter((file) => file < lifecycleMigration).map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
   const database = new SqliteD1();
@@ -183,6 +185,8 @@ try {
   assert.equal(Number(JSON.parse(sqlite(`SELECT COUNT(*) AS value FROM sqlite_master
     WHERE type = 'index' AND name = 'idx_course_makeup_resolution_one_active';`, true))[0].value), 1,
   "0059 retains the released Worker's active-resolution uniqueness protection during deployment");
+  sqlite(readFileSync(path.join("migrations", lessonRetirementMigration), "utf8"));
+  assert.equal(sqlite("PRAGMA foreign_key_check;"), "", "0060 adds lesson retirement without changing legacy records");
 
   // This is the released Worker's resolution write shape: no case_id exists in
   // its SQL. It must remain safe if it reaches D1 after 0059 but before the
@@ -569,11 +573,91 @@ try {
   assert.equal(race.filter((entry) => entry.status === 'rejected').length, 1, "the competing booking is rejected rather than overbooking");
   assert.equal(count(database, 'course_makeup_assignment', "target_class_session_id = 'capacity-target' AND target_curriculum_lesson_id = 'lesson-1' AND status = 'active'"), 1, "active make-up occupancy is scoped to the exact target lesson");
 
+  // A named lesson can be retired for the current academic year without
+  // deleting its absences. Restore re-evaluates the same durable sources,
+  // then the grouped normal booking consumes capacity atomically and replays.
+  sqlite(`
+    INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('group-target', 'year', 'stage_1', 'Бүлгийн зорилтот анги', 'Ням', '20:00', '21:20', 2, 'available', 'offering', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at)
+      VALUES ('group-target', 'weekly', '${addCivilDays(targetDate, 21)}', 'Ням', '20:00', '21:20', '${now}', '${now}');
+    INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('group-target-calendar', 'group-target', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at)
+      VALUES ('group-target-revision', 'group-target-calendar', 'program', 1, 'draft', '${addCivilDays(targetDate, 21)}', 0, 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('group-target-slot', 'group-target-revision', '${addCivilDays(targetDate, 21)}', '20:00', '21:20', 'generated', 'scheduled', 'lesson-1', 1, 'makeup-test', '${now}', '${now}');
+    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id = 'group-target-revision';
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at) VALUES
+      ('student-7', 'Бүлэг', 'Долоо', 'not_specified', '2015-01-07', 'active', 1, 'makeup-test', '${now}', '${now}'),
+      ('student-8', 'Бүлэг', 'Найм', 'not_specified', '2015-01-08', 'active', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('prereg-student-7', 'guardian', 'year', 'completed', 1, 'makeup-test', '${now}', '${now}'),
+      ('prereg-student-8', 'guardian', 'year', 'completed', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('application-student-7', 'prereg-student-7', 'student-7', 5, 'new', 'enrolled', 1, 'makeup-test', '${now}', '${now}'),
+      ('application-student-8', 'prereg-student-8', 'student-8', 5, 'new', 'enrolled', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('enrollment-7', 'application-student-7', 'student-7', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}'),
+      ('enrollment-8', 'application-student-8', 'student-8', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}');
+  `);
+  const groupIdentity = { academicYearId: 'year', curriculumProgramId: 'program', curriculumLessonId: 'lesson-1' };
+  const retirePreview = await makeups.previewCourseMakeupLessonRetirement(runtime, actor(), groupIdentity, afterSourceEnd);
+  assert.ok(retirePreview.sources.some((entry) => entry.enrollmentId === 'enrollment-7') && retirePreview.sources.some((entry) => entry.enrollmentId === 'enrollment-8'), "retirement previews the lesson's current waiting sources without selecting children");
+  const retired = await makeups.retireCourseMakeupLesson(runtime, actor(), {
+    ...groupIdentity, expectedFingerprint: retirePreview.fingerprint, operationId: '44444444-4444-4444-8444-444444444444',
+  }, afterSourceEnd);
+  const retiredReplay = await makeups.retireCourseMakeupLesson(runtime, actor(), {
+    ...groupIdentity, expectedFingerprint: retirePreview.fingerprint, operationId: '44444444-4444-4444-8444-444444444444',
+  }, afterSourceEnd);
+  assert.deepEqual(retiredReplay, retired, "a lost-response retirement retry returns its original lesson result");
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
+  assert.ok(!overview.unresolved.some((entry) => entry.enrollmentId === 'enrollment-7'), "retired lessons leave the active waiting pool without erasing their absence");
+  assert.ok(overview.archived.some((group) => group.entries.some((entry) => entry.enrollmentId === 'enrollment-7')), "retired lesson sources remain visible in the archive");
+  await assert.rejects(() => makeups.previewCourseMakeupGroupNormalBooking(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd), /Course make-up/, "retirement is enforced at the server booking preview rather than only hidden in the page");
+  const staleRestorePreview = await makeups.previewCourseMakeupLessonRestore(runtime, actor(), groupIdentity, afterSourceEnd);
+  sqlite(`UPDATE course_makeup_lesson_state SET revision = revision + 1, updated_at = '${now}' WHERE id = ${quote(retired.lessonStateId)};`);
+  await assert.rejects(() => makeups.restoreCourseMakeupLesson(runtime, actor(), {
+    ...groupIdentity, expectedFingerprint: staleRestorePreview.fingerprint, operationId: '54444444-4444-4444-8444-444444444444',
+  }, afterSourceEnd), /Course make-up/, "a changed retirement state rejects its stale restore review");
+  const restorePreview = await makeups.previewCourseMakeupLessonRestore(runtime, actor(), groupIdentity, afterSourceEnd);
+  await makeups.restoreCourseMakeupLesson(runtime, actor(), {
+    ...groupIdentity, expectedFingerprint: restorePreview.fingerprint, operationId: '55555555-5555-4555-8555-555555555555',
+  }, afterSourceEnd);
+  const groupedPreview = await makeups.previewCourseMakeupGroupNormalBooking(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
+  const groupedTarget = groupedPreview.targets.find((target) => target.classSessionId === 'group-target');
+  assert.equal(groupedTarget?.remainingCapacity, 2, "grouped preview offers only a target with capacity for every selected child");
+  const groupBookingInput = {
+    sources: [source(7), source(8)], expectedFingerprint: groupedPreview.fingerprint,
+    targetClassSessionId: 'group-target', operationId: '66666666-6666-4666-8666-666666666666',
+  };
+  const groupBooking = await makeups.assignCourseMakeupGroupToNormalClass(runtime, actor(), groupBookingInput, afterSourceEnd);
+  assert.equal(groupBooking.assignmentIds.length, 2, "one grouped normal operation creates one assignment per selected source");
+  assert.deepEqual(await makeups.assignCourseMakeupGroupToNormalClass(runtime, actor(), groupBookingInput, afterSourceEnd), groupBooking,
+    "a retry after the grouped booking returns the original result without duplicate assignments");
+  assert.equal(count(database, 'course_makeup_assignment', "target_class_session_id = 'group-target' AND status = 'active'"), 2, "batch booking never silently books only part of the selected group");
+  for (const assignmentId of groupBooking.assignmentIds) {
+    await makeups.cancelCourseMakeupAssignment(runtime, actor(), { assignmentId }, afterSourceEnd);
+  }
+  const specialGroupPreview = await makeups.previewCourseMakeupGroupSpecialBooking(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
+  const specialGroupInput = {
+    sources: [source(7), source(8)], expectedFingerprint: specialGroupPreview.fingerprint,
+    localDate: addCivilDays(targetDate, 30), startTime: '19:00', endTime: '20:20', capacity: 2,
+    note: 'Бүлгийн тусгай нөхөх', operationId: '77777777-7777-4777-8777-777777777777',
+  };
+  const groupSpecial = await makeups.createCourseMakeupGroupSpecialOccurrence(runtime, actor(), specialGroupInput, afterSourceEnd);
+  assert.equal(groupSpecial.assignmentIds.length, 2, "one reviewed special creation atomically creates and books every selected source");
+  assert.deepEqual(await makeups.createCourseMakeupGroupSpecialOccurrence(runtime, actor(), specialGroupInput, afterSourceEnd), groupSpecial,
+    "a retry after grouped special creation returns the original session and assignments");
+  assert.equal(count(database, 'course_makeup_special_occurrence', `id = ${quote(groupSpecial.specialOccurrenceId)} AND status = 'active'`), 1,
+    "an idempotent special retry cannot leave a second empty session");
+
   const page = readFileSync("src/pages/staff/makeups.astro", "utf8");
   const built = readFileSync("dist/staff/makeups/index.html", "utf8");
   assert.match(page, /Нөхөхгүй/);
-  assert.match(page, /Дахин нээх/);
-  assert.match(page, /Тусгай нөхөх хичээл үүсгэх/);
+  assert.match(page, /Архиваас гаргах/);
+  assert.doesNotMatch(page, /Дахин нээх/, "lesson-level archive recovery replaces the obsolete per-child reopen control");
+  assert.match(page, /Шинэ тусгай нөхөх хичээл/);
   assert.match(page, /Сул суудал/);
   assert.doesNotMatch(page, /урилга|Messenger|и-мэйл илгээ/, "make-up planning does not claim communication");
   assert.doesNotMatch(built, /Тест Нэг|Ижил хичээл/, "static make-up page contains no student or private lesson fixture");
