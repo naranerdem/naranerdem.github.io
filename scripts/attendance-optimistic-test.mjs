@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   attendanceCheckboxState,
+  attendanceIsComplete,
   attendanceProgressCount,
   attendanceStatusAfterToggle,
   createOptimisticRosterMutator,
@@ -47,7 +48,9 @@ assert.equal(attendanceStatusAfterToggle(null, "late", true), "late", "checking 
 assert.equal(effectiveAttendanceStatus(null, false), null, "unchecked future or in-progress attendance is not absent");
 assert.equal(effectiveAttendanceStatus(null, true), "absent", "unchecked attendance is effectively absent after class ends");
 assert.equal(effectiveAttendanceStatus("present", true), "present", "a later present correction replaces derived absence");
-assert.equal(attendanceProgressCount([{ recordedAttendanceStatus: null }], false), 0);
-assert.equal(attendanceProgressCount([{ recordedAttendanceStatus: null }], true), 1, "ended occurrence is conceptually complete without writing absent rows");
+assert.equal(attendanceProgressCount([{ recordedAttendanceStatus: null }]), 0);
+assert.equal(attendanceProgressCount([{ recordedAttendanceStatus: "absent" }]), 1, "an explicitly saved absence counts as attendance");
+assert.equal(attendanceIsComplete([{ recordedAttendanceStatus: null }]), false, "an ended but untouched roster is not complete");
+assert.equal(attendanceIsComplete([{ recordedAttendanceStatus: "absent" }]), true, "an explicit absence completes a one-learner roster");
 
 console.log("ok optimistic attendance checklist, effective status, rollback, counting, and row locking");

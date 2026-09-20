@@ -292,6 +292,7 @@ try {
   await page.getByText("Тусгай Нөхөх Анударь", { exact: true }).waitFor({ state: "visible" });
   await page.getByText("Тусгай Нөхөх Билгүүн", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await page.locator("[data-attendance-row]").count(), 2, "a special session does not add ordinary class enrollments to its attendance roster");
+  assert.match(await page.locator("#attendance-summary").innerText(), /^0 \/ 2 тэмдэглэсэн/, "an untouched special roster does not claim completed attendance");
   assert.equal(await page.getByText("Нөхөх", { exact: true }).count(), 2, "each special-session attendee is visibly labelled as a make-up attendee");
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "special-makeup-attendance-desktop.png") });
@@ -309,6 +310,7 @@ try {
     "a corrected special-session mark survives reload");
   assert.equal(await page.locator("[data-attendance-row='special-enrollment-b'] [data-attendance-control='present']").isChecked(), true,
     "each special-session attendee persists independently");
+  assert.match(await page.locator("#attendance-summary").innerText(), /^2 \/ 2 ирц бүрдсэн/, "the roster reports completion only after every special attendee has a saved status");
   const specialAttendance = await page.evaluate(async () => (await fetch(`/api/staff/attendance?date=${encodeURIComponent(location.search.match(/date=([^&]+)/)?.[1] || "")}&occurrence=special-occurrence`, { credentials: "same-origin" })).json());
   assert.equal(specialAttendance.selected.occurrenceKind, "special", "the attendance endpoint retains a stable special occurrence identity");
   assert.equal(specialAttendance.selected.rosterCount, 2, "saved marks do not remove special-session attendees from their expected roster");

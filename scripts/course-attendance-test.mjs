@@ -219,7 +219,8 @@ try {
   assert.equal(day.selected.roster[0].effectiveAttendanceStatus, null, "unchecked attendance is not absent before class end");
   const endedDay = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today", afterClassEnd);
   assert.equal(endedDay.selected.occurrenceEnded, true);
-  assert.equal(endedDay.selected.progressCount, 2, "an ended occurrence is conceptually complete");
+  assert.equal(endedDay.selected.progressCount, 0, "an ended occurrence remains unmarked until attendance is persisted");
+  assert.equal(endedDay.selected.attendanceComplete, false, "an untouched roster is not marked complete solely because the lesson ended");
   assert.ok(endedDay.selected.roster.every((entry) => entry.effectiveAttendanceStatus === "absent"), "unchecked roster members are effectively absent after class end");
   assert.equal(count(database, "course_attendance"), 0, "derived absence does not create explicit attendance rows");
   await assert.rejects(() => attendance.getCourseAttendanceDay(runtime, actor("accountant"), today), /Course attendance/, "accountants cannot view attendance");
@@ -321,6 +322,9 @@ try {
   assert.equal(specialDay.selected.roster.filter((entry) => entry.attendanceKind === "makeup").length, 2, "special-session attendees retain make-up identification");
   assert.equal(new Set(specialDay.selected.roster.map((entry) => entry.studentId)).size, 2, "each special-session attendee appears once");
   assert.equal(specialDay.selected.roster[0].makeupSource.lessonTitle, "Өнгөрсөн хичээл", "special attendance retains the source missed-lesson link");
+  assert.equal(specialDay.selected.markedCount, 0, "a past special session starts with no saved destination attendance");
+  assert.equal(specialDay.selected.progressCount, 0, "source absences do not count as destination attendance");
+  assert.equal(specialDay.selected.attendanceComplete, false, "a booked but untouched special roster is not complete");
   sqlite(`
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('same-student-prereg', 'guardian', 'year', 'completed', 1, 'attendance-test', '${now}', '${now}');
@@ -344,12 +348,22 @@ try {
   await attendance.recordCourseAttendance(runtime, actor(), {
     slotId: "special-attendance", enrollmentId: "enrollment-a", makeupAssignmentId: "special-assignment-a", status: "present",
   });
+  const partiallyMarkedSpecial = await attendance.getCourseAttendanceDay(runtime, actor(), specialDate, "special-attendance", afterClassEnd);
+  assert.equal(partiallyMarkedSpecial.selected.progressCount, 1, "a persisted present mark advances only that special attendee");
+  assert.equal(partiallyMarkedSpecial.selected.attendanceComplete, false, "one saved mark does not complete a two-learner special roster");
   assert.equal((await attendance.recordCourseAttendance(runtime, actor(), {
     slotId: "special-attendance", enrollmentId: "enrollment-a", makeupAssignmentId: "special-assignment-a", status: "present",
   })).changed, false, "replaying a special attendance mark does not create another result");
   await attendance.recordCourseAttendance(runtime, actor(), {
     slotId: "special-attendance", enrollmentId: "enrollment-a", makeupAssignmentId: "special-assignment-a", status: "late",
   });
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: "special-attendance", enrollmentId: "enrollment-b", makeupAssignmentId: "special-assignment-b", status: "absent",
+  });
+  const explicitlyCompletedSpecial = await attendance.getCourseAttendanceDay(runtime, actor(), specialDate, "special-attendance", afterClassEnd);
+  assert.equal(explicitlyCompletedSpecial.selected.roster.find((entry) => entry.enrollmentId === "enrollment-b").recordedAttendanceStatus, "absent", "a persisted absence remains distinct from a date-derived effective absence");
+  assert.equal(explicitlyCompletedSpecial.selected.progressCount, 2, "an explicit absence counts toward the completed special roster");
+  assert.equal(explicitlyCompletedSpecial.selected.attendanceComplete, true, "all explicitly marked special attendees complete the roster");
   await attendance.recordCourseAttendance(runtime, actor(), {
     slotId: "special-attendance", enrollmentId: "enrollment-b", makeupAssignmentId: "special-assignment-b", status: "late",
   });

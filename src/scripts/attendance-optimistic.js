@@ -24,8 +24,12 @@ export function markedRosterCount(roster) {
   return roster.filter((entry) => entry.recordedAttendanceStatus !== null && entry.recordedAttendanceStatus !== "").length;
 }
 
-export function attendanceProgressCount(roster, occurrenceEnded) {
-  return occurrenceEnded ? roster.length : markedRosterCount(roster);
+export function attendanceProgressCount(roster) {
+  return markedRosterCount(roster);
+}
+
+export function attendanceIsComplete(roster) {
+  return roster.length > 0 && markedRosterCount(roster) === roster.length;
 }
 
 export function createOptimisticRosterMutator({ onChange, onError }) {

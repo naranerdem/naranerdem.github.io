@@ -37,6 +37,7 @@ import "../../styles/global.css";
       // @ts-nocheck
       import {
         attendanceCheckboxState,
+        attendanceIsComplete,
         attendanceProgressCount,
         attendanceStatusAfterToggle,
         createOptimisticRosterMutator,
@@ -152,13 +153,17 @@ import "../../styles/global.css";
         const summary = q("#attendance-summary");
         if (!selected || !summary) return;
         selected.markedCount = markedRosterCount(selected.roster);
-        selected.progressCount = attendanceProgressCount(selected.roster, selected.occurrenceEnded);
+        selected.progressCount = attendanceProgressCount(selected.roster);
+        selected.attendanceComplete = attendanceIsComplete(selected.roster);
         const occurrence = state.data.occurrences.find((entry) => entry.slotId === selected.slotId);
         if (occurrence) {
           occurrence.markedCount = selected.markedCount;
           occurrence.progressCount = selected.progressCount;
         }
-        summary.innerHTML = `<strong>${selected.progressCount} / ${selected.rosterCount} ${selected.occurrenceEnded ? "ирц бүрдсэн · Дууссан" : "тэмдэглэсэн"}</strong>${bulkMarkup(selected)}`;
+        const progressLabel = selected.attendanceComplete
+          ? (selected.occurrenceEnded ? "ирц бүрдсэн · Дууссан" : "ирц бүрдсэн")
+          : (selected.occurrenceEnded ? "тэмдэглэсэн · Хичээл дууссан" : "тэмдэглэсэн");
+        summary.innerHTML = `<strong>${selected.progressCount} / ${selected.rosterCount} ${progressLabel}</strong>${bulkMarkup(selected)}`;
       }
 
       function patchRosterRow(enrollmentId) {

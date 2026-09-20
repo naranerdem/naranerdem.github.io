@@ -391,6 +391,7 @@ function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
     absenceNoticeNote: entry.absenceNoticeNote,
   }));
   const markedCount = roster.filter((entry) => entry.recordedAttendanceStatus !== null).length;
+  const attendanceComplete = roster.length > 0 && markedCount === roster.length;
   return {
     slotId: occurrence.slotId,
     occurrenceKind: occurrence.occurrenceKind,
@@ -406,8 +407,9 @@ function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
     holidayLabel: occurrence.holidayLabel,
     roster,
     markedCount,
-    progressCount: occurrenceEnded ? roster.length : markedCount,
+    progressCount: markedCount,
     rosterCount: roster.length,
+    attendanceComplete,
     occurrenceEnded,
   };
 }
@@ -424,7 +426,8 @@ async function occurrenceSummary(env: WorkerEnv, occurrence: OccurrenceRow, at: 
   return {
     rosterCount: roster.length,
     markedCount,
-    progressCount: occurrenceEnded ? roster.length : markedCount,
+    progressCount: markedCount,
+    attendanceComplete: roster.length > 0 && markedCount === roster.length,
     occurrenceEnded,
   };
 }
