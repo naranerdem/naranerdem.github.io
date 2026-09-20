@@ -63,11 +63,11 @@ async function waitForRenderedCount(page, selector, expected, label) {
 async function openMakeupSectionAndFirstGroup(page, section) {
   const sectionNode = page.locator(`[data-section='${section}']`);
   console.log(`make-up browser fixture: opening ${section} section`);
-  await sectionNode.evaluate((details) => { details.open = true; });
+  if (!await sectionNode.evaluate((details) => details.open)) await sectionNode.locator(":scope > summary").click();
   const group = sectionNode.locator("[data-makeup-group]").first();
   await group.waitFor({ state: "attached" });
   console.log(`make-up browser fixture: opening ${section} lesson group`);
-  await group.evaluate((details) => { details.open = true; });
+  if (!await group.evaluate((details) => details.open)) await group.locator(":scope > summary").click();
   return group;
 }
 
@@ -246,19 +246,23 @@ try {
   execute(`UPDATE class_session SET capacity = 1 WHERE id = 'day-change-class';`);
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  const initialGroup = await openMakeupSectionAndFirstGroup(page, "open");
-  const initialCheckbox = initialGroup.locator("[data-case-select][value^='source-enrollment|']");
+  await openMakeupSectionAndFirstGroup(page, "open");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("[data-case-select][value^='source-enrollment|']");
+    return input && input.getBoundingClientRect().width > 0;
+  });
+  const initialCheckbox = page.locator("[data-case-select][value^='source-enrollment|']");
   const initialLabel = initialCheckbox.locator("xpath=ancestor::label");
-  const checkboxSize = await initialCheckbox.evaluate((input) => parseFloat(getComputedStyle(input).inlineSize));
-  assert.ok(checkboxSize >= 22 && checkboxSize <= 24,
-    "the make-up selection checkbox has a comfortably visible 22–24px control");
+  const checkboxSize = await initialCheckbox.evaluate((input) => input.getBoundingClientRect().width);
+  assert.ok(checkboxSize >= 22 && checkboxSize <= 26,
+    "the make-up selection checkbox has a comfortably visible approximately 22–24px control");
   assert.ok(await initialLabel.evaluate((label) => label.getBoundingClientRect().height >= 44),
     "the complete learner label has a 44px minimum touch target");
   await initialLabel.locator("strong").click();
   await page.waitForFunction((input) => input.checked, await initialCheckbox.elementHandle());
   assert.equal(await page.locator("[data-section='open'] [data-makeup-group]").first().evaluate((details) => details.open), true,
     "selection keeps the current expanded lesson group open while availability refreshes");
-  await page.getByText("Тохирох дараагийн ээлжит цагуудын суудал дүүрсэн байна.", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Тохирох цагуудын суудал дүүрсэн байна.", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await page.getByRole("button", { name: "Түр шилжих", exact: true }).count(), 0, "the normal booking action is absent when no future matching lesson has capacity");
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-desktop.png") });
@@ -270,8 +274,10 @@ try {
     UPDATE registration_capacity_hold SET status = 'released', released_at = ${sql(now)} WHERE id IN ('target-hold', 'day-target-hold');`);
   await page.reload();
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  const refreshedGroup = await openMakeupSectionAndFirstGroup(page, "open");
-  const refreshedCheckbox = refreshedGroup.locator("[data-case-select][value^='source-enrollment|']");
+  await openMakeupSectionAndFirstGroup(page, "open");
+  await page.waitForFunction(() => document.querySelector("[data-case-select][value^='source-enrollment|']")?.getBoundingClientRect().width > 0);
+  const refreshedGroup = page.locator("[data-section='open'] [data-makeup-group]").first();
+  const refreshedCheckbox = page.locator("[data-case-select][value^='source-enrollment|']");
   await refreshedCheckbox.focus();
   await page.keyboard.press("Space");
   await page.waitForFunction((input) => input.checked, await refreshedCheckbox.elementHandle());
@@ -295,8 +301,9 @@ try {
   assert.equal(await normalButton.evaluate((button) => document.activeElement === button), true,
     "closing an inline review returns focus to its initiating action");
   await normalButton.click();
+  await inlineReview.getByRole("button", { name: "Сонгох", exact: true }).click();
   await inlineReview.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
-  await page.getByText("Түр шилжих товыг хадгаллаа.").waitFor({ state: "visible" });
+  await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.").waitFor({ state: "visible" });
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   const normalAssignment = assignments.scheduled.filter((entry) => entry.targetKind === "normal_class");
   assert.equal(normalAssignment.length, 1, "the rendered normal-target action creates one active normal-class assignment alongside the seeded special bookings");

@@ -85,8 +85,10 @@ try {
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   const lifecycleMigration = migrations.find((file) => file === "0059_course_makeup_case_lifecycle.sql");
   const lessonRetirementMigration = migrations.find((file) => file === "0060_course_makeup_lesson_retirement.sql");
+  const assignmentOperationMigration = migrations.find((file) => file === "0061_course_makeup_assignment_operations.sql");
   assert.ok(lifecycleMigration, "the lifecycle migration is present");
   assert.ok(lessonRetirementMigration, "the lesson-retirement migration is present");
+  assert.ok(assignmentOperationMigration, "the assignment-operation migration is present");
   sqlite(migrations.filter((file) => file < lifecycleMigration).map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
   const database = new SqliteD1();
@@ -186,6 +188,7 @@ try {
     WHERE type = 'index' AND name = 'idx_course_makeup_resolution_one_active';`, true))[0].value), 1,
   "0059 retains the released Worker's active-resolution uniqueness protection during deployment");
   sqlite(readFileSync(path.join("migrations", lessonRetirementMigration), "utf8"));
+  sqlite(readFileSync(path.join("migrations", assignmentOperationMigration), "utf8"));
   assert.equal(sqlite("PRAGMA foreign_key_check;"), "", "0060 adds lesson retirement without changing legacy records");
 
   // This is the released Worker's resolution write shape: no case_id exists in
@@ -661,6 +664,26 @@ try {
   for (const assignmentId of groupBooking.assignmentIds) {
     await makeups.cancelCourseMakeupAssignment(runtime, actor(), { assignmentId }, afterSourceEnd);
   }
+  const cachedAvailability = await makeups.getCourseMakeupGroupAvailability(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
+  assert.ok(cachedAvailability.targets.some((target) => target.kind === "normal_class" && target.classSessionId === 'group-target'
+    && target.eligibleSourceKeys.length === 2), "one shared availability response retains per-child eligibility for a normal destination");
+  const existingPreview = await makeups.previewCourseMakeupGroupDestinationBooking(runtime, actor(), {
+    sources: [source(7), source(8)], targetKind: 'normal_class', targetClassSessionId: 'group-target',
+  }, afterSourceEnd);
+  const existingInput = {
+    sources: [source(7), source(8)], expectedFingerprint: existingPreview.fingerprint,
+    targetKind: 'normal_class', targetClassSessionId: 'group-target', operationId: '67676767-6767-4676-8676-676767676767',
+  };
+  const existingBooking = await makeups.assignCourseMakeupGroupToExistingDestination(runtime, actor(), existingInput, afterSourceEnd);
+  assert.equal(existingBooking.assignmentIds.length, 2, "one reviewed existing-session operation assigns every selected learner");
+  assert.deepEqual(await makeups.assignCourseMakeupGroupToExistingDestination(runtime, actor(), existingInput, afterSourceEnd), existingBooking,
+    "a lost-response existing-session retry returns the recorded result without duplicate assignments");
+  const cancellationPreview = await makeups.previewCourseMakeupAssignmentCancellation(runtime, actor(), { assignmentId: existingBooking.assignmentIds[0] }, afterSourceEnd);
+  const cancellationInput = { assignmentId: existingBooking.assignmentIds[0], expectedFingerprint: cancellationPreview.fingerprint, operationId: '68686868-6868-4686-8686-686868686868' };
+  const cancelled = await makeups.cancelCourseMakeupAssignment(runtime, actor(), cancellationInput, afterSourceEnd);
+  assert.deepEqual(await makeups.cancelCourseMakeupAssignment(runtime, actor(), cancellationInput, afterSourceEnd), cancelled,
+    "individual cancellation replays its durable result instead of cancelling a later assignment");
+  await makeups.cancelCourseMakeupAssignment(runtime, actor(), { assignmentId: existingBooking.assignmentIds[1] }, afterSourceEnd);
   const specialGroupPreview = await makeups.previewCourseMakeupGroupSpecialBooking(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
   const specialGroupInput = {
     sources: [source(7), source(8)], expectedFingerprint: specialGroupPreview.fingerprint,

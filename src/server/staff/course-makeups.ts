@@ -415,13 +415,20 @@ async function normalTargets(
       AND target_program.id = ?
       AND target_program.academic_year_id = ?
       AND class_session.id <> ?
+      AND NOT EXISTS (
+        SELECT 1 FROM enrollment AS target_enrollment
+        WHERE target_enrollment.class_session_id = class_session.id
+          AND target_enrollment.student_id = ?
+          AND target_enrollment.confirmed_at IS NOT NULL
+          AND target_enrollment.cancelled_at IS NULL
+      )
       AND class_session.status IN ('available', 'full')
       AND offering.status = 'active'
       AND offering.kind IN ('annual_course', 'summer_course')
       AND (slot.local_date > ? OR (slot.local_date = ? AND slot.start_time > ?))
     ORDER BY slot.local_date, slot.start_time, offering.title, class_session.id`).bind(
     source.curriculumLessonId, source.curriculumProgramId, source.academicYearId,
-    source.classSessionId, local.date, local.date, local.time,
+    source.classSessionId, source.studentId, local.date, local.date, local.time,
   ).all<NormalTargetRow>();
   const projections = new Map((await getClassCapacityProjections(
     env.DB,
@@ -441,8 +448,9 @@ async function normalTargets(
 
 async function specialTargets(
   env: WorkerEnv,
-  lessonId: string,
+  source: Pick<SourceRow, "curriculumLessonId" | "studentId">,
   at = new Date(),
+  includeFull = false,
 ): Promise<Array<SpecialTargetRow & { remainingCapacity: number }>> {
   const local = localDateTime(at);
   const result = await env.DB.prepare(`SELECT special.id,
@@ -458,14 +466,24 @@ async function specialTargets(
     FROM course_makeup_special_occurrence AS special
     WHERE special.status = 'active'
       AND special.curriculum_lesson_id = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM course_makeup_assignment AS existing_assignment
+        INNER JOIN course_makeup_resolution AS existing_resolution
+          ON existing_resolution.id = existing_assignment.resolution_id
+        INNER JOIN enrollment AS existing_enrollment
+          ON existing_enrollment.id = existing_resolution.source_enrollment_id
+        WHERE existing_assignment.target_special_occurrence_id = special.id
+          AND existing_assignment.status = 'active'
+          AND existing_enrollment.student_id = ?
+      )
       AND (special.local_date > ? OR (special.local_date = ? AND special.start_time > ?))
     ORDER BY special.local_date, special.start_time, special.id`).bind(
-    lessonId, local.date, local.date, local.time,
+    source.curriculumLessonId, source.studentId, local.date, local.date, local.time,
   ).all<SpecialTargetRow>();
   return result.results.map((target) => ({
     ...target,
     remainingCapacity: target.capacity - target.assignedCount,
-  })).filter((target) => target.remainingCapacity > 0);
+  })).filter((target) => includeFull || target.remainingCapacity > 0);
 }
 
 async function assertSpecialAvailability(
@@ -776,7 +794,7 @@ export async function getCourseMakeupOverview(
     selected = {
       source: serializeSource(source),
       normalTargets: await normalTargets(env, source, at),
-      specialTargets: await specialTargets(env, source.curriculumLessonId, at),
+      specialTargets: await specialTargets(env, source, at),
     };
   }
   return {
@@ -918,6 +936,76 @@ async function commonNormalTargets(
   return [...common.values()];
 }
 
+type ExistingMakeupTarget = {
+  kind: "normal_class" | "special";
+  key: string;
+  classSessionId?: string;
+  specialOccurrenceId?: string;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  classLabel: string;
+  remainingCapacity: number;
+  assignedCount?: number;
+  capacity?: number;
+};
+
+function normalTarget(target: NormalTargetRow & { remainingCapacity: number; classLabel: string }): ExistingMakeupTarget {
+  return {
+    kind: "normal_class", key: `normal:${target.classSessionId}`, classSessionId: target.classSessionId,
+    localDate: target.localDate, startTime: target.startTime, endTime: target.endTime,
+    classLabel: target.classLabel, remainingCapacity: target.remainingCapacity,
+  };
+}
+
+function specialTarget(target: SpecialTargetRow & { remainingCapacity: number }): ExistingMakeupTarget {
+  return {
+    kind: "special", key: `special:${target.id}`, specialOccurrenceId: target.id,
+    localDate: target.localDate, startTime: target.startTime, endTime: target.endTime,
+    classLabel: target.note || "Тусгай нөхөх цаг", remainingCapacity: target.remainingCapacity,
+    assignedCount: target.assignedCount, capacity: target.capacity,
+  };
+}
+
+async function commonExistingTargets(env: WorkerEnv, sources: SourceRow[], at = new Date()): Promise<ExistingMakeupTarget[]> {
+  const normal = (await commonNormalTargets(env, sources, at)).map(normalTarget);
+  const specialLists = await Promise.all(sources.map((source) => specialTargets(env, source, at, true)));
+  const special = new Map(specialLists[0].map((target) => [target.id, target]));
+  for (const list of specialLists.slice(1)) {
+    const allowed = new Set(list.map((target) => target.id));
+    for (const key of special.keys()) if (!allowed.has(key)) special.delete(key);
+  }
+  return [...normal, ...[...special.values()].map(specialTarget)]
+    .sort((left, right) => `${left.localDate} ${left.startTime}`.localeCompare(`${right.localDate} ${right.startTime}`));
+}
+
+export async function getCourseMakeupGroupAvailability(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const group = await reviewedLessonGroup(env, input, at);
+  const targets = new Map<string, ExistingMakeupTarget & { eligibleSourceKeys: string[] }>();
+  for (const source of group.sources) {
+    const candidates = [
+      ...(await normalTargets(env, source, at, true)).map(normalTarget),
+      ...(await specialTargets(env, source, at, true)).map(specialTarget),
+    ];
+    for (const candidate of candidates) {
+      const existing = targets.get(candidate.key);
+      if (existing) existing.eligibleSourceKeys.push(sourceKey(source));
+      else targets.set(candidate.key, { ...candidate, eligibleSourceKeys: [sourceKey(source)] });
+    }
+  }
+  return {
+    fingerprint: group.fingerprint,
+    sources: group.sources.map(serializeSource),
+    targets: [...targets.values()].sort((left, right) => `${left.localDate} ${left.startTime}`.localeCompare(`${right.localDate} ${right.startTime}`)),
+  };
+}
+
 function operationFingerprint(action: string, input: Record<string, unknown>, target: Record<string, unknown>) {
   return JSON.stringify({
     action,
@@ -939,6 +1027,39 @@ async function existingLessonOperation<T>(
   if (!existing) return null;
   if (existing.requestFingerprint !== fingerprint) throw new CourseMakeupError("conflict");
   return JSON.parse(existing.resultJson) as T;
+}
+
+async function existingAssignmentOperation<T>(
+  env: WorkerEnv,
+  operationIdValue: string,
+  fingerprint: string,
+): Promise<T | null> {
+  const existing = await env.DB.prepare(`SELECT request_fingerprint AS requestFingerprint, result_json AS resultJson
+    FROM course_makeup_assignment_operation WHERE operation_id = ?`).bind(operationIdValue).first<{
+      requestFingerprint: string; resultJson: string;
+    }>();
+  if (!existing) return null;
+  if (existing.requestFingerprint !== fingerprint) throw new CourseMakeupError("conflict");
+  return JSON.parse(existing.resultJson) as T;
+}
+
+function assignmentOperationInsert(
+  env: WorkerEnv,
+  operationIdValue: string,
+  action: "assign_existing" | "cancel_assignment",
+  fingerprint: string,
+  result: Record<string, unknown>,
+  actor: StaffPrincipal,
+  source: { isTest: number; testRunId: string | null },
+  time: string,
+): D1PreparedStatement {
+  return env.DB.prepare(`INSERT INTO course_makeup_assignment_operation (
+    operation_id, action, request_fingerprint, result_json, performed_by_staff_account_id,
+    performed_at, is_test, test_run_id, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+    operationIdValue, action, fingerprint, JSON.stringify(result), actor.staffAccountId,
+    time, source.isTest, source.testRunId, time,
+  );
 }
 
 function lessonOperationInsert(
@@ -1001,6 +1122,114 @@ export async function previewCourseMakeupGroupNormalBooking(
       classLabel: target.classLabel,
     })),
   };
+}
+
+function requestedExistingTarget(input: Record<string, unknown>): { kind: "normal_class" | "special"; key: string } {
+  const kind = clean(input.targetKind);
+  const id = kind === "normal_class" ? clean(input.targetClassSessionId) : clean(input.targetSpecialOccurrenceId);
+  if ((kind !== "normal_class" && kind !== "special") || !id) throw new CourseMakeupError("invalid");
+  return { kind, key: `${kind === "normal_class" ? "normal" : "special"}:${id}` };
+}
+
+function serializeExistingTarget(target: ExistingMakeupTarget) {
+  return {
+    kind: target.kind, classSessionId: target.classSessionId ?? null,
+    specialOccurrenceId: target.specialOccurrenceId ?? null,
+    localDate: target.localDate, startTime: target.startTime, endTime: target.endTime,
+    classLabel: target.classLabel, remainingCapacity: target.remainingCapacity,
+    assignedCount: target.assignedCount ?? null, capacity: target.capacity ?? null,
+  };
+}
+
+export async function previewCourseMakeupGroupDestinationBooking(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const group = await reviewedLessonGroup(env, input, at);
+  const requested = requestedExistingTarget(input);
+  const candidates = await commonExistingTargets(env, group.sources, at);
+  const target = candidates.find((candidate) => candidate.key === requested.key);
+  if (!target) throw new CourseMakeupError("not_eligible");
+  return {
+    fingerprint: group.fingerprint,
+    sources: group.sources.map(serializeSource),
+    target: serializeExistingTarget(target),
+    canBook: target.remainingCapacity >= group.sources.length,
+  };
+}
+
+export async function assignCourseMakeupGroupToExistingDestination(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+): Promise<{ assignmentIds: string[]; target: ReturnType<typeof serializeExistingTarget> }> {
+  requireCapability(actor, "makeup.manage");
+  const idempotencyKey = operationId(input.operationId);
+  if (!idempotencyKey) throw new CourseMakeupError("invalid");
+  const requested = requestedExistingTarget(input);
+  const operationFingerprintValue = operationFingerprint("assign_existing", input, requested);
+  const replay = await existingAssignmentOperation<{ assignmentIds: string[]; target: ReturnType<typeof serializeExistingTarget> }>(
+    env, idempotencyKey, operationFingerprintValue,
+  );
+  if (replay) return replay;
+  const group = await reviewedLessonGroup(env, input, at);
+  expectedFingerprint(input, group.fingerprint);
+  const target = (await commonExistingTargets(env, group.sources, at)).find((candidate) => candidate.key === requested.key);
+  if (!target || target.remainingCapacity < group.sources.length) throw new CourseMakeupError("capacity");
+  const time = now();
+  const caseRefs = await Promise.all(group.sources.map((source) => existingOrNewCase(env, source, id())));
+  const previous = await Promise.all(caseRefs.map((caseRef) => caseRef.existing ? activeCurrentResolution(env, caseRef.id) : Promise.resolve(null)));
+  const assignmentIds = group.sources.map(() => id());
+  const statements: D1PreparedStatement[] = [];
+  for (const [index, source] of group.sources.entries()) {
+    const caseRef = caseRefs[index];
+    const resolutionId = id();
+    statements.push(
+      ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+      ...retireCurrentAttempt(env, actor, previous[index]?.id ?? null, time),
+      resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
+      caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
+      assignmentInsert(env, actor, source, resolutionId, assignmentIds[index], target.kind === "normal_class"
+        ? { kind: "normal_class", classSessionId: target.classSessionId! }
+        : { kind: "special", specialOccurrenceId: target.specialOccurrenceId! }, time),
+    );
+  }
+  const result = { assignmentIds, target: serializeExistingTarget(target) };
+  statements.push(
+    assignmentOperationInsert(env, idempotencyKey, "assign_existing", operationFingerprintValue, result, actor, group.sources[0], time),
+    audit(env, actor, "course_makeup_group_assigned_existing", "course_makeup_assignment", assignmentIds[0], {
+      operationId: idempotencyKey, target: result.target, assignmentIds, sourceCount: group.sources.length,
+    }, group.sources[0], time),
+  );
+  await safeBatch(env, statements);
+  return result;
+}
+
+export async function getCourseMakeupDestinationCandidates(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const requested = requestedExistingTarget(input);
+  const sources = await unresolvedSources(env, at);
+  const candidates: SourceRow[] = [];
+  let target: ExistingMakeupTarget | null = null;
+  for (const source of sources) {
+    const matches = await commonExistingTargets(env, [source], at);
+    const match = matches.find((entry) => entry.key === requested.key);
+    if (match) {
+      candidates.push(source);
+      target ||= match;
+    }
+  }
+  if (!target) throw new CourseMakeupError("not_eligible");
+  return { target: serializeExistingTarget(target), sources: candidates.map(serializeSource) };
 }
 
 export async function assignCourseMakeupGroupToNormalClass(
@@ -1075,7 +1304,6 @@ export async function createCourseMakeupGroupSpecialOccurrence(
   const target = {
     localDate: clean(input.localDate, 10),
     startTime: clean(input.startTime, 5),
-    endTime: clean(input.endTime, 5),
     capacity: Number(input.capacity),
     note: optionalText(input.note),
   };
@@ -1083,8 +1311,8 @@ export async function createCourseMakeupGroupSpecialOccurrence(
   const replay = await existingLessonOperation<{ specialOccurrenceId: string; assignmentIds: string[] }>(env, idempotencyKey, fingerprint);
   if (replay) return replay;
   const group = await reviewedLessonGroup(env, input, at);
+  const endTime = addMinutes(target.startTime, group.sources[0].defaultClassDurationMinutes ?? 80);
   expectedFingerprint(input, group.fingerprint);
-  const endTime = target.endTime || addMinutes(target.startTime, group.sources[0].defaultClassDurationMinutes ?? 80);
   const local = localDateTime(at);
   if (!validDate(target.localDate) || !validTime(target.startTime) || !validTime(endTime) || endTime <= target.startTime
     || !Number.isInteger(target.capacity) || target.capacity < group.sources.length || target.capacity > 100
@@ -1453,7 +1681,7 @@ export async function assignCourseMakeupToSpecialOccurrence(
   requireCapability(actor, "makeup.manage");
   const source = await unresolvedSource(env, sourceIdentity(input), at);
   const specialOccurrenceId = clean(input.specialOccurrenceId);
-  const target = (await specialTargets(env, source.curriculumLessonId, at))
+  const target = (await specialTargets(env, source, at))
     .find((entry) => entry.id === specialOccurrenceId);
   if (!target) throw new CourseMakeupError("not_eligible");
   const resolutionId = id();
@@ -1492,7 +1720,7 @@ export async function createSpecialCourseMakeupOccurrence(
   if (sources.some((source) => source.curriculumLessonId !== lessonId)) throw new CourseMakeupError("invalid");
   const localDate = clean(input.localDate, 10);
   const startTime = clean(input.startTime, 5);
-  const endTime = clean(input.endTime, 5) || addMinutes(startTime, sources[0].defaultClassDurationMinutes ?? 80);
+  const endTime = addMinutes(startTime, sources[0].defaultClassDurationMinutes ?? 80);
   const capacity = Number(input.capacity);
   const local = localDateTime(at);
   if (!validDate(localDate) || !validTime(startTime) || !validTime(endTime) || endTime <= startTime
@@ -1578,7 +1806,7 @@ async function specialSchedulePreview(
   const special = await specialScheduleForChange(env, specialOccurrenceId, at);
   const localDate = clean(input.localDate, 10);
   const startTime = clean(input.startTime, 5);
-  const endTime = clean(input.endTime, 5) || addMinutes(startTime, durationMinutes(special.startTime, special.endTime));
+  const endTime = addMinutes(startTime, durationMinutes(special.startTime, special.endTime));
   const local = localDateTime(at);
   if (!validDate(localDate) || !validTime(startTime) || !validTime(endTime) || endTime <= startTime
     || localDate < local.date || (localDate === local.date && startTime <= local.time)) {
@@ -1633,7 +1861,7 @@ export async function rescheduleSpecialCourseMakeupOccurrence(
     }>();
   const fingerprint = JSON.stringify({
     specialOccurrenceId: clean(input.specialOccurrenceId), expectedUpdatedAt: clean(input.expectedUpdatedAt, 64),
-    localDate: clean(input.localDate, 10), startTime: clean(input.startTime, 5), endTime: clean(input.endTime, 5),
+    localDate: clean(input.localDate, 10), startTime: clean(input.startTime, 5),
   });
   if (existing) {
     if (existing.requestFingerprint !== fingerprint) throw new CourseMakeupError("conflict");
@@ -1709,13 +1937,64 @@ async function hasRecordedSpecialAttendance(
   return Boolean(row?.value);
 }
 
+function assignmentCancellationFingerprint(assignment: AssignmentRow): string {
+  return JSON.stringify({
+    assignmentId: assignment.assignmentId, resolutionId: assignment.resolutionId,
+    caseId: assignment.caseId, targetKind: assignment.targetKind,
+    targetClassSessionId: assignment.targetClassSessionId,
+    targetSpecialOccurrenceId: assignment.targetSpecialOccurrenceId,
+    targetLocalDate: assignment.targetLocalDate, targetStartTime: assignment.targetStartTime,
+  });
+}
+
+export async function previewCourseMakeupAssignmentCancellation(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: Record<string, unknown>,
+  at = new Date(),
+) {
+  requireCapability(actor, "makeup.manage");
+  const assignment = await activeAssignment(env, clean(input.assignmentId));
+  if (assignment.targetKind === "special" && await hasRecordedSpecialAttendance(env, { assignmentId: assignment.assignmentId })) {
+    throw new CourseMakeupError("attendance_recorded");
+  }
+  const local = localDateTime(at);
+  if (!assignment.targetLocalDate || assignment.targetLocalDate < local.date
+    || (assignment.targetLocalDate === local.date && (assignment.targetStartTime ?? "") <= local.time)) {
+    throw new CourseMakeupError("conflict");
+  }
+  const retired = await env.DB.prepare(`SELECT 1 AS value
+    FROM course_makeup_lesson_state AS lesson_state
+    INNER JOIN curriculum_lesson AS lesson ON lesson.id = lesson_state.curriculum_lesson_id
+    INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
+    WHERE lesson_state.curriculum_lesson_id = ? AND lesson_state.status = 'retired'
+      AND lesson_state.curriculum_program_id = program.id
+      AND lesson_state.academic_year_id = program.academic_year_id
+    LIMIT 1`).bind(assignment.sourceCurriculumLessonId).first<{ value: number }>();
+  return {
+    fingerprint: assignmentCancellationFingerprint(assignment), assignmentId: assignment.assignmentId,
+    studentName: assignment.studentName, lessonTitle: assignment.lessonTitle,
+    targetKind: assignment.targetKind, localDate: assignment.targetLocalDate,
+    startTime: assignment.targetStartTime, endTime: assignment.targetEndTime,
+    returnsToPool: !retired,
+  };
+}
+
 export async function cancelCourseMakeupAssignment(
   env: WorkerEnv,
   actor: StaffPrincipal,
   input: Record<string, unknown>,
   at = new Date(),
-): Promise<void> {
+): Promise<{ assignmentId: string; caseState: "open" | "resolved" }> {
   requireCapability(actor, "makeup.manage");
+  const idempotencyKey = operationId(input.operationId);
+  const requestedFingerprint = clean(input.expectedFingerprint, 8000);
+  if (idempotencyKey) {
+    const existing = await existingAssignmentOperation<{ assignmentId: string; caseState: "open" | "resolved" }>(
+      env, idempotencyKey, requestedFingerprint,
+    );
+    if (existing) return existing;
+  }
   const assignment = await activeAssignment(env, clean(input.assignmentId));
   if (assignment.targetKind === "special" && await hasRecordedSpecialAttendance(env, { assignmentId: assignment.assignmentId })) {
     throw new CourseMakeupError("attendance_recorded");
@@ -1728,7 +2007,10 @@ export async function cancelCourseMakeupAssignment(
   }
   const time = now();
   const completedElsewhere = await caseHasCompletedOtherAttempt(env, assignment.caseId, assignment.resolutionId);
-  await safeBatch(env, [
+  const fingerprint = assignmentCancellationFingerprint(assignment);
+  if (requestedFingerprint && requestedFingerprint !== fingerprint) throw new CourseMakeupError("stale");
+  const result = { assignmentId: assignment.assignmentId, caseState: completedElsewhere ? "resolved" as const : "open" as const };
+  const statements = [
     env.DB.prepare(`UPDATE course_makeup_assignment SET status = 'cancelled',
       cancelled_at = ?, cancelled_by_staff_account_id = ?, cancellation_reason = 'teacher_reopened',
       updated_at = ? WHERE id = ? AND status = 'active'`).bind(time, actor.staffAccountId, time, assignment.assignmentId),
@@ -1737,9 +2019,14 @@ export async function cancelCourseMakeupAssignment(
       updated_at = ? WHERE id = ? AND status = 'active'`).bind(time, actor.staffAccountId, time, assignment.resolutionId),
     caseCurrentUpdate(env, assignment.caseId, null, completedElsewhere ? "resolved" : "open", time),
     audit(env, actor, "course_makeup_assignment_cancelled", "course_makeup_assignment", assignment.assignmentId, {
-      sourceEnrollmentId: assignment.sourceEnrollmentId,
+      sourceEnrollmentId: assignment.sourceEnrollmentId, operationId: idempotencyKey,
     }, assignment, time),
-  ]);
+  ];
+  if (idempotencyKey) statements.push(assignmentOperationInsert(
+    env, idempotencyKey, "cancel_assignment", fingerprint, result, actor, assignment, time,
+  ));
+  await safeBatch(env, statements);
+  return result;
 }
 
 export async function reconcileCourseMakeupCase(

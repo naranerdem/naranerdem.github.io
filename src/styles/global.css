@@ -3696,17 +3696,17 @@ textarea:focus {
   cursor: pointer;
   display: grid;
   gap: 0.7rem;
-  grid-template-columns: 1.5rem minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
   min-height: 44px;
   padding: 0.45rem 0;
 }
 
 .staff-makeup-case input {
-  block-size: 1.4rem;
-  inline-size: 1.4rem;
+  block-size: 23px;
+  inline-size: 23px;
   margin: 0;
-  min-block-size: 1.4rem;
-  min-inline-size: 1.4rem;
+  min-block-size: 23px;
+  min-inline-size: 23px;
 }
 
 .staff-makeup-case span,
@@ -4685,7 +4685,7 @@ textarea:focus {
   }
 
   .staff-makeup-case {
-    grid-template-columns: 1.5rem minmax(0, 1fr);
+    grid-template-columns: 24px minmax(0, 1fr);
   }
 
   .staff-makeup-case .staff-text-action {

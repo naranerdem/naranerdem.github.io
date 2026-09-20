@@ -131,6 +131,7 @@ import {
 import {
   assignCourseMakeupToNormalClass,
   assignCourseMakeupGroupToNormalClass,
+  assignCourseMakeupGroupToExistingDestination,
   assignCourseMakeupToSpecialOccurrence,
   cancelCourseMakeupAssignment,
   cancelSpecialCourseMakeupOccurrence,
@@ -138,11 +139,15 @@ import {
   createSpecialCourseMakeupOccurrence,
   createCourseMakeupGroupSpecialOccurrence,
   getCourseMakeupOverview,
+  getCourseMakeupGroupAvailability,
+  getCourseMakeupDestinationCandidates,
   previewSpecialCourseMakeupReschedule,
   previewCourseMakeupGroupNormalBooking,
+  previewCourseMakeupGroupDestinationBooking,
   previewCourseMakeupGroupSpecialBooking,
   previewCourseMakeupLessonRetirement,
   previewCourseMakeupLessonRestore,
+  previewCourseMakeupAssignmentCancellation,
   reconcileCourseMakeupCase,
   rescheduleSpecialCourseMakeupOccurrence,
   resolveCourseMakeupAsNotNeeded,
@@ -1718,6 +1723,18 @@ export async function handleApiRequest(
         case "makeup.group-normal-preview":
           result = await previewCourseMakeupGroupNormalBooking(env, principal, payload);
           break;
+        case "makeup.group-availability":
+          result = await getCourseMakeupGroupAvailability(env, principal, payload);
+          break;
+        case "makeup.group-destination-preview":
+          result = await previewCourseMakeupGroupDestinationBooking(env, principal, payload);
+          break;
+        case "makeup.group-destination-book":
+          result = await assignCourseMakeupGroupToExistingDestination(env, principal, payload);
+          break;
+        case "makeup.destination-candidates":
+          result = await getCourseMakeupDestinationCandidates(env, principal, payload);
+          break;
         case "makeup.group-normal-book":
           result = await assignCourseMakeupGroupToNormalClass(env, principal, payload);
           break;
@@ -1752,7 +1769,10 @@ export async function handleApiRequest(
           result = await rescheduleSpecialCourseMakeupOccurrence(env, principal, payload);
           break;
         case "makeup.assignment-cancel":
-          await cancelCourseMakeupAssignment(env, principal, payload);
+          result = await cancelCourseMakeupAssignment(env, principal, payload);
+          break;
+        case "makeup.assignment-cancel-preview":
+          result = await previewCourseMakeupAssignmentCancellation(env, principal, payload);
           break;
         case "makeup.case-reconcile":
           await reconcileCourseMakeupCase(env, principal, payload);
