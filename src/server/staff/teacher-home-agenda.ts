@@ -180,5 +180,5 @@ export async function getTeacherHomeAgenda(
     cancelledLabel: entry.kind === "cancelled" ? entry.cancelledLabel : null,
   })).sort((left, right) => `${left.localDate}\u0000${left.startTime}\u0000${left.occurrenceId}`.localeCompare(`${right.localDate}\u0000${right.startTime}\u0000${right.occurrenceId}`));
 
-  return { today, weekStart, weekEnd, entries };
+  return { today, weekStart, weekEnd, entries, canManageMakeups: hasStaffCapability(actor, "makeup.manage") };
 }

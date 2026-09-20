@@ -177,7 +177,7 @@ import "../styles/global.css";
           : `<a class="staff-agenda-entry ${entry.kind}" href="${entry.kind === "cancelled" ? `/staff/day-changes/?date=${encodeURIComponent(entry.localDate)}` : "/staff/makeups/"}"><span>${escape(entry.startTime)}–${escape(entry.endTime)}</span><strong>${escape(entry.kind === "cancelled" ? "Цуцалсан хичээл" : "Тусгай нөхөх хичээл")}</strong><small>${escape(entry.lessonTitle)}</small><small>${escape(attendees)}</small></a>`;
         const targetKind = entry.kind === "special_makeup" ? "special" : "normal_class";
         const targetId = entry.kind === "special_makeup" ? entry.occurrenceId : entry.classSessionId;
-        const canAdd = (entry.kind === "lesson" || entry.kind === "special_makeup") && entry.localDate >= agendaState.data.today;
+        const canAdd = agendaState.data.canManageMakeups && (entry.kind === "lesson" || entry.kind === "special_makeup") && entry.localDate >= agendaState.data.today;
         const panel = agendaState.makeupPanel?.occurrenceId === entry.occurrenceId ? agendaMakeupPanel(entry) : "";
         return `<div class="staff-agenda-entry-wrap">${action}${canAdd ? `<button type="button" class="staff-text-action" data-agenda-add-learner="${targetKind}" data-agenda-target-id="${escape(targetId)}" data-agenda-occurrence-id="${escape(entry.occurrenceId)}">Сурагч нэмэх</button>` : ""}${panel}</div>`;
       }
