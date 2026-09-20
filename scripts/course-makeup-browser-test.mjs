@@ -194,9 +194,11 @@ try {
     INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('hold-draft', '${"a".repeat(64)}', 'year', 'Hold Guardian', 'parent', '99000001', 'hold@example.test', 'hold@example.test', 'Тест', 'single', 'v1', 'v1', 'awaiting_initial_payment', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
-      VALUES ('hold-child', 'hold-draft', 0, 'Hold', 'Child', 'not_specified', '2015-02-02', '5', 'new', 'stage_1', 'target-class', 'awaiting_initial_payment', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      VALUES ('hold-child', 'hold-draft', 0, 'Hold', 'Child', 'not_specified', '2015-02-02', '5', 'new', 'stage_1', 'target-class', 'awaiting_initial_payment', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('day-hold-child', 'hold-draft', 1, 'Day Hold', 'Child', 'not_specified', '2015-02-03', '5', 'new', 'stage_1', 'day-change-class', 'awaiting_initial_payment', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_capacity_hold (id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at, is_test, test_run_id, created_at, updated_at)
-      VALUES ('target-hold', 'hold-child', 'target-class', 'initial_payment', 'active', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      VALUES ('target-hold', 'hold-child', 'target-class', 'initial_payment', 'active', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('day-target-hold', 'day-hold-child', 'day-change-class', 'initial_payment', 'active', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
   `);
 
   console.log("make-up browser fixture: starting local Worker");
@@ -241,26 +243,29 @@ try {
   await page.locator("#staff-setup-section").waitFor({ state: "visible" });
 
   console.log("make-up browser fixture: checking make-up availability");
+  execute(`UPDATE class_session SET capacity = 1 WHERE id = 'day-change-class';`);
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   const initialGroup = await openMakeupSectionAndFirstGroup(page, "open");
   await initialGroup.locator("[data-case-select][value^='source-enrollment|']").evaluate((input) => input.click());
-  await page.getByRole("button", { name: "Нөхөх", exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-section='open'] [data-makeup-group]").first().evaluate((details) => details.open), true,
+    "selection keeps the current expanded lesson group open while availability refreshes");
+  await page.getByText("Тохирох дараагийн ээлжит цагуудын суудал дүүрсэн байна.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("button", { name: "Түр шилжих", exact: true }).count(), 0, "the normal booking action is absent when no future matching lesson has capacity");
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-case-pool-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.getByRole("button", { name: "Нөхөх", exact: true }).click();
-  await page.getByText("Бүх сонгосон сурагчид багтах тохирох анги алга.").waitFor({ state: "visible" });
-  assert.equal(await page.getByRole("button", { name: "Баталгаажуулах", exact: true }).count(), 0, "a capacity-consuming hold hides the unavailable normal target");
 
-  execute(`UPDATE registration_capacity_hold SET status = 'released', released_at = ${sql(now)} WHERE id = 'target-hold';`);
+  execute(`UPDATE class_session SET capacity = 10 WHERE id = 'day-change-class';
+    UPDATE registration_capacity_hold SET status = 'released', released_at = ${sql(now)} WHERE id IN ('target-hold', 'day-target-hold');`);
   await page.reload();
   await page.locator("#tool-app").waitFor({ state: "visible" });
   const refreshedGroup = await openMakeupSectionAndFirstGroup(page, "open");
   await refreshedGroup.locator("[data-case-select][value^='source-enrollment|']").evaluate((input) => input.click());
-  await page.getByRole("button", { name: "Нөхөх", exact: true }).click();
+  await page.getByRole("button", { name: "Түр шилжих", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Түр шилжих", exact: true }).click();
   await page.getByText("Сул суудал: 1").waitFor({ state: "visible" });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "makeup-capacity-desktop.png") });
@@ -268,7 +273,7 @@ try {
   await page.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "makeup-capacity-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
-  await page.getByText("Нөхөх хичээлийг товлолоо.").waitFor({ state: "visible" });
+  await page.getByText("Түр шилжих товыг хадгаллаа.").waitFor({ state: "visible" });
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   const normalAssignment = assignments.scheduled.filter((entry) => entry.targetKind === "normal_class");
   assert.equal(normalAssignment.length, 1, "the rendered normal-target action creates one active normal-class assignment alongside the seeded special bookings");
@@ -642,8 +647,8 @@ try {
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   const archiveSourceGroup = await openMakeupSectionAndFirstGroup(page, "open");
-  await archiveSourceGroup.getByRole("button", { name: "Дуусгах", exact: true }).click();
-  await page.locator("#makeup-detail").getByRole("button", { name: "Дуусгах", exact: true }).click();
+  await archiveSourceGroup.getByRole("button", { name: "Архивлах", exact: true }).click();
+  await page.locator("#makeup-detail").getByRole("button", { name: "Архивлах", exact: true }).click();
   await page.getByText("Хичээлийг архивт орууллаа.", { exact: true }).waitFor({ state: "visible" });
   const archiveGroup = await openMakeupSectionAndFirstGroup(page, "archive");
   await page.setViewportSize({ width: 1280, height: 900 });

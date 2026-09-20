@@ -32,7 +32,7 @@ import "../../styles/global.css";
       // @ts-nocheck
       import { escape, formatDate, getCourseMakeups, hasMakeupAccess, postCourseMakeupAction } from "../../scripts/staff-setup.js";
 
-      const state = { data: null, selected: new Map(), panel: null, pending: false, refreshVersion: 0, previewVersion: 0, openGroup: null, openSection: null };
+      const state = { data: null, selected: new Map(), panel: null, pending: false, refreshVersion: 0, previewVersion: 0, availabilityVersion: 0, normalAvailability: new Map(), openGroup: null, openSection: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -40,13 +40,20 @@ import "../../styles/global.css";
       const groupKey = (group) => `${group.academicYearId}|${group.curriculumProgramId}|${group.curriculumLessonId}`;
       const sourcePayload = (entry) => ({ enrollmentId: entry.enrollmentId, classSessionId: entry.classSessionId, curriculumLessonId: entry.curriculumLessonId });
       const groupPayload = (group) => ({ academicYearId: group.academicYearId, curriculumProgramId: group.curriculumProgramId, curriculumLessonId: group.curriculumLessonId });
-      const fullDate = (entry) => `${entry.sourceLocalDate} · ${entry.sourceStartTime}–${entry.sourceEndTime}`;
+      const currentYear = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ulaanbaatar", year: "numeric" }).format(new Date());
+      const compactDate = (value) => {
+        const [year, month, day] = String(value || "").split("-");
+        return year && month && day ? `${year === currentYear ? "" : `${year}/`}${month}/${day}` : "";
+      };
+      const sourceSummary = (entry) => [entry.classLabel, compactDate(entry.sourceLocalDate), entry.sourceStartTime && entry.sourceEndTime ? `${entry.sourceStartTime}–${entry.sourceEndTime}` : ""].filter(Boolean).join(" · ");
+      const selectionKey = (group, entries = selectedEntries(group)) => entries.map(sourceKey).sort().join(",");
 
       async function refresh() {
         const version = ++state.refreshVersion;
         const data = await getCourseMakeups();
         if (version !== state.refreshVersion) return;
         state.data = data;
+        state.normalAvailability.clear();
         for (const group of data.groups || []) {
           const allowed = new Set(group.entries.map(sourceKey));
           const selected = state.selected.get(groupKey(group));
@@ -71,7 +78,25 @@ import "../../styles/global.css";
 
       function sourceRows(group) {
         const selected = state.selected.get(groupKey(group)) || new Set();
-        return group.entries.map((entry) => `<label class="staff-makeup-case"><input type="checkbox" data-case-select="${escape(groupKey(group))}" value="${escape(sourceKey(entry))}" ${selected.has(sourceKey(entry)) ? "checked" : ""} /><span><strong>${escape(entry.studentName)}</strong><small>${escape(entry.classLabel)} · ${escape(fullDate(entry))}${entry.hasAbsenceNotice ? " · Мэдэгдсэн" : ""}</small></span><button class="staff-text-action" type="button" data-no-makeup="${escape(sourceKey(entry))}" data-group="${escape(groupKey(group))}">Нөхөхгүй</button></label>`).join("");
+        return group.entries.map((entry) => `<label class="staff-makeup-case"><input type="checkbox" data-case-select="${escape(groupKey(group))}" value="${escape(sourceKey(entry))}" ${selected.has(sourceKey(entry)) ? "checked" : ""} /><span><strong>${escape(entry.studentName)}</strong><small>${escape(sourceSummary(entry))}${entry.hasAbsenceNotice ? " · Мэдэгдсэн" : ""}</small></span></label>`).join("");
+      }
+
+      function normalAvailabilityAction(group) {
+        const entries = selectedEntries(group);
+        if (!entries.length) return "";
+        const availability = state.normalAvailability.get(groupKey(group));
+        const key = selectionKey(group, entries);
+        if (!availability || availability.selectionKey !== key || availability.status === "loading") return `<span class="staff-muted">Тохирох ээлжит цагийг шалгаж байна…</span>`;
+        if (availability.status === "error") return `<span class="staff-error-inline">Тохирох цагийг шалгаж чадсангүй.</span><button class="button secondary" type="button" data-retry-normal-availability="${escape(groupKey(group))}">Дахин шалгах</button>`;
+        const preview = availability.preview;
+        if (preview.targets.length) return `<button class="button secondary" type="button" data-group-normal="${escape(groupKey(group))}">Түр шилжих</button>`;
+        const partialTarget = preview.insufficientTargets?.find((target) => target.remainingCapacity > 0);
+        if (partialTarget) {
+          const target = partialTarget;
+          return `<span class="staff-muted">${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)} цагт ${target.remainingCapacity} сул суудал байна. Сонгосон ${entries.length} сурагч бүгд багтахгүй.</span>`;
+        }
+        if (preview.fullTargets?.length) return `<span class="staff-muted">Тохирох дараагийн ээлжит цагуудын суудал дүүрсэн байна.</span>`;
+        return `<span class="staff-muted">Энэ хичээлд тохирох дараагийн ээлжит цаг алга.</span>`;
       }
 
       function activeGroups() {
@@ -79,7 +104,7 @@ import "../../styles/global.css";
         if (!groups.length) return `<p class="staff-empty">Одоогоор шийдэх нөхөх хичээл алга.</p>`;
         return groups.map((group) => {
           const count = selectedEntries(group).length;
-          return `${groupHeading(group, group.entries.length)}<div class="staff-makeup-group-body">${sourceRows(group)}<div class="staff-makeup-group-actions"><span>${count ? `${count} сурагч сонгосон` : "Сурагч сонгоно уу"}</span><button class="button secondary" type="button" data-group-normal="${escape(groupKey(group))}" ${count ? "" : "disabled"}>Нөхөх</button><button class="button secondary" type="button" data-group-special="${escape(groupKey(group))}" ${count ? "" : "disabled"}>Шинэ</button><button class="button secondary" type="button" data-group-retire="${escape(groupKey(group))}">Дуусгах</button></div></div></details>`;
+          return `${groupHeading(group, group.entries.length)}<div class="staff-makeup-group-body">${sourceRows(group)}<div class="staff-makeup-group-actions"><span>${count ? `${count} сурагч сонгосон` : "Сурагч сонгоно уу"}</span>${normalAvailabilityAction(group)}<button class="button secondary" type="button" data-group-special="${escape(groupKey(group))}" ${count ? "" : "disabled"}>Шинэ цаг</button><button class="button secondary" type="button" data-group-retire="${escape(groupKey(group))}">Архивлах</button></div></div></details>`;
         }).join("");
       }
 
@@ -97,7 +122,7 @@ import "../../styles/global.css";
       function archivedGroups() {
         const groups = state.data.archived || [];
         if (!groups.length) return `<p class="staff-empty">Архивласан нөхөх хичээл алга.</p>`;
-        return groups.map((group) => `${groupHeading(group, group.entries.length, true)}<div class="staff-makeup-group-body"><p class="staff-muted">Энэ хичээлийг тухайн хичээлийн жилд дахин санал болгохгүй. Өмнөх таслалт, ирцийн түүх хадгалагдсан.</p>${group.entries.map((entry) => `<article class="staff-makeup-archive-case"><strong>${escape(entry.studentName)}</strong><small>${escape(entry.classLabel)} · ${escape(fullDate(entry))}</small></article>`).join("")}${group.history?.length ? `<details class="staff-makeup-attempt-history"><summary>Өмнөх оролдлогууд (${group.history.length})</summary>${group.history.map((attempt) => `<p>${escape(attempt.studentName)} · ${attempt.destinationAttendanceStatus === "present" ? "Ирсэн" : attempt.destinationAttendanceStatus === "late" ? "Хоцорсон" : attempt.destinationAttendanceStatus === "absent" ? "Ирээгүй" : attempt.decision === "no_makeup" ? "Нөхөхгүй" : "Товлосон"}</p>`).join("")}</details>` : ""}<div class="staff-makeup-group-actions"><button class="button secondary" type="button" data-group-restore="${escape(groupKey(group))}">Архиваас гаргах</button></div></div></details>`).join("");
+        return groups.map((group) => `${groupHeading(group, group.entries.length, true)}<div class="staff-makeup-group-body"><p class="staff-muted">Энэ хичээлийг тухайн хичээлийн жилд дахин санал болгохгүй. Өмнөх таслалт, ирцийн түүх хадгалагдсан.</p>${group.entries.map((entry) => `<article class="staff-makeup-archive-case"><strong>${escape(entry.studentName)}</strong><small>${escape(sourceSummary(entry))}</small></article>`).join("")}${group.history?.length ? `<details class="staff-makeup-attempt-history"><summary>Өмнөх оролдлогууд (${group.history.length})</summary>${group.history.map((attempt) => `<p>${escape(attempt.studentName)} · ${attempt.destinationAttendanceStatus === "present" ? "Ирсэн" : attempt.destinationAttendanceStatus === "late" ? "Хоцорсон" : attempt.destinationAttendanceStatus === "absent" ? "Ирээгүй" : attempt.decision === "no_makeup" ? "Нөхөхгүй" : "Товлосон"}</p>`).join("")}</details>` : ""}<div class="staff-makeup-group-actions"><button class="button secondary" type="button" data-group-restore="${escape(groupKey(group))}">Архиваас гаргах</button></div></div></details>`).join("");
       }
 
       function renderSections() {
@@ -117,19 +142,38 @@ import "../../styles/global.css";
         if (!panel) { container.hidden = true; container.innerHTML = ""; return; }
         container.hidden = false;
         if (panel.kind === "normal") {
-          container.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">Нөхөх хичээл товлох</p><h2>${panel.preview.sources.length} сурагч</h2><p class="staff-muted">Бүх сонгосон сурагчид нэг ижил хичээлд багтах ёстой.</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div>${panel.preview.targets.length ? `<div class="staff-makeup-targets">${panel.preview.targets.map((target) => `<article class="staff-makeup-target"><div><strong>${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)}</strong><p>${escape(target.classLabel)} · Сул суудал: ${target.remainingCapacity}</p></div><button class="button primary" type="button" data-confirm-normal="${escape(target.classSessionId)}">Баталгаажуулах</button></article>`).join("")}</div>` : `<p class="staff-empty">Бүх сонгосон сурагчид багтах тохирох анги алга.</p>`}`;
+          container.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">Түр шилжих</p><h2>${panel.preview.sources.length} сурагч</h2><p class="staff-muted">Энэ нь тухайн хичээлийн нэг удаагийн нөхөлт бөгөөд анги, бүртгэл, төлбөрийг байнга өөрчлөхгүй.</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div>${panel.preview.targets.length ? `<div class="staff-makeup-targets">${panel.preview.targets.map((target) => `<article class="staff-makeup-target"><div><strong>${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)}</strong><p>${escape(target.classLabel)} · Сул суудал: ${target.remainingCapacity}</p></div><button class="button primary" type="button" data-confirm-normal="${escape(target.classSessionId)}">Баталгаажуулах</button></article>`).join("")}</div>` : `<p class="staff-empty">Бүх сонгосон сурагчид багтах тохирох анги алга.</p>`}`;
           return;
         }
         if (panel.kind === "special") {
           const defaultDate = new Date(); defaultDate.setDate(defaultDate.getDate() + 1);
-          container.innerHTML = `<form id="group-special-form" class="staff-makeup-special-form"><div class="staff-section-heading"><div><p class="eyebrow">Шинэ тусгай нөхөх хичээл</p><h2>${panel.preview.sources.length} сурагч</h2><p class="staff-muted">Нэг тусгай хичээл үүсгэж, сонгосон сурагчдыг хамтад нь товлоно.</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div><div class="staff-form-grid"><label>Өдөр<input name="localDate" type="date" value="${defaultDate.toISOString().slice(0, 10)}" required /></label><label>Эхлэх цаг<input name="startTime" type="time" required /></label><label>Дуусах цаг<input name="endTime" type="time" required /></label><label>Багтаамж<input name="capacity" type="number" min="${panel.preview.minimumCapacity}" max="100" value="${panel.preview.minimumCapacity}" required /></label></div><label>Тэмдэглэл<textarea name="note" rows="2"></textarea></label><button class="button primary" type="submit">Үүсгэж товлох</button></form>`;
+          container.innerHTML = `<form id="group-special-form" class="staff-makeup-special-form"><div class="staff-section-heading"><div><p class="eyebrow">Шинэ цаг</p><h2>${panel.preview.sources.length} сурагч</h2><p class="staff-muted">Нэг тусгай хичээлийн цаг үүсгэж, сонгосон сурагчдыг хамтад нь товлоно.</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div><div class="staff-form-grid"><label>Өдөр<input name="localDate" type="date" value="${defaultDate.toISOString().slice(0, 10)}" required /></label><label>Эхлэх цаг<input name="startTime" type="time" required /></label><label>Дуусах цаг<input name="endTime" type="time" required /></label><label>Багтаамж<input name="capacity" type="number" min="${panel.preview.minimumCapacity}" max="100" value="${panel.preview.minimumCapacity}" required /></label></div><label>Тэмдэглэл<textarea name="note" rows="2"></textarea></label><button class="button primary" type="submit">Шинэ цаг товлох</button></form>`;
           return;
         }
-        const verb = panel.kind === "retire" ? "Дуусгах" : "Архиваас гаргах";
+        const verb = panel.kind === "retire" ? "Архивлах" : "Архиваас гаргах";
         container.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(verb)}</p><h2>${panel.group.lessonSequence}. ${escape(panel.group.lessonTitle)}</h2><p>${panel.preview.count} шийдээгүй таслалт ${panel.kind === "retire" ? "архивт орно. Товлосон болон ирц шалгах ажил хэвээр үлдэнэ." : "дахин шийдэх жагсаалтад гарна."}</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div><div class="staff-inline-actions"><button class="button primary" type="button" data-confirm-lesson="${escape(panel.kind)}">${escape(verb)}</button></div>`;
       }
 
       function render() { renderSections(); renderPanel(); }
+
+      async function loadNormalAvailability(group) {
+        const entries = selectedEntries(group);
+        const key = groupKey(group);
+        const selectedKey = selectionKey(group, entries);
+        if (!entries.length) { state.normalAvailability.delete(key); render(); return; }
+        const version = ++state.availabilityVersion;
+        state.normalAvailability.set(key, { status: "loading", selectionKey: selectedKey });
+        render();
+        try {
+          const preview = await postCourseMakeupAction("makeup.group-normal-preview", { sources: entries.map(sourcePayload) });
+          if (version !== state.availabilityVersion || selectionKey(group) !== selectedKey) return;
+          state.normalAvailability.set(key, { status: "ready", selectionKey: selectedKey, preview });
+        } catch {
+          if (version !== state.availabilityVersion || selectionKey(group) !== selectedKey) return;
+          state.normalAvailability.set(key, { status: "error", selectionKey: selectedKey });
+        }
+        render();
+      }
       function setBusy(button, label) { button.dataset.label ||= button.textContent; button.textContent = label; button.disabled = true; }
       async function mutate(button, action, payload, success) {
         if (state.pending) return; state.pending = true; setBusy(button, `${button.textContent.trim()}...`); message("");
@@ -152,6 +196,8 @@ import "../../styles/global.css";
         state.openGroup = input.closest("[data-makeup-group]")?.dataset.makeupGroup || state.openGroup;
         state.openSection = input.closest("[data-section]")?.dataset.section || state.openSection;
         state.panel = null; ++state.previewVersion; render();
+        const group = groupByKey(input.dataset.caseSelect);
+        if (group) void loadNormalAvailability(group);
       });
       q("#tool-app").addEventListener("toggle", (event) => {
         const details = event.target; if (!details.matches("[data-makeup-group]") || !details.open) return;
@@ -166,11 +212,12 @@ import "../../styles/global.css";
         const button = event.target.closest("button"); if (!button || button.type === "submit" || state.pending) return;
         if (button.dataset.closePanel !== undefined) { ++state.previewVersion; state.panel = null; renderPanel(); return; }
         const findGroup = (key, archived = false) => groupByKey(key, archived);
+        if (button.dataset.retryNormalAvailability) { const group = findGroup(button.dataset.retryNormalAvailability); if (group) void loadNormalAvailability(group); return; }
         if (button.dataset.groupNormal) { const group = findGroup(button.dataset.groupNormal); await preview("makeup.group-normal-preview", { sources: selectedEntries(group).map(sourcePayload) }, { kind: "normal", group, entries: selectedEntries(group) }); return; }
         if (button.dataset.groupSpecial) { const group = findGroup(button.dataset.groupSpecial); await preview("makeup.group-special-preview", { sources: selectedEntries(group).map(sourcePayload) }, { kind: "special", group, entries: selectedEntries(group) }); return; }
         if (button.dataset.groupRetire) { const group = findGroup(button.dataset.groupRetire); await preview("makeup.lesson-retire-preview", groupPayload(group), { kind: "retire", group }); return; }
         if (button.dataset.groupRestore) { const group = findGroup(button.dataset.groupRestore, true); await preview("makeup.lesson-restore-preview", groupPayload(group), { kind: "restore", group }); return; }
-        if (button.dataset.confirmNormal) { const panel = state.panel; await mutate(button, "makeup.group-normal-book", { sources: panel.entries.map(sourcePayload), expectedFingerprint: panel.preview.fingerprint, targetClassSessionId: button.dataset.confirmNormal, operationId: crypto.randomUUID() }, "Нөхөх хичээлийг товлолоо."); return; }
+        if (button.dataset.confirmNormal) { const panel = state.panel; await mutate(button, "makeup.group-normal-book", { sources: panel.entries.map(sourcePayload), expectedFingerprint: panel.preview.fingerprint, targetClassSessionId: button.dataset.confirmNormal, operationId: crypto.randomUUID() }, "Түр шилжих товыг хадгаллаа."); return; }
         if (button.dataset.confirmLesson) {
           const panel = state.panel;
           const restoring = panel.kind === "restore";
@@ -180,7 +227,6 @@ import "../../styles/global.css";
           if (restoring) q(`[data-makeup-group="${CSS.escape(groupKey(panel.group))}"] > summary`)?.focus();
           return;
         }
-        if (button.dataset.noMakeup) { const group = findGroup(button.dataset.group); const entry = group.entries.find((candidate) => sourceKey(candidate) === button.dataset.noMakeup); await mutate(button, "makeup.no-makeup", sourcePayload(entry), "Нөхөхгүй гэж тэмдэглэлээ."); return; }
         if (button.dataset.cancelAssignment) { await mutate(button, "makeup.assignment-cancel", { assignmentId: button.dataset.cancelAssignment }, "Товыг буцаалаа."); return; }
         if (button.dataset.openSpecialReschedule) { state.panel = { kind: "reschedule", specialOccurrenceId: button.dataset.openSpecialReschedule }; renderSpecialRescheduleForm(); return; }
         if (button.id === "edit-special-reschedule") { state.panel = { kind: "reschedule", specialOccurrenceId: state.panel.specialOccurrenceId }; renderSpecialRescheduleForm(); return; }
@@ -189,7 +235,7 @@ import "../../styles/global.css";
       q("#tool-app").addEventListener("submit", async (event) => {
         if (event.target.id !== "group-special-form" && event.target.id !== "special-reschedule-form") return;
         event.preventDefault(); const form = new FormData(event.target);
-        if (event.target.id === "group-special-form") { const panel = state.panel; await mutate(event.target.querySelector("button[type='submit']"), "makeup.group-special-create", { sources: panel.entries.map(sourcePayload), expectedFingerprint: panel.preview.fingerprint, localDate: form.get("localDate"), startTime: form.get("startTime"), endTime: form.get("endTime"), capacity: Number(form.get("capacity")), note: form.get("note"), operationId: crypto.randomUUID() }, "Тусгай нөхөх хичээлийг товлолоо."); return; }
+        if (event.target.id === "group-special-form") { const panel = state.panel; await mutate(event.target.querySelector("button[type='submit']"), "makeup.group-special-create", { sources: panel.entries.map(sourcePayload), expectedFingerprint: panel.preview.fingerprint, localDate: form.get("localDate"), startTime: form.get("startTime"), endTime: form.get("endTime"), capacity: Number(form.get("capacity")), note: form.get("note"), operationId: crypto.randomUUID() }, "Шинэ цагийг товлолоо."); return; }
         const submit = event.target.querySelector("button[type='submit']"); setBusy(submit, "Урьдчилан харж байна...");
         try { const preview = await postCourseMakeupAction("makeup.special-reschedule-preview", { specialOccurrenceId: form.get("specialOccurrenceId"), localDate: form.get("localDate"), startTime: form.get("startTime"), endTime: form.get("endTime") }); state.panel = { kind: "reschedule-review", preview }; renderSpecialRescheduleReview(); }
         catch (error) { message(error.message || "Урьдчилан харах боломжгүй."); submit.disabled = false; submit.textContent = "Урьдчилан харах"; }

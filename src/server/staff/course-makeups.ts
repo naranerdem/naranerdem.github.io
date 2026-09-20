@@ -381,8 +381,9 @@ async function unresolvedSource(
 
 async function normalTargets(
   env: WorkerEnv,
-  source: SourceIdentity,
+  source: SourceRow,
   at = new Date(),
+  includeFull = false,
 ): Promise<Array<NormalTargetRow & { remainingCapacity: number; classLabel: string }>> {
   const local = localDateTime(at);
   const result = await env.DB.prepare(`SELECT
@@ -406,16 +407,21 @@ async function normalTargets(
     INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
     INNER JOIN class_session ON class_session.id = calendar.class_session_id
     INNER JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
+    INNER JOIN curriculum_lesson AS target_lesson ON target_lesson.id = slot.curriculum_lesson_id
+    INNER JOIN curriculum_program AS target_program ON target_program.id = target_lesson.curriculum_program_id
     LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
     WHERE slot.status = 'scheduled'
       AND slot.curriculum_lesson_id = ?
+      AND target_program.id = ?
+      AND target_program.academic_year_id = ?
       AND class_session.id <> ?
       AND class_session.status IN ('available', 'full')
       AND offering.status = 'active'
       AND offering.kind IN ('annual_course', 'summer_course')
       AND (slot.local_date > ? OR (slot.local_date = ? AND slot.start_time > ?))
     ORDER BY slot.local_date, slot.start_time, offering.title, class_session.id`).bind(
-    source.curriculumLessonId, source.classSessionId, local.date, local.date, local.time,
+    source.curriculumLessonId, source.curriculumProgramId, source.academicYearId,
+    source.classSessionId, local.date, local.date, local.time,
   ).all<NormalTargetRow>();
   const projections = new Map((await getClassCapacityProjections(
     env.DB,
@@ -430,7 +436,7 @@ async function normalTargets(
     // visitor is additional only for this target lesson.
     remainingCapacity: Math.max((projections.get(target.classSessionId)?.freeSeats ?? 0) - target.makeupCount, 0),
     classLabel: `${stageLabel(target.stageCode)} · ${target.classWeekday} ${target.startTime}–${target.endTime}`,
-  })).filter((target) => target.remainingCapacity > 0);
+  })).filter((target) => includeFull || target.remainingCapacity > 0);
 }
 
 async function specialTargets(
@@ -709,7 +715,7 @@ function serializeSource(source: SourceRow) {
     lessonTitle: source.lessonTitle,
     programTitle: source.programTitle,
     offeringTitle: source.offeringTitle,
-    classLabel: `${stageLabel(source.stageCode)} · ${source.classWeekday} ${source.sourceStartTime}–${source.sourceEndTime}`,
+    classLabel: `${stageLabel(source.stageCode)} · ${source.classWeekday}`,
     hasAbsenceNotice: Boolean(source.hasAbsenceNotice),
   };
 }
@@ -903,13 +909,13 @@ async function commonNormalTargets(
   sources: SourceRow[],
   at = new Date(),
 ): Promise<Array<NormalTargetRow & { remainingCapacity: number; classLabel: string }>> {
-  const lists = await Promise.all(sources.map((source) => normalTargets(env, source, at)));
+  const lists = await Promise.all(sources.map((source) => normalTargets(env, source, at, true)));
   const common = new Map(lists[0].map((target) => [target.classSessionId, target]));
   for (const list of lists.slice(1)) {
     const allowed = new Set(list.map((target) => target.classSessionId));
     for (const key of common.keys()) if (!allowed.has(key)) common.delete(key);
   }
-  return [...common.values()].filter((target) => target.remainingCapacity >= sources.length);
+  return [...common.values()];
 }
 
 function operationFingerprint(action: string, input: Record<string, unknown>, target: Record<string, unknown>) {
@@ -964,7 +970,10 @@ export async function previewCourseMakeupGroupNormalBooking(
 ) {
   requireCapability(actor, "makeup.manage");
   const group = await reviewedLessonGroup(env, input, at);
-  const targets = await commonNormalTargets(env, group.sources, at);
+  const candidates = await commonNormalTargets(env, group.sources, at);
+  const targets = candidates.filter((target) => target.remainingCapacity >= group.sources.length);
+  const insufficientTargets = candidates.filter((target) => target.remainingCapacity < group.sources.length);
+  const fullTargets = insufficientTargets.filter((target) => target.remainingCapacity === 0);
   return {
     fingerprint: group.fingerprint,
     sources: group.sources.map(serializeSource),
@@ -975,6 +984,21 @@ export async function previewCourseMakeupGroupNormalBooking(
       endTime: target.endTime,
       classLabel: target.classLabel,
       remainingCapacity: target.remainingCapacity,
+    })),
+    insufficientTargets: insufficientTargets.map((target) => ({
+      classSessionId: target.classSessionId,
+      localDate: target.localDate,
+      startTime: target.startTime,
+      endTime: target.endTime,
+      classLabel: target.classLabel,
+      remainingCapacity: target.remainingCapacity,
+    })),
+    fullTargets: fullTargets.map((target) => ({
+      classSessionId: target.classSessionId,
+      localDate: target.localDate,
+      startTime: target.startTime,
+      endTime: target.endTime,
+      classLabel: target.classLabel,
     })),
   };
 }
@@ -994,7 +1018,7 @@ export async function assignCourseMakeupGroupToNormalClass(
   if (replay) return replay;
   const group = await reviewedLessonGroup(env, input, at);
   expectedFingerprint(input, group.fingerprint);
-  const target = (await commonNormalTargets(env, group.sources, at)).find((candidate) => candidate.classSessionId === targetClassSessionId);
+  const target = (await commonNormalTargets(env, group.sources, at)).find((candidate) => candidate.classSessionId === targetClassSessionId && candidate.remainingCapacity >= group.sources.length);
   if (!target) throw new CourseMakeupError("capacity");
   const time = now();
   const caseRefs = await Promise.all(group.sources.map((source) => existingOrNewCase(env, source, id())));

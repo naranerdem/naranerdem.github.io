@@ -461,6 +461,11 @@ try {
   const scheduled = (await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd)).scheduled.find((entry) => entry.assignmentId === followed.assignmentId);
   assert.equal(scheduled.targetLocalDate, shiftedTargetDate, "normal assignment follows target class + lesson after calendar reflow");
 
+  const atTargetStart = new Date(`${targetDate}T14:00:00+08:00`);
+  overview = await makeups.getCourseMakeupOverview(runtime, actor(), source(4), atTargetStart);
+  assert.ok(!overview.selected.normalTargets.some((entry) => entry.classSessionId === 'target-class'),
+    "a normal target beginning at the current Ulaanbaatar time is no longer an eligible future occurrence");
+
   // The shared capacity projection excludes a transferred-out enrollment, but
   // active operational reservations still occupy the target before a make-up
   // is assigned.
@@ -627,6 +632,23 @@ try {
   const groupedPreview = await makeups.previewCourseMakeupGroupNormalBooking(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
   const groupedTarget = groupedPreview.targets.find((target) => target.classSessionId === 'group-target');
   assert.equal(groupedTarget?.remainingCapacity, 2, "grouped preview offers only a target with capacity for every selected child");
+  assert.ok(!groupedPreview.targets.some((target) => target.classSessionId === 'target-class'),
+    "a class whose later slot teaches another lesson is not treated as a group make-up destination");
+  sqlite(`UPDATE class_session SET capacity = 1 WHERE id IN ('group-target', 'target-class', 'review-target');`);
+  const capacityLimitedPreview = await makeups.previewCourseMakeupGroupNormalBooking(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
+  assert.equal(capacityLimitedPreview.targets.length, 0, "a target with too few seats is not offered for a partial group booking");
+  assert.equal(capacityLimitedPreview.insufficientTargets.find((target) => target.classSessionId === 'group-target')?.remainingCapacity, 1,
+    "the preview reports actual spare seats when they cannot fit the complete selected group");
+  sqlite(`UPDATE class_session SET capacity = 2 WHERE id IN ('group-target', 'target-class'); UPDATE class_session SET capacity = 3 WHERE id = 'review-target';`);
+  const staleCapacityPreview = await makeups.previewCourseMakeupGroupNormalBooking(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
+  sqlite(`UPDATE class_session SET capacity = 1 WHERE id = 'group-target';`);
+  await assert.rejects(() => makeups.assignCourseMakeupGroupToNormalClass(runtime, actor(), {
+    sources: [source(7), source(8)], expectedFingerprint: staleCapacityPreview.fingerprint,
+    targetClassSessionId: 'group-target', operationId: '65656565-6565-4565-8565-656565656565',
+  }, afterSourceEnd), /Course make-up/, "confirmation rechecks a stale group-capacity result before writing");
+  assert.equal(count(database, 'course_makeup_assignment', "target_class_session_id = 'group-target' AND status = 'active'"), 0,
+    "a stale capacity rejection leaves every selected source available");
+  sqlite(`UPDATE class_session SET capacity = 2 WHERE id = 'group-target';`);
   const groupBookingInput = {
     sources: [source(7), source(8)], expectedFingerprint: groupedPreview.fingerprint,
     targetClassSessionId: 'group-target', operationId: '66666666-6666-4666-8666-666666666666',
@@ -651,13 +673,33 @@ try {
     "a retry after grouped special creation returns the original session and assignments");
   assert.equal(count(database, 'course_makeup_special_occurrence', `id = ${quote(groupSpecial.specialOccurrenceId)} AND status = 'active'`), 1,
     "an idempotent special retry cannot leave a second empty session");
+  for (const assignmentId of groupSpecial.assignmentIds) {
+    await makeups.cancelCourseMakeupAssignment(runtime, actor(), { assignmentId }, afterSourceEnd);
+  }
+  const noFutureDate = addCivilDays(targetDate, 40);
+  sqlite(`
+    INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('different-lesson-target', 'year', 'stage_1', 'Өөр хичээлийн зорилт', 'Даваа', '22:00', '23:20', 10, 'available', 'offering', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('different-lesson-calendar', 'different-lesson-target', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at)
+      VALUES ('different-lesson-revision', 'different-lesson-calendar', 'program', 1, 'draft', '${addCivilDays(noFutureDate, 1)}', 0, 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('different-lesson-slot', 'different-lesson-revision', '${addCivilDays(noFutureDate, 1)}', '22:00', '23:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-test', '${now}', '${now}');
+    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id = 'different-lesson-revision';
+  `);
+  const noFuturePreview = await makeups.previewCourseMakeupGroupNormalBooking(runtime, actor(), { sources: [source(7), source(8)] }, new Date(`${noFutureDate}T12:00:00+08:00`));
+  assert.equal(noFuturePreview.targets.length, 0, "no future matching named lesson leaves the normal booking action unavailable");
+  assert.equal(noFuturePreview.insufficientTargets.length, 0, "a later slot for a different named lesson is not reported as a matching target");
 
   const page = readFileSync("src/pages/staff/makeups.astro", "utf8");
   const built = readFileSync("dist/staff/makeups/index.html", "utf8");
-  assert.match(page, /Нөхөхгүй/);
+  assert.doesNotMatch(page, /data-no-makeup/, "the active make-up pool no longer persists an individual refusal from a child row");
   assert.match(page, /Архиваас гаргах/);
   assert.doesNotMatch(page, /Дахин нээх/, "lesson-level archive recovery replaces the obsolete per-child reopen control");
-  assert.match(page, /Шинэ тусгай нөхөх хичээл/);
+  assert.match(page, /Түр шилжих/);
+  assert.match(page, /Шинэ цаг/);
+  assert.match(page, /Архивлах/);
   assert.match(page, /Сул суудал/);
   assert.doesNotMatch(page, /урилга|Messenger|и-мэйл илгээ/, "make-up planning does not claim communication");
   assert.doesNotMatch(built, /Тест Нэг|Ижил хичээл/, "static make-up page contains no student or private lesson fixture");
