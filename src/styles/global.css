@@ -3650,7 +3650,7 @@ textarea:focus {
   cursor: pointer;
   display: flex;
   font-size: clamp(1.2rem, 2.8vw, 1.55rem);
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1.2;
   justify-content: space-between;
   list-style: none;
@@ -3665,7 +3665,7 @@ textarea:focus {
 .staff-makeup-section-count {
   color: var(--blue);
   font-size: 0.82em;
-  font-weight: 750;
+  font-weight: 500;
 }
 
 .staff-makeup-section-body {

@@ -60,11 +60,12 @@ async function waitForRenderedCount(page, selector, expected, label) {
   }
   throw new Error(`${label}: expected ${expected} rendered element(s), found ${actual}`);
 }
-async function openMakeupSectionAndFirstGroup(page, section) {
+async function openMakeupSectionAndFirstGroup(page, section, memberSelector = "") {
   const sectionNode = page.locator(`[data-section='${section}']`);
   console.log(`make-up browser fixture: opening ${section} section`);
   if (!await sectionNode.evaluate((details) => details.open)) await sectionNode.locator(":scope > summary").click();
-  const group = sectionNode.locator("[data-makeup-group]").first();
+  const groups = sectionNode.locator("[data-makeup-group]");
+  const group = memberSelector ? groups.filter({ has: page.locator(memberSelector) }).first() : groups.first();
   await group.waitFor({ state: "attached" });
   console.log(`make-up browser fixture: opening ${section} lesson group`);
   if (!await group.evaluate((details) => details.open)) await group.locator(":scope > summary").click();
@@ -127,6 +128,7 @@ try {
       ('day-change-second-revision', 'day-change-second-calendar', 'program', 1, 'draft', '${sourceDate}', 0, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at) VALUES
       ('source-slot', 'source-revision', '${sourceDate}', '10:00', '11:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('source-slot-2', 'source-revision', '${addDays(sourceDate, 1)}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('same-day-slot', 'target-revision', '${targetDate}', '22:00', '22:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('target-slot', 'target-revision', '${targetDate}', '23:00', '23:59', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('alternate-day-slot', 'target-revision', '${alternateDate}', '21:00', '21:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
@@ -146,7 +148,8 @@ try {
       VALUES ('special-student-a', 'Тусгай Нөхөх', 'Анударь', 'not_specified', '2015-04-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-student-b', 'Тусгай Нөхөх', 'Билгүүн', 'not_specified', '2015-05-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-student-review', 'Ирц Шалгах', 'Энхрий', 'not_specified', '2015-06-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-student-reschedule', 'Өдөр Цаг', 'Өөрчлөх', 'not_specified', '2015-07-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-student-reschedule', 'Өдөр Цаг', 'Өөрчлөх', 'not_specified', '2015-07-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-student-add', 'Тусгай Нөхөх', 'Нэмэх', 'not_specified', '2015-08-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('prereg', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
@@ -159,12 +162,14 @@ try {
       VALUES ('special-prereg-a', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-prereg-b', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-prereg-review', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-prereg-reschedule', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-prereg-reschedule', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-prereg-add', 'guardian', 'year', 'completed', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-application-a', 'special-prereg-a', 'special-student-a', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-application-b', 'special-prereg-b', 'special-student-b', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-application-review', 'special-prereg-review', 'special-student-review', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-application-reschedule', 'special-prereg-reschedule', 'special-student-reschedule', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-application-reschedule', 'special-prereg-reschedule', 'special-student-reschedule', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-application-add', 'special-prereg-add', 'special-student-add', 5, 'new', 'enrolled', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('source-enrollment', 'application', 'student', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
@@ -173,16 +178,19 @@ try {
       VALUES ('special-enrollment-a', 'special-application-a', 'special-student-a', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-enrollment-b', 'special-application-b', 'special-student-b', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-enrollment-review', 'special-application-review', 'special-student-review', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-enrollment-reschedule', 'special-application-reschedule', 'special-student-reschedule', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-enrollment-reschedule', 'special-application-reschedule', 'special-student-reschedule', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-enrollment-add', 'special-application-add', 'special-student-add', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO course_makeup_special_occurrence (id, curriculum_lesson_id, local_date, start_time, end_time, capacity, status, created_by_staff_account_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-occurrence', 'lesson', '${targetDate}', '14:00', '15:20', 2, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('review-special-occurrence', 'lesson', '${pastDate}', '14:00', '15:20', 1, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('reschedule-special-occurrence', 'lesson', '${rescheduleDate}', '14:00', '15:20', 1, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('reschedule-special-occurrence', 'lesson', '${rescheduleDate}', '14:00', '15:20', 1, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('add-special-occurrence', 'lesson', '${pastDate}', '16:00', '17:20', 3, 'active', 'makeup-browser-staff', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO course_makeup_resolution (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id, decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-resolution-a', 'special-enrollment-a', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-resolution-b', 'special-enrollment-b', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-resolution-review', 'special-enrollment-review', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-resolution-reschedule', 'special-enrollment-reschedule', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-resolution-reschedule', 'special-enrollment-reschedule', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-resolution-add', 'special-enrollment-add', 'source-class', 'lesson', 'assigned', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     -- The 0059 compatibility trigger adopts this released-Worker insert
     -- shape into one durable case per source. Do not fabricate a duplicate
     -- fixture case after the trigger has done its job.
@@ -190,7 +198,8 @@ try {
       VALUES ('special-assignment-a', 'special-resolution-a', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-assignment-b', 'special-resolution-b', 'special', 'special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-assignment-review', 'special-resolution-review', 'special', 'review-special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-        ('special-assignment-reschedule', 'special-resolution-reschedule', 'special', 'reschedule-special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+        ('special-assignment-reschedule', 'special-resolution-reschedule', 'special', 'reschedule-special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+        ('special-assignment-add', 'special-resolution-add', 'special', 'add-special-occurrence', 'lesson', 'active', 'makeup-browser-staff', ${sql(now)}, 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('hold-draft', '${"a".repeat(64)}', 'year', 'Hold Guardian', 'parent', '99000001', 'hold@example.test', 'hold@example.test', 'Тест', 'single', 'v1', 'v1', 'awaiting_initial_payment', '${addDays(today, 30)}T00:00:00.000Z', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
@@ -213,6 +222,9 @@ try {
   context = await browser.newContext();
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   const page = await context.newPage();
+  page.setDefaultTimeout(10_000);
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
   console.log("make-up browser fixture: opening teacher home");
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });
@@ -246,21 +258,72 @@ try {
   execute(`UPDATE class_session SET capacity = 1 WHERE id = 'day-change-class';`);
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await openMakeupSectionAndFirstGroup(page, "open");
+  console.log("make-up browser fixture: checking selection and accordion responsiveness");
+  let releaseAvailability;
+  const availabilityHeld = new Promise((resolve) => { releaseAvailability = resolve; });
+  let availabilityStarted;
+  const availabilityRequested = new Promise((resolve) => { availabilityStarted = resolve; });
+  let delayedAvailability = false;
+  const delayFirstAvailability = async (route) => {
+    const body = JSON.parse(route.request().postData() || "{}");
+    if (!delayedAvailability && body.action === "makeup.group-availability") {
+      delayedAvailability = true;
+      availabilityStarted();
+      await availabilityHeld;
+    }
+    await route.continue();
+  };
+  await page.route("**/api/staff/makeups", delayFirstAvailability);
+  await openMakeupSectionAndFirstGroup(page, "open", "[data-case-select][value='source-enrollment|source-class|lesson']");
+  await availabilityRequested;
+  const interactionCheckbox = page.locator("[data-case-select][value='source-enrollment|source-class|lesson']");
+  const interactionGroup = page.locator("[data-section='open'] [data-makeup-group]").filter({ has: page.locator("[data-case-select][value='source-enrollment|source-class|lesson']") }).first();
+  const interactionLabel = interactionCheckbox.locator("xpath=ancestor::label");
+  await interactionLabel.locator("strong").click();
+  await page.waitForFunction((input) => input.checked, await interactionCheckbox.elementHandle());
+  await interactionLabel.locator("strong").click();
+  await page.waitForFunction((input) => !input.checked, await interactionCheckbox.elementHandle());
+  await interactionLabel.locator("strong").click();
+  await page.waitForFunction((input) => input.checked, await interactionCheckbox.elementHandle());
+  assert.match(await interactionGroup.locator(".staff-makeup-selection-info").innerText(), /1 сурагч сонгосон/,
+    "label clicks immediately update the local selected count without a business-data write");
+  const siblingGroup = page.locator("[data-section='open'] [data-makeup-group]").filter({ hasText: "Дараагийн хичээл" }).first();
+  assert.equal(await page.locator("[data-section='open'] [data-makeup-group]").count() >= 2, true,
+    "the fixture provides distinct named-lesson groups for accordion coverage");
+  await siblingGroup.locator(":scope > summary").click();
+  assert.equal(await siblingGroup.evaluate((details) => details.open), true, "another lesson group remains responsive while an earlier availability request is pending");
+  assert.equal(await interactionGroup.evaluate((details) => details.open), false,
+    "opening another lesson group closes the previous group without discarding its selection");
+  await page.locator("[data-section='scheduled'] > summary").click();
+  assert.equal(await page.locator("[data-section='scheduled']").evaluate((details) => details.open), true,
+    "a different top-level section remains responsive while availability is pending");
+  releaseAvailability();
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator("[data-section='scheduled']").evaluate((details) => details.open), true,
+    "a stale availability response does not reopen or overwrite the current section");
+  await page.unroute("**/api/staff/makeups", delayFirstAvailability);
+  await page.locator("[data-section='open'] > summary").click();
+  await page.locator("[data-section='open'] [data-makeup-group]").filter({ has: page.locator("[data-case-select][value='source-enrollment|source-class|lesson']") }).first().locator(":scope > summary").click();
+  assert.equal(await interactionCheckbox.isChecked(), true, "returning to the selected lesson preserves its local selection");
+  await openMakeupSectionAndFirstGroup(page, "open", "[data-case-select][value='source-enrollment|source-class|lesson']");
   await page.waitForFunction(() => {
-    const input = document.querySelector("[data-case-select][value^='source-enrollment|']");
+    const input = document.querySelector("[data-case-select][value='source-enrollment|source-class|lesson']");
     return input && input.getBoundingClientRect().width > 0;
   });
-  const initialCheckbox = page.locator("[data-case-select][value^='source-enrollment|']");
+  const initialCheckbox = page.locator("[data-case-select][value='source-enrollment|source-class|lesson']");
   const initialLabel = initialCheckbox.locator("xpath=ancestor::label");
   const checkboxSize = await initialCheckbox.evaluate((input) => input.getBoundingClientRect().width);
   assert.ok(checkboxSize >= 22 && checkboxSize <= 26,
     "the make-up selection checkbox has a comfortably visible approximately 22–24px control");
   assert.ok(await initialLabel.evaluate((label) => label.getBoundingClientRect().height >= 44),
     "the complete learner label has a 44px minimum touch target");
+  if (await initialCheckbox.isChecked()) {
+    await initialLabel.locator("strong").click();
+    await page.waitForFunction((input) => !input.checked, await initialCheckbox.elementHandle());
+  }
   await initialLabel.locator("strong").click();
   await page.waitForFunction((input) => input.checked, await initialCheckbox.elementHandle());
-  assert.equal(await page.locator("[data-section='open'] [data-makeup-group]").first().evaluate((details) => details.open), true,
+  assert.equal(await interactionGroup.evaluate((details) => details.open), true,
     "selection keeps the current expanded lesson group open while availability refreshes");
   await page.getByText("Тохирох цагуудын суудал дүүрсэн байна.", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await page.getByRole("button", { name: "Түр шилжих", exact: true }).count(), 0, "the normal booking action is absent when no future matching lesson has capacity");
@@ -274,13 +337,15 @@ try {
     UPDATE registration_capacity_hold SET status = 'released', released_at = ${sql(now)} WHERE id IN ('target-hold', 'day-target-hold');`);
   await page.reload();
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await openMakeupSectionAndFirstGroup(page, "open");
-  await page.waitForFunction(() => document.querySelector("[data-case-select][value^='source-enrollment|']")?.getBoundingClientRect().width > 0);
-  const refreshedGroup = page.locator("[data-section='open'] [data-makeup-group]").first();
-  const refreshedCheckbox = page.locator("[data-case-select][value^='source-enrollment|']");
+  await openMakeupSectionAndFirstGroup(page, "open", "[data-case-select][value='source-enrollment|source-class|lesson']");
+  await page.waitForFunction(() => document.querySelector("[data-case-select][value='source-enrollment|source-class|lesson']")?.getBoundingClientRect().width > 0);
+  console.log("make-up browser fixture: reopening selection is ready");
+  const refreshedGroup = page.locator("[data-section='open'] [data-makeup-group]").filter({ has: page.locator("[data-case-select][value='source-enrollment|source-class|lesson']") }).first();
+  const refreshedCheckbox = page.locator("[data-case-select][value='source-enrollment|source-class|lesson']");
   await refreshedCheckbox.focus();
   await page.keyboard.press("Space");
   await page.waitForFunction((input) => input.checked, await refreshedCheckbox.elementHandle());
+  console.log("make-up browser fixture: keyboard selection is ready");
   await page.getByRole("button", { name: "Түр шилжих", exact: true }).waitFor({ state: "visible" });
   const normalButton = refreshedGroup.getByRole("button", { name: "Түр шилжих", exact: true });
   await normalButton.click();
@@ -301,13 +366,43 @@ try {
   assert.equal(await normalButton.evaluate((button) => document.activeElement === button), true,
     "closing an inline review returns focus to its initiating action");
   await normalButton.click();
-  await inlineReview.getByRole("button", { name: "Сонгох", exact: true }).click();
+  await inlineReview.locator("[data-preview-destination='normal_class']").click();
   await inlineReview.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
   await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.").waitFor({ state: "visible" });
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   const normalAssignment = assignments.scheduled.filter((entry) => entry.targetKind === "normal_class");
   assert.equal(normalAssignment.length, 1, "the rendered normal-target action creates one active normal-class assignment alongside the seeded special bookings");
   assert.equal(normalAssignment[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
+
+  console.log("make-up browser fixture: selecting an existing special-session destination from both entry points");
+  execute(`UPDATE course_makeup_special_occurrence
+    SET local_date = '${addDays(today, 2)}', updated_at = ${sql(now)}
+    WHERE id = 'add-special-occurrence';`);
+  await page.goto(`${baseUrl}/staff/`);
+  await page.locator("#staff-home").waitFor({ state: "visible" });
+  const agendaAddLearner = page.locator("#staff-agenda [data-agenda-add-learner='special'][data-agenda-target-id='add-special-occurrence']");
+  await agendaAddLearner.click();
+  const agendaPicker = page.locator(".staff-agenda-makeup-panel");
+  await agendaPicker.getByText("Архив Туршилт", { exact: true }).waitFor({ state: "visible" });
+  const agendaPickerCheckbox = agendaPicker.locator("[data-agenda-makeup-source][value='archive-enrollment|source-class|lesson']");
+  await agendaPickerCheckbox.locator("xpath=ancestor::label").locator("strong").click();
+  assert.equal(await agendaPickerCheckbox.isChecked(), true, "the agenda picker shares immediate local checkbox selection");
+  await agendaPicker.getByRole("button", { name: "Болих", exact: true }).click();
+  await page.goto(`${baseUrl}/staff/makeups/`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  const scheduledSpecialGroup = page.locator("[data-section='scheduled'] [data-makeup-group]").filter({ has: page.locator("[data-open-add-learners='special'][data-target-id='add-special-occurrence']") }).first();
+  await page.locator("[data-section='scheduled'] > summary").click();
+  await scheduledSpecialGroup.locator(":scope > summary").click();
+  await scheduledSpecialGroup.locator("[data-open-add-learners='special'][data-target-id='add-special-occurrence']").click();
+  const scheduledPicker = scheduledSpecialGroup.locator("#makeup-detail");
+  const scheduledPickerCheckbox = scheduledPicker.locator("[data-destination-select][value='archive-enrollment|source-class|lesson']");
+  await scheduledPickerCheckbox.locator("xpath=ancestor::label").locator("strong").click();
+  await scheduledPicker.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await scheduledPicker.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
+  await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  const afterSpecialAdd = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
+  assert.equal(afterSpecialAdd.scheduled.filter((entry) => entry.targetSpecialOccurrenceId === "add-special-occurrence").length, 2,
+    "the planned-session picker adds exactly one eligible learner to the existing special session");
 
   execute(`
     UPDATE class_session SET capacity = 2 WHERE id = 'target-class';
@@ -349,8 +444,8 @@ try {
   console.log("make-up browser fixture: inspecting case history, attendance review, and special reschedule preview");
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await openMakeupSectionAndFirstGroup(page, "review");
-  await page.getByText(/Ирц Шалгах Энхрий/).waitFor({ state: "visible" });
+  const reviewGroup = await openMakeupSectionAndFirstGroup(page, "review");
+  await reviewGroup.getByText(/Ирц Шалгах Энхрий/).waitFor({ state: "visible" });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator("#makeup-groups").screenshot({ path: path.join(screenshotDir, "makeup-attendance-review-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -361,7 +456,7 @@ try {
   await page.locator("#special-reschedule-form").waitFor({ state: "visible" });
   await page.locator("#special-reschedule-form [name='localDate']").fill(addDays(rescheduleDate, 1));
   await page.locator("#special-reschedule-form [name='startTime']").fill("16:00");
-  await page.locator("#special-reschedule-form [name='endTime']").fill("17:20");
+  await page.locator("#special-reschedule-form [data-derived-end]").getByText("17:20", { exact: true }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
   await page.getByRole("heading", { name: "Өдөр, цаг өөрчлөх", exact: true }).waitFor({ state: "visible" });
   await page.getByText(/1 сурагчийн тов/).waitFor({ state: "visible" });
@@ -693,6 +788,7 @@ try {
   await page.getByText("Хичээлийг дахин шийдэхээр нээлээ.", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await page.locator("[data-section='open'] [data-makeup-group]").first().evaluate((node) => document.activeElement === node.querySelector("summary")), true,
     "restoring an archived lesson focuses its reopened actionable group");
+  assert.deepEqual(browserErrors, [], "the rendered make-up workflow completes without uncaught browser errors");
   console.log(`ok browser make-up capacity target availability and booking (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);

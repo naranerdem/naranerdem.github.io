@@ -31,7 +31,7 @@ import "../../styles/global.css";
       // @ts-nocheck
       import { escape, formatDate, getCourseMakeups, hasMakeupAccess, postCourseMakeupAction } from "../../scripts/staff-setup.js";
 
-      const state = { data: null, selected: new Map(), panel: null, pending: false, refreshVersion: 0, previewVersion: 0, availabilityVersion: 0, normalAvailability: new Map(), openGroup: null, openSection: null };
+      const state = { data: null, selected: new Map(), panel: null, pending: false, refreshVersion: 0, previewVersion: 0, availabilityVersion: new Map(), normalAvailability: new Map(), openGroup: null, openSection: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -53,6 +53,7 @@ import "../../styles/global.css";
         if (version !== state.refreshVersion) return;
         state.data = data;
         state.normalAvailability.clear();
+        state.availabilityVersion.clear();
         for (const group of data.groups || []) {
           const allowed = new Set(group.entries.map(sourceKey));
           const selected = state.selected.get(groupKey(group));
@@ -206,18 +207,19 @@ import "../../styles/global.css";
       }
       function render() { renderSections(); }
 
-      async function loadNormalAvailability(group) {
+      async function loadNormalAvailability(group, { retry = false } = {}) {
         const key = groupKey(group);
-        if (state.normalAvailability.get(key)?.status === "ready") return;
-        const version = ++state.availabilityVersion;
+        if (!retry && ["ready", "loading"].includes(state.normalAvailability.get(key)?.status)) return;
+        const version = (state.availabilityVersion.get(key) || 0) + 1;
+        state.availabilityVersion.set(key, version);
         state.normalAvailability.set(key, { status: "loading" });
         render();
         try {
           const preview = await postCourseMakeupAction("makeup.group-availability", { sources: group.entries.map(sourcePayload) });
-          if (version !== state.availabilityVersion) return;
+          if (version !== state.availabilityVersion.get(key)) return;
           state.normalAvailability.set(key, { status: "ready", preview });
         } catch {
-          if (version !== state.availabilityVersion) return;
+          if (version !== state.availabilityVersion.get(key)) return;
           state.normalAvailability.set(key, { status: "error" });
         }
         render();
@@ -257,38 +259,52 @@ import "../../styles/global.css";
         const selected = state.panel.selected || new Set(); input.checked ? selected.add(input.value) : selected.delete(input.value);
         state.panel.selected = selected; render();
       });
-      q("#tool-app").addEventListener("toggle", (event) => {
-        const details = event.target; if (!details.matches("[data-makeup-group]")) return;
-        if (!details.open && state.panel?.groupKey === details.dataset.makeupGroup) { ++state.previewVersion; state.panel = null; render(); return; }
-        if (!details.open) return;
-        state.openGroup = details.dataset.makeupGroup;
-        for (const other of document.querySelectorAll("[data-makeup-group]")) if (other !== details) other.open = false;
-        const group = groupByKey(state.openGroup);
-        if (group) void loadNormalAvailability(group);
-      }, true);
-      q("#tool-app").addEventListener("toggle", (event) => {
-        const details = event.target;
-        if (!details.matches("[data-section]")) return;
-        if (!details.open && state.panel?.sectionKey === details.dataset.section) { ++state.previewVersion; state.panel = null; render(); return; }
-        if (details.open) {
-          state.openSection = details.dataset.section;
-          for (const other of document.querySelectorAll("[data-section]")) if (other !== details) other.open = false;
-        }
-      }, true);
       q("#tool-app").addEventListener("click", async (event) => {
+        const summary = event.target.closest("summary");
+        if (summary?.parentElement?.matches("[data-makeup-group]")) {
+          event.preventDefault();
+          if (state.pending) return;
+          const details = summary.parentElement;
+          const key = details.dataset.makeupGroup;
+          const opening = state.openGroup !== key;
+          ++state.previewVersion;
+          state.panel = null;
+          state.openSection = details.closest("[data-section]")?.dataset.section || state.openSection;
+          state.openGroup = opening ? key : null;
+          render();
+          requestAnimationFrame(() => q(`[data-makeup-group="${CSS.escape(key)}"] > summary`)?.focus());
+          if (opening) {
+            const group = groupByKey(key);
+            if (group) void loadNormalAvailability(group);
+          }
+          return;
+        }
+        if (summary?.parentElement?.matches("[data-section]")) {
+          event.preventDefault();
+          if (state.pending) return;
+          const key = summary.parentElement.dataset.section;
+          const opening = state.openSection !== key;
+          ++state.previewVersion;
+          state.panel = null;
+          state.openSection = opening ? key : null;
+          state.openGroup = null;
+          render();
+          requestAnimationFrame(() => q(`[data-section="${CSS.escape(key)}"] > summary`)?.focus());
+          return;
+        }
         const button = event.target.closest("button"); if (!button || button.type === "submit" || state.pending) return;
         if (button.dataset.closePanel !== undefined) { closePanel(); return; }
         const findGroup = (key, archived = false) => groupByKey(key, archived);
-        if (button.dataset.retryNormalAvailability) { const group = findGroup(button.dataset.retryNormalAvailability); if (group) void loadNormalAvailability(group); return; }
+        if (button.dataset.retryNormalAvailability) { const group = findGroup(button.dataset.retryNormalAvailability); if (group) void loadNormalAvailability(group, { retry: true }); return; }
         if (button.dataset.groupNormal) { const group = findGroup(button.dataset.groupNormal); state.panel = { kind: "normal", group, entries: selectedEntries(group), groupKey: groupKey(group), sectionKey: "open", returnFocus: button.dataset.panelTrigger || "" }; render(); focusPanel(); return; }
         if (button.dataset.groupSpecial) { const group = findGroup(button.dataset.groupSpecial); await preview(button, "makeup.group-special-preview", { sources: selectedEntries(group).map(sourcePayload) }, { kind: "special", group, entries: selectedEntries(group), groupKey: groupKey(group), sectionKey: "open" }); return; }
         if (button.dataset.groupRetire) { const group = findGroup(button.dataset.groupRetire); await preview(button, "makeup.lesson-retire-preview", groupPayload(group), { kind: "retire", group, groupKey: groupKey(group), sectionKey: "open" }); return; }
         if (button.dataset.groupRestore) { const group = findGroup(button.dataset.groupRestore, true); await preview(button, "makeup.lesson-restore-preview", groupPayload(group), { kind: "restore", group, groupKey: groupKey(group), sectionKey: "archive" }); return; }
         if (button.dataset.previewDestination) { const panel = state.panel; const targetKind = button.dataset.previewDestination; const targetPayload = targetKind === "special" ? { targetSpecialOccurrenceId: button.dataset.targetId } : { targetClassSessionId: button.dataset.targetId }; await preview(button, "makeup.group-destination-preview", { sources: panel.entries.map(sourcePayload), targetKind, ...targetPayload }, { kind: "destination-review", group: panel.group, entries: panel.entries, groupKey: panel.groupKey, sectionKey: panel.sectionKey, targetKind, ...targetPayload }); return; }
-        if (button.dataset.backDestinations) { const panel = state.panel; state.panel = { kind: "normal", group: panel.group, entries: panel.entries, groupKey: panel.groupKey, sectionKey: panel.sectionKey, returnFocus: panel.returnFocus }; render(); focusPanel(); return; }
-        if (button.dataset.confirmDestination) { const panel = state.panel; const target = panel.preview.target; await mutate(button, "makeup.group-destination-book", { sources: panel.entries.map(sourcePayload), expectedFingerprint: panel.preview.fingerprint, targetKind: target.kind, targetClassSessionId: target.classSessionId, targetSpecialOccurrenceId: target.specialOccurrenceId, operationId: panel.operationId ||= crypto.randomUUID() }, "Нөхөх хичээлийн товыг хадгаллаа."); return; }
+        if (button.dataset.backDestinations !== undefined) { const panel = state.panel; state.panel = { kind: "normal", group: panel.group, entries: panel.entries, groupKey: panel.groupKey, sectionKey: panel.sectionKey, returnFocus: panel.returnFocus }; render(); focusPanel(); return; }
+        if (button.dataset.confirmDestination !== undefined) { const panel = state.panel; const target = panel.preview.target; await mutate(button, "makeup.group-destination-book", { sources: panel.entries.map(sourcePayload), expectedFingerprint: panel.preview.fingerprint, targetKind: target.kind, targetClassSessionId: target.classSessionId, targetSpecialOccurrenceId: target.specialOccurrenceId, operationId: panel.operationId ||= crypto.randomUUID() }, "Нөхөх хичээлийн товыг хадгаллаа."); return; }
         if (button.dataset.openAddLearners) { state.pending = true; setBusy(button, "Ачаалж байна…"); try { const targetKind = button.dataset.openAddLearners; const targetPayload = targetKind === "special" ? { targetSpecialOccurrenceId: button.dataset.targetId } : { targetClassSessionId: button.dataset.targetId }; const result = await postCourseMakeupAction("makeup.destination-candidates", { targetKind, ...targetPayload }); state.panel = { kind: "existing-destination", target: result.target, sources: result.sources, selected: new Set(), groupKey: button.dataset.panelGroup, sectionKey: "scheduled", returnFocus: button.dataset.panelTrigger || "" }; render(); focusPanel(); } catch (error) { message(error.message || "Сурагчдын жагсаалтыг ачаалж чадсангүй."); button.disabled = false; button.textContent = button.dataset.label || button.textContent; } finally { state.pending = false; } return; }
-        if (button.dataset.previewExistingSelection) { const panel = state.panel; const entries = panel.sources.filter((entry) => panel.selected.has(sourceKey(entry))); const target = panel.target; const targetPayload = target.kind === "special" ? { targetSpecialOccurrenceId: target.specialOccurrenceId } : { targetClassSessionId: target.classSessionId }; await preview(button, "makeup.group-destination-preview", { sources: entries.map(sourcePayload), targetKind: target.kind, ...targetPayload }, { kind: "destination-review", group: null, entries, groupKey: panel.groupKey, sectionKey: panel.sectionKey, returnFocus: panel.returnFocus }); return; }
+        if (button.dataset.previewExistingSelection !== undefined) { const panel = state.panel; const entries = panel.sources.filter((entry) => panel.selected.has(sourceKey(entry))); const target = panel.target; const targetPayload = target.kind === "special" ? { targetSpecialOccurrenceId: target.specialOccurrenceId } : { targetClassSessionId: target.classSessionId }; await preview(button, "makeup.group-destination-preview", { sources: entries.map(sourcePayload), targetKind: target.kind, ...targetPayload }, { kind: "destination-review", group: null, entries, groupKey: panel.groupKey, sectionKey: panel.sectionKey, returnFocus: panel.returnFocus }); return; }
         if (button.dataset.confirmLesson) {
           const panel = state.panel;
           const restoring = panel.kind === "restore";
@@ -299,7 +315,7 @@ import "../../styles/global.css";
           return;
         }
         if (button.dataset.cancelAssignment) { await preview(button, "makeup.assignment-cancel-preview", { assignmentId: button.dataset.cancelAssignment }, { kind: "assignment-cancel", assignmentId: button.dataset.cancelAssignment, groupKey: button.dataset.panelGroup, sectionKey: "scheduled", returnFocus: button.dataset.panelTrigger || "" }); return; }
-        if (button.dataset.confirmAssignmentCancel) { const panel = state.panel; await mutate(button, "makeup.assignment-cancel", { assignmentId: panel.preview.assignmentId, expectedFingerprint: panel.preview.fingerprint, operationId: panel.operationId ||= crypto.randomUUID() }, "Товлолтыг цуцаллаа."); return; }
+        if (button.dataset.confirmAssignmentCancel !== undefined) { const panel = state.panel; await mutate(button, "makeup.assignment-cancel", { assignmentId: panel.preview.assignmentId, expectedFingerprint: panel.preview.fingerprint, operationId: panel.operationId ||= crypto.randomUUID() }, "Товлолтыг цуцаллаа."); return; }
         if (button.dataset.openSpecialReschedule) { state.panel = { kind: "reschedule", specialOccurrenceId: button.dataset.openSpecialReschedule, groupKey: button.dataset.panelGroup, sectionKey: "scheduled", returnFocus: button.dataset.panelTrigger || "" }; render(); focusPanel(); return; }
         if (button.id === "edit-special-reschedule") { state.panel = { kind: "reschedule", specialOccurrenceId: state.panel.specialOccurrenceId, groupKey: state.panel.groupKey, sectionKey: state.panel.sectionKey, returnFocus: state.panel.returnFocus }; render(); focusPanel(); return; }
         if (button.id === "confirm-special-reschedule") { const preview = state.panel.preview; await mutate(button, "makeup.special-reschedule", { specialOccurrenceId: preview.specialOccurrenceId, expectedUpdatedAt: preview.expectedUpdatedAt, localDate: preview.next.localDate, startTime: preview.next.startTime, endTime: preview.next.endTime, operationId: preview.operationId ||= crypto.randomUUID() }, "Тусгай нөхөх хичээлийн өдөр, цагийг өөрчиллөө."); }
