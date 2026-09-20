@@ -254,7 +254,7 @@ async function rosterForSpecialOccurrence(env: WorkerEnv, occurrence: Occurrence
     FROM course_makeup_assignment AS assignment
     INNER JOIN course_makeup_resolution AS resolution
       ON resolution.id = assignment.resolution_id
-      AND resolution.status = 'active' AND resolution.decision = 'assigned'
+      AND resolution.decision = 'assigned'
     INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = resolution.source_enrollment_id
     INNER JOIN student ON student.id = source_enrollment.student_id
     INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
@@ -269,10 +269,14 @@ async function rosterForSpecialOccurrence(env: WorkerEnv, occurrence: Occurrence
       AND source_slot.status = 'scheduled'
     LEFT JOIN course_makeup_special_attendance AS special_attendance
       ON special_attendance.course_makeup_assignment_id = assignment.id
-    WHERE assignment.status = 'active'
-      AND assignment.target_kind = 'special'
+    WHERE assignment.target_kind = 'special'
       AND assignment.target_special_occurrence_id = ?
-    ORDER BY student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
+      AND (
+        (assignment.status = 'active' AND resolution.status = 'active')
+        OR special_attendance.attendance_status IS NOT NULL
+      )
+    ORDER BY assignment.status = 'active' DESC, student.surname COLLATE NOCASE,
+      student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
   `).bind(occurrence.specialOccurrenceId).all<RosterRow>();
   const seenStudents = new Set<string>();
   return rows.results.filter((entry) => {
@@ -342,7 +346,7 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): P
     FROM course_makeup_assignment AS assignment
     INNER JOIN course_makeup_resolution AS resolution
       ON resolution.id = assignment.resolution_id
-      AND resolution.status = 'active' AND resolution.decision = 'assigned'
+      AND resolution.decision = 'assigned'
     INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = resolution.source_enrollment_id
     INNER JOIN student ON student.id = source_enrollment.student_id
     INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
@@ -357,11 +361,15 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): P
       AND source_slot.status = 'scheduled'
     LEFT JOIN course_makeup_attendance AS makeup_attendance
       ON makeup_attendance.course_makeup_assignment_id = assignment.id
-    WHERE assignment.status = 'active'
-      AND assignment.target_kind = 'normal_class'
+    WHERE assignment.target_kind = 'normal_class'
       AND assignment.target_class_session_id = ?
       AND assignment.target_curriculum_lesson_id = ?
-    ORDER BY student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE, source_enrollment.id
+      AND (
+        (assignment.status = 'active' AND resolution.status = 'active')
+        OR makeup_attendance.attendance_status IS NOT NULL
+      )
+    ORDER BY assignment.status = 'active' DESC, student.surname COLLATE NOCASE,
+      student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
   `).bind(occurrence.classSessionId, occurrence.curriculumLessonId).all<RosterRow>();
   const ordinaryStudentIds = new Set(ordinary.results.map((entry) => entry.studentId));
   return [...ordinary.results, ...makeup.results.filter((entry) => !ordinaryStudentIds.has(entry.studentId))]
@@ -558,10 +566,9 @@ function makeupAttendanceStatements(
     const statements: D1PreparedStatement[] = [];
     if (existing) {
       statements.push(env.DB.prepare(`UPDATE course_makeup_special_attendance
-        SET attendance_status = ?, special_occurrence_id = ?, scheduled_local_date = ?,
-          updated_at = ?, updated_by_staff_account_id = ?
+        SET attendance_status = ?, updated_at = ?, updated_by_staff_account_id = ?
         WHERE id = ?`).bind(
-        status, occurrence.specialOccurrenceId, occurrence.localDate, time, actor.staffAccountId, attendanceId,
+        status, time, actor.staffAccountId, attendanceId,
       ));
     } else {
       statements.push(env.DB.prepare(`INSERT INTO course_makeup_special_attendance (
@@ -601,10 +608,9 @@ function makeupAttendanceStatements(
   const statements: D1PreparedStatement[] = [];
   if (existing) {
     statements.push(env.DB.prepare(`UPDATE course_makeup_attendance
-      SET attendance_status = ?, recorded_calendar_slot_id = ?, scheduled_local_date = ?,
-        updated_at = ?, updated_by_staff_account_id = ?
+      SET attendance_status = ?, updated_at = ?, updated_by_staff_account_id = ?
       WHERE id = ?`).bind(
-      status, occurrence.slotId, occurrence.localDate, time, actor.staffAccountId, attendanceId,
+      status, time, actor.staffAccountId, attendanceId,
     ));
   } else {
     statements.push(env.DB.prepare(`INSERT INTO course_makeup_attendance (

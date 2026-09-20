@@ -748,6 +748,35 @@ async function existingOrNewCase(env: WorkerEnv, source: SourceRow, proposedId: 
   return existing ? { id: existing.id, existing: true } : { id: proposedId, existing: false };
 }
 
+async function activeCurrentResolution(env: WorkerEnv, caseId: string): Promise<{ id: string } | null> {
+  return env.DB.prepare(`SELECT resolution.id
+    FROM course_makeup_case AS makeup_case
+    INNER JOIN course_makeup_resolution AS resolution
+      ON resolution.id = makeup_case.current_resolution_id AND resolution.status = 'active'
+    WHERE makeup_case.id = ?`).bind(caseId).first<{ id: string }>();
+}
+
+function retireCurrentAttempt(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  resolutionId: string | null,
+  time: string,
+): D1PreparedStatement[] {
+  if (!resolutionId) return [];
+  return [
+    env.DB.prepare(`UPDATE course_makeup_assignment SET status = 'cancelled',
+      cancelled_at = ?, cancelled_by_staff_account_id = ?, cancellation_reason = 'teacher_reopened',
+      updated_at = ? WHERE resolution_id = ? AND status = 'active'`).bind(
+      time, actor.staffAccountId, time, resolutionId,
+    ),
+    env.DB.prepare(`UPDATE course_makeup_resolution SET status = 'invalidated',
+      invalidated_at = ?, invalidated_by_staff_account_id = ?, invalidation_reason = 'assignment_cancelled',
+      updated_at = ? WHERE id = ? AND status = 'active'`).bind(
+      time, actor.staffAccountId, time, resolutionId,
+    ),
+  ];
+}
+
 function assignmentInsert(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -792,10 +821,12 @@ export async function resolveCourseMakeupAsNotNeeded(
   const source = await unresolvedSource(env, sourceIdentity(input), at);
   const resolutionId = id();
   const caseRef = await existingOrNewCase(env, source, id());
+  const previous = caseRef.existing ? await activeCurrentResolution(env, caseRef.id) : null;
   const time = now();
   const note = optionalText(input.note);
   await safeBatch(env, [
     ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+    ...retireCurrentAttempt(env, actor, previous?.id ?? null, time),
     resolutionInsert(env, actor, source, caseRef.id, resolutionId, "no_makeup", note, time),
     caseCurrentUpdate(env, caseRef.id, resolutionId, "closed", time),
     audit(env, actor, "course_makeup_not_needed", "course_makeup_resolution", resolutionId, {
@@ -853,9 +884,11 @@ export async function assignCourseMakeupToNormalClass(
   const resolutionId = id();
   const assignmentId = id();
   const caseRef = await existingOrNewCase(env, source, id());
+  const previous = caseRef.existing ? await activeCurrentResolution(env, caseRef.id) : null;
   const time = now();
   await safeBatch(env, [
     ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+    ...retireCurrentAttempt(env, actor, previous?.id ?? null, time),
     resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
     caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
     assignmentInsert(env, actor, source, resolutionId, assignmentId, {
@@ -885,9 +918,11 @@ export async function assignCourseMakeupToSpecialOccurrence(
   const resolutionId = id();
   const assignmentId = id();
   const caseRef = await existingOrNewCase(env, source, id());
+  const previous = caseRef.existing ? await activeCurrentResolution(env, caseRef.id) : null;
   const time = now();
   await safeBatch(env, [
     ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+    ...retireCurrentAttempt(env, actor, previous?.id ?? null, time),
     resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
     caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
     assignmentInsert(env, actor, source, resolutionId, assignmentId, { kind: "special", specialOccurrenceId }, time),
@@ -932,6 +967,8 @@ export async function createSpecialCourseMakeupOccurrence(
   const specialOccurrenceId = id();
   const time = now();
   const caseRefs = await Promise.all(sources.map((source) => existingOrNewCase(env, source, id())));
+  const previousResolutions = await Promise.all(caseRefs.map((caseRef) => caseRef.existing
+    ? activeCurrentResolution(env, caseRef.id) : Promise.resolve(null)));
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(`INSERT INTO course_makeup_special_occurrence (
       id, curriculum_lesson_id, local_date, start_time, end_time, capacity,
@@ -947,6 +984,7 @@ export async function createSpecialCourseMakeupOccurrence(
     const caseRef = caseRefs[index];
     statements.push(
       ...(!caseRef.existing ? [caseInsert(env, source, caseRef.id, null, "open", time)] : []),
+      ...retireCurrentAttempt(env, actor, previousResolutions[index]?.id ?? null, time),
       resolutionInsert(env, actor, source, caseRef.id, resolutionId, "assigned", null, time),
       caseCurrentUpdate(env, caseRef.id, resolutionId, "open", time),
       assignmentInsert(env, actor, source, resolutionId, assignmentId, { kind: "special", specialOccurrenceId }, time),

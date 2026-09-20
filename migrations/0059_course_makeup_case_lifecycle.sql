@@ -65,9 +65,134 @@ SET case_id = (
 )
 WHERE case_id IS NULL;
 
--- A prior marked attempt remains active for correction protection while a new
--- attempt may become the case's current attempt.
-DROP INDEX idx_course_makeup_resolution_one_active;
+-- Keep the released Worker safe during the migration/deployment transition.
+-- It still expects exactly one active resolution per source. The compatible
+-- Worker retires a marked missed attempt before a new attempt is created.
+-- A legacy Worker that writes after this migration receives a durable case
+-- automatically, rather than creating an invisible unlinked resolution.
+CREATE TRIGGER adopt_legacy_course_makeup_resolution_case
+AFTER INSERT ON course_makeup_resolution
+WHEN NEW.case_id IS NULL
+BEGIN
+  INSERT INTO course_makeup_case (
+    id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+    current_resolution_id, state, is_test, test_run_id, created_at, updated_at
+  ) VALUES (
+    'makeup-case-' || lower(hex(randomblob(16))),
+    NEW.source_enrollment_id, NEW.source_class_session_id, NEW.source_curriculum_lesson_id,
+    NEW.id, CASE WHEN NEW.decision = 'no_makeup' THEN 'closed' ELSE 'open' END,
+    NEW.is_test, NEW.test_run_id, NEW.created_at, NEW.updated_at
+  ) ON CONFLICT(source_enrollment_id, source_class_session_id, source_curriculum_lesson_id)
+  DO UPDATE SET current_resolution_id = NEW.id,
+    state = CASE WHEN NEW.decision = 'no_makeup' THEN 'closed' ELSE 'open' END,
+    updated_at = NEW.updated_at;
+
+  UPDATE course_makeup_resolution
+  SET case_id = (
+    SELECT id FROM course_makeup_case
+    WHERE source_enrollment_id = NEW.source_enrollment_id
+      AND source_class_session_id = NEW.source_class_session_id
+      AND source_curriculum_lesson_id = NEW.source_curriculum_lesson_id
+  )
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER reopen_case_for_legacy_resolution_invalidation
+AFTER UPDATE OF status ON course_makeup_resolution
+WHEN OLD.status = 'active' AND NEW.status = 'invalidated' AND NEW.case_id IS NOT NULL
+BEGIN
+  UPDATE course_makeup_case
+  SET current_resolution_id = NULL, state = 'open', updated_at = NEW.updated_at
+  WHERE id = NEW.case_id AND current_resolution_id = NEW.id;
+END;
+
+-- A retired, already-marked attempt remains historical evidence. Its mark may
+-- be corrected between explicit statuses, but it can never be retargeted or
+-- newly marked after it has been retired. New marks, clears, and identity
+-- changes still require the active-target validation from 0055/0058.
+DROP TRIGGER validate_course_makeup_attendance_update;
+CREATE TRIGGER validate_course_makeup_attendance_update
+BEFORE UPDATE OF course_makeup_assignment_id, recorded_calendar_slot_id, scheduled_local_date, attendance_status
+ON course_makeup_attendance
+WHEN (
+  NEW.course_makeup_assignment_id IS NOT OLD.course_makeup_assignment_id
+  OR NEW.recorded_calendar_slot_id IS NOT OLD.recorded_calendar_slot_id
+  OR NEW.scheduled_local_date IS NOT OLD.scheduled_local_date
+  OR (
+    NEW.attendance_status IS NOT OLD.attendance_status
+    AND (OLD.attendance_status IS NULL OR NEW.attendance_status IS NULL)
+  )
+) AND NOT EXISTS (
+  SELECT 1
+  FROM course_makeup_assignment AS assignment
+  INNER JOIN course_makeup_resolution AS resolution
+    ON resolution.id = assignment.resolution_id
+  INNER JOIN class_calendar_slot AS slot
+    ON slot.id = NEW.recorded_calendar_slot_id
+  INNER JOIN class_calendar_revision AS revision
+    ON revision.id = slot.class_calendar_revision_id
+  INNER JOIN class_calendar AS calendar
+    ON calendar.id = revision.class_calendar_id
+  WHERE assignment.id = NEW.course_makeup_assignment_id
+    AND assignment.status = 'active'
+    AND assignment.target_kind = 'normal_class'
+    AND resolution.status = 'active'
+    AND resolution.decision = 'assigned'
+    AND calendar.class_session_id = assignment.target_class_session_id
+    AND slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id
+    AND slot.local_date = NEW.scheduled_local_date
+    AND slot.status = 'scheduled'
+    AND revision.status IN ('published', 'superseded')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'course make-up attendance must match an active normal target');
+END;
+
+DROP TRIGGER validate_course_makeup_special_attendance_update;
+CREATE TRIGGER validate_course_makeup_special_attendance_update
+BEFORE UPDATE OF course_makeup_assignment_id, special_occurrence_id, scheduled_local_date, attendance_status
+ON course_makeup_special_attendance
+WHEN (
+  NEW.course_makeup_assignment_id IS NOT OLD.course_makeup_assignment_id
+  OR NEW.special_occurrence_id IS NOT OLD.special_occurrence_id
+  OR NEW.scheduled_local_date IS NOT OLD.scheduled_local_date
+  OR (
+    NEW.attendance_status IS NOT OLD.attendance_status
+    AND (OLD.attendance_status IS NULL OR NEW.attendance_status IS NULL)
+  )
+) AND NOT EXISTS (
+  SELECT 1
+  FROM course_makeup_assignment AS assignment
+  INNER JOIN course_makeup_resolution AS resolution
+    ON resolution.id = assignment.resolution_id
+  INNER JOIN course_makeup_special_occurrence AS special
+    ON special.id = assignment.target_special_occurrence_id
+  WHERE assignment.id = NEW.course_makeup_assignment_id
+    AND assignment.status = 'active'
+    AND assignment.target_kind = 'special'
+    AND resolution.status = 'active'
+    AND resolution.decision = 'assigned'
+    AND special.status = 'active'
+    AND special.id = NEW.special_occurrence_id
+    AND special.local_date = NEW.scheduled_local_date
+)
+BEGIN
+  SELECT RAISE(ABORT, 'special make-up attendance must match an active special target');
+END;
+
+-- A recorded present/late special visit is fulfilled and cannot be unbooked.
+-- A recorded absence is a missed attempt: 0059 retains it as history while a
+-- later explicit rebooking may retire that assignment.
+DROP TRIGGER prevent_attended_special_makeup_assignment_cancellation;
+CREATE TRIGGER prevent_attended_special_makeup_assignment_cancellation
+BEFORE UPDATE OF status ON course_makeup_assignment
+WHEN OLD.status = 'active' AND NEW.status = 'cancelled' AND EXISTS (
+  SELECT 1 FROM course_makeup_special_attendance
+  WHERE course_makeup_assignment_id = OLD.id AND attendance_status IN ('present', 'late')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'cannot cancel fulfilled special make-up assignment');
+END;
 
 CREATE TRIGGER prevent_course_makeup_case_identity_update
 BEFORE UPDATE OF source_enrollment_id, source_class_session_id, source_curriculum_lesson_id

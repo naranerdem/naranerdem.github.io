@@ -149,6 +149,7 @@ try {
       ('student-3', 'Тест', 'Гурав', 'not_specified', '2015-01-03', 'active', 1, 'makeup-test', '${now}', '${now}'),
       ('student-4', 'Тест', 'Дөрөв', 'not_specified', '2015-01-04', 'active', 1, 'makeup-test', '${now}', '${now}'),
       ('student-5', 'Тест', 'Тав', 'not_specified', '2015-01-05', 'active', 1, 'makeup-test', '${now}', '${now}'),
+      ('student-6', 'Тест', 'Зургаа', 'not_specified', '2015-01-06', 'active', 1, 'makeup-test', '${now}', '${now}'),
       ('student-target', 'Тест', 'Зорилт', 'not_specified', '2015-01-06', 'active', 1, 'makeup-test', '${now}', '${now}');
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       SELECT 'prereg-' || id, 'guardian', 'year', 'completed', 1, 'makeup-test', '${now}', '${now}' FROM student;
@@ -160,6 +161,7 @@ try {
       ('enrollment-3', 'application-student-3', 'student-3', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}'),
       ('enrollment-4', 'application-student-4', 'student-4', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}'),
       ('enrollment-5', 'application-student-5', 'student-5', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}'),
+      ('enrollment-6', 'application-student-6', 'student-6', 'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}'),
       ('target-enrollment', 'application-student-target', 'student-target', 'year', 'target-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}');
     INSERT INTO course_attendance (id, enrollment_id, class_session_id, curriculum_lesson_id, attendance_status, recorded_calendar_slot_id, scheduled_local_date, first_recorded_at, updated_at, recorded_by_staff_account_id, updated_by_staff_account_id, is_test, test_run_id, created_at)
       VALUES ('attendance-3', 'enrollment-3', 'source-class', 'lesson-1', 'present', 'source-slot', '${sourceDate}', '${now}', '${now}', 'teacher-staff', 'teacher-staff', 1, 'makeup-test', '${now}');
@@ -178,6 +180,45 @@ try {
   assert.equal(migratedCase[0].state, "closed", "0059 preserves a legacy no-makeup decision without inventing attendance");
   assert.ok(migratedCase[0].caseId, "0059 links the legacy resolution to its durable case");
   assert.equal(sqlite("PRAGMA foreign_key_check;"), "", "0059 preserves legacy make-up foreign keys");
+  assert.equal(Number(JSON.parse(sqlite(`SELECT COUNT(*) AS value FROM sqlite_master
+    WHERE type = 'index' AND name = 'idx_course_makeup_resolution_one_active';`, true))[0].value), 1,
+  "0059 retains the released Worker's active-resolution uniqueness protection during deployment");
+
+  // This is the released Worker's resolution write shape: no case_id exists in
+  // its SQL. It must remain safe if it reaches D1 after 0059 but before the
+  // compatible Worker is serving traffic.
+  sqlite(`INSERT INTO course_makeup_resolution (
+    id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+    decision, status, decided_by_staff_account_id, decided_at,
+    is_test, test_run_id, created_at, updated_at
+  ) VALUES (
+    'legacy-post-0059', 'enrollment-6', 'source-class', 'lesson-1',
+    'no_makeup', 'active', 'teacher-staff', '${now}',
+    1, 'makeup-test', '${now}', '${now}'
+  );`);
+  const legacyTransition = JSON.parse(sqlite(`SELECT resolution.case_id AS caseId,
+      makeup_case.current_resolution_id AS currentResolutionId, makeup_case.state
+    FROM course_makeup_resolution AS resolution
+    INNER JOIN course_makeup_case AS makeup_case ON makeup_case.id = resolution.case_id
+    WHERE resolution.id = 'legacy-post-0059';`, true));
+  assert.deepEqual(legacyTransition, [{ caseId: legacyTransition[0].caseId, currentResolutionId: 'legacy-post-0059', state: 'closed' }],
+    "a released Worker write after 0059 is adopted into exactly one durable case");
+  assert.throws(() => sqlite(`INSERT INTO course_makeup_resolution (
+    id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+    decision, status, decided_by_staff_account_id, decided_at,
+    is_test, test_run_id, created_at, updated_at
+  ) VALUES (
+    'legacy-post-0059-duplicate', 'enrollment-6', 'source-class', 'lesson-1',
+    'assigned', 'active', 'teacher-staff', '${now}',
+    1, 'makeup-test', '${now}', '${now}'
+  );`), /sqlite3 failed/, "the released Worker cannot create a second active resolution after 0059");
+  sqlite(`UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}',
+    invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}'
+    WHERE id = 'legacy-post-0059';`);
+  const reopenedLegacyCase = JSON.parse(sqlite(`SELECT current_resolution_id AS currentResolutionId, state
+    FROM course_makeup_case WHERE id = ${quote(legacyTransition[0].caseId)};`, true));
+  assert.deepEqual(reopenedLegacyCase, [{ currentResolutionId: null, state: 'open' }],
+    "legacy invalidation reopens its adopted case without leaving a stale current attempt");
 
   for (const [source, output] of [["src/server/staff/course-makeups.ts", makeupBundle], ["src/server/staff/course-attendance.ts", attendanceBundle]]) {
     const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
@@ -217,7 +258,7 @@ try {
   }
   assert.equal((await makeups.getCourseMakeupOverview(runtime, actor(), undefined, beforeSourceEnd)).unresolved.length, 0, "no make-up case exists before source class end");
   let overview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
-  assert.deepEqual(overview.unresolved.map((entry) => entry.enrollmentId).sort(), ["enrollment-1", "enrollment-2", "enrollment-4", "enrollment-5"], "post-class unchecked students are unresolved while present is excluded");
+  assert.deepEqual(overview.unresolved.map((entry) => entry.enrollmentId).sort(), ["enrollment-1", "enrollment-2", "enrollment-4", "enrollment-5", "enrollment-6"], "post-class unchecked students and reopened legacy cases are unresolved while present is excluded");
   assert.equal(overview.unresolved.find((entry) => entry.enrollmentId === "enrollment-2").hasAbsenceNotice, true, "prior notice is context only");
   await assert.rejects(() => makeups.getCourseMakeupOverview(runtime, actor("accountant"), undefined, afterSourceEnd), /Course make-up/, "accountants cannot view make-ups");
 
@@ -324,6 +365,34 @@ try {
   await makeups.cancelCourseMakeupAssignment(runtime, actor(), { assignmentId: secondAttempt.assignmentId }, afterSourceEnd);
   assert.equal(database.query("SELECT state FROM course_makeup_case WHERE source_enrollment_id = 'enrollment-2'")[0].state, 'resolved', "cancelling an unmarked later attempt restores the truthful completed outcome");
   assert.equal(database.query(`SELECT attendance_status AS status FROM course_makeup_attendance WHERE course_makeup_assignment_id = ${quote(firstAttempt.assignmentId)}`)[0].status, 'present', "retired attempt attendance remains immutable history");
+
+  const missedSpecial = await makeups.createSpecialCourseMakeupOccurrence(runtime, actor(), {
+    sources: [source(6)], localDate: today, startTime: '02:00', endTime: '03:00', capacity: 1,
+  }, afterSourceEnd);
+  const missedSpecialAssignment = database.query(`SELECT id FROM course_makeup_assignment
+    WHERE target_special_occurrence_id = ${quote(missedSpecial.specialOccurrenceId)} AND status = 'active'`)[0].id;
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: missedSpecial.specialOccurrenceId, enrollmentId: 'enrollment-6',
+    makeupAssignmentId: missedSpecialAssignment, status: 'absent',
+  });
+  const rebookedSpecialMiss = await makeups.assignCourseMakeupToNormalClass(runtime, actor(), {
+    ...source(6), targetClassSessionId: 'review-target',
+  }, afterSourceEnd);
+  assert.equal(database.query(`SELECT status FROM course_makeup_assignment WHERE id = ${quote(missedSpecialAssignment)}`)[0].status, 'cancelled',
+    "an explicitly absent special attempt retires before the same case is rebooked");
+  const retiredSpecialRoster = await attendance.getCourseAttendanceDay(runtime, actor(), today, missedSpecial.specialOccurrenceId, afterSourceEnd);
+  assert.equal(retiredSpecialRoster.selected.roster.find((entry) => entry.makeupAssignmentId === missedSpecialAssignment)?.recordedAttendanceStatus, 'absent',
+    "a retired special attempt remains visible with its recorded destination attendance");
+  await attendance.recordCourseAttendance(runtime, actor(), {
+    slotId: missedSpecial.specialOccurrenceId, enrollmentId: 'enrollment-6',
+    makeupAssignmentId: missedSpecialAssignment, status: 'late',
+  });
+  assert.equal(database.query(`SELECT attendance_status AS status FROM course_makeup_special_attendance
+    WHERE course_makeup_assignment_id = ${quote(missedSpecialAssignment)}`)[0].status, 'late',
+  "a retired marked special attempt can receive a truthful attendance correction without retargeting it");
+  assert.equal(database.query("SELECT state FROM course_makeup_case WHERE source_enrollment_id = 'enrollment-6'")[0].state, 'reconciliation',
+    "a corrected fulfilled historical attempt flags the case while its later booking remains current");
+  assert.equal(rebookedSpecialMiss.assignmentId.length > 0, true, "rebooking creates one new current attempt without retargeting the historical special mark");
 
   const rescheduled = await makeups.createSpecialCourseMakeupOccurrence(runtime, actor(), {
     sources: [source(5)], localDate: addCivilDays(targetDate, 2), startTime: '18:00', endTime: '19:00', capacity: 1,

@@ -98,7 +98,8 @@ function count(database, table, where = "1 = 1") {
 try {
   const migrations = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
   const specialAttendanceMigration = "0058_course_makeup_special_attendance.sql";
-  sqlite(migrations.filter((file) => file !== specialAttendanceMigration)
+  const lifecycleMigration = "0059_course_makeup_case_lifecycle.sql";
+  sqlite(migrations.filter((file) => file !== specialAttendanceMigration && file !== lifecycleMigration)
     .map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
   for (const [source, output] of [["src/server/staff/course-attendance.ts", attendanceBundle], ["src/server/staff/program-calendar.ts", calendarBundle], ["src/server/staff/registration-cancellation.ts", cancellationBundle]]) {
@@ -198,6 +199,7 @@ try {
   assert.equal(database.query("SELECT attendance_status AS status FROM course_makeup_attendance WHERE id = 'legacy-makeup-attendance'")[0].status, "present", "0058 preserves a normal make-up mark from the released schema");
   assert.equal(count(database, "course_makeup_attendance_change", "course_makeup_attendance_id = 'legacy-makeup-attendance'"), legacyNormalHistory, "0058 preserves normal make-up correction history from the released schema");
   assert.equal(count(database, "course_makeup_special_attendance"), 0, "0058 does not create special-session attendance rows during upgrade");
+  sqlite(readFileSync(path.join("migrations", lifecycleMigration), "utf8"));
   sqlite(`UPDATE course_makeup_assignment SET status = 'cancelled', cancelled_at = '${now}', cancelled_by_staff_account_id = 'teacher-staff', cancellation_reason = 'teacher_reopened', updated_at = '${now}' WHERE id = 'legacy-makeup-assignment';
     UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}' WHERE id = 'legacy-makeup-resolution';`);
 
@@ -266,8 +268,10 @@ try {
       'active', 'teacher-staff', '${now}', 1, 'attendance-test', '${now}', '${now}');
   `);
   const makeupDestination = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-makeup-target", afterClassEnd);
-  assert.equal(makeupDestination.selected.rosterCount, 1, "an active normal make-up assignment joins its exact target attendance roster");
-  const makeupRow = makeupDestination.selected.roster[0];
+  assert.equal(makeupDestination.selected.rosterCount, 2, "an active normal make-up joins its exact target roster while a retired marked attempt remains historical evidence");
+  assert.equal(makeupDestination.selected.roster.find((entry) => entry.makeupAssignmentId === "legacy-makeup-assignment")?.recordedAttendanceStatus, "present",
+    "0059 keeps an earlier marked make-up attempt visible at its original destination");
+  const makeupRow = makeupDestination.selected.roster.find((entry) => entry.makeupAssignmentId === "makeup-assignment");
   assert.equal(makeupRow.attendanceKind, "makeup", "the destination roster labels the make-up attendee distinctly");
   assert.equal(makeupRow.makeupAssignmentId, "makeup-assignment");
   assert.equal(makeupRow.makeupSource.lessonTitle, "Өнгөрсөн хичээл", "the target roster preserves the source missed-lesson linkage");
@@ -288,8 +292,12 @@ try {
   assert.equal(count(database, "course_makeup_attendance_change", "course_makeup_attendance_id = (SELECT id FROM course_makeup_attendance WHERE course_makeup_assignment_id = 'makeup-assignment')"), 3, "make-up attendance recording and correction retain append-only history");
   sqlite(`UPDATE course_makeup_assignment SET status = 'cancelled', cancelled_at = '${now}', cancelled_by_staff_account_id = 'teacher-staff', cancellation_reason = 'teacher_reopened', updated_at = '${now}' WHERE id = 'makeup-assignment';
     UPDATE course_makeup_resolution SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff', invalidation_reason = 'assignment_cancelled', updated_at = '${now}' WHERE id = 'makeup-resolution';`);
+  assert.throws(() => sqlite(`UPDATE course_makeup_attendance SET attendance_status = 'present'
+    WHERE course_makeup_assignment_id = 'makeup-assignment';`), /must match an active normal target/,
+  "a retired unmarked normal attempt cannot receive a new attendance mark");
   const cancelledMakeupDestination = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-makeup-target", afterClassEnd);
-  assert.equal(cancelledMakeupDestination.selected.rosterCount, 0, "cancelled make-up assignments leave the target roster while preserving their audit history");
+  assert.equal(cancelledMakeupDestination.selected.rosterCount, 1, "an unmarked cancelled assignment leaves the target roster while a separate marked historical attempt remains visible");
+  assert.equal(cancelledMakeupDestination.selected.roster[0].makeupAssignmentId, "legacy-makeup-assignment", "the preserved row is the original marked attempt, not the cancelled unmarked booking");
 
   const specialDate = addCivilDays(past, -1);
   sqlite(`
@@ -370,7 +378,7 @@ try {
   assert.equal(count(database, "course_makeup_special_attendance"), 2, "special marks are stored once per booked assignment without rewriting ordinary attendance");
   assert.equal(count(database, "course_makeup_attendance", "course_makeup_assignment_id LIKE 'special-%'"), 0, "special marks do not contaminate normal make-up attendance");
   assert.equal(count(database, "course_makeup_special_attendance_change", "course_makeup_special_attendance_id = (SELECT id FROM course_makeup_special_attendance WHERE course_makeup_assignment_id = 'special-assignment-a')"), 2, "special mark corrections retain append-only history");
-  assert.throws(() => sqlite(`UPDATE course_makeup_assignment SET status = 'cancelled' WHERE id = 'special-assignment-a';`), /cannot cancel attended special make-up assignment/, "database blocks unbooking an attended special assignment");
+  assert.throws(() => sqlite(`UPDATE course_makeup_assignment SET status = 'cancelled' WHERE id = 'special-assignment-a';`), /cannot cancel fulfilled special make-up assignment/, "database blocks unbooking a fulfilled special assignment");
   assert.throws(() => sqlite(`UPDATE course_makeup_special_occurrence SET status = 'cancelled' WHERE id = 'special-attendance';`), /cannot cancel attended special make-up occurrence/, "database blocks cancelling an attended special session");
   const specialReloaded = await attendance.getCourseAttendanceDay(runtime, actor(), specialDate, "special-attendance", afterClassEnd);
   assert.equal(specialReloaded.selected.roster.find((entry) => entry.enrollmentId === "enrollment-a").recordedAttendanceStatus, "late", "special attendance persists through a fresh roster read");
