@@ -667,12 +667,18 @@ try {
   const cachedAvailability = await makeups.getCourseMakeupGroupAvailability(runtime, actor(), { sources: [source(7), source(8)] }, afterSourceEnd);
   assert.ok(cachedAvailability.targets.some((target) => target.kind === "normal_class" && target.classSessionId === 'group-target'
     && target.eligibleSourceKeys.length === 2), "one shared availability response retains per-child eligibility for a normal destination");
+  const groupTarget = cachedAvailability.targets.find((target) => target.kind === 'normal_class' && target.classSessionId === 'group-target');
+  await assert.rejects(() => makeups.previewCourseMakeupGroupDestinationBooking(runtime, actor(), {
+    sources: [source(7), source(8)], targetKind: 'normal_class', targetClassSessionId: 'group-target', targetSlotId: 'wrong-slot',
+  }, afterSourceEnd), /Course make-up/, "an existing normal destination must name its current occurrence, not only its class");
   const existingPreview = await makeups.previewCourseMakeupGroupDestinationBooking(runtime, actor(), {
     sources: [source(7), source(8)], targetKind: 'normal_class', targetClassSessionId: 'group-target',
+    targetSlotId: groupTarget?.slotId,
   }, afterSourceEnd);
   const existingInput = {
     sources: [source(7), source(8)], expectedFingerprint: existingPreview.fingerprint,
-    targetKind: 'normal_class', targetClassSessionId: 'group-target', operationId: '67676767-6767-4676-8676-676767676767',
+    targetKind: 'normal_class', targetClassSessionId: 'group-target', targetSlotId: existingPreview.target.slotId,
+    operationId: '67676767-6767-4676-8676-676767676767',
   };
   const existingBooking = await makeups.assignCourseMakeupGroupToExistingDestination(runtime, actor(), existingInput, afterSourceEnd);
   assert.equal(existingBooking.assignmentIds.length, 2, "one reviewed existing-session operation assigns every selected learner");

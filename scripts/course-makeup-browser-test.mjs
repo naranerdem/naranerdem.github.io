@@ -5,6 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "@playwright/test";
+import { assertDisposableLocalWrangler, failWithoutQuotaRetry } from "./local-disposable-test-target.mjs";
 
 // Disposable Worker/D1 coverage for the rendered teacher make-up workflow.
 // The staff cookie is a regular hashed local session, never a production bypass.
@@ -22,9 +23,10 @@ let context;
 let workerOutput = "";
 
 function runWrangler(args, label) {
+  assertDisposableLocalWrangler(args, persistDir, label);
   // The complete local migration ledger exceeds Node's default subprocess buffer.
   const result = spawnSync(process.execPath, [wranglerCli, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-  if (result.status !== 0) throw new Error(`${label} failed\n${result.stdout}\n${result.stderr}`);
+  if (result.status !== 0) failWithoutQuotaRetry(label, result);
 }
 function sql(value) { return `'${String(value).replaceAll("'", "''")}'`; }
 function execute(command) {
@@ -225,6 +227,11 @@ try {
   page.setDefaultTimeout(10_000);
   const browserErrors = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
+  let destinationCandidateRequests = 0;
+  page.on("request", (request) => {
+    if (!request.url().endsWith("/api/staff/makeups") || request.method() !== "POST") return;
+    try { if (JSON.parse(request.postData() || "{}").action === "makeup.destination-candidates") destinationCandidateRequests += 1; } catch {}
+  });
   console.log("make-up browser fixture: opening teacher home");
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });
@@ -264,9 +271,11 @@ try {
   let availabilityStarted;
   const availabilityRequested = new Promise((resolve) => { availabilityStarted = resolve; });
   let delayedAvailability = false;
+  let availabilityRequestCount = 0;
   const delayFirstAvailability = async (route) => {
     const body = JSON.parse(route.request().postData() || "{}");
     if (!delayedAvailability && body.action === "makeup.group-availability") {
+      availabilityRequestCount += 1;
       delayedAvailability = true;
       availabilityStarted();
       await availabilityHeld;
@@ -281,6 +290,7 @@ try {
   const interactionLabel = interactionCheckbox.locator("xpath=ancestor::label");
   await interactionLabel.locator("strong").click();
   await page.waitForFunction((input) => input.checked, await interactionCheckbox.elementHandle());
+  assert.equal(availabilityRequestCount, 1, "opening the lesson starts one shared availability request before local checkbox changes");
   await interactionLabel.locator("strong").click();
   await page.waitForFunction((input) => !input.checked, await interactionCheckbox.elementHandle());
   await interactionLabel.locator("strong").click();
@@ -365,6 +375,25 @@ try {
   await page.waitForFunction((button) => document.activeElement === button, await normalButton.elementHandle());
   assert.equal(await normalButton.evaluate((button) => document.activeElement === button), true,
     "closing an inline review returns focus to its initiating action");
+  await refreshedGroup.getByRole("button", { name: "Шинэ цаг", exact: true }).click();
+  const specialDraft = refreshedGroup.locator("#group-special-form");
+  await specialDraft.waitFor({ state: "visible" });
+  await specialDraft.locator("[name='localDate']").fill(addDays(today, 4));
+  await specialDraft.locator("[name='startTime']").fill("18:00");
+  await specialDraft.locator("[name='note']").fill("Сонголт хадгалах туршилт");
+  await refreshedCheckbox.press("Space");
+  await specialDraft.getByText("Товлох сурагч сонгоно уу.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await specialDraft.locator("[name='startTime']").inputValue(), "18:00", "changing selection keeps the open new-session draft fields");
+  assert.equal(await specialDraft.locator("[name='note']").inputValue(), "Сонголт хадгалах туршилт", "selection does not remount away the entered note");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await specialDraft.screenshot({ path: path.join(screenshotDir, "makeup-new-session-selection-empty-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await specialDraft.screenshot({ path: path.join(screenshotDir, "makeup-new-session-selection-empty-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await refreshedCheckbox.press("Space");
+  await specialDraft.getByRole("button", { name: "Урьдчилан харах", exact: true }).waitFor({ state: "visible" });
+  await specialDraft.getByRole("button", { name: "Болих", exact: true }).click();
+  await specialDraft.waitFor({ state: "hidden" });
   await normalButton.click();
   await inlineReview.locator("[data-preview-destination='normal_class']").click();
   await inlineReview.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
@@ -374,35 +403,41 @@ try {
   assert.equal(normalAssignment.length, 1, "the rendered normal-target action creates one active normal-class assignment alongside the seeded special bookings");
   assert.equal(normalAssignment[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
 
-  console.log("make-up browser fixture: selecting an existing special-session destination from both entry points");
+  console.log("make-up browser fixture: selecting an existing special-session destination from attendance");
   execute(`UPDATE course_makeup_special_occurrence
     SET local_date = '${addDays(today, 2)}', updated_at = ${sql(now)}
     WHERE id = 'add-special-occurrence';`);
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });
-  const agendaAddLearner = page.locator("#staff-agenda [data-agenda-add-learner='special'][data-agenda-target-id='add-special-occurrence']");
-  await agendaAddLearner.click();
-  const agendaPicker = page.locator(".staff-agenda-makeup-panel");
-  await agendaPicker.getByText("Архив Туршилт", { exact: true }).waitFor({ state: "visible" });
-  const agendaPickerCheckbox = agendaPicker.locator("[data-agenda-makeup-source][value='archive-enrollment|source-class|lesson']");
-  await agendaPickerCheckbox.locator("xpath=ancestor::label").locator("strong").click();
-  assert.equal(await agendaPickerCheckbox.isChecked(), true, "the agenda picker shares immediate local checkbox selection");
-  await agendaPicker.getByRole("button", { name: "Болих", exact: true }).click();
+  assert.equal(await page.locator("#staff-agenda [data-agenda-add-learner]").count(), 0,
+    "agenda cards navigate to attendance without preloading a separate learner picker");
+  assert.equal(destinationCandidateRequests, 0, "calendar rendering does not request destination candidates");
+  await page.goto(`${baseUrl}/staff/attendance/?date=${addDays(today, 2)}&occurrence=add-special-occurrence&makeupAdd=1`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  const attendancePicker = page.locator("#attendance-detail .staff-makeup-detail");
+  await attendancePicker.getByText("Архив Туршилт", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(destinationCandidateRequests, 1, "the attendance add action requests candidates exactly once for its selected occurrence");
+  const attendancePickerCheckbox = attendancePicker.locator("[data-attendance-makeup-source][value='archive-enrollment|source-class|lesson']");
+  await attendancePickerCheckbox.locator("xpath=ancestor::label").locator("strong").click();
+  assert.equal(await attendancePickerCheckbox.isChecked(), true, "the attendance picker shares immediate local checkbox selection");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await attendancePicker.screenshot({ path: path.join(screenshotDir, "attendance-add-learner-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await attendancePicker.screenshot({ path: path.join(screenshotDir, "attendance-add-learner-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await attendancePicker.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await attendancePicker.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
+  await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  const scheduledSpecialGroup = page.locator("[data-section='scheduled'] [data-makeup-group]").filter({ has: page.locator("[data-open-add-learners='special'][data-target-id='add-special-occurrence']") }).first();
   await page.locator("[data-section='scheduled'] > summary").click();
-  await scheduledSpecialGroup.locator(":scope > summary").click();
-  await scheduledSpecialGroup.locator("[data-open-add-learners='special'][data-target-id='add-special-occurrence']").click();
-  const scheduledPicker = scheduledSpecialGroup.locator("#makeup-detail");
-  const scheduledPickerCheckbox = scheduledPicker.locator("[data-destination-select][value='archive-enrollment|source-class|lesson']");
-  await scheduledPickerCheckbox.locator("xpath=ancestor::label").locator("strong").click();
-  await scheduledPicker.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
-  await scheduledPicker.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
-  await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  const scheduledShortcut = page.locator("[data-section='scheduled'] a[href*='occurrence=add-special-occurrence'][href*='makeupAdd=1']").first();
+  await scheduledShortcut.click();
+  await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=add-special-occurrence.*makeupAdd=1/);
+  await page.locator("#attendance-detail .staff-makeup-detail").getByText("Нэмэх боломжтой сурагч алга.", { exact: true }).waitFor({ state: "visible" });
   const afterSpecialAdd = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   assert.equal(afterSpecialAdd.scheduled.filter((entry) => entry.targetSpecialOccurrenceId === "add-special-occurrence").length, 2,
-    "the planned-session picker adds exactly one eligible learner to the existing special session");
+    "the attendance picker adds exactly one eligible learner to the existing special session");
 
   execute(`
     UPDATE class_session SET capacity = 2 WHERE id = 'target-class';

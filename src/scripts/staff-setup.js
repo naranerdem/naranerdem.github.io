@@ -151,12 +151,16 @@ export async function hasSetupAccess() {
   return Boolean(session.authenticated && capabilities.includes("program.manage") && capabilities.includes("calendar.manage"));
 }
 
-export async function hasAttendanceAccess() {
+export async function getStaffCapabilities() {
   const response = await fetch("/api/staff/session", { credentials: "same-origin" });
-  if (!response.ok) return false;
+  if (!response.ok) return [];
   const session = await response.json();
-  const capabilities = session.capabilities || [];
-  return Boolean(session.authenticated && capabilities.includes("attendance.view") && capabilities.includes("attendance.manage"));
+  return session.authenticated ? session.capabilities || [] : [];
+}
+
+export async function hasAttendanceAccess() {
+  const capabilities = await getStaffCapabilities();
+  return capabilities.includes("attendance.view") && capabilities.includes("attendance.manage");
 }
 
 export async function hasMakeupAccess() {

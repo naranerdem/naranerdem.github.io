@@ -44,7 +44,7 @@ import "../../styles/global.css";
         effectiveAttendanceStatus,
         markedRosterCount,
       } from "../../scripts/attendance-optimistic.js";
-      import { escape, formatDate, getAttendanceDay, hasAttendanceAccess, postAttendanceAction } from "../../scripts/staff-setup.js";
+      import { escape, formatDate, getAttendanceDay, getStaffCapabilities, postAttendanceAction, postCourseMakeupAction } from "../../scripts/staff-setup.js";
 
       const params = new URLSearchParams(location.search);
       const safeHomeDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : "";
@@ -56,7 +56,7 @@ import "../../styles/global.css";
       if (homeDate) homeReturn.set("date", homeDate);
       if (homeDay) homeReturn.set("day", homeDay);
       const returnTo = homeReturn.size ? `/staff/?${homeReturn.toString()}` : "/staff/";
-      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "", refreshVersion: 0 };
+      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "", refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0 };
       const q = (selector) => document.querySelector(selector);
       q("#attendance-back").href = returnTo;
       q("#attendance-back").addEventListener("click", (event) => {
@@ -79,6 +79,7 @@ import "../../styles/global.css";
       async function refresh() {
         const version = ++state.refreshVersion;
         const requestedSlotId = state.selectedSlotId;
+        if (state.makeupPicker?.slotId !== requestedSlotId) { ++state.makeupPickerVersion; state.makeupPicker = null; }
         const data = await getAttendanceDay(state.date, requestedSlotId);
         if (version !== state.refreshVersion) return;
         state.data = data;
@@ -109,7 +110,7 @@ import "../../styles/global.css";
       }
 
       function attendanceControls(entry) {
-        if (isFuture()) return "";
+        if (isFuture() || !state.canManageAttendance) return "";
         const status = entry.recordedAttendanceStatus || "";
         const checked = attendanceCheckboxState(status);
         const pending = optimistic.isPending(entry.enrollmentId);
@@ -122,6 +123,7 @@ import "../../styles/global.css";
 
       function noticeControls(entry) {
         if (entry.attendanceKind === "makeup") return "";
+        if (!state.canManageAttendance) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
         if (!isFuture()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
         const pending = optimistic.isPending(entry.enrollmentId);
         return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Урьдчилж мэдэгдсэн</label>`;
@@ -143,7 +145,7 @@ import "../../styles/global.css";
 
       function bulkMarkup(selected) {
         const unmarked = selected.rosterCount - markedRosterCount(selected.roster);
-        if (isFuture() || unmarked <= 0) return "";
+        if (isFuture() || !state.canManageAttendance || unmarked <= 0) return "";
         if (state.bulkPending) return `<span class="staff-muted">Тэмдэглэж байна…</span>`;
         if (state.bulkConfirm) return `<div class="staff-attendance-bulk-confirm"><p>Одоогоор тэмдэглээгүй ${unmarked} сурагчийг ирсэн гэж тэмдэглэх үү?</p><div class="staff-inline-actions"><button id="attendance-bulk-cancel" class="button secondary" type="button">Болих</button><button id="attendance-bulk-confirm" class="button primary" type="button">Бүгд ирсэн</button></div></div>`;
         return `<button id="attendance-bulk-present" class="button secondary" type="button">Бүгд ирсэн</button>`;
@@ -181,8 +183,48 @@ import "../../styles/global.css";
         const detail = q("#attendance-detail"); const selected = state.data.selected;
         if (!selected) { detail.hidden = true; detail.innerHTML = ""; return; }
         detail.hidden = false;
-        detail.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(formatDate(selected.localDate))} · ${escape(selected.startTime)}–${escape(selected.endTime)}</p><h2>${escape(selected.offeringTitle)}</h2><p>${escape(selected.classLabel)} · ${selected.lessonSequence}. ${escape(selected.lessonTitle)}</p>${selected.holidayLabel ? `<p class="staff-calendar-warning">Анхааруулга: ${escape(selected.holidayLabel)} хугацаанд.</p>` : ""}</div></div><div id="attendance-summary" class="staff-attendance-summary"></div>${selected.rosterCount ? `<div class="staff-attendance-roster">${selected.roster.map(rosterRow).join("")}</div>` : `<p class="staff-empty">Бүртгэлтэй сурагч алга.</p>`}`;
+        const add = canAddMakeup(selected) ? `<button type="button" class="button secondary" data-open-makeup-picker>Сурагч нэмэх</button>` : "";
+        detail.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(formatDate(selected.localDate))} · ${escape(selected.startTime)}–${escape(selected.endTime)}</p><h2>${escape(selected.offeringTitle)}</h2><p>${escape(selected.classLabel)} · ${selected.lessonSequence}. ${escape(selected.lessonTitle)}</p>${selected.holidayLabel ? `<p class="staff-calendar-warning">Анхааруулга: ${escape(selected.holidayLabel)} хугацаанд.</p>` : ""}</div>${add}</div><div id="attendance-summary" class="staff-attendance-summary"></div>${makeupPickerMarkup(selected)}${selected.rosterCount ? `<div class="staff-attendance-roster">${selected.roster.map(rosterRow).join("")}</div>` : `<p class="staff-empty">Бүртгэлтэй сурагч алга.</p>`}`;
         renderSummary();
+      }
+
+      const makeupSourceKey = (entry) => `${entry.enrollmentId}|${entry.classSessionId}|${entry.curriculumLessonId}`;
+      const makeupSourcePayload = (entry) => ({ enrollmentId: entry.enrollmentId, classSessionId: entry.classSessionId, curriculumLessonId: entry.curriculumLessonId });
+      function makeupTargetPayload(selected) {
+        return selected.occurrenceKind === "special"
+          ? { targetKind: "special", targetSpecialOccurrenceId: selected.specialOccurrenceId || selected.slotId }
+          : { targetKind: "normal_class", targetClassSessionId: selected.classSessionId, targetSlotId: selected.slotId };
+      }
+      function canAddMakeup(selected) {
+        return state.canManageMakeups && !selected.occurrenceEnded;
+      }
+      function makeupPickerMarkup(selected) {
+        const picker = state.makeupPicker;
+        if (!picker || picker.slotId !== selected.slotId) return "";
+        if (picker.status === "loading") return `<section class="staff-makeup-detail" aria-live="polite"><p class="staff-muted" role="status">Тохирох сурагчдыг ачаалж байна…</p></section>`;
+        if (picker.status === "error") return `<section class="staff-makeup-detail" aria-live="polite"><p class="staff-error-inline">${escape(picker.error)}</p><button class="button secondary" type="button" data-retry-makeup-picker>Дахин шалгах</button></section>`;
+        if (picker.status === "empty") return `<section class="staff-makeup-detail" aria-live="polite"><p class="staff-empty">Нэмэх боломжтой сурагч алга.</p><button class="button secondary" type="button" data-close-makeup-picker>Болих</button></section>`;
+        const selectedKeys = picker.selected || new Set();
+        if (picker.status === "review") return `<section class="staff-makeup-detail" aria-live="polite"><div class="staff-section-heading"><div><p class="eyebrow">Сурагч нэмэх</p><h2>${picker.preview.sources.length} сурагч</h2><p>${escape(formatDate(picker.preview.target.localDate))} · ${escape(picker.preview.target.startTime)}–${escape(picker.preview.target.endTime)}</p><p class="staff-muted">Сул суудал: ${picker.preview.target.remainingCapacity}. Баталгаажуулахад дахин шалгана.</p></div></div><div class="staff-inline-actions"><button class="button primary" type="button" data-confirm-makeup-picker>Баталгаажуулах</button><button class="button secondary" type="button" data-edit-makeup-picker>Засах</button></div></section>`;
+        const target = picker.target;
+        return `<section class="staff-makeup-detail" aria-live="polite"><div class="staff-section-heading"><div><p class="eyebrow">Сурагч нэмэх</p><h2>${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)}</h2><p class="staff-muted">${target.kind === "special" ? "Тусгай нөхөх цаг" : escape(target.classLabel)} · Сул суудал: ${target.remainingCapacity}</p></div><button class="button secondary" type="button" data-close-makeup-picker>Болих</button></div>${picker.error ? `<p class="staff-error-inline" role="status">${escape(picker.error)}</p>` : ""}${picker.sources.length ? `<div class="staff-makeup-case-list">${picker.sources.map((entry) => `<label class="staff-makeup-case"><input type="checkbox" data-attendance-makeup-source value="${escape(makeupSourceKey(entry))}" ${selectedKeys.has(makeupSourceKey(entry)) ? "checked" : ""}/><span><strong>${escape(entry.studentName)}</strong><small>${escape([entry.classLabel, entry.sourceLocalDate, entry.sourceStartTime && entry.sourceEndTime ? `${entry.sourceStartTime}–${entry.sourceEndTime}` : ""].filter(Boolean).join(" · "))}</small></span></label>`).join("")}</div><div class="staff-makeup-selection-info"><strong>${selectedKeys.size ? `${selectedKeys.size} сурагч сонгосон` : "Сурагч сонгоно уу"}</strong>${selectedKeys.size > target.remainingCapacity ? `<span class="staff-muted">Энэ цагт бүх сонголт багтахгүй.</span>` : ""}</div><div class="staff-inline-actions"><button class="button primary" type="button" data-preview-makeup-picker ${selectedKeys.size && selectedKeys.size <= target.remainingCapacity ? "" : "disabled"}>Урьдчилан харах</button></div>` : `<p class="staff-empty">Нэмэх боломжтой сурагч алга.</p>`}</section>`;
+      }
+
+      async function loadMakeupPicker(retry = false) {
+        const selected = state.data?.selected;
+        if (!selected || !canAddMakeup(selected)) return;
+        const version = ++state.makeupPickerVersion;
+        state.makeupPicker = { slotId: selected.slotId, status: "loading", selected: new Set() };
+        renderDetail();
+        try {
+          const result = await postCourseMakeupAction("makeup.destination-candidates", makeupTargetPayload(selected));
+          if (version !== state.makeupPickerVersion || state.data?.selected?.slotId !== selected.slotId) return;
+          state.makeupPicker = { slotId: selected.slotId, status: result.sources.length ? "ready" : "empty", selected: new Set(), ...result };
+        } catch (error) {
+          if (version !== state.makeupPickerVersion || state.data?.selected?.slotId !== selected.slotId) return;
+          state.makeupPicker = { slotId: selected.slotId, status: "error", selected: new Set(), error: error.message || "Сурагчдын жагсаалтыг ачаалж чадсангүй." };
+        }
+        renderDetail();
       }
 
       async function mutateRow(enrollmentId, next, action, payload, success) {
@@ -229,9 +271,47 @@ import "../../styles/global.css";
         }
       }
 
-      q("#attendance-detail").addEventListener("click", (event) => {
+      q("#attendance-detail").addEventListener("click", async (event) => {
         const target = event.target.closest("button");
         if (!target || target.disabled) return;
+        if (target.dataset.openMakeupPicker !== undefined || target.dataset.retryMakeupPicker !== undefined) { loadMakeupPicker(target.dataset.retryMakeupPicker !== undefined); return; }
+        if (target.dataset.closeMakeupPicker !== undefined) { ++state.makeupPickerVersion; state.makeupPicker = null; renderDetail(); return; }
+        if (target.dataset.editMakeupPicker !== undefined) {
+          const picker = state.makeupPicker;
+          if (picker?.status === "review") { state.makeupPicker = { ...picker, status: "ready", preview: null }; renderDetail(); }
+          return;
+        }
+        if (target.dataset.previewMakeupPicker !== undefined) {
+          const picker = state.makeupPicker; const selected = state.data?.selected;
+          if (!picker || !selected || picker.status !== "ready") return;
+          const sources = picker.sources.filter((entry) => picker.selected.has(makeupSourceKey(entry)));
+          if (!sources.length || sources.length > picker.target.remainingCapacity) return;
+          target.disabled = true; target.textContent = "Урьдчилан харж байна…";
+          try {
+            const preview = await postCourseMakeupAction("makeup.group-destination-preview", { sources: sources.map(makeupSourcePayload), ...makeupTargetPayload(selected) });
+            if (state.makeupPicker !== picker || state.data?.selected?.slotId !== selected.slotId) return;
+            state.makeupPicker = { ...picker, status: "review", preview, selected: new Set(sources.map(makeupSourceKey)) };
+            renderDetail();
+          } catch (error) {
+            if (state.makeupPicker === picker) { picker.error = error.message || "Урьдчилан харах боломжгүй."; renderDetail(); }
+          }
+          return;
+        }
+        if (target.dataset.confirmMakeupPicker !== undefined) {
+          const picker = state.makeupPicker; const selected = state.data?.selected;
+          if (!picker?.preview || !selected) return;
+          target.disabled = true; target.textContent = "Хадгалж байна…";
+          try {
+            await postCourseMakeupAction("makeup.group-destination-book", {
+              sources: picker.preview.sources.map(makeupSourcePayload), expectedFingerprint: picker.preview.fingerprint,
+              ...makeupTargetPayload(selected), operationId: picker.operationId ||= crypto.randomUUID(),
+            });
+            ++state.makeupPickerVersion; state.makeupPicker = null; await refresh(); message("Нөхөх хичээлийн товыг хадгаллаа.", true);
+          } catch (error) {
+            if (state.makeupPicker === picker) { picker.error = error.message || "Товыг хадгалж чадсангүй."; target.disabled = false; target.textContent = "Баталгаажуулах"; }
+          }
+          return;
+        }
         if (target.id === "attendance-bulk-present") { state.bulkConfirm = true; renderSummary(); return; }
         if (target.id === "attendance-bulk-cancel") { state.bulkConfirm = false; renderSummary(); return; }
         if (target.id === "attendance-bulk-confirm") { bulkPresent(); return; }
@@ -239,6 +319,11 @@ import "../../styles/global.css";
       });
       q("#attendance-detail").addEventListener("change", (event) => {
         const target = event.target;
+        if (target.matches("[data-attendance-makeup-source]") && state.makeupPicker?.status === "ready") {
+          const selected = new Set(state.makeupPicker.selected || []);
+          target.checked ? selected.add(target.value) : selected.delete(target.value);
+          state.makeupPicker.selected = selected; renderDetail(); return;
+        }
         if (target.matches("[data-attendance-control]")) {
           const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === target.dataset.enrollment);
           if (entry) setAttendance(entry.enrollmentId, attendanceStatusAfterToggle(entry.recordedAttendanceStatus, target.dataset.attendanceControl, target.checked));
@@ -251,10 +336,17 @@ import "../../styles/global.css";
         if (!target || !canChangeOccurrence(event)) return;
       });
       function render() { renderList(); renderDetail(); }
-      q("#attendance-date-form").onsubmit = (event) => { event.preventDefault(); if (!canChangeOccurrence(event)) return; state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
-      q("#attendance-date").onchange = (event) => { if (!canChangeOccurrence(event)) { q("#attendance-date").value = state.date; return; } state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
-      q("#attendance-today").onclick = (event) => { if (!canChangeOccurrence(event)) return; state.date = state.data.today; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
-      (async () => { if (!(await hasAttendanceAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+      q("#attendance-date-form").onsubmit = (event) => { event.preventDefault(); if (!canChangeOccurrence(event)) return; ++state.makeupPickerVersion; state.makeupPicker = null; state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
+      q("#attendance-date").onchange = (event) => { if (!canChangeOccurrence(event)) { q("#attendance-date").value = state.date; return; } ++state.makeupPickerVersion; state.makeupPicker = null; state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
+      q("#attendance-today").onclick = (event) => { if (!canChangeOccurrence(event)) return; ++state.makeupPickerVersion; state.makeupPicker = null; state.date = state.data.today; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };
+      (async () => {
+        const capabilities = await getStaffCapabilities();
+        if (!capabilities.includes("attendance.view")) { show("tool-denied"); return; }
+        state.canManageAttendance = capabilities.includes("attendance.manage");
+        state.canManageMakeups = capabilities.includes("makeup.manage");
+        await refresh(); show("tool-app");
+        if (params.get("makeupAdd") === "1") void loadMakeupPicker();
+      })().catch(() => show("tool-denied"));
     </script>
   </body>
 </html>

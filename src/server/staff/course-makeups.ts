@@ -37,6 +37,7 @@ interface SourceRow extends SourceIdentity {
 }
 
 interface NormalTargetRow {
+  slotId: string;
   classSessionId: string;
   curriculumLessonId: string;
   localDate: string;
@@ -359,6 +360,74 @@ async function unresolvedSources(
     .map((entry) => entry.source);
 }
 
+interface DestinationLessonContext {
+  kind: "normal_class" | "special";
+  slotId: string | null;
+  classSessionId: string | null;
+  specialOccurrenceId: string | null;
+  curriculumLessonId: string;
+  curriculumProgramId: string;
+  academicYearId: string;
+}
+
+async function destinationLessonContext(
+  env: WorkerEnv,
+  requested: ReturnType<typeof requestedExistingTarget>,
+  at = new Date(),
+): Promise<DestinationLessonContext> {
+  const local = localDateTime(at);
+  const row = requested.kind === "normal_class"
+    ? await env.DB.prepare(`SELECT 'normal_class' AS kind, slot.id AS slotId,
+        class_session.id AS classSessionId, NULL AS specialOccurrenceId,
+        lesson.id AS curriculumLessonId, program.id AS curriculumProgramId,
+        program.academic_year_id AS academicYearId
+      FROM class_calendar_slot AS slot
+      INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id AND revision.status = 'published'
+      INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+      INNER JOIN class_session ON class_session.id = calendar.class_session_id
+      INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
+      INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
+      WHERE slot.id = ? AND class_session.id = ? AND slot.status = 'scheduled'
+        AND (slot.local_date > ? OR (slot.local_date = ? AND slot.start_time > ?))`).bind(
+      requested.slotId, requested.key.slice("normal:".length), local.date, local.date, local.time,
+    ).first<DestinationLessonContext>()
+    : await env.DB.prepare(`SELECT 'special' AS kind, NULL AS slotId, NULL AS classSessionId,
+        special.id AS specialOccurrenceId, lesson.id AS curriculumLessonId,
+        program.id AS curriculumProgramId, program.academic_year_id AS academicYearId
+      FROM course_makeup_special_occurrence AS special
+      INNER JOIN curriculum_lesson AS lesson ON lesson.id = special.curriculum_lesson_id
+      INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
+      WHERE special.id = ? AND special.status = 'active'
+        AND (special.local_date > ? OR (special.local_date = ? AND special.start_time > ?))`).bind(
+      requested.key.slice("special:".length), local.date, local.date, local.time,
+    ).first<DestinationLessonContext>();
+  if (!row) throw new CourseMakeupError("not_eligible");
+  return row;
+}
+
+async function unresolvedSourcesForDestination(
+  env: WorkerEnv,
+  destination: DestinationLessonContext,
+  at = new Date(),
+): Promise<SourceRow[]> {
+  const local = localDateTime(at);
+  const result = await env.DB.prepare(`${SOURCE_SELECT}
+    AND lesson.id = ? AND program.id = ? AND program.academic_year_id = ?
+    AND (slot.local_date < ? OR (slot.local_date = ? AND slot.end_time <= ?))
+    GROUP BY enrollment.id, class_session.id, lesson.id
+    ORDER BY slot.local_date DESC, slot.start_time, student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE`).bind(
+    destination.curriculumLessonId, destination.curriculumProgramId, destination.academicYearId,
+    local.date, local.date, local.time,
+  ).all<SourceRow>();
+  const cases = await caseRows(env);
+  const states = await lessonStates(env);
+  const eligible = await Promise.all(result.results.map(async (source) => ({
+    source, state: await currentAttemptState(env, cases.get(sourceKey(source)) ?? null, at),
+  })));
+  return eligible.filter((entry) => entry.state === "needs_action"
+    && states.get(lessonKey(entry.source))?.status !== "retired").map((entry) => entry.source);
+}
+
 async function unresolvedSource(
   env: WorkerEnv,
   source: SourceIdentity,
@@ -387,6 +456,7 @@ async function normalTargets(
 ): Promise<Array<NormalTargetRow & { remainingCapacity: number; classLabel: string }>> {
   const local = localDateTime(at);
   const result = await env.DB.prepare(`SELECT
+      slot.id AS slotId,
       class_session.id AS classSessionId,
       slot.curriculum_lesson_id AS curriculumLessonId,
       slot.local_date AS localDate,
@@ -939,6 +1009,7 @@ async function commonNormalTargets(
 type ExistingMakeupTarget = {
   kind: "normal_class" | "special";
   key: string;
+  slotId?: string;
   classSessionId?: string;
   specialOccurrenceId?: string;
   localDate: string;
@@ -952,7 +1023,7 @@ type ExistingMakeupTarget = {
 
 function normalTarget(target: NormalTargetRow & { remainingCapacity: number; classLabel: string }): ExistingMakeupTarget {
   return {
-    kind: "normal_class", key: `normal:${target.classSessionId}`, classSessionId: target.classSessionId,
+    kind: "normal_class", key: `normal:${target.classSessionId}`, slotId: target.slotId, classSessionId: target.classSessionId,
     localDate: target.localDate, startTime: target.startTime, endTime: target.endTime,
     classLabel: target.classLabel, remainingCapacity: target.remainingCapacity,
   };
@@ -1124,16 +1195,22 @@ export async function previewCourseMakeupGroupNormalBooking(
   };
 }
 
-function requestedExistingTarget(input: Record<string, unknown>): { kind: "normal_class" | "special"; key: string } {
+function requestedExistingTarget(input: Record<string, unknown>): { kind: "normal_class" | "special"; key: string; slotId: string | null } {
   const kind = clean(input.targetKind);
   const id = kind === "normal_class" ? clean(input.targetClassSessionId) : clean(input.targetSpecialOccurrenceId);
   if ((kind !== "normal_class" && kind !== "special") || !id) throw new CourseMakeupError("invalid");
-  return { kind, key: `${kind === "normal_class" ? "normal" : "special"}:${id}` };
+  const slotId = kind === "normal_class" ? clean(input.targetSlotId) : null;
+  if (kind === "normal_class" && !slotId) throw new CourseMakeupError("invalid");
+  return { kind, key: `${kind === "normal_class" ? "normal" : "special"}:${id}`, slotId };
+}
+
+function matchesRequestedTarget(target: ExistingMakeupTarget, requested: ReturnType<typeof requestedExistingTarget>): boolean {
+  return target.key === requested.key && (requested.kind !== "normal_class" || target.slotId === requested.slotId);
 }
 
 function serializeExistingTarget(target: ExistingMakeupTarget) {
   return {
-    kind: target.kind, classSessionId: target.classSessionId ?? null,
+    kind: target.kind, slotId: target.slotId ?? null, classSessionId: target.classSessionId ?? null,
     specialOccurrenceId: target.specialOccurrenceId ?? null,
     localDate: target.localDate, startTime: target.startTime, endTime: target.endTime,
     classLabel: target.classLabel, remainingCapacity: target.remainingCapacity,
@@ -1151,7 +1228,7 @@ export async function previewCourseMakeupGroupDestinationBooking(
   const group = await reviewedLessonGroup(env, input, at);
   const requested = requestedExistingTarget(input);
   const candidates = await commonExistingTargets(env, group.sources, at);
-  const target = candidates.find((candidate) => candidate.key === requested.key);
+  const target = candidates.find((candidate) => matchesRequestedTarget(candidate, requested));
   if (!target) throw new CourseMakeupError("not_eligible");
   return {
     fingerprint: group.fingerprint,
@@ -1178,7 +1255,7 @@ export async function assignCourseMakeupGroupToExistingDestination(
   if (replay) return replay;
   const group = await reviewedLessonGroup(env, input, at);
   expectedFingerprint(input, group.fingerprint);
-  const target = (await commonExistingTargets(env, group.sources, at)).find((candidate) => candidate.key === requested.key);
+  const target = (await commonExistingTargets(env, group.sources, at)).find((candidate) => matchesRequestedTarget(candidate, requested));
   if (!target || target.remainingCapacity < group.sources.length) throw new CourseMakeupError("capacity");
   const time = now();
   const caseRefs = await Promise.all(group.sources.map((source) => existingOrNewCase(env, source, id())));
@@ -1217,12 +1294,13 @@ export async function getCourseMakeupDestinationCandidates(
 ) {
   requireCapability(actor, "makeup.manage");
   const requested = requestedExistingTarget(input);
-  const sources = await unresolvedSources(env, at);
+  const destination = await destinationLessonContext(env, requested, at);
+  const sources = await unresolvedSourcesForDestination(env, destination, at);
   const candidates: SourceRow[] = [];
   let target: ExistingMakeupTarget | null = null;
   for (const source of sources) {
     const matches = await commonExistingTargets(env, [source], at);
-    const match = matches.find((entry) => entry.key === requested.key);
+    const match = matches.find((entry) => matchesRequestedTarget(entry, requested));
     if (match) {
       candidates.push(source);
       target ||= match;

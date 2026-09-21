@@ -141,7 +141,7 @@ import "../styles/global.css";
         }
       })();
       if (storedAgendaState && !agendaParams.size) sessionStorage.removeItem("staff-agenda-return");
-      const agendaState = { data: null, week: agendaParams.get("week") || storedAgendaState?.week || "", selectedDate: agendaParams.get("date") || storedAgendaState?.date || "", expandedDay: agendaParams.get("day") || storedAgendaState?.day || "", loading: false, makeupPanel: null, makeupPending: false };
+      const agendaState = { data: null, week: agendaParams.get("week") || storedAgendaState?.week || "", selectedDate: agendaParams.get("date") || storedAgendaState?.date || "", expandedDay: agendaParams.get("day") || storedAgendaState?.day || "", loading: false };
 
       const isoDay = (value) => new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10);
       const addDays = (value, days) => {
@@ -175,25 +175,7 @@ import "../styles/global.css";
         const action = entry.kind === "lesson" || entry.kind === "special_makeup"
           ? `<a class="staff-agenda-entry" data-agenda-occurrence="${escape(entry.occurrenceId)}" href="/staff/attendance/?date=${encodeURIComponent(entry.localDate)}&occurrence=${encodeURIComponent(entry.occurrenceId)}&homeWeek=${encodeURIComponent(agendaState.week)}&homeDate=${encodeURIComponent(agendaState.selectedDate)}&homeDay=${encodeURIComponent(agendaState.expandedDay)}"><span>${escape(entry.startTime)}–${escape(entry.endTime)}</span><strong>${escape(entry.classLabel)}</strong><small>${entry.lessonSequence ? `${escape(entry.lessonSequence)}. ` : ""}${escape(entry.lessonTitle)}</small><small>${escape(attendees)}</small></a>`
           : `<a class="staff-agenda-entry ${entry.kind}" href="${entry.kind === "cancelled" ? `/staff/day-changes/?date=${encodeURIComponent(entry.localDate)}` : "/staff/makeups/"}"><span>${escape(entry.startTime)}–${escape(entry.endTime)}</span><strong>${escape(entry.kind === "cancelled" ? "Цуцалсан хичээл" : "Тусгай нөхөх хичээл")}</strong><small>${escape(entry.lessonTitle)}</small><small>${escape(attendees)}</small></a>`;
-        const targetKind = entry.kind === "special_makeup" ? "special" : "normal_class";
-        const targetId = entry.kind === "special_makeup" ? entry.occurrenceId : entry.classSessionId;
-        const canAdd = agendaState.data.canManageMakeups && (entry.kind === "lesson" || entry.kind === "special_makeup") && entry.localDate >= agendaState.data.today;
-        const panel = agendaState.makeupPanel?.occurrenceId === entry.occurrenceId ? agendaMakeupPanel(entry) : "";
-        return `<div class="staff-agenda-entry-wrap">${action}${canAdd ? `<button type="button" class="staff-text-action" data-agenda-add-learner="${targetKind}" data-agenda-target-id="${escape(targetId)}" data-agenda-occurrence-id="${escape(entry.occurrenceId)}">Сурагч нэмэх</button>` : ""}${panel}</div>`;
-      }
-
-      function sourcePayload(entry) { return { enrollmentId: entry.enrollmentId, classSessionId: entry.classSessionId, curriculumLessonId: entry.curriculumLessonId }; }
-      async function agendaMakeupAction(action, payload) {
-        const response = await fetch("/api/staff/makeups", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, ...payload }) });
-        const data = await response.json(); if (!response.ok) throw new Error(data.message || "Үйлдлийг хийх боломжгүй."); return data;
-      }
-      function agendaMakeupPanel(entry) {
-        const panel = agendaState.makeupPanel;
-        if (panel.loading) return `<p class="staff-muted" role="status">Тохирох сурагчдыг ачаалж байна…</p>`;
-        if (panel.error) return `<p class="staff-error-inline">${escape(panel.error)}</p><button class="staff-text-action" type="button" data-agenda-add-learner="${escape(panel.targetKind)}" data-agenda-target-id="${escape(panel.targetId)}" data-agenda-occurrence-id="${escape(entry.occurrenceId)}">Дахин шалгах</button>`;
-        if (panel.review) return `<div class="staff-agenda-makeup-panel"><p><strong>${panel.selected.length} сурагч</strong> · ${escape(formatDate(panel.review.target.localDate))} · ${escape(panel.review.target.startTime)}–${escape(panel.review.target.endTime)}</p><p class="staff-muted">Сул суудал: ${panel.review.target.remainingCapacity}. Баталгаажуулахын өмнө дахин шалгана.</p><button class="button primary" type="button" data-agenda-confirm-makeup>Баталгаажуулах</button><button class="button secondary" type="button" data-agenda-close-makeup>Болих</button></div>`;
-        const selected = new Set(panel.selected || []);
-        return `<div class="staff-agenda-makeup-panel"><p class="staff-muted">Сул суудал: ${panel.target.remainingCapacity}${panel.target.capacity ? ` · Товлосон: ${panel.target.assignedCount}/${panel.target.capacity}` : ""}</p>${panel.sources.length ? panel.sources.map((source) => `<label class="staff-makeup-case"><input type="checkbox" data-agenda-makeup-source value="${escape(`${source.enrollmentId}|${source.classSessionId}|${source.curriculumLessonId}`)}" ${selected.has(`${source.enrollmentId}|${source.classSessionId}|${source.curriculumLessonId}`) ? "checked" : ""}/><span><strong>${escape(source.studentName)}</strong><small>${escape(source.classLabel)} · ${escape(source.sourceLocalDate)} · ${escape(source.sourceStartTime)}–${escape(source.sourceEndTime)}</small></span></label>`).join("") : `<p class="staff-muted">Энэ цагт тохирох шийдээгүй таслалт алга.</p>`}<div class="staff-inline-actions"><button class="button primary" type="button" data-agenda-preview-makeup ${(selected.size && selected.size <= panel.target.remainingCapacity) ? "" : "disabled"}>Урьдчилан харах</button><button class="button secondary" type="button" data-agenda-close-makeup>Болих</button></div></div>`;
+        return `<div class="staff-agenda-entry-wrap">${action}</div>`;
       }
 
       function renderAgenda() {
@@ -250,46 +232,6 @@ import "../styles/global.css";
 
 
       agenda?.addEventListener("click", async (event) => {
-        const addLearner = event.target.closest("[data-agenda-add-learner]");
-        if (addLearner) {
-          event.preventDefault();
-          const occurrenceId = addLearner.dataset.agendaOccurrenceId;
-          agendaState.makeupPanel = { occurrenceId, targetKind: addLearner.dataset.agendaAddLearner, targetId: addLearner.dataset.agendaTargetId, loading: true, sources: [], selected: [] };
-          renderAgenda();
-          try {
-            const payload = addLearner.dataset.agendaAddLearner === "special" ? { targetSpecialOccurrenceId: addLearner.dataset.agendaTargetId } : { targetClassSessionId: addLearner.dataset.agendaTargetId };
-            const result = await agendaMakeupAction("makeup.destination-candidates", { targetKind: addLearner.dataset.agendaAddLearner, ...payload });
-            if (agendaState.makeupPanel?.occurrenceId !== occurrenceId) return;
-            agendaState.makeupPanel = { ...agendaState.makeupPanel, ...result, loading: false, selected: [] };
-          } catch (error) {
-            if (agendaState.makeupPanel?.occurrenceId === occurrenceId) agendaState.makeupPanel = { ...agendaState.makeupPanel, loading: false, error: error.message || "Тохирох сурагчдыг авч чадсангүй." };
-          }
-          renderAgenda(); return;
-        }
-        if (event.target.closest("[data-agenda-close-makeup]")) { agendaState.makeupPanel = null; renderAgenda(); return; }
-        if (event.target.closest("[data-agenda-preview-makeup]")) {
-          const panel = agendaState.makeupPanel; if (!panel || agendaState.makeupPending) return;
-          agendaState.makeupPending = true;
-          try {
-            const sources = panel.sources.filter((source) => panel.selected.includes(`${source.enrollmentId}|${source.classSessionId}|${source.curriculumLessonId}`));
-            const targetPayload = panel.target.kind === "special" ? { targetSpecialOccurrenceId: panel.target.specialOccurrenceId } : { targetClassSessionId: panel.target.classSessionId };
-            const review = await agendaMakeupAction("makeup.group-destination-preview", { sources: sources.map(sourcePayload), targetKind: panel.target.kind, ...targetPayload });
-            agendaState.makeupPanel = { ...panel, sources, selected: sources.map((source) => `${source.enrollmentId}|${source.classSessionId}|${source.curriculumLessonId}`), review };
-          } catch (error) { agendaState.makeupPanel = { ...panel, error: error.message || "Урьдчилан харах боломжгүй." }; }
-          finally { agendaState.makeupPending = false; renderAgenda(); }
-          return;
-        }
-        if (event.target.closest("[data-agenda-confirm-makeup]")) {
-          const panel = agendaState.makeupPanel; if (!panel || agendaState.makeupPending) return;
-          agendaState.makeupPending = true; renderAgenda();
-          try {
-            const target = panel.review.target; const targetPayload = target.kind === "special" ? { targetSpecialOccurrenceId: target.specialOccurrenceId } : { targetClassSessionId: target.classSessionId };
-            await agendaMakeupAction("makeup.group-destination-book", { sources: panel.sources.map(sourcePayload), expectedFingerprint: panel.review.fingerprint, targetKind: target.kind, ...targetPayload, operationId: panel.operationId || (panel.operationId = crypto.randomUUID()) });
-            agendaState.makeupPanel = null; await loadAgenda(agendaState.week, agendaState.selectedDate);
-          } catch (error) { agendaState.makeupPanel = { ...panel, error: error.message || "Товыг хадгалж чадсангүй." }; renderAgenda(); }
-          finally { agendaState.makeupPending = false; }
-          return;
-        }
         const entry = event.target.closest("[data-agenda-occurrence]");
         if (entry) {
           sessionStorage.setItem("staff-agenda-return", JSON.stringify({ week: agendaState.week, date: agendaState.selectedDate, day: agendaState.expandedDay }));
@@ -315,10 +257,6 @@ import "../styles/global.css";
       });
       agenda?.addEventListener("change", async (event) => {
         const target = event.target;
-        if (target.matches("[data-agenda-makeup-source]") && agendaState.makeupPanel) {
-          const selected = new Set(agendaState.makeupPanel.selected || []); target.checked ? selected.add(target.value) : selected.delete(target.value);
-          agendaState.makeupPanel.selected = [...selected]; renderAgenda(); return;
-        }
         if (target.matches("[data-agenda-date]") && target.value) await loadAgenda(target.value, target.value);
       });
 
