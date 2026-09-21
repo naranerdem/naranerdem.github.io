@@ -748,7 +748,7 @@ try {
   assert.ok(destinationCandidates.sources.some((entry) => entry.enrollmentId === 'enrollment-7')
     && destinationCandidates.sources.some((entry) => entry.enrollmentId === 'enrollment-8'),
   "the attendance destination picker returns only compatible unresolved sources for its exact occurrence");
-  assert.ok(destinationCandidateQueries <= 9,
+  assert.ok(destinationCandidateQueries <= 7,
     "destination candidate loading stays destination-scoped instead of rediscovering every target for each source");
   console.log(`make-up destination candidates: ${destinationCandidates.sources.length} sources, ${destinationCandidateQueries} prepared queries, ${destinationCandidateElapsedMs.toFixed(1)} ms local`);
   await assert.rejects(() => makeups.previewCourseMakeupGroupDestinationBooking(runtime, actor(), {

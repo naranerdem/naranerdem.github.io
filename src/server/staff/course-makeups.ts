@@ -285,6 +285,21 @@ async function caseRows(env: WorkerEnv): Promise<Map<string, CaseRow>> {
   return new Map(result.results.map((entry) => [sourceKey(entry), entry]));
 }
 
+async function caseRowsForSources(env: WorkerEnv, sources: SourceRow[]): Promise<Map<string, CaseRow>> {
+  if (!sources.length) return new Map();
+  const enrollmentIds = [...new Set(sources.map((source) => source.enrollmentId))];
+  const result = await env.DB.prepare(`SELECT id, source_enrollment_id AS enrollmentId,
+      source_class_session_id AS classSessionId, source_curriculum_lesson_id AS curriculumLessonId,
+      current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
+      is_test AS isTest, test_run_id AS testRunId
+    FROM course_makeup_case
+    WHERE source_curriculum_lesson_id = ?
+      AND source_enrollment_id IN (${enrollmentIds.map(() => "?").join(", ")})`).bind(
+    sources[0].curriculumLessonId, ...enrollmentIds,
+  ).all<CaseRow & SourceIdentity>();
+  return new Map(result.results.map((entry) => [sourceKey(entry), entry]));
+}
+
 async function caseForSource(env: WorkerEnv, source: SourceIdentity): Promise<CaseRow | null> {
   return env.DB.prepare(`SELECT id, current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
       is_test AS isTest, test_run_id AS testRunId
@@ -328,6 +343,24 @@ async function currentAttemptState(
       attendanceStatus: "present" | "late" | "absent" | null;
       localDate: string | null; startTime: string | null; endTime: string | null;
     }>();
+  return currentAttemptStateFromRow(caseRow, row, at);
+}
+
+type CurrentAttemptRow = {
+  decision: "no_makeup" | "assigned"; assignmentId: string | null;
+  attendanceStatus: "present" | "late" | "absent" | null;
+  localDate: string | null; startTime: string | null; endTime: string | null;
+};
+
+function currentAttemptStateFromRow(
+  caseRow: CaseRow | null,
+  row: CurrentAttemptRow | null,
+  at = new Date(),
+): "needs_action" | "scheduled" | "attendance_review" | "resolved" | "closed" | "reconciliation" {
+  if (!caseRow) return "needs_action";
+  if (caseRow.state === "closed") return "closed";
+  if (caseRow.state === "reconciliation") return "reconciliation";
+  if (!caseRow.currentResolutionId) return caseRow.state === "resolved" ? "resolved" : "needs_action";
   if (!row) return caseRow.state === "resolved" ? "resolved" : "needs_action";
   if (row.decision === "no_makeup") return "closed";
   if (!row.assignmentId || !row.localDate || !row.startTime || !row.endTime) return "needs_action";
@@ -336,6 +369,48 @@ async function currentAttemptState(
   const local = localDateTime(at);
   return row.localDate < local.date || (row.localDate === local.date && row.endTime <= local.time)
     ? "attendance_review" : "scheduled";
+}
+
+async function currentAttemptStatesForSources(
+  env: WorkerEnv,
+  sources: SourceRow[],
+  cases: Map<string, CaseRow>,
+  at = new Date(),
+): Promise<Map<string, ReturnType<typeof currentAttemptStateFromRow>>> {
+  const resolutionIds = [...new Set([...cases.values()].flatMap((entry) => entry.currentResolutionId ? [entry.currentResolutionId] : []))];
+  const rows = resolutionIds.length ? await env.DB.prepare(`SELECT resolution.id AS resolutionId,
+      resolution.decision, assignment.id AS assignmentId,
+      COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) AS attendanceStatus,
+      COALESCE(slot.local_date, special.local_date) AS localDate,
+      COALESCE(slot.start_time, special.start_time) AS startTime,
+      COALESCE(slot.end_time, special.end_time) AS endTime
+    FROM course_makeup_resolution AS resolution
+    LEFT JOIN course_makeup_assignment AS assignment
+      ON assignment.resolution_id = resolution.id AND assignment.status = 'active'
+    LEFT JOIN class_calendar AS calendar ON calendar.class_session_id = assignment.target_class_session_id
+    LEFT JOIN class_calendar_revision AS revision
+      ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS slot
+      ON slot.class_calendar_revision_id = revision.id
+      AND slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id AND slot.status = 'scheduled'
+    LEFT JOIN course_makeup_special_occurrence AS special
+      ON special.id = assignment.target_special_occurrence_id AND special.status = 'active'
+    LEFT JOIN course_makeup_attendance AS normal_attendance
+      ON normal_attendance.course_makeup_assignment_id = assignment.id
+    LEFT JOIN course_makeup_special_attendance AS special_attendance
+      ON special_attendance.course_makeup_assignment_id = assignment.id
+    WHERE resolution.id IN (${resolutionIds.map(() => "?").join(", ")})
+      AND resolution.status = 'active'`).bind(...resolutionIds).all<CurrentAttemptRow & { resolutionId: string }>()
+    : { results: [] as Array<CurrentAttemptRow & { resolutionId: string }> };
+  const rowsByResolution = new Map<string, CurrentAttemptRow>();
+  for (const row of rows.results) if (!rowsByResolution.has(row.resolutionId)) rowsByResolution.set(row.resolutionId, row);
+  return new Map(sources.map((source) => {
+    const caseRow = cases.get(sourceKey(source)) ?? null;
+    return [
+      sourceKey(source),
+      currentAttemptStateFromRow(caseRow, caseRow?.currentResolutionId ? rowsByResolution.get(caseRow.currentResolutionId) ?? null : null, at),
+    ];
+  }));
 }
 
 async function unresolvedSources(
@@ -442,13 +517,13 @@ async function unresolvedSourcesForDestination(
     destination.curriculumLessonId, destination.curriculumProgramId, destination.academicYearId,
     local.date, local.date, local.time, ...destinationBindings,
   ).all<SourceRow>();
-  const cases = await caseRows(env);
-  const states = await lessonStates(env);
-  const eligible = await Promise.all(result.results.map(async (source) => ({
-    source, state: await currentAttemptState(env, cases.get(sourceKey(source)) ?? null, at),
-  })));
-  return eligible.filter((entry) => entry.state === "needs_action"
-    && states.get(lessonKey(entry.source))?.status !== "retired").map((entry) => entry.source);
+  const [cases, lessonState] = await Promise.all([
+    caseRowsForSources(env, result.results),
+    result.results.length ? lessonStateForSource(env, result.results[0]) : Promise.resolve(null),
+  ]);
+  const states = await currentAttemptStatesForSources(env, result.results, cases, at);
+  return result.results.filter((source) => states.get(sourceKey(source)) === "needs_action"
+    && lessonState?.status !== "retired");
 }
 
 // Destination pages must be able to render a successful empty candidate list.
