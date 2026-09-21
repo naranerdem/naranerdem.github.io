@@ -56,7 +56,7 @@ import "../../styles/global.css";
       if (homeDate) homeReturn.set("date", homeDate);
       if (homeDay) homeReturn.set("day", homeDay);
       const returnTo = homeReturn.size ? `/staff/?${homeReturn.toString()}` : "/staff/";
-      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "", refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0 };
+      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "", refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0, makeupPickerLoads: new Map() };
       const q = (selector) => document.querySelector(selector);
       q("#attendance-back").href = returnTo;
       q("#attendance-back").addEventListener("click", (event) => {
@@ -231,15 +231,26 @@ import "../../styles/global.css";
         const selected = state.data?.selected;
         if (!selected || !canAddMakeup(selected)) return;
         const version = ++state.makeupPickerVersion;
+        const target = makeupTargetPayload(selected);
+        const targetKey = target.targetKind === "special"
+          ? `special:${target.targetSpecialOccurrenceId}`
+          : `normal:${target.targetClassSessionId}:${target.targetSlotId}`;
+        let request = !retry && state.makeupPickerLoads.get(targetKey);
         state.makeupPicker = { slotId: selected.slotId, status: "loading", selected: new Set() };
         renderDetail();
         try {
-          const result = await postCourseMakeupAction("makeup.destination-candidates", makeupTargetPayload(selected));
+          if (!request) {
+            request = postCourseMakeupAction("makeup.destination-candidates", target);
+            state.makeupPickerLoads.set(targetKey, request);
+          }
+          const result = await request;
           if (version !== state.makeupPickerVersion || state.data?.selected?.slotId !== selected.slotId) return;
           state.makeupPicker = { slotId: selected.slotId, status: result.sources.length ? "ready" : "empty", selected: new Set(), ...result };
         } catch (error) {
           if (version !== state.makeupPickerVersion || state.data?.selected?.slotId !== selected.slotId) return;
           state.makeupPicker = { slotId: selected.slotId, status: "error", selected: new Set(), error: error.message || "Сурагчдын жагсаалтыг ачаалж чадсангүй." };
+        } finally {
+          if (state.makeupPickerLoads.get(targetKey) === request) state.makeupPickerLoads.delete(targetKey);
         }
         renderDetail();
       }

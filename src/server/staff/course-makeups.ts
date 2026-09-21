@@ -411,13 +411,36 @@ async function unresolvedSourcesForDestination(
   at = new Date(),
 ): Promise<SourceRow[]> {
   const local = localDateTime(at);
+  const destinationFilter = destination.kind === "normal_class"
+    ? `AND class_session.id <> ?
+      AND NOT EXISTS (
+        SELECT 1 FROM enrollment AS target_enrollment
+        WHERE target_enrollment.class_session_id = ?
+          AND target_enrollment.student_id = student.id
+          AND target_enrollment.confirmed_at IS NOT NULL
+          AND target_enrollment.cancelled_at IS NULL
+      )`
+    : `AND NOT EXISTS (
+      SELECT 1 FROM course_makeup_assignment AS existing_assignment
+      INNER JOIN course_makeup_resolution AS existing_resolution
+        ON existing_resolution.id = existing_assignment.resolution_id
+      INNER JOIN enrollment AS existing_enrollment
+        ON existing_enrollment.id = existing_resolution.source_enrollment_id
+      WHERE existing_assignment.target_special_occurrence_id = ?
+        AND existing_assignment.status = 'active'
+        AND existing_enrollment.student_id = student.id
+    )`;
+  const destinationBindings = destination.kind === "normal_class"
+    ? [destination.classSessionId, destination.classSessionId]
+    : [destination.specialOccurrenceId];
   const result = await env.DB.prepare(`${SOURCE_SELECT}
     AND lesson.id = ? AND program.id = ? AND program.academic_year_id = ?
     AND (slot.local_date < ? OR (slot.local_date = ? AND slot.end_time <= ?))
+    ${destinationFilter}
     GROUP BY enrollment.id, class_session.id, lesson.id
     ORDER BY slot.local_date DESC, slot.start_time, student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE`).bind(
     destination.curriculumLessonId, destination.curriculumProgramId, destination.academicYearId,
-    local.date, local.date, local.time,
+    local.date, local.date, local.time, ...destinationBindings,
   ).all<SourceRow>();
   const cases = await caseRows(env);
   const states = await lessonStates(env);
@@ -1350,17 +1373,7 @@ export async function getCourseMakeupDestinationCandidates(
   const destination = await destinationLessonContext(env, requested, at);
   const destinationTarget = await existingTargetForDestination(env, destination, at);
   const sources = await unresolvedSourcesForDestination(env, destination, at);
-  const candidates: SourceRow[] = [];
-  let target: ExistingMakeupTarget | null = null;
-  for (const source of sources) {
-    const matches = await commonExistingTargets(env, [source], at);
-    const match = matches.find((entry) => matchesRequestedTarget(entry, requested));
-    if (match) {
-      candidates.push(source);
-      target ||= match;
-    }
-  }
-  return { target: serializeExistingTarget(target ?? destinationTarget), sources: candidates.map(serializeSource) };
+  return { target: serializeExistingTarget(destinationTarget), sources: sources.map(serializeSource) };
 }
 
 export async function assignCourseMakeupGroupToNormalClass(

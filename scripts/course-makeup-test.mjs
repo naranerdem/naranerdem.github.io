@@ -45,7 +45,8 @@ class Statement {
 }
 
 class SqliteD1 {
-  prepare(sql) { return new Statement(this, sql); }
+  prepareCount = 0;
+  prepare(sql) { this.prepareCount += 1; return new Statement(this, sql); }
   query(sql, values = []) { const output = sqlite(`${bindSql(sql, values)};`, true); return output ? JSON.parse(output) : []; }
   async batch(statements) {
     const changes = statements.map((statement, index) => `${bindSql(statement.sql, statement.values)};
@@ -737,6 +738,19 @@ try {
   assert.ok(cachedAvailability.targets.some((target) => target.kind === "normal_class" && target.classSessionId === 'group-target'
     && target.eligibleSourceKeys.length === 2), "one shared availability response retains per-child eligibility for a normal destination");
   const groupTarget = cachedAvailability.targets.find((target) => target.kind === 'normal_class' && target.classSessionId === 'group-target');
+  database.prepareCount = 0;
+  const destinationCandidatesStartedAt = performance.now();
+  const destinationCandidates = await makeups.getCourseMakeupDestinationCandidates(runtime, actor(), {
+    targetKind: 'normal_class', targetClassSessionId: 'group-target', targetSlotId: groupTarget?.slotId,
+  }, afterSourceEnd);
+  const destinationCandidateElapsedMs = performance.now() - destinationCandidatesStartedAt;
+  const destinationCandidateQueries = database.prepareCount;
+  assert.ok(destinationCandidates.sources.some((entry) => entry.enrollmentId === 'enrollment-7')
+    && destinationCandidates.sources.some((entry) => entry.enrollmentId === 'enrollment-8'),
+  "the attendance destination picker returns only compatible unresolved sources for its exact occurrence");
+  assert.ok(destinationCandidateQueries <= 9,
+    "destination candidate loading stays destination-scoped instead of rediscovering every target for each source");
+  console.log(`make-up destination candidates: ${destinationCandidates.sources.length} sources, ${destinationCandidateQueries} prepared queries, ${destinationCandidateElapsedMs.toFixed(1)} ms local`);
   await assert.rejects(() => makeups.previewCourseMakeupGroupDestinationBooking(runtime, actor(), {
     sources: [source(7), source(8)], targetKind: 'normal_class', targetClassSessionId: 'group-target', targetSlotId: 'wrong-slot',
   }, afterSourceEnd), /Course make-up/, "an existing normal destination must name its current occurrence, not only its class");
