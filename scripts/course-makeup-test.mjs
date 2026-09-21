@@ -46,8 +46,13 @@ class Statement {
 
 class SqliteD1 {
   prepareCount = 0;
+  executedQueries = [];
   prepare(sql) { this.prepareCount += 1; return new Statement(this, sql); }
-  query(sql, values = []) { const output = sqlite(`${bindSql(sql, values)};`, true); return output ? JSON.parse(output) : []; }
+  query(sql, values = []) {
+    this.executedQueries.push({ sql, values });
+    const output = sqlite(`${bindSql(sql, values)};`, true);
+    return output ? JSON.parse(output) : [];
+  }
   async batch(statements) {
     const changes = statements.map((statement, index) => `${bindSql(statement.sql, statement.values)};
 INSERT INTO _batch_changes VALUES (${index}, changes());`).join("\n");
@@ -739,6 +744,7 @@ try {
     && target.eligibleSourceKeys.length === 2), "one shared availability response retains per-child eligibility for a normal destination");
   const groupTarget = cachedAvailability.targets.find((target) => target.kind === 'normal_class' && target.classSessionId === 'group-target');
   database.prepareCount = 0;
+  database.executedQueries = [];
   const destinationCandidatesStartedAt = performance.now();
   const destinationCandidates = await makeups.getCourseMakeupDestinationCandidates(runtime, actor(), {
     targetKind: 'normal_class', targetClassSessionId: 'group-target', targetSlotId: groupTarget?.slotId,
@@ -750,6 +756,11 @@ try {
   "the attendance destination picker returns only compatible unresolved sources for its exact occurrence");
   assert.ok(destinationCandidateQueries <= 7,
     "destination candidate loading stays destination-scoped instead of rediscovering every target for each source");
+  const sourceQuery = database.executedQueries.find((entry) => entry.sql.includes("FROM class_calendar_slot AS slot")
+    && entry.sql.includes("lesson.id = ?") && entry.sql.includes("target_enrollment"));
+  assert.ok(sourceQuery, "candidate loading runs one source query scoped to the selected lesson and destination enrollment context");
+  const sourcePlan = sqlite(`EXPLAIN QUERY PLAN ${bindSql(sourceQuery.sql, sourceQuery.values)};`);
+  console.log(`make-up destination source plan: ${sourcePlan.replaceAll("\n", " | ")}`);
   console.log(`make-up destination candidates: ${destinationCandidates.sources.length} sources, ${destinationCandidateQueries} prepared queries, ${destinationCandidateElapsedMs.toFixed(1)} ms local`);
   await assert.rejects(() => makeups.previewCourseMakeupGroupDestinationBooking(runtime, actor(), {
     sources: [source(7), source(8)], targetKind: 'normal_class', targetClassSessionId: 'group-target', targetSlotId: 'wrong-slot',
