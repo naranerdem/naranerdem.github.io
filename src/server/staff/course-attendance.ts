@@ -130,6 +130,11 @@ function stageLabel(value: string): string {
   return ({ stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" } as Record<string, string>)[value] ?? value;
 }
 
+function occurrenceWeekday(localDate: string): string {
+  const weekday = new Date(`${localDate}T00:00:00Z`).getUTCDay();
+  return ["Ням", "Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба"][weekday] ?? "";
+}
+
 function classLabel(occurrence: Pick<OccurrenceRow, "stageCode" | "offeringKind" | "offeringTitle" | "classWeekday" | "startTime" | "endTime">): string {
   if (occurrence.offeringKind === "special_makeup") return "Тусгай нөхөх хичээл";
   return occurrence.offeringKind === "annual_course"
@@ -406,9 +411,11 @@ function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
     specialOccurrenceId: occurrence.specialOccurrenceId,
     classSessionId: occurrence.classSessionId,
     localDate: occurrence.localDate,
+    occurrenceWeekday: occurrenceWeekday(occurrence.localDate),
     startTime: occurrence.startTime,
     endTime: occurrence.endTime,
     classLabel: classLabel(occurrence),
+    usualClassSchedule: occurrence.occurrenceKind === "normal" ? classLabel(occurrence) : null,
     offeringTitle: occurrence.offeringTitle,
     lessonSequence: occurrence.lessonSequence,
     lessonTitle: occurrence.lessonTitle,

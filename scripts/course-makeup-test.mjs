@@ -86,9 +86,11 @@ try {
   const lifecycleMigration = migrations.find((file) => file === "0059_course_makeup_case_lifecycle.sql");
   const lessonRetirementMigration = migrations.find((file) => file === "0060_course_makeup_lesson_retirement.sql");
   const assignmentOperationMigration = migrations.find((file) => file === "0061_course_makeup_assignment_operations.sql");
+  const sourceCalendarContextMigration = migrations.find((file) => file === "0062_course_makeup_source_calendar_context.sql");
   assert.ok(lifecycleMigration, "the lifecycle migration is present");
   assert.ok(lessonRetirementMigration, "the lesson-retirement migration is present");
   assert.ok(assignmentOperationMigration, "the assignment-operation migration is present");
+  assert.ok(sourceCalendarContextMigration, "the source-calendar-context migration is present");
   sqlite(migrations.filter((file) => file < lifecycleMigration).map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
   const database = new SqliteD1();
@@ -190,6 +192,73 @@ try {
   sqlite(readFileSync(path.join("migrations", lessonRetirementMigration), "utf8"));
   sqlite(readFileSync(path.join("migrations", assignmentOperationMigration), "utf8"));
   assert.equal(sqlite("PRAGMA foreign_key_check;"), "", "0060 adds lesson retirement without changing legacy records");
+
+  // A calendar can legitimately continue a historical published program after
+  // its Offering advances. Before 0062, the source trigger rejects that same
+  // source even though the published calendar is authoritative for attendance.
+  sqlite(`INSERT INTO curriculum_program (
+      id, program_family_id, academic_year_id, stage_code, revision_number,
+      display_name, program_kind, status, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('offering-current-program', 'family', 'year', 'stage_1', 2,
+      'Offering шинэ хувилбар', 'annual_course', 'draft', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO activity_offering (
+      id, kind, title, academic_year_id, stage_code, starts_on,
+      curriculum_program_id, use_academic_year_breaks, charge_mode, status,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES ('offering-current', 'annual_course', 'Шинэчилсэн сургалт', 'year', 'stage_1', '${sourceDate}',
+      'offering-current-program', 1, 'paid', 'archived', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_session (
+      id, academic_year_id, stage_code, display_label, weekday, start_time, end_time,
+      capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('calendar-context-source-class', 'year', 'stage_1', 'Өмнөх хуваарьтай эх анги', 'Бямба', '12:00', '13:20',
+      10, 'available', NULL, 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('calendar-context-source-calendar', 'calendar-context-source-class', 'Asia/Ulaanbaatar', 'active', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_revision (
+      id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date,
+      locked_through_sequence, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('calendar-context-source-revision', 'calendar-context-source-calendar', 'program', 1, 'draft', '${sourceDate}',
+      0, 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO class_calendar_slot (
+      id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status,
+      curriculum_lesson_id, is_test, test_run_id, created_at, updated_at
+    ) VALUES ('calendar-context-source-slot', 'calendar-context-source-revision', '${sourceDate}', '12:00', '13:20',
+      'generated', 'scheduled', 'lesson-1', 1, 'makeup-test', '${now}', '${now}');
+    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}'
+      WHERE id = 'calendar-context-source-revision';
+    UPDATE class_session SET activity_offering_id = 'offering-current'
+      WHERE id = 'calendar-context-source-class';
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('calendar-context-student', 'Хуучин', 'Хуваарь', 'not_specified', '2015-01-07', 'active', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('calendar-context-prereg', 'guardian', 'year', 'completed', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('calendar-context-application', 'calendar-context-prereg', 'calendar-context-student', 5, 'new', 'enrolled', 1, 'makeup-test', '${now}', '${now}');
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('calendar-context-enrollment', 'calendar-context-application', 'calendar-context-student', 'year',
+        'calendar-context-source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}');`);
+  assert.throws(() => sqlite(`INSERT INTO course_makeup_resolution (
+      id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      decision, status, decided_by_staff_account_id, decided_at,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES ('calendar-context-before-0062', 'calendar-context-enrollment', 'calendar-context-source-class', 'lesson-1',
+      'assigned', 'active', 'teacher-staff', '${now}', 1, 'makeup-test', '${now}', '${now}');`),
+  /make-up source must match enrollment class and offering lesson/,
+  "the pre-0062 source trigger rejects a historical published calendar program");
+  sqlite(readFileSync(path.join("migrations", sourceCalendarContextMigration), "utf8"));
+  sqlite(`INSERT INTO course_makeup_resolution (
+      id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      decision, status, decided_by_staff_account_id, decided_at,
+      is_test, test_run_id, created_at, updated_at
+    ) VALUES ('calendar-context-after-0062', 'calendar-context-enrollment', 'calendar-context-source-class', 'lesson-1',
+      'assigned', 'active', 'teacher-staff', '${now}', 1, 'makeup-test', '${now}', '${now}');
+    UPDATE course_makeup_resolution
+    SET status = 'invalidated', invalidated_at = '${now}', invalidated_by_staff_account_id = 'teacher-staff',
+      invalidation_reason = 'assignment_cancelled', updated_at = '${now}'
+    WHERE id = 'calendar-context-after-0062';`);
+  assert.equal(Number(JSON.parse(sqlite(`SELECT COUNT(*) AS value FROM course_makeup_resolution
+    WHERE id = 'calendar-context-after-0062';`, true))[0].value), 1,
+  "0062 permits a source still represented by its published calendar revision");
 
   // This is the released Worker's resolution write shape: no case_id exists in
   // its SQL. It must remain safe if it reaches D1 after 0059 but before the

@@ -381,7 +381,8 @@ try {
   await specialDraft.locator("[name='localDate']").fill(addDays(today, 4));
   await specialDraft.locator("[name='startTime']").fill("00:00");
   await specialDraft.locator("[name='note']").fill("Сонголт хадгалах туршилт");
-  await refreshedCheckbox.press("Space");
+  await refreshedCheckbox.uncheck();
+  assert.equal(await refreshedCheckbox.isChecked(), false, "deselecting the learner updates the open new-session draft");
   await specialDraft.getByText("Товлох сурагч сонгоно уу.", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await specialDraft.locator("[name='startTime']").inputValue(), "00:00", "changing selection keeps the open new-session draft fields");
   assert.equal(await specialDraft.locator("[name='note']").inputValue(), "Сонголт хадгалах туршилт", "selection does not remount away the entered note");
@@ -390,7 +391,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await specialDraft.screenshot({ path: path.join(screenshotDir, "makeup-new-session-selection-empty-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await refreshedCheckbox.press("Space");
+  await refreshedCheckbox.check();
   await specialDraft.getByRole("button", { name: "Урьдчилан харах", exact: true }).waitFor({ state: "visible" });
   await specialDraft.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
   await refreshedGroup.getByText(/00:00–01:20/, { exact: false }).waitFor({ state: "visible" });
