@@ -93,10 +93,12 @@ try {
   const lessonRetirementMigration = migrations.find((file) => file === "0060_course_makeup_lesson_retirement.sql");
   const assignmentOperationMigration = migrations.find((file) => file === "0061_course_makeup_assignment_operations.sql");
   const sourceCalendarContextMigration = migrations.find((file) => file === "0062_course_makeup_source_calendar_context.sql");
+  const classScheduleControlsMigration = migrations.find((file) => file === "0063_class_schedule_controls.sql");
   assert.ok(lifecycleMigration, "the lifecycle migration is present");
   assert.ok(lessonRetirementMigration, "the lesson-retirement migration is present");
   assert.ok(assignmentOperationMigration, "the assignment-operation migration is present");
   assert.ok(sourceCalendarContextMigration, "the source-calendar-context migration is present");
+  assert.ok(classScheduleControlsMigration, "the class schedule controls migration is present");
   sqlite(migrations.filter((file) => file < lifecycleMigration).map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
   const database = new SqliteD1();
@@ -252,6 +254,7 @@ try {
   /make-up source must match enrollment class and offering lesson/,
   "the pre-0062 source trigger rejects a historical published calendar program");
   sqlite(readFileSync(path.join("migrations", sourceCalendarContextMigration), "utf8"));
+  sqlite(readFileSync(path.join("migrations", classScheduleControlsMigration), "utf8"));
   sqlite(`INSERT INTO course_makeup_resolution (
       id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
       decision, status, decided_by_staff_account_id, decided_at,

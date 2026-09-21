@@ -130,7 +130,7 @@ function offerInsertStatement(env: WorkerEnv, offer: PreparedOffer, now: string,
   ) SELECT ?, entry.id, entry.registration_draft_child_id, entry.class_session_id, 'active', ?, ?, ?, entry.is_test, entry.test_run_id, ?, ?
   FROM registration_draft_waitlist_entry AS entry
   WHERE entry.id = ? AND entry.status = 'active'
-    AND EXISTS (SELECT 1 FROM class_session WHERE id = entry.class_session_id AND status IN ('available', 'full'))
+    AND EXISTS (SELECT 1 FROM class_session WHERE id = entry.class_session_id AND schedule_state = 'active' AND status IN ('available', 'full'))
     AND NOT EXISTS (SELECT 1 FROM waitlist_seat_offer existing WHERE existing.waitlist_entry_id = entry.id)
     AND NOT EXISTS (SELECT 1 FROM registration_draft_waitlist_entry earlier
       LEFT JOIN waitlist_seat_offer earlier_offer ON earlier_offer.waitlist_entry_id = earlier.id

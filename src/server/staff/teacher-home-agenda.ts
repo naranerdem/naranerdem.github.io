@@ -130,6 +130,7 @@ export async function getTeacherHomeAgenda(
     LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
     LEFT JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
     WHERE revision.status = 'published'
+      AND class_session.schedule_state = 'active'
       AND slot.local_date BETWEEN ? AND ?
       AND slot.status IN ('scheduled', 'cancelled')
       AND offering.kind IN ('annual_course', 'summer_course')

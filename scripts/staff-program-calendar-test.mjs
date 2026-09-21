@@ -479,7 +479,11 @@ try {
   await service.saveClassPublicVisibility(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: hiddenClass.updatedAt, publicVisibility: true });
   const restoredClass = database.query(`SELECT is_publicly_visible AS publicVisibility, status, updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
   assert.deepEqual([restoredClass.publicVisibility, restoredClass.status], [1, "available"], "showing a class leaves registration status unchanged");
-  await service.deleteClassSession(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: restoredClass.updatedAt });
+  await service.removeClassFromSchedule(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: restoredClass.updatedAt });
+  const removedUnusedClass = database.query(`SELECT schedule_state AS scheduleState, status, is_publicly_visible AS publicVisibility, updated_at AS updatedAt FROM class_session WHERE id = ${quote(newClass.id)}`)[0];
+  assert.deepEqual([removedUnusedClass.scheduleState, removedUnusedClass.status, removedUnusedClass.publicVisibility], ["removed", "closed", 0], "schedule removal is distinct from ordinary closure and hides new public registration");
+  await assert.rejects(() => service.saveClassPublicVisibility(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: removedUnusedClass.updatedAt, publicVisibility: true }), /Program and calendar/, "a removed class cannot be made public before restoration");
+  await service.deleteClassSession(runtime, actor("teacher"), { classSessionId: newClass.id, expectedUpdatedAt: removedUnusedClass.updatedAt });
   assert.equal(count(database, "class_session", `id = ${quote(newClass.id)}`), 0, "an unused class can be deleted");
   sqlite(`INSERT INTO curriculum_program (
     id, program_family_id, academic_year_id, stage_code, revision_number, display_name,
@@ -656,7 +660,13 @@ try {
     VALUES ('school-restore-break', 'year-2026', 'Өвлийн амралт', '2026-09-12', '2026-09-12', 1, 'active', 1, 'staff-program-test', '${now}', '${now}');`);
   await service.createCalendarChangeDraft(runtime, actor("teacher"), { classSessionId: "class-1" });
   draft = database.query("SELECT revision.id, revision.updated_at AS updatedAt, revision.locked_through_sequence AS protectedThrough FROM class_calendar_revision AS revision INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id WHERE calendar.class_session_id = 'class-1' AND revision.status = 'draft'")[0];
-  assert.equal(draft.protectedThrough, 1, "an existing stored historical prefix remains protected even without a teacher lock control");
+  const protectedPublishedLessons = Number(database.query(`SELECT COUNT(*) AS count
+    FROM class_calendar_slot AS slot
+    INNER JOIN class_calendar_revision AS revision ON revision.id = slot.class_calendar_revision_id
+    INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+    WHERE calendar.class_session_id = 'class-1' AND revision.status = 'published'
+      AND slot.status = 'scheduled' AND slot.local_date < ${quote(ulaanbaatarToday())}`)[0].count);
+  assert.equal(draft.protectedThrough, protectedPublishedLessons, "an existing stored historical prefix remains protected even without a teacher lock control");
   const holidaySkippedOverview = await service.getProgramCalendarOverview(runtime);
   assert.equal(holidaySkippedOverview.revisions.find((entry) => entry.id === draft.id).slots.find((slot) => slot.localDate === "2026-09-12").schoolHolidayNoClass, true, "a school-calendar no-class row retains restore context without a redundant overlap warning");
   await service.changeCalendarDraft(runtime, actor("teacher"), { revisionId: draft.id, expectedUpdatedAt: draft.updatedAt, kind: "restore", localDate: "2026-09-12" });

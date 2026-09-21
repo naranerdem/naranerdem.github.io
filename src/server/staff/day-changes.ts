@@ -285,6 +285,7 @@ const OCCURRENCE_SELECT = `SELECT slot.id AS slotId,
     AND (lesson.id = slot.curriculum_lesson_id
       OR (slot.status = 'cancelled' AND lesson.sequence_number = slot.cancelled_lesson_sequence))
   WHERE offering.status = 'active'
+    AND class_session.schedule_state = 'active'
     AND offering.kind IN ('annual_course', 'summer_course')
     AND slot.status IN ('scheduled', 'cancelled')`;
 
@@ -538,7 +539,7 @@ export async function getDailyChangesOverview(
       ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
     LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
     WHERE offering.status = 'active' AND offering.kind IN ('annual_course', 'summer_course')
-      AND class_session.status != 'cancelled'
+      AND class_session.schedule_state = 'active' AND class_session.status != 'cancelled'
     ORDER BY offering.title, class_session.display_label`).all<{
       classSessionId: string; classLabel: string; offeringTitle: string; startTime: string; endTime: string;
     }>();
@@ -590,7 +591,7 @@ async function contextForClass(env: WorkerEnv, classSessionId: string): Promise<
     INNER JOIN class_session ON class_session.id = calendar.class_session_id
     INNER JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
     LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
-    WHERE class_session.id = ? AND revision.status = 'published'
+    WHERE class_session.id = ? AND class_session.schedule_state = 'active' AND revision.status = 'published'
       AND offering.status = 'active' AND offering.kind IN ('annual_course', 'summer_course')
     GROUP BY revision.id`).bind(classSessionId).first<CalendarContextRow>();
   if (!row) throw new DayChangeError("not_found");
@@ -1342,7 +1343,7 @@ async function assertOneRoomAvailability(env: WorkerEnv, plans: readonly Planned
         ON revision.id = slot.class_calendar_revision_id AND revision.status = 'published'
       INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
       INNER JOIN class_session ON class_session.id = calendar.class_session_id
-      WHERE slot.status = 'scheduled' AND slot.local_date = ?
+      WHERE slot.status = 'scheduled' AND class_session.schedule_state = 'active' AND slot.local_date = ?
         AND slot.start_time < ? AND slot.end_time > ?`).bind(
       candidate.slot.localDate, candidate.slot.endTime, candidate.slot.startTime,
     ).all<{ classSessionId: string; classLabel: string; slotId: string; localDate: string; startTime: string; endTime: string }>();

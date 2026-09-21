@@ -342,6 +342,7 @@ async function loadChosenClasses(
       AND offering.kind IN ('annual_course', 'summer_course') AND offering.status = 'active'
     LEFT JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = offering.id
     WHERE class_session.id IN (${placeholders})
+      AND class_session.schedule_state = 'active'
       AND (class_session.is_publicly_visible = 1 OR ? = 1)
       AND (? != 'production' OR (
         academic_year.is_test = 0 AND offering.is_test = 0
@@ -410,7 +411,7 @@ function requestedSeatsSql(requirePublicVisibility: boolean): string {
       LEFT JOIN draft_holds ON draft_holds.class_session_id = requested.class_session_id
       LEFT JOIN waitlist_offers ON waitlist_offers.class_session_id = requested.class_session_id
       LEFT JOIN transfer_reservations ON transfer_reservations.class_session_id = requested.class_session_id
-      WHERE class_session.status NOT IN ('available', 'full')${publicVisibility}
+      WHERE class_session.schedule_state != 'active' OR class_session.status NOT IN ('available', 'full')${publicVisibility}
         OR class_session.capacity - COALESCE(confirmed.count, 0)
           - COALESCE(legacy_holds.count, 0) - COALESCE(draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0)
           - COALESCE(transfer_reservations.count, 0)
@@ -715,7 +716,7 @@ export async function createRegistrationDraft(
     INNER JOIN class_session ON class_session.id = registration_draft_child.preferred_waitlist_class_session_id
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.preferred_waitlist_class_session_id IS NOT NULL
-      AND class_session.status IN ('available', 'full')${staffIntake ? "" : "\n      AND class_session.is_publicly_visible = 1"}
+      AND class_session.schedule_state = 'active' AND class_session.status IN ('available', 'full')${staffIntake ? "" : "\n      AND class_session.is_publicly_visible = 1"}
   `).bind(now, now, draftId));
   statements.push(env.DB.prepare(`
     INSERT INTO payment_request (id, registration_draft_id, payment_reference, transfer_description, created_at, updated_at, is_test, test_run_id)
@@ -1058,7 +1059,7 @@ export const reacquireAllRequestedSeatsSql = `
       LEFT JOIN other_draft_holds ON other_draft_holds.class_session_id = requested.class_session_id
       LEFT JOIN waitlist_offers ON waitlist_offers.class_session_id = requested.class_session_id
       LEFT JOIN transfer_reservations ON transfer_reservations.class_session_id = requested.class_session_id
-      WHERE class_session.status NOT IN ('available', 'full')
+      WHERE class_session.schedule_state != 'active' OR class_session.status NOT IN ('available', 'full')
         OR class_session.capacity - COALESCE(confirmed.count, 0)
           - COALESCE(legacy_holds.count, 0) - COALESCE(other_draft_holds.count, 0) - COALESCE(waitlist_offers.count, 0)
           - COALESCE(transfer_reservations.count, 0)
@@ -1157,7 +1158,7 @@ export async function confirmRegistrationChallenge(
       ON class_session.id = registration_draft_child.preferred_waitlist_class_session_id
     WHERE registration_draft_child.registration_draft_id = ?
       AND registration_draft_child.preferred_waitlist_class_session_id IS NOT NULL
-      AND class_session.status IN ('available', 'full')
+      AND class_session.schedule_state = 'active' AND class_session.status IN ('available', 'full')
   `).bind(now, now, draftId);
   const draftVerified = env.DB.prepare(`
     UPDATE registration_draft
@@ -1458,7 +1459,7 @@ export async function joinOriginalClassWaitlist(
       AND registration_draft_child.id = ?
       AND registration_draft_child.status = 'seat_unavailable'
       AND registration_draft_child.preferred_waitlist_class_session_id IS NULL
-      AND class_session.status IN ('available', 'full')
+      AND class_session.schedule_state = 'active' AND class_session.status IN ('available', 'full')
   `).bind(now, now, tokenHash, now, childId).run();
   if (changeCount(result) !== 1) throw new RegistrationSubmissionError("waitlist_unavailable");
   await database.prepare(`

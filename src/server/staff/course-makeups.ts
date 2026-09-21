@@ -462,7 +462,7 @@ async function destinationLessonContext(
       INNER JOIN class_session ON class_session.id = calendar.class_session_id
       INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
       INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
-      WHERE slot.id = ? AND class_session.id = ? AND slot.status = 'scheduled'
+      WHERE slot.id = ? AND class_session.id = ? AND class_session.schedule_state = 'active' AND slot.status = 'scheduled'
         AND (slot.local_date > ? OR (slot.local_date = ? AND slot.start_time > ?))`).bind(
       requested.slotId, requested.key.slice("normal:".length), local.date, local.date, local.time,
     ).first<DestinationLessonContext>()
@@ -557,7 +557,7 @@ async function existingTargetForDestination(
       INNER JOIN class_session ON class_session.id = calendar.class_session_id
       INNER JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
       LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
-      WHERE slot.id = ? AND class_session.id = ? AND slot.status = 'scheduled'`).bind(
+      WHERE slot.id = ? AND class_session.id = ? AND class_session.schedule_state = 'active' AND slot.status = 'scheduled'`).bind(
       destination.slotId, destination.classSessionId,
     ).first<NormalTargetRow>();
     if (!row) throw new CourseMakeupError("not_eligible");
@@ -632,6 +632,7 @@ async function normalTargets(
     INNER JOIN curriculum_program AS target_program ON target_program.id = target_lesson.curriculum_program_id
     LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
     WHERE slot.status = 'scheduled'
+      AND class_session.schedule_state = 'active'
       AND slot.curriculum_lesson_id = ?
       AND target_program.id = ?
       AND target_program.academic_year_id = ?
@@ -643,7 +644,7 @@ async function normalTargets(
           AND target_enrollment.confirmed_at IS NOT NULL
           AND target_enrollment.cancelled_at IS NULL
       )
-      AND class_session.status IN ('available', 'full')
+      AND class_session.schedule_state = 'active' AND class_session.status IN ('available', 'full')
       AND offering.status = 'active'
       AND offering.kind IN ('annual_course', 'summer_course')
       AND (slot.local_date > ? OR (slot.local_date = ? AND slot.start_time > ?))

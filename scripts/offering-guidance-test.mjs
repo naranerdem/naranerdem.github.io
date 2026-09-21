@@ -59,6 +59,11 @@ try {
   assert.match(offeringsPageSource, /Арга хэмжээ устгах/, "unused event deletion is kept in event details");
   assert.match(offeringsPageSource, /function classManagement/, "Offering details own compact class management");
   assert.match(offeringsPageSource, /data-add-class/, "an Offering can add a class from its selected detail");
+  assert.match(offeringsPageSource, /Хуваариас хасах/, "class editing exposes an explicit schedule-removal action rather than inferring it from enrollment counts");
+  assert.match(offeringsPageSource, /Хуваарьт оруулах/, "a removed class has an explicit restoration action");
+  assert.match(offeringsPageSource, /Хуваариас хассан ангиуд/, "inactive classes stay recoverable in a separate collapsed group");
+  assert.match(offeringsPageSource, /class\.schedule\.remove/, "schedule removal uses its dedicated reviewed server action");
+  assert.match(offeringsPageSource, /class\.schedule\.restore/, "schedule restoration uses its dedicated reviewed server action");
   assert.doesNotMatch(schedulePageSource, /id="classes-title"/, "Schedule no longer repeats class management below the calendar");
   assert.doesNotMatch(schedulePageSource, /data-add-class/, "Schedule only opens existing class calendars");
   assert.match(holidaysPageSource, /!entry\.isTest/, "ordinary Holidays hides isolated staging-only break fixtures");

@@ -181,6 +181,8 @@ import {
   prepareNextAcademicYearShell,
   copyPreviousAcademicYearBreaks,
   removeAcademicYearBreak,
+  removeClassFromSchedule,
+  restoreClassToSchedule,
   saveAcademicYearBreak,
   saveClassSession,
   saveClassPublicVisibility,
@@ -447,6 +449,20 @@ function programCalendarError(caught: unknown): Response {
   if (caught.code === "program_context_required") return error("invalid_request", "Энэ сургалтад баталгаатай хөтөлбөр холбогдоогүй тул шинэ анги нэмж болохгүй. Эхлээд Хөтөлбөр хэсгээс тухайн сургалтын хөтөлбөрийг бэлтгэж, баталгаажуулна уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "immutable") return error("invalid_request", "Хэвлэгдсэн эсвэл ашиглагдаж буй мэдээллийг шууд өөрчилж болохгүй. Шинэ ноорог үүсгэнэ үү.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "referenced") return error("invalid_request", "Энэ анги бүртгэл эсвэл хуваарьт ашиглагдсан тул устгаж болохгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "schedule_commitments") {
+    const labels: Record<string, string> = {
+      confirmed_enrollment: "баталгаажсан сурагч",
+      pending_payment: "эхний төлбөр хүлээж буй бүртгэл",
+      pending_registration: "идэвхтэй бүртгэлийн хүсэлт",
+      registration_hold: "идэвхтэй суудлын хадгалалт",
+      waitlist: "идэвхтэй хүлээлгийн бүртгэл",
+      waitlist_offer: "идэвхтэй хүлээлгийн санал",
+      transfer_reservation: "шилжилтийн суудлын хадгалалт",
+      future_makeup: "ирээдүйн нөхөх хичээлийн товлолт",
+    };
+    return error("invalid_request", `Эхлээд дараах идэвхтэй үүргийг одоогийн ажлын урсгалаар шийднэ үү: ${caught.blockers.map((entry) => labels[entry] || entry).join(", ")}.`, 409, { "Cache-Control": "no-store" });
+  }
+  if (caught.code === "schedule_not_ready") return error("invalid_request", "Хуваарьт оруулахын өмнө ирээдүйн хэвлэгдсэн хичээл болон танхимын давхардлыг шалгаж шийднэ үү. Бүртгэл, нийтэд харагдах төлөв хаалттай хэвээр байна.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "capacity_below_consumed") return error("invalid_request", `Одоогоор ${caught.minimumCapacity ?? 0} суудал эзлэгдсэн эсвэл хадгалагдсан тул суудлын тоог түүнээс бага болгох боломжгүй.`, 409, { "Cache-Control": "no-store" });
   if (caught.code === "insufficient_slots") return error("invalid_request", "Хөтөлбөрийн бүх хичээл сонгосон хугацаанд багтахгүй байна. Хугацааг сунгах, давтамжийг өөрчлөх эсвэл нэмэлт өдөр оруулна уу.", 422, { "Cache-Control": "no-store" });
   return error("invalid_request", "Оруулсан мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
@@ -2035,6 +2051,16 @@ export async function handleApiRequest(
             classSessionId: String(payload.classSessionId ?? ""),
             expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
             publicVisibility: payload.publicVisibility,
+          });
+          break;
+        case "class.schedule.remove":
+          await removeClassFromSchedule(env, principal, {
+            classSessionId: String(payload.classSessionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+          });
+          break;
+        case "class.schedule.restore":
+          await restoreClassToSchedule(env, principal, {
+            classSessionId: String(payload.classSessionId ?? ""), expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
           });
           break;
         case "class.delete":

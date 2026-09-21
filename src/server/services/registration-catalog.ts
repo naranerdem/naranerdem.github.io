@@ -69,7 +69,7 @@ const stagingCatalogSql = `
     pricing.second_installment_due_on AS secondInstallmentDueOn,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
     CASE
-      WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
+      WHEN class_session.schedule_state != 'active' OR class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
         OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
         OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 0
@@ -99,6 +99,7 @@ const stagingCatalogSql = `
     GROUP BY class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
   WHERE ${activeWindowForOfferingSql("offering.id")}
+    AND class_session.schedule_state = 'active'
     AND class_session.status IN ('available', 'full', 'closed')
     AND (class_session.is_publicly_visible = 1 OR ? = 1)
   ORDER BY academic_year.starts_on, academic_year.public_label,
@@ -124,7 +125,7 @@ const productionCatalogSql = `
     pricing.second_installment_due_on AS secondInstallmentDueOn,
     COALESCE(active_holds.count, 0) + COALESCE(draft_holds.count, 0) AS activeHoldCount,
     CASE
-      WHEN class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
+      WHEN class_session.schedule_state != 'active' OR class_session.status = 'closed' OR offering.kind NOT IN ('annual_course', 'summer_course')
         OR NOT ${activeWindowForOfferingSql("offering.id")}
         OR pricing.one_time_amount_mnt IS NULL
         OR payment_settings.bank_name IS NULL OR payment_settings.account_holder_name IS NULL OR payment_settings.account_number IS NULL THEN 0
@@ -165,6 +166,7 @@ const productionCatalogSql = `
     GROUP BY registration_capacity_hold.class_session_id
   ) AS draft_holds ON draft_holds.class_session_id = class_session.id
   WHERE ${activeWindowForOfferingSql("offering.id")}
+    AND class_session.schedule_state = 'active'
     AND academic_year.is_test = ?
     AND class_session.is_test = ?
     AND class_session.is_test_only = ?

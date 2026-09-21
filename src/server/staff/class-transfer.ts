@@ -114,7 +114,7 @@ export async function listClassTransferTargets(env: WorkerEnv, actor: StaffPrinc
   if (source.academicYearStatus === "archived") return { targets: [], current: currentProjection, targetAvailability: "source_year_archived" as const };
   const rows = await env.DB.prepare(`SELECT class_session.id AS classSessionId FROM class_session
     INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
-    WHERE class_session.id != ? AND class_session.academic_year_id = ? AND class_session.status = 'available' AND activity_offering.status = 'active'
+    WHERE class_session.id != ? AND class_session.academic_year_id = ? AND class_session.schedule_state = 'active' AND class_session.status = 'available' AND activity_offering.status = 'active'
     ORDER BY CASE class_session.stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE class_session.weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END, class_session.start_time, class_session.id`).bind(source.classSessionId, source.academicYearId).all<{ classSessionId: string }>();
   // The capacity projection intentionally treats an empty ID list as an
@@ -152,7 +152,7 @@ export async function initiateClassTransfer(env: WorkerEnv, actor: StaffPrincipa
         INNER JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
         INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
         INNER JOIN offering_course_pricing ON offering_course_pricing.activity_offering_id = activity_offering.id
-        WHERE class_session.id = ? AND class_session.academic_year_id = ? AND class_session.status = 'available'
+        WHERE class_session.id = ? AND class_session.academic_year_id = ? AND class_session.schedule_state = 'active' AND class_session.status = 'available'
           AND activity_offering.status = 'active' AND academic_year.registration_status != 'archived'
           AND class_session.updated_at = ? AND activity_offering.updated_at = ? AND offering_course_pricing.updated_at = ? AND academic_year.updated_at = ?
           AND class_session.capacity > ${capacitySql})

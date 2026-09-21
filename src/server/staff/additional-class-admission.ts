@@ -238,7 +238,7 @@ async function targetForMutation(env: WorkerEnv, source: SourceRow, targetClassS
     INNER JOIN academic_year ON academic_year.id = class_session.academic_year_id
     INNER JOIN offering_course_pricing AS pricing ON pricing.activity_offering_id = activity_offering.id
     WHERE class_session.id = ? AND class_session.academic_year_id = ?
-      AND class_session.status = 'available' AND activity_offering.status = 'active'
+      AND class_session.schedule_state = 'active' AND class_session.status = 'available' AND activity_offering.status = 'active'
       AND activity_offering.kind IN ('annual_course', 'summer_course') AND academic_year.registration_status != 'archived'`)
     .bind(targetClassSessionId, source.academicYearId).first<TargetRow>();
   if (!row || number(row.classIsTest) !== source.isTest || number(row.offeringIsTest) !== source.isTest || number(row.yearIsTest) !== source.isTest) {

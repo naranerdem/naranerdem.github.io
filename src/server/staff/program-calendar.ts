@@ -38,7 +38,7 @@ type StageCode = typeof STAGES[number];
 const WEEKDAYS = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"] as const;
 
 export class ProgramCalendarError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced" | "program_context_required" | "insufficient_slots" | "capacity_below_consumed", public readonly minimumCapacity?: number) {
+  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "referenced" | "program_context_required" | "insufficient_slots" | "capacity_below_consumed" | "schedule_commitments" | "schedule_not_ready", public readonly minimumCapacity?: number, public readonly blockers: readonly string[] = []) {
     super("Program and calendar operation failed.");
     this.name = "ProgramCalendarError";
   }
@@ -107,6 +107,7 @@ interface ClassRow {
   endTime: string;
   capacity: number;
   status: "draft" | "available" | "full" | "closed" | "cancelled";
+  scheduleState: "active" | "removed";
   publicVisibility: number;
   isTest: number;
   testRunId: string | null;
@@ -422,7 +423,7 @@ const CLASS_SELECT = `SELECT class_session.id, class_session.academic_year_id AS
   COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) AS weekday,
   COALESCE(class_meeting_rule.start_time, class_session.start_time) AS startTime,
   COALESCE(class_meeting_rule.end_time, class_session.end_time) AS endTime,
-  class_session.capacity, class_session.status,
+  class_session.capacity, class_session.status, class_session.schedule_state AS scheduleState,
   class_session.is_publicly_visible AS publicVisibility,
   class_session.is_test AS isTest, class_session.test_run_id AS testRunId,
   class_session.updated_at AS updatedAt, class_calendar.id AS calendarId,
@@ -487,7 +488,7 @@ function mapPlanningError(caught: unknown): never {
   throw caught;
 }
 
-async function classHasReferences(env: WorkerEnv, classSessionId: string): Promise<boolean> {
+async function classHasBusinessReferences(env: WorkerEnv, classSessionId: string): Promise<boolean> {
   const row = await env.DB.prepare(`
     SELECT CASE WHEN
       EXISTS (SELECT 1 FROM enrollment WHERE class_session_id = ?)
@@ -498,18 +499,103 @@ async function classHasReferences(env: WorkerEnv, classSessionId: string): Promi
       OR EXISTS (SELECT 1 FROM registration_capacity_hold WHERE class_session_id = ?)
       OR EXISTS (SELECT 1 FROM registration_draft_waitlist_entry WHERE class_session_id = ?)
       OR EXISTS (SELECT 1 FROM waitlist_seat_offer WHERE class_session_id = ?)
-      OR EXISTS (SELECT 1 FROM class_calendar WHERE class_session_id = ?)
       OR EXISTS (SELECT 1 FROM course_attendance WHERE class_session_id = ?)
       OR EXISTS (SELECT 1 FROM course_absence_notice WHERE class_session_id = ?)
       OR EXISTS (SELECT 1 FROM course_makeup_resolution WHERE source_class_session_id = ?)
       OR EXISTS (SELECT 1 FROM course_makeup_assignment WHERE target_class_session_id = ?)
+      OR EXISTS (SELECT 1 FROM class_transfer
+        WHERE source_class_session_id = ? OR target_class_session_id = ?)
+      OR EXISTS (SELECT 1 FROM class_transfer_target_reservation WHERE class_session_id = ?)
     THEN 1 ELSE 0 END AS found
   `).bind(
+    classSessionId, classSessionId, classSessionId,
     classSessionId, classSessionId, classSessionId, classSessionId,
     classSessionId, classSessionId, classSessionId, classSessionId,
-    classSessionId, classSessionId, classSessionId, classSessionId, classSessionId,
+    classSessionId, classSessionId, classSessionId, classSessionId,
   ).first<{ found: number }>();
   return row?.found === 1;
+}
+
+type ScheduleRemovalBlocker =
+  | "confirmed_enrollment"
+  | "pending_payment"
+  | "pending_registration"
+  | "registration_hold"
+  | "waitlist"
+  | "waitlist_offer"
+  | "transfer_reservation"
+  | "future_makeup";
+
+async function scheduleRemovalBlockers(env: WorkerEnv, classSessionId: string): Promise<ScheduleRemovalBlocker[]> {
+  const today = localToday();
+  const row = await env.DB.prepare(`SELECT
+    EXISTS (SELECT 1 FROM enrollment
+      WHERE class_session_id = ? AND status = 'confirmed' AND transferred_out_at IS NULL) AS confirmedEnrollment,
+    EXISTS (SELECT 1 FROM enrollment
+      WHERE class_session_id = ? AND status = 'awaiting_initial_payment') AS pendingPayment,
+    EXISTS (SELECT 1 FROM registration_draft_child
+      WHERE selected_class_session_id = ? AND status IN ('provisional_hold', 'awaiting_initial_payment')) AS pendingRegistration,
+    EXISTS (SELECT 1 FROM registration_capacity_hold
+      WHERE class_session_id = ? AND status = 'active') AS registrationHold,
+    EXISTS (SELECT 1 FROM registration_draft_waitlist_entry
+      WHERE class_session_id = ? AND status IN ('active', 'offered'))
+      OR EXISTS (SELECT 1 FROM waitlist_entry
+      WHERE class_session_id = ? AND status IN ('active', 'offered')) AS waitlist,
+    EXISTS (SELECT 1 FROM waitlist_seat_offer
+      WHERE class_session_id = ? AND status IN ('active', 'awaiting_transfer')) AS waitlistOffer,
+    EXISTS (SELECT 1 FROM class_transfer_target_reservation
+      WHERE class_session_id = ? AND status = 'active') AS transferReservation,
+    EXISTS (
+      SELECT 1 FROM course_makeup_assignment AS assignment
+      INNER JOIN class_calendar AS calendar ON calendar.class_session_id = assignment.target_class_session_id
+      INNER JOIN class_calendar_revision AS revision ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+      INNER JOIN class_calendar_slot AS slot ON slot.class_calendar_revision_id = revision.id
+      WHERE assignment.target_kind = 'normal_class' AND assignment.target_class_session_id = ?
+        AND assignment.status = 'active' AND slot.status = 'scheduled'
+        AND slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id
+        AND slot.local_date >= ?
+    ) AS futureMakeup`).bind(
+      classSessionId, classSessionId, classSessionId, classSessionId,
+      classSessionId, classSessionId, classSessionId, classSessionId, classSessionId, today,
+    ).first<Record<string, number>>();
+  if (!row) return [];
+  const mapping: Array<[keyof typeof row, ScheduleRemovalBlocker]> = [
+    ["confirmedEnrollment", "confirmed_enrollment"], ["pendingPayment", "pending_payment"],
+    ["pendingRegistration", "pending_registration"], ["registrationHold", "registration_hold"],
+    ["waitlist", "waitlist"], ["waitlistOffer", "waitlist_offer"],
+    ["transferReservation", "transfer_reservation"], ["futureMakeup", "future_makeup"],
+  ];
+  return mapping.filter(([key]) => Boolean(row[key])).map(([, blocker]) => blocker);
+}
+
+async function classHasFuturePublishedSchedule(env: WorkerEnv, classSessionId: string): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT 1 AS found
+    FROM class_calendar AS calendar
+    INNER JOIN class_calendar_revision AS revision ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+    INNER JOIN class_calendar_slot AS slot ON slot.class_calendar_revision_id = revision.id
+    WHERE calendar.class_session_id = ? AND slot.status = 'scheduled' AND slot.local_date >= ?
+    LIMIT 1`).bind(classSessionId, localToday()).first<{ found: number }>();
+  return Boolean(row?.found);
+}
+
+async function hasFutureRoomConflict(env: WorkerEnv, classSessionId: string): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT 1 AS found
+    FROM class_calendar AS own_calendar
+    INNER JOIN class_calendar_revision AS own_revision
+      ON own_revision.class_calendar_id = own_calendar.id AND own_revision.status = 'published'
+    INNER JOIN class_calendar_slot AS own_slot
+      ON own_slot.class_calendar_revision_id = own_revision.id AND own_slot.status = 'scheduled'
+    INNER JOIN class_calendar_slot AS other_slot
+      ON other_slot.local_date = own_slot.local_date AND other_slot.status = 'scheduled'
+      AND other_slot.start_time < own_slot.end_time AND other_slot.end_time > own_slot.start_time
+    INNER JOIN class_calendar_revision AS other_revision
+      ON other_revision.id = other_slot.class_calendar_revision_id AND other_revision.status = 'published'
+    INNER JOIN class_calendar AS other_calendar ON other_calendar.id = other_revision.class_calendar_id
+    INNER JOIN class_session AS other_class
+      ON other_class.id = other_calendar.class_session_id AND other_class.schedule_state = 'active'
+    WHERE own_calendar.class_session_id = ? AND other_calendar.class_session_id != ?
+      AND own_slot.local_date >= ? LIMIT 1`).bind(classSessionId, classSessionId, localToday()).first<{ found: number }>();
+  return Boolean(row?.found);
 }
 
 async function offeringHasCalendar(env: WorkerEnv, offeringId: string): Promise<boolean> {
@@ -688,7 +774,7 @@ export async function getProgramCalendarOverview(env: WorkerEnv): Promise<Record
     ...entry,
     displayLabel: classDisplayLabel(entry),
     registrationOpen: registrationOpen(entry.status),
-    canDelete: !(await classHasReferences(env, entry.id)),
+    canDelete: entry.scheduleState === "removed" && !(await classHasBusinessReferences(env, entry.id)),
   })));
   const classById = new Map(classes.results.map((entry) => [entry.id, entry]));
   const offeringById = new Map((offeringSetup.offerings as Array<{ id: string; kind: string; endsOn?: string | null }>).map((entry) => [entry.id, entry]));
@@ -1475,7 +1561,8 @@ export async function saveClassSession(env: WorkerEnv, actor: StaffPrincipal, in
   }
   const current = await classById(env, input.id);
   if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
-  const referenced = await classHasReferences(env, current.id);
+  if (current.scheduleState === "removed" && input.registrationOpen) throw new ProgramCalendarError("schedule_not_ready");
+  const referenced = await classHasBusinessReferences(env, current.id);
   const structuralChange = current.offeringId !== offering.id || current.academicYearId !== academicYearId
     || current.stageCode !== stage || current.recurrenceKind !== recurrence
     || current.firstDate !== firstDate || current.lastDate !== lastDate
@@ -1546,6 +1633,7 @@ export async function saveClassPublicVisibility(
     throw new ProgramCalendarError("invalid");
   }
   const current = await classById(env, input.classSessionId);
+  if (current.scheduleState === "removed" && input.publicVisibility) throw new ProgramCalendarError("schedule_not_ready");
   if (current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
   const time = new Date().toISOString();
   const flags = operationFlags(env, current);
@@ -1566,17 +1654,96 @@ export async function saveClassPublicVisibility(
   if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
+export async function removeClassFromSchedule(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { classSessionId: string; expectedUpdatedAt: string },
+): Promise<void> {
+  requireCapability(actor, "calendar.manage");
+  const current = await classById(env, input.classSessionId);
+  if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  if (current.scheduleState === "removed") return;
+  const blockers = await scheduleRemovalBlockers(env, current.id);
+  if (blockers.length) throw new ProgramCalendarError("schedule_commitments", undefined, blockers);
+  const time = now();
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE class_session SET schedule_state = 'removed', status = 'closed',
+      is_publicly_visible = 0, updated_at = ?
+      WHERE id = ? AND schedule_state = 'active' AND updated_at = ?
+        AND NOT EXISTS (SELECT 1 FROM enrollment WHERE class_session_id = ? AND status = 'confirmed' AND transferred_out_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM enrollment WHERE class_session_id = ? AND status = 'awaiting_initial_payment')
+        AND NOT EXISTS (SELECT 1 FROM registration_draft_child
+          WHERE selected_class_session_id = ? AND status IN ('provisional_hold', 'awaiting_initial_payment'))
+        AND NOT EXISTS (SELECT 1 FROM registration_capacity_hold WHERE class_session_id = ? AND status = 'active')
+        AND NOT EXISTS (SELECT 1 FROM registration_draft_waitlist_entry WHERE class_session_id = ? AND status IN ('active', 'offered'))
+        AND NOT EXISTS (SELECT 1 FROM waitlist_entry WHERE class_session_id = ? AND status IN ('active', 'offered'))
+        AND NOT EXISTS (SELECT 1 FROM waitlist_seat_offer WHERE class_session_id = ? AND status IN ('active', 'awaiting_transfer'))
+        AND NOT EXISTS (SELECT 1 FROM class_transfer_target_reservation WHERE class_session_id = ? AND status = 'active')
+        AND NOT EXISTS (
+          SELECT 1 FROM course_makeup_assignment AS assignment
+          INNER JOIN class_calendar AS calendar ON calendar.class_session_id = assignment.target_class_session_id
+          INNER JOIN class_calendar_revision AS revision ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+          INNER JOIN class_calendar_slot AS slot ON slot.class_calendar_revision_id = revision.id
+          WHERE assignment.target_kind = 'normal_class' AND assignment.target_class_session_id = ?
+            AND assignment.status = 'active' AND slot.status = 'scheduled'
+            AND slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id AND slot.local_date >= ?
+        )`).bind(time, current.id, current.updatedAt,
+      current.id, current.id, current.id, current.id, current.id, current.id, current.id, current.id, current.id, localToday()),
+    audit(env, actor, "class_schedule_removed", "class_session", current.id, {
+      previousRegistrationOpen: registrationOpen(current.status),
+      previousPublicVisibility: Boolean(current.publicVisibility),
+      effect: "future_calendar_hidden_registration_closed_public_hidden",
+    }, operationFlags(env, current), time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) {
+    const currentBlockers = await scheduleRemovalBlockers(env, current.id);
+    if (currentBlockers.length) throw new ProgramCalendarError("schedule_commitments", undefined, currentBlockers);
+    throw new ProgramCalendarError("conflict");
+  }
+}
+
+export async function restoreClassToSchedule(
+  env: WorkerEnv,
+  actor: StaffPrincipal,
+  input: { classSessionId: string; expectedUpdatedAt: string },
+): Promise<void> {
+  requireCapability(actor, "calendar.manage");
+  const current = await classById(env, input.classSessionId);
+  if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
+  if (current.scheduleState === "active") return;
+  if (!(await classHasFuturePublishedSchedule(env, current.id)) || await hasFutureRoomConflict(env, current.id)) {
+    throw new ProgramCalendarError("schedule_not_ready");
+  }
+  const time = now();
+  const result = await env.DB.batch([
+    env.DB.prepare(`UPDATE class_session SET schedule_state = 'active', status = 'closed',
+      is_publicly_visible = 0, updated_at = ?
+      WHERE id = ? AND schedule_state = 'removed' AND updated_at = ?`).bind(time, current.id, current.updatedAt),
+    audit(env, actor, "class_schedule_restored", "class_session", current.id, {
+      registrationOpen: false,
+      publicVisibility: false,
+      futureScheduleRechecked: true,
+    }, operationFlags(env, current), time),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
+}
+
 export async function deleteClassSession(env: WorkerEnv, actor: StaffPrincipal, input: { classSessionId: string; expectedUpdatedAt: string }): Promise<void> {
   requireCapability(actor, "calendar.manage");
   const current = await classById(env, input.classSessionId);
   if (!input.expectedUpdatedAt || current.updatedAt !== input.expectedUpdatedAt) throw new ProgramCalendarError("conflict");
-  if (await classHasReferences(env, current.id)) throw new ProgramCalendarError("referenced");
+  if (current.scheduleState !== "removed" || await classHasBusinessReferences(env, current.id)) throw new ProgramCalendarError("referenced");
   const time = now();
   const result = await env.DB.batch([
-    env.DB.prepare("DELETE FROM class_session WHERE id = ? AND updated_at = ?").bind(current.id, input.expectedUpdatedAt),
+    env.DB.prepare("INSERT INTO unused_class_deletion_context (class_session_id, created_at) VALUES (?, ?)").bind(current.id, time),
+    env.DB.prepare(`UPDATE class_calendar_revision SET based_on_revision_id = NULL, status = 'draft'
+      WHERE class_calendar_id IN (SELECT id FROM class_calendar WHERE class_session_id = ?)`).bind(current.id),
+    env.DB.prepare("DELETE FROM class_calendar_revision WHERE class_calendar_id IN (SELECT id FROM class_calendar WHERE class_session_id = ?)").bind(current.id),
+    env.DB.prepare("DELETE FROM class_calendar WHERE class_session_id = ?").bind(current.id),
+    env.DB.prepare("DELETE FROM class_session WHERE id = ? AND schedule_state = 'removed' AND updated_at = ?").bind(current.id, input.expectedUpdatedAt),
     audit(env, actor, "class_session_deleted", "class_session", current.id, {}, operationFlags(env, current), time),
   ]);
-  if ((result[0]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
+  if ((result[4]?.meta?.changes ?? 0) !== 1) throw new ProgramCalendarError("conflict");
 }
 
 export async function saveAcademicYearBreak(env: WorkerEnv, actor: StaffPrincipal, input: BreakSaveInput): Promise<void> {
