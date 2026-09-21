@@ -93,7 +93,11 @@ export async function postCourseMakeupAction(action, payload = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.error?.message || "Нөхөх хичээлийг хадгалж чадсангүй.");
+    const error = new Error(body?.error?.message || "Нөхөх хичээлийг хадгалж чадсангүй.");
+    // Callers retain their operation ID when a response is lost, so a retry can
+    // reconcile the durable operation instead of making a second booking.
+    error.responseReceived = true;
+    throw error;
   }
   return response.json();
 }

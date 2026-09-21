@@ -198,6 +198,9 @@ import "../../styles/global.css";
       function canAddMakeup(selected) {
         return state.canManageMakeups && !selected.occurrenceEnded;
       }
+      function makeupReviewSources(sources) {
+        return `<p class="staff-muted">Нэмэх сурагчид</p><ul class="staff-makeup-student-list">${sources.map((entry) => `<li><strong>${escape(entry.studentName)}</strong><span>${escape([entry.classLabel, entry.sourceLocalDate, entry.sourceStartTime && entry.sourceEndTime ? `${entry.sourceStartTime}–${entry.sourceEndTime}` : ""].filter(Boolean).join(" · "))}</span></li>`).join("")}</ul>`;
+      }
       function makeupPickerMarkup(selected) {
         const picker = state.makeupPicker;
         if (!picker || picker.slotId !== selected.slotId) return "";
@@ -205,7 +208,20 @@ import "../../styles/global.css";
         if (picker.status === "error") return `<section class="staff-makeup-detail" aria-live="polite"><p class="staff-error-inline">${escape(picker.error)}</p><button class="button secondary" type="button" data-retry-makeup-picker>Дахин шалгах</button></section>`;
         if (picker.status === "empty") return `<section class="staff-makeup-detail" aria-live="polite"><p class="staff-empty">Нэмэх боломжтой сурагч алга.</p><button class="button secondary" type="button" data-close-makeup-picker>Болих</button></section>`;
         const selectedKeys = picker.selected || new Set();
-        if (picker.status === "review") return `<section class="staff-makeup-detail" aria-live="polite"><div class="staff-section-heading"><div><p class="eyebrow">Сурагч нэмэх</p><h2>${picker.preview.sources.length} сурагч</h2><p>${escape(formatDate(picker.preview.target.localDate))} · ${escape(picker.preview.target.startTime)}–${escape(picker.preview.target.endTime)}</p><p class="staff-muted">Сул суудал: ${picker.preview.target.remainingCapacity}. Баталгаажуулахад дахин шалгана.</p></div></div><div class="staff-inline-actions"><button class="button primary" type="button" data-confirm-makeup-picker>Баталгаажуулах</button><button class="button secondary" type="button" data-edit-makeup-picker>Засах</button></div></section>`;
+        if (["review", "saving", "refresh-error"].includes(picker.status)) {
+          const saving = picker.status === "saving";
+          const refreshError = picker.status === "refresh-error";
+          const error = picker.error ? `<p class="staff-error-inline" role="status">${escape(picker.error)}</p>` : "";
+          const outcome = refreshError
+            ? `<p class="staff-error-inline" role="status">Тов хадгалагдсан боловч ирцийн жагсаалтыг шинэчилж чадсангүй. Дахин ачаалж шалгана уу.</p>`
+            : "";
+          const primary = saving
+            ? `<button class="button primary" type="button" disabled aria-busy="true">Хадгалж байна…</button>`
+            : refreshError
+              ? `<button class="button primary" type="button" data-refresh-makeup-picker>Дахин ачаалах</button>`
+              : `<button class="button primary" type="button" data-confirm-makeup-picker>${picker.saveState === "uncertain" ? "Дахин шалгах" : "Баталгаажуулах"}</button>`;
+          return `<section class="staff-makeup-detail" aria-live="polite"><div class="staff-section-heading"><div><p class="eyebrow">Сурагч нэмэх</p><h2>${picker.preview.sources.length} сурагч</h2><p>${escape(formatDate(picker.preview.target.localDate))} · ${escape(picker.preview.target.startTime)}–${escape(picker.preview.target.endTime)}</p><p class="staff-muted">Сул суудал: ${picker.preview.target.remainingCapacity}. Баталгаажуулахад дахин шалгана.</p></div></div>${makeupReviewSources(picker.preview.sources)}${error}${outcome}<div class="staff-inline-actions">${primary}${saving || refreshError ? "" : `<button class="button secondary" type="button" data-edit-makeup-picker>Засах</button>`}</div></section>`;
+        }
         const target = picker.target;
         return `<section class="staff-makeup-detail" aria-live="polite"><div class="staff-section-heading"><div><p class="eyebrow">Сурагч нэмэх</p><h2>${escape(formatDate(target.localDate))} · ${escape(target.startTime)}–${escape(target.endTime)}</h2><p class="staff-muted">${target.kind === "special" ? "Тусгай нөхөх цаг" : escape(target.classLabel)} · Сул суудал: ${target.remainingCapacity}</p></div><button class="button secondary" type="button" data-close-makeup-picker>Болих</button></div>${picker.error ? `<p class="staff-error-inline" role="status">${escape(picker.error)}</p>` : ""}${picker.sources.length ? `<div class="staff-makeup-case-list">${picker.sources.map((entry) => `<label class="staff-makeup-case"><input type="checkbox" data-attendance-makeup-source value="${escape(makeupSourceKey(entry))}" ${selectedKeys.has(makeupSourceKey(entry)) ? "checked" : ""}/><span><strong>${escape(entry.studentName)}</strong><small>${escape([entry.classLabel, entry.sourceLocalDate, entry.sourceStartTime && entry.sourceEndTime ? `${entry.sourceStartTime}–${entry.sourceEndTime}` : ""].filter(Boolean).join(" · "))}</small></span></label>`).join("")}</div><div class="staff-makeup-selection-info"><strong>${selectedKeys.size ? `${selectedKeys.size} сурагч сонгосон` : "Сурагч сонгоно уу"}</strong>${selectedKeys.size > target.remainingCapacity ? `<span class="staff-muted">Энэ цагт бүх сонголт багтахгүй.</span>` : ""}</div><div class="staff-inline-actions"><button class="button primary" type="button" data-preview-makeup-picker ${selectedKeys.size && selectedKeys.size <= target.remainingCapacity ? "" : "disabled"}>Урьдчилан харах</button></div>` : `<p class="staff-empty">Нэмэх боломжтой сурагч алга.</p>`}</section>`;
       }
@@ -225,6 +241,22 @@ import "../../styles/global.css";
           state.makeupPicker = { slotId: selected.slotId, status: "error", selected: new Set(), error: error.message || "Сурагчдын жагсаалтыг ачаалж чадсангүй." };
         }
         renderDetail();
+      }
+
+      async function refreshBookedMakeupPicker(picker) {
+        try {
+          await refresh();
+          if (state.makeupPicker?.slotId !== picker.slotId) return;
+          ++state.makeupPickerVersion;
+          state.makeupPicker = null;
+          renderDetail();
+          message("Нөхөх хичээлийн товыг хадгаллаа.", true);
+        } catch {
+          if (state.makeupPicker?.slotId !== picker.slotId) return;
+          state.makeupPicker = { ...picker, status: "refresh-error" };
+          renderDetail();
+          message("Тов хадгалагдсан боловч ирцийн жагсаалтыг шинэчилж чадсангүй.");
+        }
       }
 
       async function mutateRow(enrollmentId, next, action, payload, success) {
@@ -281,6 +313,14 @@ import "../../styles/global.css";
           if (picker?.status === "review") { state.makeupPicker = { ...picker, status: "ready", preview: null }; renderDetail(); }
           return;
         }
+        if (target.dataset.refreshMakeupPicker !== undefined) {
+          const picker = state.makeupPicker;
+          if (picker?.status === "refresh-error") {
+            target.disabled = true; target.textContent = "Ачаалж байна…";
+            await refreshBookedMakeupPicker(picker);
+          }
+          return;
+        }
         if (target.dataset.previewMakeupPicker !== undefined) {
           const picker = state.makeupPicker; const selected = state.data?.selected;
           if (!picker || !selected || picker.status !== "ready") return;
@@ -299,16 +339,27 @@ import "../../styles/global.css";
         }
         if (target.dataset.confirmMakeupPicker !== undefined) {
           const picker = state.makeupPicker; const selected = state.data?.selected;
-          if (!picker?.preview || !selected) return;
-          target.disabled = true; target.textContent = "Хадгалж байна…";
+          if (!picker?.preview || !selected || picker.status !== "review") return;
+          state.makeupPicker = { ...picker, status: "saving", error: "" };
+          renderDetail();
           try {
             await postCourseMakeupAction("makeup.group-destination-book", {
               sources: picker.preview.sources.map(makeupSourcePayload), expectedFingerprint: picker.preview.fingerprint,
               ...makeupTargetPayload(selected), operationId: picker.operationId ||= crypto.randomUUID(),
             });
-            ++state.makeupPickerVersion; state.makeupPicker = null; await refresh(); message("Нөхөх хичээлийн товыг хадгаллаа.", true);
+            await refreshBookedMakeupPicker({ ...picker, status: "saving" });
           } catch (error) {
-            if (state.makeupPicker === picker) { picker.error = error.message || "Товыг хадгалж чадсангүй."; target.disabled = false; target.textContent = "Баталгаажуулах"; }
+            if (state.makeupPicker?.slotId === picker.slotId) {
+              state.makeupPicker = {
+                ...picker,
+                status: "review",
+                saveState: error.responseReceived ? "failed" : "uncertain",
+                error: error.responseReceived
+                  ? (error.message || "Товыг хадгалж чадсангүй.")
+                  : "Хариу тодорхойгүй байна. Ижил хүсэлтээр дахин шалгана уу.",
+              };
+              renderDetail();
+            }
           }
           return;
         }

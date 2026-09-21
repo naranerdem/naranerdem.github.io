@@ -428,6 +428,59 @@ async function unresolvedSourcesForDestination(
     && states.get(lessonKey(entry.source))?.status !== "retired").map((entry) => entry.source);
 }
 
+// Destination pages must be able to render a successful empty candidate list.
+// Candidate eligibility depends on a source, but the destination itself does not.
+async function existingTargetForDestination(
+  env: WorkerEnv,
+  destination: DestinationLessonContext,
+  at = new Date(),
+): Promise<ExistingMakeupTarget> {
+  if (destination.kind === "normal_class") {
+    const row = await env.DB.prepare(`SELECT
+        slot.id AS slotId,
+        class_session.id AS classSessionId,
+        slot.curriculum_lesson_id AS curriculumLessonId,
+        slot.local_date AS localDate,
+        slot.start_time AS startTime,
+        slot.end_time AS endTime,
+        offering.title AS offeringTitle,
+        class_session.stage_code AS stageCode,
+        COALESCE(meeting.weekly_weekday, class_session.weekday) AS classWeekday,
+        class_session.capacity,
+        (SELECT COUNT(*) FROM course_makeup_assignment AS assignment
+          WHERE assignment.target_kind = 'normal_class'
+            AND assignment.target_class_session_id = class_session.id
+            AND assignment.target_curriculum_lesson_id = slot.curriculum_lesson_id
+            AND assignment.status = 'active') AS makeupCount
+      FROM class_calendar_slot AS slot
+      INNER JOIN class_calendar_revision AS revision
+        ON revision.id = slot.class_calendar_revision_id AND revision.status = 'published'
+      INNER JOIN class_calendar AS calendar ON calendar.id = revision.class_calendar_id
+      INNER JOIN class_session ON class_session.id = calendar.class_session_id
+      INNER JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
+      LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
+      WHERE slot.id = ? AND class_session.id = ? AND slot.status = 'scheduled'`).bind(
+      destination.slotId, destination.classSessionId,
+    ).first<NormalTargetRow>();
+    if (!row) throw new CourseMakeupError("not_eligible");
+    const projection = (await getClassCapacityProjections(env.DB, env.APP_ENV, at, [row.classSessionId]))[0];
+    return normalTarget({
+      ...row,
+      remainingCapacity: Math.max((projection?.freeSeats ?? 0) - row.makeupCount, 0),
+      classLabel: `${stageLabel(row.stageCode)} · ${row.classWeekday} ${row.startTime}–${row.endTime}`,
+    });
+  }
+  const row = await env.DB.prepare(`SELECT special.id, special.curriculum_lesson_id AS curriculumLessonId,
+      special.local_date AS localDate, special.start_time AS startTime, special.end_time AS endTime,
+      special.capacity, special.note,
+      (SELECT COUNT(*) FROM course_makeup_assignment AS assignment
+        WHERE assignment.target_special_occurrence_id = special.id AND assignment.status = 'active') AS assignedCount
+    FROM course_makeup_special_occurrence AS special
+    WHERE special.id = ? AND special.status = 'active'`).bind(destination.specialOccurrenceId).first<SpecialTargetRow>();
+  if (!row) throw new CourseMakeupError("not_eligible");
+  return specialTarget({ ...row, remainingCapacity: row.capacity - row.assignedCount });
+}
+
 async function unresolvedSource(
   env: WorkerEnv,
   source: SourceIdentity,
@@ -1295,6 +1348,7 @@ export async function getCourseMakeupDestinationCandidates(
   requireCapability(actor, "makeup.manage");
   const requested = requestedExistingTarget(input);
   const destination = await destinationLessonContext(env, requested, at);
+  const destinationTarget = await existingTargetForDestination(env, destination, at);
   const sources = await unresolvedSourcesForDestination(env, destination, at);
   const candidates: SourceRow[] = [];
   let target: ExistingMakeupTarget | null = null;
@@ -1306,8 +1360,7 @@ export async function getCourseMakeupDestinationCandidates(
       target ||= match;
     }
   }
-  if (!target) throw new CourseMakeupError("not_eligible");
-  return { target: serializeExistingTarget(target), sources: candidates.map(serializeSource) };
+  return { target: serializeExistingTarget(target ?? destinationTarget), sources: candidates.map(serializeSource) };
 }
 
 export async function assignCourseMakeupGroupToNormalClass(

@@ -132,7 +132,7 @@ try {
       ('source-slot', 'source-revision', '${sourceDate}', '10:00', '11:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('source-slot-2', 'source-revision', '${addDays(sourceDate, 1)}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('same-day-slot', 'target-revision', '${targetDate}', '22:00', '22:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
-      ('target-slot', 'target-revision', '${targetDate}', '23:00', '23:59', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
+      ('target-slot', 'target-revision', '${targetDate}', '23:00', '23:59', 'manual_extra', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('alternate-day-slot', 'target-revision', '${alternateDate}', '21:00', '21:20', 'generated', 'scheduled', 'lesson-3', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('day-change-slot-1', 'day-change-revision', '${sourceDate}', '12:00', '13:20', 'generated', 'scheduled', 'lesson', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
       ('day-change-slot', 'day-change-revision', '${dayChangeDate}', '12:00', '13:20', 'generated', 'scheduled', 'lesson-2', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
@@ -145,7 +145,7 @@ try {
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('student', 'Browser Маш Урт', 'Нөхөх Оролцогчийн Нэр', 'not_specified', '2015-01-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
-      VALUES ('archive-student', 'Архив', 'Туршилт', 'not_specified', '2015-01-09', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
+      VALUES ('archive-student', 'Fixture', 'Child 24', 'not_specified', '2015-01-09', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('special-student-a', 'Тусгай Нөхөх', 'Анударь', 'not_specified', '2015-04-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
         ('special-student-b', 'Тусгай Нөхөх', 'Билгүүн', 'not_specified', '2015-05-01', 'active', 1, 'makeup-browser', ${sql(now)}, ${sql(now)}),
@@ -379,11 +379,11 @@ try {
   const specialDraft = refreshedGroup.locator("#group-special-form");
   await specialDraft.waitFor({ state: "visible" });
   await specialDraft.locator("[name='localDate']").fill(addDays(today, 4));
-  await specialDraft.locator("[name='startTime']").fill("18:00");
+  await specialDraft.locator("[name='startTime']").fill("00:00");
   await specialDraft.locator("[name='note']").fill("Сонголт хадгалах туршилт");
   await refreshedCheckbox.press("Space");
   await specialDraft.getByText("Товлох сурагч сонгоно уу.", { exact: true }).waitFor({ state: "visible" });
-  assert.equal(await specialDraft.locator("[name='startTime']").inputValue(), "18:00", "changing selection keeps the open new-session draft fields");
+  assert.equal(await specialDraft.locator("[name='startTime']").inputValue(), "00:00", "changing selection keeps the open new-session draft fields");
   assert.equal(await specialDraft.locator("[name='note']").inputValue(), "Сонголт хадгалах туршилт", "selection does not remount away the entered note");
   await page.setViewportSize({ width: 1280, height: 900 });
   await specialDraft.screenshot({ path: path.join(screenshotDir, "makeup-new-session-selection-empty-desktop.png") });
@@ -392,31 +392,61 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await refreshedCheckbox.press("Space");
   await specialDraft.getByRole("button", { name: "Урьдчилан харах", exact: true }).waitFor({ state: "visible" });
+  await specialDraft.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await refreshedGroup.getByText(/00:00–01:20/, { exact: false }).waitFor({ state: "visible" });
+  assert.equal(await refreshedGroup.getByRole("button", { name: "Шинэ цаг товлох", exact: true }).isEnabled(), true,
+    "a midnight start produces a complete derived range and an enabled reviewed confirmation");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await refreshedGroup.locator("#makeup-detail").screenshot({ path: path.join(screenshotDir, "makeup-new-session-midnight-review-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await refreshedGroup.getByRole("button", { name: "Засах", exact: true }).click();
   await specialDraft.getByRole("button", { name: "Болих", exact: true }).click();
   await specialDraft.waitFor({ state: "hidden" });
-  await normalButton.click();
-  await inlineReview.locator("[data-preview-destination='normal_class']").click();
-  await inlineReview.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
-  await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.").waitFor({ state: "visible" });
+
+  console.log("make-up browser fixture: adding a learner to the rescheduled regular attendance occurrence");
+  await page.goto(`${baseUrl}/staff/attendance/?date=${targetDate}&occurrence=target-slot&makeupAdd=1`);
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  const normalAttendancePicker = page.locator("#attendance-detail .staff-makeup-detail");
+  await normalAttendancePicker.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).waitFor({ state: "visible" });
+  const normalAttendanceCheckbox = normalAttendancePicker.locator("[data-attendance-makeup-source][value='source-enrollment|source-class|lesson']");
+  await normalAttendanceCheckbox.locator("xpath=ancestor::label").locator("strong").click();
+  await normalAttendancePicker.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await page.locator("[data-confirm-makeup-picker]").waitFor({ state: "visible" });
+  await page.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).waitFor({ state: "visible" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "attendance-add-learner-regular-review-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "attendance-add-learner-regular-review-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await normalAttendancePicker.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
+  await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.locator("[data-attendance-row]").count(), 1,
+    "the rescheduled regular occurrence immediately renders its newly booked make-up learner once");
+  await page.reload();
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  assert.equal(await page.getByText("Browser Маш Урт Нөхөх Оролцогчийн Нэр", { exact: true }).count(), 1,
+    "reloading the exact rescheduled occurrence retains the make-up roster row once");
   const assignments = await page.evaluate(async () => (await fetch("/api/staff/makeups", { credentials: "same-origin" })).json());
   const normalAssignment = assignments.scheduled.filter((entry) => entry.targetKind === "normal_class");
-  assert.equal(normalAssignment.length, 1, "the rendered normal-target action creates one active normal-class assignment alongside the seeded special bookings");
+  assert.equal(normalAssignment.length, 1, "attendance-page confirmation creates one active normal-class assignment");
   assert.equal(normalAssignment[0].targetClassSessionId, "target-class", "the booking retains its exact target class identity");
 
   console.log("make-up browser fixture: selecting an existing special-session destination from attendance");
   execute(`UPDATE course_makeup_special_occurrence
     SET local_date = '${addDays(today, 2)}', updated_at = ${sql(now)}
     WHERE id = 'add-special-occurrence';`);
+  const candidateRequestsBeforeAgenda = destinationCandidateRequests;
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });
   assert.equal(await page.locator("#staff-agenda [data-agenda-add-learner]").count(), 0,
     "agenda cards navigate to attendance without preloading a separate learner picker");
-  assert.equal(destinationCandidateRequests, 0, "calendar rendering does not request destination candidates");
+  assert.equal(destinationCandidateRequests, candidateRequestsBeforeAgenda, "calendar rendering does not request destination candidates");
   await page.goto(`${baseUrl}/staff/attendance/?date=${addDays(today, 2)}&occurrence=add-special-occurrence&makeupAdd=1`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   const attendancePicker = page.locator("#attendance-detail .staff-makeup-detail");
-  await attendancePicker.getByText("Архив Туршилт", { exact: true }).waitFor({ state: "visible" });
-  assert.equal(destinationCandidateRequests, 1, "the attendance add action requests candidates exactly once for its selected occurrence");
+  await attendancePicker.getByText("Fixture Child 24", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(destinationCandidateRequests, candidateRequestsBeforeAgenda + 1, "the attendance add action requests candidates exactly once for its selected occurrence");
   const attendancePickerCheckbox = attendancePicker.locator("[data-attendance-makeup-source][value='archive-enrollment|source-class|lesson']");
   await attendancePickerCheckbox.locator("xpath=ancestor::label").locator("strong").click();
   assert.equal(await attendancePickerCheckbox.isChecked(), true, "the attendance picker shares immediate local checkbox selection");
@@ -426,12 +456,50 @@ try {
   await attendancePicker.screenshot({ path: path.join(screenshotDir, "attendance-add-learner-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 900 });
   await attendancePicker.getByRole("button", { name: "Урьдчилан харах", exact: true }).click();
+  await attendancePicker.getByText("Fixture Child 24", { exact: true }).waitFor({ state: "visible" });
+  let destinationBookSeen = false;
+  let refreshFailedAfterBook = false;
+  const failOneRosterRefresh = async (route) => {
+    const request = route.request();
+    if (request.url().endsWith("/api/staff/makeups") && request.method() === "POST") {
+      try { if (JSON.parse(request.postData() || "{}").action === "makeup.group-destination-book") destinationBookSeen = true; } catch {}
+      await route.continue();
+      return;
+    }
+    if (destinationBookSeen && !refreshFailedAfterBook && request.method() === "GET" && request.url().includes("/api/staff/attendance?")) {
+      refreshFailedAfterBook = true;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "түр алдаа" } }) });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**/api/staff/**", failOneRosterRefresh);
   await attendancePicker.getByRole("button", { name: "Баталгаажуулах", exact: true }).click();
+  await page.getByText("Тов хадгалагдсан боловч ирцийн жагсаалтыг шинэчилж чадсангүй.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(refreshFailedAfterBook, true, "a post-book roster refresh failure is surfaced separately from the durable save");
+  await page.unroute("**/api/staff/**", failOneRosterRefresh);
+  await page.getByRole("button", { name: "Дахин ачаалах", exact: true }).click();
   await page.getByText("Нөхөх хичээлийн товыг хадгаллаа.", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Fixture Child 24", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await page.getByText("Fixture Child 24", { exact: true }).count(), 1,
+    "special attendance confirmation renders the named learner exactly once without creating an attendance mark");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "attendance-add-learner-special-saved-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "attendance-add-learner-special-saved-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.reload();
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  assert.equal(await page.getByText("Fixture Child 24", { exact: true }).count(), 1,
+    "special attendance reload preserves the confirmed make-up learner exactly once");
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  await page.locator("[data-section='scheduled'] > summary").click();
-  const scheduledShortcut = page.locator("[data-section='scheduled'] a[href*='occurrence=add-special-occurrence'][href*='makeupAdd=1']").first();
+  const scheduledShortcutSelector = "a[href*='occurrence=add-special-occurrence'][href*='makeupAdd=1']";
+  const scheduledSection = page.locator("[data-section='scheduled']");
+  if (!await scheduledSection.evaluate((details) => details.open)) await scheduledSection.locator(":scope > summary").click();
+  const scheduledGroup = scheduledSection.locator("[data-makeup-group]").filter({ has: page.locator(scheduledShortcutSelector) }).first();
+  if (!await scheduledGroup.evaluate((details) => details.open)) await scheduledGroup.locator(":scope > summary").click();
+  const scheduledShortcut = scheduledGroup.locator(scheduledShortcutSelector).first();
   await scheduledShortcut.click();
   await page.waitForURL(/\/staff\/attendance\/\?date=.*occurrence=add-special-occurrence.*makeupAdd=1/);
   await page.locator("#attendance-detail .staff-makeup-detail").getByText("Нэмэх боломжтой сурагч алга.", { exact: true }).waitFor({ state: "visible" });

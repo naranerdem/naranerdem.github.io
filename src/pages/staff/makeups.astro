@@ -180,7 +180,10 @@ import "../../styles/global.css";
           return `<form id="group-special-form" class="staff-makeup-special-form"><div class="staff-section-heading"><div><p class="eyebrow">Шинэ цаг</p><h2>${count ? `${count} сурагч` : "Сурагч сонгоно уу"}</h2><p class="staff-muted">Нэг тусгай хичээлийн цаг үүсгэж, сонгосон сурагчдыг хамтад нь товлоно.</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div><div class="staff-form-grid"><label>Өдөр<input name="localDate" type="date" value="${escape(draft.localDate || defaultDate.toISOString().slice(0, 10))}" required /></label><label>Эхлэх цаг<input name="startTime" type="time" value="${escape(draft.startTime || "")}" required /></label><p class="staff-muted">Дуусах цаг: <output data-derived-end data-duration="${duration}">${draft.startTime ? escape(addMinutes(draft.startTime, duration)) : "Эхлэх цагаа сонгоно уу"}</output></p><label>Суудлын тоо<input name="capacity" type="number" min="${count || 1}" max="100" value="${capacity}" required /></label></div><label>Тэмдэглэл<textarea name="note" rows="2">${escape(draft.note || "")}</textarea></label>${count ? "" : `<p class="staff-muted">Товлох сурагч сонгоно уу.</p>`}<button class="button primary" type="submit" ${count ? "" : "disabled"}>Урьдчилан харах</button></form>`;
         }
         if (panel.kind === "special-review") {
-          return `<div class="staff-section-heading"><div><p class="eyebrow">Шинэ цаг</p><h2>${panel.preview.sources.length} сурагч</h2><p>${escape(panel.draft.localDate)} · ${escape(panel.draft.startTime)}–${escape(panel.draft.endTime)} · Суудлын тоо: ${escape(panel.draft.capacity)}</p><p class="staff-muted">Баталгаажуулахад сонгосон сурагчид болон цагийг дахин шалгана.</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div><div class="staff-inline-actions"><button class="button primary" type="button" data-confirm-special>Шинэ цаг товлох</button><button class="button secondary" type="button" data-edit-special>Засах</button></div>`;
+          const completeRange = /^\d{4}-\d{2}-\d{2}$/.test(panel.draft.localDate || "")
+            && /^\d{2}:\d{2}$/.test(panel.draft.startTime || "")
+            && /^\d{2}:\d{2}$/.test(panel.draft.endTime || "");
+          return `<div class="staff-section-heading"><div><p class="eyebrow">Шинэ цаг</p><h2>${panel.preview.sources.length} сурагч</h2><p>${completeRange ? `${escape(panel.draft.localDate)} · ${escape(panel.draft.startTime)}–${escape(panel.draft.endTime)} · Суудлын тоо: ${escape(panel.draft.capacity)}` : "Цагийн мэдээлэл дутуу байна."}</p><p class="staff-muted">Баталгаажуулахад сонгосон сурагчид болон цагийг дахин шалгана.</p></div><button class="button secondary" type="button" data-close-panel>Болих</button></div>${completeRange ? "" : `<p class="staff-error-inline" role="status">Өдөр, эхлэх болон дуусах цаг бүрэн байх шаардлагатай.</p>`}<div class="staff-inline-actions"><button class="button primary" type="button" data-confirm-special ${completeRange ? "" : "disabled"}>Шинэ цаг товлох</button><button class="button secondary" type="button" data-edit-special>Засах</button></div>`;
         }
         if (panel.kind === "reschedule") {
           const current = (state.data.scheduled || []).find((entry) => entry.targetSpecialOccurrenceId === panel.specialOccurrenceId);
@@ -355,7 +358,13 @@ import "../../styles/global.css";
         event.preventDefault(); const form = new FormData(event.target);
         if (event.target.id === "group-special-form") {
           const panel = state.panel; const entries = selectedEntries(panel.group); if (!entries.length) return;
-          const draft = { localDate: String(form.get("localDate") || ""), startTime: String(form.get("startTime") || ""), capacity: String(form.get("capacity") || ""), note: String(form.get("note") || "") };
+          const startTime = String(form.get("startTime") || "");
+          const duration = Number(panel.preview?.defaultDurationMinutes || 0);
+          const draft = {
+            localDate: String(form.get("localDate") || ""), startTime,
+            endTime: /^\d{2}:\d{2}$/.test(startTime) && duration > 0 ? addMinutes(startTime, duration) : "",
+            capacity: String(form.get("capacity") || ""), note: String(form.get("note") || ""),
+          };
           const submit = event.target.querySelector("button[type='submit']");
           await preview(submit, "makeup.group-special-preview", { sources: entries.map(sourcePayload) }, { kind: "special-review", group: panel.group, entries, draft, groupKey: panel.groupKey, sectionKey: panel.sectionKey, returnFocus: panel.returnFocus });
           return;
