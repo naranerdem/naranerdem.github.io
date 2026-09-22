@@ -818,6 +818,80 @@ try {
   assert.equal(noFuturePreview.targets.length, 0, "no future matching named lesson leaves the normal booking action unavailable");
   assert.equal(noFuturePreview.insufficientTargets.length, 0, "a later slot for a different named lesson is not reported as a matching target");
 
+  const overviewControl = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
+  const controlSections = {
+    scheduled: overviewControl.scheduled.length,
+    attendanceReview: overviewControl.attendanceReview.length,
+    history: overviewControl.history.length,
+    archived: overviewControl.archived.length,
+  };
+  sqlite(`WITH RECURSIVE sequence(value) AS (
+      VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 170
+    )
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+    SELECT 'overview-student-' || value, 'Тойм', printf('Сурагч %03d', value), 'not_specified',
+      '2015-02-01', 'active', 1, 'makeup-test', '${now}', '${now}' FROM sequence;
+    WITH RECURSIVE sequence(value) AS (
+      VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 170
+    )
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+    SELECT 'overview-prereg-' || value, 'guardian', 'year', 'completed', 1, 'makeup-test', '${now}', '${now}' FROM sequence;
+    WITH RECURSIVE sequence(value) AS (
+      VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 170
+    )
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+    SELECT 'overview-application-' || value, 'overview-prereg-' || value, 'overview-student-' || value,
+      5, 'new', 'enrolled', 1, 'makeup-test', '${now}', '${now}' FROM sequence;
+    WITH RECURSIVE sequence(value) AS (
+      VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 170
+    )
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+    SELECT 'overview-enrollment-' || value, 'overview-application-' || value, 'overview-student-' || value,
+      'year', 'source-class', 'confirmed', '${confirmedAt}', 1, 'makeup-test', '${now}', '${now}' FROM sequence;
+    WITH RECURSIVE sequence(value) AS (
+      VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 170
+    )
+    INSERT INTO course_makeup_case (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      current_resolution_id, state, is_test, test_run_id, created_at, updated_at)
+    SELECT 'overview-case-' || value, 'overview-enrollment-' || value, 'source-class', 'lesson-1',
+      NULL, 'open', 1, 'makeup-test', '${now}', '${now}' FROM sequence;
+    WITH RECURSIVE sequence(value) AS (
+      VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 170
+    )
+    INSERT INTO course_makeup_resolution (id, source_enrollment_id, source_class_session_id, source_curriculum_lesson_id,
+      case_id, decision, status, decided_by_staff_account_id, decided_at, is_test, test_run_id, created_at, updated_at)
+    SELECT 'overview-resolution-' || value, 'overview-enrollment-' || value, 'source-class', 'lesson-1',
+      'overview-case-' || value, 'assigned', 'active', 'teacher-staff', '${now}', 1, 'makeup-test', '${now}', '${now}' FROM sequence;
+    WITH RECURSIVE sequence(value) AS (
+      VALUES(1) UNION ALL SELECT value + 1 FROM sequence WHERE value < 170
+    )
+    UPDATE course_makeup_case SET current_resolution_id = 'overview-resolution-' || substr(id, length('overview-case-') + 1)
+    WHERE id IN (SELECT 'overview-case-' || value FROM sequence);`);
+  database.prepareCount = 0;
+  database.executedQueries = [];
+  const overviewStartedAt = performance.now();
+  const batchedOverview = await makeups.getCourseMakeupOverview(runtime, actor(), undefined, afterSourceEnd);
+  const overviewElapsedMs = performance.now() - overviewStartedAt;
+  const attemptBatchQueries = database.executedQueries.filter((entry) => entry.sql.includes("WHERE resolution.id IN"));
+  const caseBatchQueries = database.executedQueries.filter((entry) => entry.sql.includes("FROM course_makeup_case")
+    && entry.sql.includes("source_enrollment_id = ? AND source_class_session_id = ?"));
+  assert.equal(attemptBatchQueries.length, 3, "170 current attempts use three bounded resolution batches rather than one query per source");
+  assert.equal(caseBatchQueries.length, 3, "170 source identities use three bounded case batches rather than an all-case read");
+  assert.ok(batchedOverview.unresolved.filter((entry) => entry.enrollmentId.startsWith('overview-enrollment-')).length === 170,
+    "batched overview retains every unresolved source");
+  assert.deepEqual({
+    scheduled: batchedOverview.scheduled.length,
+    attendanceReview: batchedOverview.attendanceReview.length,
+    history: batchedOverview.history.length,
+    archived: batchedOverview.archived.length,
+  }, controlSections, "batching leaves scheduled, attendance-review, history, and archive results complete");
+  const casePlan = sqlite(`EXPLAIN QUERY PLAN ${bindSql(caseBatchQueries[0].sql, caseBatchQueries[0].values)};`);
+  const attemptPlan = sqlite(`EXPLAIN QUERY PLAN ${bindSql(attemptBatchQueries[0].sql, attemptBatchQueries[0].values)};`);
+  assert.match(casePlan, /SEARCH course_makeup_case/, "source-keyed case batches seek case identities instead of scanning all cases");
+  assert.match(attemptPlan, /SEARCH resolution/, "attempt batches seek current resolution identities");
+  console.log(`make-up overview batches: 170 sources, previous 170 current-attempt queries, now ${attemptBatchQueries.length}; ${database.prepareCount} prepared queries, ${overviewElapsedMs.toFixed(1)} ms local`);
+  console.log(`make-up overview plans: cases use source identity index; attempts ${attemptPlan.replaceAll("\n", " | ")}`);
+
   const page = readFileSync("src/pages/staff/makeups.astro", "utf8");
   const built = readFileSync("dist/staff/makeups/index.html", "utf8");
   assert.doesNotMatch(page, /data-no-makeup/, "the active make-up pool no longer persists an individual refusal from a child row");

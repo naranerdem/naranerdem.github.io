@@ -276,28 +276,30 @@ async function lessonStateForSource(env: WorkerEnv, source: SourceRow): Promise<
   ).first<LessonStateRow>();
 }
 
-async function caseRows(env: WorkerEnv): Promise<Map<string, CaseRow>> {
-  const result = await env.DB.prepare(`SELECT id, source_enrollment_id AS enrollmentId,
-      source_class_session_id AS classSessionId, source_curriculum_lesson_id AS curriculumLessonId,
-      current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
-      is_test AS isTest, test_run_id AS testRunId
-    FROM course_makeup_case`).all<CaseRow & SourceIdentity>();
-  return new Map(result.results.map((entry) => [sourceKey(entry), entry]));
+const OVERVIEW_BATCH_SIZE = 80;
+
+function batches<T>(values: T[], size = OVERVIEW_BATCH_SIZE): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
 }
 
 async function caseRowsForSources(env: WorkerEnv, sources: SourceRow[]): Promise<Map<string, CaseRow>> {
   if (!sources.length) return new Map();
-  const enrollmentIds = [...new Set(sources.map((source) => source.enrollmentId))];
-  const result = await env.DB.prepare(`SELECT id, source_enrollment_id AS enrollmentId,
-      source_class_session_id AS classSessionId, source_curriculum_lesson_id AS curriculumLessonId,
-      current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
-      is_test AS isTest, test_run_id AS testRunId
-    FROM course_makeup_case
-    WHERE source_curriculum_lesson_id = ?
-      AND source_enrollment_id IN (${enrollmentIds.map(() => "?").join(", ")})`).bind(
-    sources[0].curriculumLessonId, ...enrollmentIds,
-  ).all<CaseRow & SourceIdentity>();
-  return new Map(result.results.map((entry) => [sourceKey(entry), entry]));
+  const unique = [...new Map(sources.map((source) => [sourceKey(source), source])).values()];
+  const rows: Array<CaseRow & SourceIdentity> = [];
+  for (const group of batches(unique)) {
+    const result = await env.DB.prepare(`SELECT id, source_enrollment_id AS enrollmentId,
+        source_class_session_id AS classSessionId, source_curriculum_lesson_id AS curriculumLessonId,
+        current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
+        is_test AS isTest, test_run_id AS testRunId
+      FROM course_makeup_case
+      WHERE ${group.map(() => "(source_enrollment_id = ? AND source_class_session_id = ? AND source_curriculum_lesson_id = ?)").join(" OR ")}`).bind(
+      ...group.flatMap((source) => [source.enrollmentId, source.classSessionId, source.curriculumLessonId]),
+    ).all<CaseRow & SourceIdentity>();
+    rows.push(...result.results);
+  }
+  return new Map(rows.map((entry) => [sourceKey(entry), entry]));
 }
 
 async function caseForSource(env: WorkerEnv, source: SourceIdentity): Promise<CaseRow | null> {
@@ -378,32 +380,35 @@ async function currentAttemptStatesForSources(
   at = new Date(),
 ): Promise<Map<string, ReturnType<typeof currentAttemptStateFromRow>>> {
   const resolutionIds = [...new Set([...cases.values()].flatMap((entry) => entry.currentResolutionId ? [entry.currentResolutionId] : []))];
-  const rows = resolutionIds.length ? await env.DB.prepare(`SELECT resolution.id AS resolutionId,
-      resolution.decision, assignment.id AS assignmentId,
-      COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) AS attendanceStatus,
-      COALESCE(slot.local_date, special.local_date) AS localDate,
-      COALESCE(slot.start_time, special.start_time) AS startTime,
-      COALESCE(slot.end_time, special.end_time) AS endTime
-    FROM course_makeup_resolution AS resolution
-    LEFT JOIN course_makeup_assignment AS assignment
-      ON assignment.resolution_id = resolution.id AND assignment.status = 'active'
-    LEFT JOIN class_calendar AS calendar ON calendar.class_session_id = assignment.target_class_session_id
-    LEFT JOIN class_calendar_revision AS revision
-      ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
-    LEFT JOIN class_calendar_slot AS slot
-      ON slot.class_calendar_revision_id = revision.id
-      AND slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id AND slot.status = 'scheduled'
-    LEFT JOIN course_makeup_special_occurrence AS special
-      ON special.id = assignment.target_special_occurrence_id AND special.status = 'active'
-    LEFT JOIN course_makeup_attendance AS normal_attendance
-      ON normal_attendance.course_makeup_assignment_id = assignment.id
-    LEFT JOIN course_makeup_special_attendance AS special_attendance
-      ON special_attendance.course_makeup_assignment_id = assignment.id
-    WHERE resolution.id IN (${resolutionIds.map(() => "?").join(", ")})
-      AND resolution.status = 'active'`).bind(...resolutionIds).all<CurrentAttemptRow & { resolutionId: string }>()
-    : { results: [] as Array<CurrentAttemptRow & { resolutionId: string }> };
+  const rows: Array<CurrentAttemptRow & { resolutionId: string }> = [];
+  for (const group of batches(resolutionIds)) {
+    const result = await env.DB.prepare(`SELECT resolution.id AS resolutionId,
+        resolution.decision, assignment.id AS assignmentId,
+        COALESCE(normal_attendance.attendance_status, special_attendance.attendance_status) AS attendanceStatus,
+        COALESCE(slot.local_date, special.local_date) AS localDate,
+        COALESCE(slot.start_time, special.start_time) AS startTime,
+        COALESCE(slot.end_time, special.end_time) AS endTime
+      FROM course_makeup_resolution AS resolution
+      LEFT JOIN course_makeup_assignment AS assignment
+        ON assignment.resolution_id = resolution.id AND assignment.status = 'active'
+      LEFT JOIN class_calendar AS calendar ON calendar.class_session_id = assignment.target_class_session_id
+      LEFT JOIN class_calendar_revision AS revision
+        ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+      LEFT JOIN class_calendar_slot AS slot
+        ON slot.class_calendar_revision_id = revision.id
+        AND slot.curriculum_lesson_id = assignment.target_curriculum_lesson_id AND slot.status = 'scheduled'
+      LEFT JOIN course_makeup_special_occurrence AS special
+        ON special.id = assignment.target_special_occurrence_id AND special.status = 'active'
+      LEFT JOIN course_makeup_attendance AS normal_attendance
+        ON normal_attendance.course_makeup_assignment_id = assignment.id
+      LEFT JOIN course_makeup_special_attendance AS special_attendance
+        ON special_attendance.course_makeup_assignment_id = assignment.id
+      WHERE resolution.id IN (${group.map(() => "?").join(", ")})
+        AND resolution.status = 'active'`).bind(...group).all<CurrentAttemptRow & { resolutionId: string }>();
+    rows.push(...result.results);
+  }
   const rowsByResolution = new Map<string, CurrentAttemptRow>();
-  for (const row of rows.results) if (!rowsByResolution.has(row.resolutionId)) rowsByResolution.set(row.resolutionId, row);
+  for (const row of rows) if (!rowsByResolution.has(row.resolutionId)) rowsByResolution.set(row.resolutionId, row);
   return new Map(sources.map((source) => {
     const caseRow = cases.get(sourceKey(source)) ?? null;
     return [
@@ -425,14 +430,11 @@ async function unresolvedSources(
     ORDER BY slot.local_date DESC, slot.start_time, program.display_name,
       lesson.sequence_number, student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE`)
     .bind(local.date, local.date, local.time).all<SourceRow>();
-  const cases = await caseRows(env);
-  const states = await Promise.all(result.results.map(async (source) => ({
-    source, state: await currentAttemptState(env, cases.get(sourceKey(source)) ?? null, at),
-  })));
+  const cases = await caseRowsForSources(env, result.results);
+  const states = await currentAttemptStatesForSources(env, result.results, cases, at);
   const statesByLesson = await lessonStates(env);
-  return states.filter((entry) => entry.state === "needs_action"
-    && (includeRetired || statesByLesson.get(lessonKey(entry.source))?.status !== "retired"))
-    .map((entry) => entry.source);
+  return result.results.filter((source) => states.get(sourceKey(source)) === "needs_action"
+    && (includeRetired || statesByLesson.get(lessonKey(source))?.status !== "retired"));
 }
 
 interface DestinationLessonContext {
