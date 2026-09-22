@@ -45,15 +45,15 @@ import "../../styles/global.css";
     </main>
     <script>
       // @ts-nocheck
-      const state = { accounts: [], addingEmailAccountId: "" };
+      const state = { accounts: [], addingEmailAccountId: "", sessions: {}, loadingSessionsFor: "", sessionErrors: {} };
       const q = (selector) => document.querySelector(selector);
       const escape = (value) => String(value ?? "").replace(/[&<>\"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
       const roleLabel = (role) => ({ admin: "Админ", teacher: "Багш", accountant: "Нягтлан" })[role] || role;
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state")) node.hidden = node.id !== id; document.body.dataset.staffTeamSurface = id.replace("team-", ""); };
       const message = (text = "", success = false) => { const node = q("#team-message"); node.textContent = text; node.classList.toggle("staff-success", success); node.hidden = !text; };
 
-      async function request(method, body) {
-        const response = await fetch("/api/staff/team", {
+      async function request(method, body, query = "") {
+        const response = await fetch(`/api/staff/team${query}`, {
           method,
           headers: body ? { "Content-Type": "application/json", Accept: "application/json" } : { Accept: "application/json" },
           credentials: "same-origin",
@@ -90,7 +90,15 @@ import "../../styles/global.css";
           const adding = state.addingEmailAccountId === account.id
             ? `<form class="staff-team-email-form" data-email-form="${escape(account.id)}"><label>Шинэ и-мэйл <input type="email" inputmode="email" autocomplete="email" maxlength="254" required data-new-email /></label><div class="staff-inline-actions"><button class="button secondary" type="button" data-cancel-email>Болих</button><button class="button primary" type="submit">Нэмэх</button></div></form>`
             : (account.emails || []).length < 3 ? `<button class="staff-text-action" type="button" data-add-email="${escape(account.id)}">+ Имэйл нэмэх</button>` : `<p class="staff-muted staff-team-email-limit">3 и-мэйл бүртгэлтэй</p>`;
-          return `<article class="staff-team-row ${account.status === "disabled" ? "disabled" : ""}"><div class="staff-team-summary"><strong>${escape(account.displayName)}</strong><p>${escape(roleLabel(account.roles[0]))} · ${account.status === "active" ? "Идэвхтэй" : "Идэвхгүй"}${account.isTest ? " · Тест" : ""}${account.activeSessionCount ? ` · ${account.activeSessionCount} нэвтэрсэн төхөөрөмж` : ""}</p><div class="staff-team-emails"><span>Имэйл</span><ul>${emails}</ul>${adding}</div></div><div class="staff-team-actions"><button class="button secondary" type="button" data-edit="${escape(account.id)}">Нэр, эрх засах</button><button class="button secondary" type="button" data-status="${escape(account.id)}" data-next-status="${account.status === "active" ? "disabled" : "active"}">${account.status === "active" ? "Идэвхгүй болгох" : "Идэвхжүүлэх"}</button><button class="staff-text-action" type="button" data-revoke="${escape(account.id)}">Бүх төхөөрөмжөөс гаргах</button></div></article>`;
+          const sessions = state.sessions[account.id];
+          const loadingSessions = state.loadingSessionsFor === account.id;
+          const sessionError = state.sessionErrors[account.id];
+          const sessionButton = account.activeSessionCount ? `<button class="staff-text-action" type="button" data-session-list="${escape(account.id)}" aria-expanded="${Boolean(sessions)}">${sessions ? "Нэвтэрсэн төхөөрөмжүүдийг хаах" : `Нэвтэрсэн төхөөрөмжүүд (${escape(account.activeSessionCount)})`}</button>` : "";
+          const localTime = (value) => value ? new Intl.DateTimeFormat("mn-MN", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Ulaanbaatar" }).format(new Date(value)) : "Тэмдэглэгдээгүй";
+          const sessionPanel = loadingSessions ? `<p class="staff-muted" role="status">Төхөөрөмжийн мэдээллийг ачаалж байна…</p>`
+            : sessionError ? `<p class="staff-error" role="status">${escape(sessionError)}</p>`
+              : sessions ? `<section class="staff-team-sessions" aria-label="${escape(account.displayName)} нэвтэрсэн төхөөрөмжүүд"><h3>Нэвтэрсэн төхөөрөмжүүд</h3>${sessions.length ? `<ul>${sessions.map((session) => `<li><div><strong>${escape(session.clientLabel || "Төхөөрөмжийн мэдээлэл хадгалагдаагүй")}</strong>${session.current ? ` <span class="staff-current-session">Одоогийн</span>` : ""}<p>Нэвтэрсэн: ${escape(localTime(session.createdAt))}</p><p>Сүүлд идэвхтэй: ${escape(localTime(session.lastSeenAt))}</p></div></li>`).join("")}</ul>` : `<p class="staff-muted">Идэвхтэй төхөөрөмж алга.</p>`}</section>` : "";
+          return `<article class="staff-team-row ${account.status === "disabled" ? "disabled" : ""}"><div class="staff-team-summary"><strong>${escape(account.displayName)}</strong><p>${escape(roleLabel(account.roles[0]))} · ${account.status === "active" ? "Идэвхтэй" : "Идэвхгүй"}${account.isTest ? " · Тест" : ""}${account.activeSessionCount ? ` · ${account.activeSessionCount} нэвтэрсэн төхөөрөмж` : ""}</p>${sessionButton}<div class="staff-team-emails"><span>Имэйл</span><ul>${emails}</ul>${adding}</div>${sessionPanel}</div><div class="staff-team-actions"><button class="button secondary" type="button" data-edit="${escape(account.id)}">Нэр, эрх засах</button><button class="button secondary" type="button" data-status="${escape(account.id)}" data-next-status="${account.status === "active" ? "disabled" : "active"}">${account.status === "active" ? "Идэвхгүй болгох" : "Идэвхжүүлэх"}</button><button class="staff-text-action" type="button" data-revoke="${escape(account.id)}">Бүх төхөөрөмжөөс гаргах</button></div></article>`;
         }).join("") : `<p class="staff-empty">Ажилтан бүртгэгдээгүй байна.</p>`;
       }
 
@@ -126,9 +134,18 @@ import "../../styles/global.css";
         if (!button) return;
         if (button.dataset.addEmail) { state.addingEmailAccountId = button.dataset.addEmail; render(); q("[data-new-email]")?.focus(); return; }
         if (button.dataset.cancelEmail !== undefined) { state.addingEmailAccountId = ""; render(); return; }
-        const accountId = button.dataset.account || button.dataset.edit || button.dataset.status || button.dataset.revoke;
+        const accountId = button.dataset.account || button.dataset.edit || button.dataset.status || button.dataset.revoke || button.dataset.sessionList;
         const account = state.accounts.find((entry) => entry.id === accountId);
         if (!account) return;
+        if (button.dataset.sessionList) {
+          if (state.sessions[account.id]) { delete state.sessions[account.id]; delete state.sessionErrors[account.id]; render(); return; }
+          if (state.loadingSessionsFor) return;
+          state.loadingSessionsFor = account.id; delete state.sessionErrors[account.id]; render();
+          try { state.sessions[account.id] = (await request("GET", undefined, `?sessions=${encodeURIComponent(account.id)}`)).sessions || []; }
+          catch (error) { state.sessionErrors[account.id] = error.message || "Төхөөрөмжийн мэдээллийг авч чадсангүй."; }
+          finally { state.loadingSessionsFor = ""; render(); }
+          return;
+        }
         if (button.dataset.edit) { openForm(account); return; }
         if (button.dataset.primaryEmail) {
           button.disabled = true;

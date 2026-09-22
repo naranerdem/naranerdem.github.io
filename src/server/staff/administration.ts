@@ -48,6 +48,13 @@ interface StaffEmailRow {
   createdAt: string;
 }
 
+interface StaffSessionListRow {
+  id: string;
+  clientLabel: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+}
+
 export interface StaffAccountInput {
   displayName: unknown;
   email: unknown;
@@ -188,6 +195,28 @@ export async function listStaffAccounts(env: WorkerEnv, actor: StaffPrincipal) {
     activeSessionCount: Number(row.activeSessionCount),
     isTest: Boolean(row.isTest),
     updatedAt: row.updatedAt,
+  }));
+}
+
+// Session details are deliberately loaded only after an administrator opens
+// one account. Historical sessions may not have a device label, and the list
+// never includes a token, hash, IP address, or other authentication secret.
+export async function listStaffAccountSessions(env: WorkerEnv, actor: StaffPrincipal, staffAccountId: string) {
+  requireStaffAdmin(actor);
+  await targetForAudit(env, staffAccountId);
+  const rows = await env.DB.prepare(`SELECT id, client_label AS clientLabel,
+    created_at AS createdAt, last_seen_at AS lastSeenAt
+    FROM staff_session
+    WHERE staff_account_id = ? AND revoked_at IS NULL AND expired_at IS NULL
+      AND expires_at > ?
+    ORDER BY COALESCE(last_seen_at, created_at) DESC, created_at DESC, id DESC
+    LIMIT 20`).bind(staffAccountId, new Date().toISOString()).all<StaffSessionListRow>();
+  return rows.results.map((row) => ({
+    id: row.id,
+    clientLabel: row.clientLabel || null,
+    createdAt: row.createdAt,
+    lastSeenAt: row.lastSeenAt,
+    current: row.id === actor.sessionId,
   }));
 }
 

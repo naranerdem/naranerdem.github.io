@@ -42,6 +42,7 @@ const {
   addStaffAccountEmail,
   createStaffAccount,
   listStaffAccounts,
+  listStaffAccountSessions,
   removeStaffAccountEmail,
   replaceStaffRoles,
   setPrimaryStaffAccountEmail,
@@ -266,15 +267,18 @@ try {
   const staffPage = readFileSync(path.resolve("dist/staff/index.html"), "utf8");
   const settingsPage = readFileSync(path.resolve("dist/staff/settings/auth/index.html"), "utf8");
   const teamPage = readFileSync(path.resolve("dist/staff/team/index.html"), "utf8");
+  const staffSource = readFileSync(path.resolve("src/pages/staff.astro"), "utf8");
   const teamSource = readFileSync(path.resolve("src/pages/staff/team.astro"), "utf8");
   const manifest = JSON.parse(readFileSync(path.resolve("dist/manifest.webmanifest"), "utf8"));
   assert.match(staffPage, /<html lang="mn">/);
   assert.match(staffPage, /data-staff-surface="booting"/);
   assert.match(staffPage, /Нэвтрэх хүсэлт баталгаажлаа/);
   assert.match(staffPage, /Нэвтрэх гэж байсан цонх эсвэл Наран Эрдэм апп руугаа буцна уу/);
-  assert.match(staffPage, /\/api\/staff\/auth\/attempt\/claim/);
-  assert.match(staffPage, /visibilitychange/);
-  assert.match(staffPage, /setTimeout\(pollAttempt, 4000\)/);
+  // Astro emits the interactive staff client as a hashed module. Check the
+  // authored module for these runtime hooks and keep the shell assertions above.
+  assert.match(staffSource, /\/api\/staff\/auth\/attempt\/claim/);
+  assert.match(staffSource, /visibilitychange/);
+  assert.match(staffSource, /setTimeout\(pollAttempt, 4000\)/);
   assert.doesNotMatch(staffPage, />Гарах</);
   assert.doesNotMatch(staffPage, /Апп нээх/);
   assert.ok(!staffPage.includes("@example.invalid"), "staff fixtures are not shipped to the browser");
@@ -283,6 +287,7 @@ try {
   assert.match(teamPage, /<html lang="mn">/);
   assert.match(teamPage, /Ажилтнууд/);
   assert.match(teamSource, /\/api\/staff\/team/);
+  assert.match(teamSource, /Нэвтэрсэн төхөөрөмжүүд/);
   assert.match(teamSource, /Имэйл нэмэх/);
   assert.match(teamSource, /email-primary/);
   assert.match(teamSource, /email-remove/);
@@ -427,6 +432,14 @@ try {
     role: "teacher",
   }), (error) => error.code === "email_conflict");
   const createdLogin = await sameContextLogin(env, "new-staff@example.invalid", "new-staff", new Date(baseTime.getTime() + 62_000));
+  database.query("UPDATE staff_session SET client_label = 'Chrome / macOS' WHERE id = ?", [createdLogin.verified.principal.sessionId]);
+  const createdSessions = await listStaffAccountSessions(env, adminLogin.verified.principal, created.id);
+  assert.deepEqual(createdSessions.map((session) => ({ label: session.clientLabel, current: session.current })), [{ label: "Chrome / macOS", current: false }],
+    "an administrator can load bounded existing device metadata without a session-token projection");
+  const ownSessions = await listStaffAccountSessions(env, adminLogin.verified.principal, adminLogin.verified.principal.staffAccountId);
+  assert.ok(ownSessions.some((session) => session.current), "the administrator's current session is identified from the existing session ID");
+  await assert.rejects(listStaffAccountSessions(env, claimedInA.principal, created.id), (error) => error.code === "forbidden",
+    "teachers cannot inspect another staff member's sessions");
   const secondAlias = await addStaffAccountEmail(env, adminLogin.verified.principal, created.id, "new-staff-two@example.invalid", new Date(baseTime.getTime() + 62_100));
   const thirdAlias = await addStaffAccountEmail(env, adminLogin.verified.principal, created.id, "new-staff-three@example.invalid", new Date(baseTime.getTime() + 62_200));
   await assert.rejects(

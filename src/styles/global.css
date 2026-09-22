@@ -4276,6 +4276,38 @@ textarea:focus {
   font-size: 0.78rem !important;
 }
 
+.staff-team-sessions {
+  border-left: 3px solid var(--line);
+  margin-top: 0.65rem;
+  padding: 0.15rem 0 0.15rem 0.7rem;
+}
+
+.staff-team-sessions h3 {
+  color: var(--blue-deep);
+  font-size: 0.84rem;
+  margin: 0;
+}
+
+.staff-team-sessions ul {
+  display: grid;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0.45rem 0 0;
+  padding: 0;
+}
+
+.staff-team-sessions li {
+  border-top: 1px solid rgba(205, 211, 222, 0.65);
+  padding-top: 0.35rem;
+}
+
+.staff-current-session {
+  color: var(--blue-deep);
+  font-size: 0.75rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
 .staff-team-actions {
   display: flex;
   align-items: center;

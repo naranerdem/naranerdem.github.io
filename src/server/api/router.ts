@@ -91,6 +91,7 @@ import {
   addStaffAccountEmail,
   createStaffAccount,
   listStaffAccounts,
+  listStaffAccountSessions,
   removeStaffAccountEmail,
   setPrimaryStaffAccountEmail,
   setStaffAccountStatus,
@@ -1031,12 +1032,15 @@ export async function handleApiRequest(
 
   if (path === "/api/staff/team") {
     const rawSessionToken = readStaffCookie(request);
-    const principal = await resolveStaffPrincipal(env, rawSessionToken);
+    // Reading the bounded device list must not itself extend or write session activity.
+    const principal = await resolveStaffPrincipal(env, rawSessionToken, new Date(), request.method === "GET" ? "passive" : "meaningful");
     if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
     if (!hasStaffCapability(principal, "admin.staff.manage")) {
       return error("forbidden", "Ажилтны мэдээллийг харах эрх алга.", 403, { "Cache-Control": "no-store" });
     }
     if (request.method === "GET") {
+      const sessionsFor = new URL(request.url).searchParams.get("sessions");
+      if (sessionsFor) return json({ sessions: await listStaffAccountSessions(env, principal, sessionsFor) }, 200, { "Cache-Control": "no-store" });
       return json({ accounts: await listStaffAccounts(env, principal) }, 200, { "Cache-Control": "no-store" });
     }
     if (!new Set(["POST", "PUT"]).has(request.method)) return methodNotAllowed("GET, POST, PUT");
