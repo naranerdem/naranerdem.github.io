@@ -189,7 +189,7 @@ async function refreshInstallmentsForChild(env: WorkerEnv, request: PaymentReque
 export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincipal, nowDate = new Date()) {
   if (!hasStaffCapability(actor, "payment.view")) throw new PaymentReconciliationError("forbidden");
   const now = nowDate.toISOString();
-  const result = await env.DB.prepare(`SELECT
+  const paymentRowsPromise = env.DB.prepare(`SELECT
     payment_request.id AS paymentRequestId, payment_request.payment_reference AS paymentReference,
     payment_request.transfer_description AS transferDescription,
     payment_installment.id AS installmentId, payment_installment.registration_draft_child_id AS registrationDraftChildId,
@@ -371,8 +371,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
       start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
-  const [credits, discountCredits, cancelled, capacityRows, capacityLabels] = await Promise.all([
-    creditsPromise, discountCreditsPromise, cancelledPromise, capacityRowsPromise, capacityLabelsPromise,
+  const [result, credits, discountCredits, cancelled, capacityRows, capacityLabels] = await Promise.all([
+    paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, capacityRowsPromise, capacityLabelsPromise,
   ]);
   const capacityById = new Map(capacityRows.map((row) => [row.classSessionId, row]));
   const capacity = capacityLabels.results.map((label) => ({ ...label, ...(capacityById.get(label.id) ?? {
@@ -422,10 +422,21 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     usedAmountMnt: Number(row.usedAmountMnt), availableAmountMnt: Number(row.availableAmountMnt),
   }]));
   const creditByChild = await childCreditSummaryForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)));
-  const creditReviewByInstallment = new Map(await Promise.all(rawItems.flatMap((item) => [
-    { childId: String(item.registrationDraftChildId), installmentId: String(item.installmentId) },
-    ...(item.laterInstallmentId ? [{ childId: String(item.registrationDraftChildId), installmentId: String(item.laterInstallmentId) }] : []),
-  ]).map(async ({ childId, installmentId }) => {
+  // A credit-review state only affects a row with usable credit and an actual
+  // eligible installment balance. Avoid the former two-per-row projection for
+  // ordinary cash-only or already-settled registrations.
+  const creditReviewInputs = rawItems.flatMap((item) => {
+    const childId = String(item.registrationDraftChildId);
+    if (!Number(creditByChild.get(childId)?.availableAmountMnt || 0)) return [];
+    const initial = effectiveById.get(String(item.installmentId));
+    const initialOutstanding = Math.max(0, Number(initial?.effectiveAmountMnt ?? item.expectedAmountMnt) - item.allocatedAmountMnt);
+    const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
+    const laterOutstanding = later ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
+    const installmentId = item.paymentPlanCode !== "two_installment" && initialOutstanding > 0 ? String(item.installmentId)
+      : laterOutstanding > 0 && item.laterInstallmentId ? String(item.laterInstallmentId) : null;
+    return installmentId ? [{ childId, installmentId }] : [];
+  });
+  const creditReviewByInstallment = new Map(await Promise.all(creditReviewInputs.map(async ({ childId, installmentId }) => {
     try { return [installmentId, await creditPaymentReviewState(env.DB, childId, installmentId)] as const; }
     catch { return [installmentId, null] as const; }
   })));
