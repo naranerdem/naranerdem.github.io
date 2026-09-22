@@ -735,6 +735,15 @@ function settlePaymentCredit(env: WorkerEnv, source: PaymentCreditSource, amount
       source.id, amountMnt);
 }
 
+async function settledPaymentCreditState(database: D1Database, paymentCreditId: string) {
+  const row = await database.prepare(`SELECT id, status,
+      COALESCE(remaining_amount_mnt, available_amount_mnt) AS remainingAmountMnt
+    FROM payment_credit WHERE id = ?`).bind(paymentCreditId)
+    .first<{ id: string; status: string; remainingAmountMnt: number }>();
+  if (!row) throw new ChildCreditError("not_found");
+  return { id: row.id, status: row.status, remainingAmountMnt: Number(row.remainingAmountMnt) };
+}
+
 // The receiver-side family shortcut is deliberately stricter than the
 // general transfer tool. The invalid zero-value insert is a transactional
 // guard: if the relationship, agreement, payment snapshot, or active award
@@ -851,7 +860,8 @@ export async function transferPaymentCredit(env: WorkerEnv, actor: StaffPrincipa
   const key = fingerprint("transfer", source.owner.registrationDraftChildId, target.registrationDraftChildId, amountMnt, reason,
     source.id, null, null);
   if (await assertNewOperation(env.DB, id, key)) {
-    return { operationId: id, idempotent: true, source: await childCreditSummaryForOwner(env.DB, source.owner), target: await childCreditSummaryForOwner(env.DB, target) };
+    return { operationId: id, idempotent: true, paymentCredit: await settledPaymentCreditState(env.DB, source.id),
+      source: await childCreditSummaryForOwner(env.DB, source.owner), target: await childCreditSummaryForOwner(env.DB, target) };
   }
   const sourceSummary = await childCreditSummaryForOwner(env.DB, source.owner);
   const sourceRoot = sourceSummary.roots.find((root) => root.sourcePaymentCreditId === source.id);
@@ -870,7 +880,8 @@ export async function transferPaymentCredit(env: WorkerEnv, actor: StaffPrincipa
     source.owner.isTest, source.owner.testRunId, now),
   ];
   const idempotent = await runOperationBatch(env, id, key, statements, true);
-  return { operationId: id, idempotent, source: await childCreditSummaryForOwner(env.DB, source.owner), target: await childCreditSummaryForOwner(env.DB, target) };
+  return { operationId: id, idempotent, paymentCredit: await settledPaymentCreditState(env.DB, source.id),
+    source: await childCreditSummaryForOwner(env.DB, source.owner), target: await childCreditSummaryForOwner(env.DB, target) };
 }
 
 export async function refundPaymentCredit(env: WorkerEnv, actor: StaffPrincipal, input: {
@@ -882,7 +893,8 @@ export async function refundPaymentCredit(env: WorkerEnv, actor: StaffPrincipal,
   const source = await paymentCreditSource(env.DB, input.paymentCreditId);
   const key = fingerprint("refund", source.owner.registrationDraftChildId, null, amountMnt, reason, source.id, null, null);
   if (await assertNewOperation(env.DB, id, key)) {
-    return { operationId: id, idempotent: true, source: await childCreditSummaryForOwner(env.DB, source.owner) };
+    return { operationId: id, idempotent: true, paymentCredit: await settledPaymentCreditState(env.DB, source.id),
+      source: await childCreditSummaryForOwner(env.DB, source.owner) };
   }
   const sourceSummary = await childCreditSummaryForOwner(env.DB, source.owner);
   const sourceRoot = sourceSummary.roots.find((root) => root.sourcePaymentCreditId === source.id);
@@ -898,7 +910,8 @@ export async function refundPaymentCredit(env: WorkerEnv, actor: StaffPrincipal,
       sourceRegistrationDraftChildId: source.owner.registrationDraftChildId, amountMnt }, source.owner.isTest, source.owner.testRunId, now),
   ];
   const idempotent = await runOperationBatch(env, id, key, statements, true);
-  return { operationId: id, idempotent, source: await childCreditSummaryForOwner(env.DB, source.owner) };
+  return { operationId: id, idempotent, paymentCredit: await settledPaymentCreditState(env.DB, source.id),
+    source: await childCreditSummaryForOwner(env.DB, source.owner) };
 }
 
 // Applies an already-previewed family-member suggestion as one ledger

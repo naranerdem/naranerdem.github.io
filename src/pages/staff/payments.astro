@@ -97,6 +97,17 @@ import "../../styles/global.css";
       const setActionPending = (childId, action, pending) => { const key = actionKey(childId, action); if (pending) state.pendingActions[key] = true; else delete state.pendingActions[key]; };
       const actionFeedback = (childId, actions) => { const feedback = state.actionFeedback[childId]; if (!feedback || (actions && !actions.includes(feedback.action))) return ""; return `<p class="staff-action-status" data-action-feedback tabindex="-1" role="status" aria-live="polite">${escape(feedback.text)}</p>`; };
       const setActionFeedback = (childId, action, text) => { state.actionFeedback[childId] = { action, text }; };
+      function applyPaymentCreditSettlement(creditId, result) {
+        const credit = state.data?.credits?.find((entry) => entry.id === creditId);
+        const paymentCredit = result?.paymentCredit;
+        if (credit && paymentCredit?.id === creditId) credit.availableAmountMnt = Number(paymentCredit.remainingAmountMnt);
+        const target = result?.target;
+        if (target?.canonicalStudentId) {
+          for (const item of state.data?.items || []) {
+            if (item.canonicalStudentId === target.canonicalStudentId) item.availableCreditMnt = Number(target.availableAmountMnt || 0);
+          }
+        }
+      }
       const cancellationReasonLabel = (reason) => ({ guardian_request: "Эцэг эхийн хүсэлтээр", payment_overdue: "Төлбөр хугацаандаа хийгдээгүй", duplicate_registration: "Давхар бүртгэл", other: "Бусад" })[reason] || "";
       const cancellationDialog = q("#registration-cancel-dialog");
       function openCancellationConfirmation(confirmation) {
@@ -627,7 +638,6 @@ import "../../styles/global.css";
           state.openId = paymentDetailSelection.onRefresh(state.data.items);
           reconcileActionFeedback();
           render();
-          void prepareRegistrationReport();
           scheduleGraceRefresh();
           requestAnimationFrame(() => {
             const anchor = [...document.querySelectorAll("[data-registration-child]")].find((node) => node.dataset.registrationChild === options.anchorChildId);
@@ -762,17 +772,25 @@ import "../../styles/global.css";
           const panel = state.paymentCreditPanels[creditId]; const review = panel?.review;
           if (!item || !panel || !review || actionPending(creditId, "payment-credit")) return;
           setActionPending(creditId, "payment-credit", true); setActionFeedback(creditId, "payment-credit", "Кредитийн өөрчлөлтийг хадгалж байна…"); render();
+          let saved = false;
           try {
             panel.operationId ||= await secureStaffUuidV4();
             const action = panel.mode === "transfer" ? "payment-credit.transfer" : "payment-credit.refund";
-            await post({ action, creditId, targetRegistrationDraftChildId: review.targetRegistrationDraftChildId,
+            const result = await post({ action, creditId, targetRegistrationDraftChildId: review.targetRegistrationDraftChildId,
               amountMnt: review.amountMnt, reason: review.reason, operationId: panel.operationId });
-            delete state.paymentCreditPanels[creditId];
-            try { await refresh("Кредитийн өөрчлөлт хадгалагдлаа."); }
-            catch { setActionFeedback(creditId, "payment-credit", "Кредитийн өөрчлөлт хадгалагдлаа. Жагсаалтыг шинэчилж чадсангүй; дахин дарахаас өмнө Шинэчлэхийг сонгоно уу."); }
+            applyPaymentCreditSettlement(creditId, result);
+            delete panel.review; delete panel.operationId;
+            setActionFeedback(creditId, "payment-credit", result.idempotent ? "Энэ кредитийн өөрчлөлт өмнө нь хадгалагдсан байна." : "Кредитийн өөрчлөлт хадгалагдлаа.");
+            saved = true;
           } catch (error) {
             setActionFeedback(creditId, "payment-credit", error.message || "Кредитийн өөрчлөлтийг хадгалж чадсангүй.");
           } finally { setActionPending(creditId, "payment-credit", false); render(); }
+          if (saved) {
+            void refresh("", { preserve: true }).catch(() => {
+              setActionFeedback(creditId, "payment-credit", "Кредитийн өөрчлөлт хадгалагдлаа. Жагсаалтыг шинэчилж чадсангүй; дахин дарахаас өмнө Шинэчлэхийг сонгоно уу.");
+              render();
+            });
+          }
           return;
         }
         if (target.dataset.paymentOpen) { const childId = target.dataset.paymentOpen; if (!canSwitchPanel(childId, "payment")) return; activatePanel(childId, "payment"); render(); q(`[data-payment-form] input[name="amount"]`)?.focus(); return; }
@@ -1473,23 +1491,30 @@ import "../../styles/global.css";
       }
       q("#payment-copy").addEventListener("click", async (event) => {
         const button = event.currentTarget;
-        const report = state.registrationReportCache;
-        if (button.disabled || !report) return;
+        if (button.disabled) return;
         copyFallback();
         button.dataset.copying = "true";
         setToolbarBusy("#payment-copy", true, "Хуулж байна…");
         message("Хуулж байна…");
+        let report = state.registrationReportCache;
         try {
+          if (!report) {
+            message("Excel-ийн жагсаалтыг бэлдэж байна…");
+            report = await registrationReport();
+            state.registrationReportCache = report;
+          }
           // The cached report lets Safari begin its clipboard permission check in this tap.
           await copyReportToClipboard(report);
           message("Хуулагдлаа.", true);
         } catch {
-          copyFallback(reportToTsv(report));
-          message("Хөтөч хуулж зөвшөөрсөнгүй. Доорх хүснэгтийг гараар хуулна уу.");
+          if (report) {
+            copyFallback(reportToTsv(report));
+            message("Хөтөч хуулж зөвшөөрсөнгүй. Доорх хүснэгтийг гараар хуулна уу.");
+          } else message("Excel-ийн жагсаалтыг бэлдэж чадсангүй. Дахин оролдоно уу.");
         } finally {
           delete button.dataset.copying;
           setToolbarBusy("#payment-copy", false, "Хуулж байна…");
-          setCopyReady(Boolean(state.registrationReportCache));
+          setCopyReady(state.canRegistrationExport);
         }
       });
       q("#payment-export").addEventListener("click", async (event) => {
@@ -1527,7 +1552,7 @@ import "../../styles/global.css";
         state.cancellationConfirmation = null;
         confirmation.initiator?.focus({ preventScroll: true });
       });
-      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; q("#payment-copy").hidden = !state.canRegistrationExport; show("tool-app"); try { await refresh(launchCreated ? "Бүртгэл үүсгэгдлээ." : "", launchRegistrationId ? { anchorChildId: launchRegistrationId } : {}); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
+      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; q("#payment-copy").hidden = !state.canRegistrationExport; setCopyReady(state.canRegistrationExport); show("tool-app"); try { await refresh(launchCreated ? "Бүртгэл үүсгэгдлээ." : "", launchRegistrationId ? { anchorChildId: launchRegistrationId } : {}); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
     </script>
   </body>
 </html>

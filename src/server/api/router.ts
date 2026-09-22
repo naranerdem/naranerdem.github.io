@@ -1271,9 +1271,22 @@ export async function handleApiRequest(
       const principal = await staffPrincipalForRequest(request, env);
       if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
       try {
-        const queue = await getInitialPaymentQueue(env, principal);
-        const promotion = await getPromotionReviewQueue(env, principal);
-        return json({ ...queue, promotionItems: promotion.items }, 200, { "Cache-Control": "no-store" });
+        const startedAt = performance.now();
+        const timed = async <T,>(work: () => Promise<T>) => {
+          const phaseStartedAt = performance.now();
+          const value = await work();
+          return { value, durationMs: performance.now() - phaseStartedAt };
+        };
+        const [queueResult, promotionResult] = await Promise.all([
+          timed(() => getInitialPaymentQueue(env, principal)),
+          timed(() => getPromotionReviewQueue(env, principal)),
+        ]);
+        const totalMs = performance.now() - startedAt;
+        return json({ ...queueResult.value, promotionItems: promotionResult.value.items }, 200, {
+          "Cache-Control": "no-store",
+          // Only aggregate phase durations are exposed for bounded staff-page diagnostics.
+          "Server-Timing": `payment_queue;dur=${queueResult.durationMs.toFixed(1)}, promotion_queue;dur=${promotionResult.durationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
+        });
       } catch (caught) {
         return paymentReconciliationError(caught);
       }
