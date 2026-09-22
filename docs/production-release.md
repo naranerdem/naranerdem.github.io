@@ -21,6 +21,17 @@ Never copy staging D1, fixtures, secrets, staff sessions, or rehearsal records i
 - Review pending production migrations without applying them:
   `npx wrangler d1 migrations list DB --remote`.
 - Require additive/backward-compatible migrations. Any destructive or incompatible migration needs its own reviewed plan.
+- For `0064_scheduler_reconciliation_queues.sql`, treat local transition
+  compatibility as a release gate while registration is live: upgrade a
+  representative released-schema database, then verify public registration,
+  holds/waitlist, payment and credit handling, reminders/Outbox, attendance,
+  and make-up booking remain equivalent to the released Worker on fixed
+  fixtures. The check must also prove that released-Worker writes after the
+  migration enqueue changed work, a cancellation or payment immediately before
+  reminder processing cannot send a stale reminder while historical catch-up
+  is incomplete, and revised claimed work is retried by revision. A failed
+  compatibility gate blocks production migration, deployment, and setting
+  changes; it does not justify an automatic rollback.
 - Record the live Worker deployment: `npx wrangler deployments list`.
 - If a migration is involved, record a D1 Time Travel bookmark immediately before it:
   `npx wrangler d1 time-travel info DB --timestamp=<RFC3339-now> --json`.

@@ -114,6 +114,14 @@ try {
   sql(readFileSync(path.join("migrations", queueMigration), "utf8"));
   assert.equal(Number(database.query("SELECT COUNT(*) AS count FROM child_credit_entry")[0].count), 0,
     "migration only creates queues and cursors; it does not reconcile financial rows");
+  // These writes use only released-schema tables after 0064 exists. They model
+  // ordinary old-Worker activity during the migration/deployment interval.
+  const cancelledDuringTransition = seedRequest(database, 98, { due: true });
+  database.query(`UPDATE registration_draft SET status = 'cancelled', updated_at = ? WHERE id = ?`, [stamp, cancelledDuringTransition.id]);
+  const transitionQueue = database.query(`SELECT status, revision FROM payment_milestone_reconciliation_queue
+    WHERE payment_request_id = ?`, [cancelledDuringTransition.request])[0];
+  assert.equal(transitionQueue.status, "pending", "a released-Worker cancellation after migration is queued before catch-up completes");
+  assert.ok(Number(transitionQueue.revision) >= 2, "the cancellation supersedes the initial post-migration queue revision");
   const plan = sql(`EXPLAIN QUERY PLAN SELECT payment_request_id FROM payment_milestone_reconciliation_queue
     WHERE status = 'pending' ORDER BY priority, updated_at, payment_request_id LIMIT 32;`);
   assert.match(plan, /USING COVERING INDEX idx_payment_milestone_reconciliation_queue_pending/, "queue claim uses its full pending-work index");
@@ -154,6 +162,8 @@ try {
   assert.equal(sent.length, 1, "the due reminder is delivered once while catch-up is progressing");
   assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id = ?`, [due.id])[0].count), 1,
     "the due milestone retains one durable Outbox identity across reconciliation retries");
+  assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id = ?`, [cancelledDuringTransition.id])[0].count), 0,
+    "a cancellation immediately before reminder processing suppresses its reminder even with legacy catch-up still in progress");
 
   database.resetQueries();
   const idleStartedAt = performance.now();
@@ -188,6 +198,21 @@ try {
     WHERE payment_request_id = 'history-002-request'`)[0].status, "completed",
   "a cancellation queue item is consumed without needing a full-history milestone sweep");
 
+  const revisedWhileClaimed = seedRequest(database, 99);
+  database.query(`UPDATE payment_milestone_reconciliation_queue
+    SET status = 'processing', lease_expires_at = '2026-09-21T03:00:00.000Z'
+    WHERE payment_request_id = ?`, [revisedWhileClaimed.request]);
+  database.query(`UPDATE payment_installment SET reminder_at = '2026-10-04T02:00:00.000Z', updated_at = ?
+    WHERE payment_request_id = ?`, [stamp, revisedWhileClaimed.request]);
+  const revisedQueue = database.query(`SELECT status, revision FROM payment_milestone_reconciliation_queue
+    WHERE payment_request_id = ?`, [revisedWhileClaimed.request])[0];
+  assert.equal(revisedQueue.status, "pending", "a write during a claimed batch returns the request to pending work");
+  assert.ok(Number(revisedQueue.revision) >= 2, "a write during a claimed batch advances its revision fence");
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 13 * 60_000), provider);
+  assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue
+    WHERE payment_request_id = ?`, [revisedWhileClaimed.request])[0].status, "completed",
+  "the newer revision is reconciled without waiting for the historical sweep");
+
   database.query(`UPDATE payment_milestone_reconciliation_queue
     SET status = 'processing', lease_expires_at = '2026-09-21T01:00:00.000Z', revision = revision + 1
     WHERE payment_request_id = ?`, [due.request]);
@@ -195,7 +220,7 @@ try {
   assert.equal(database.query("SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?", [due.request])[0].status, "completed",
     "an interrupted claim is recovered without duplicate milestones or delivery");
 
-  const overlap = seedRequest(database, 99);
+  const overlap = seedRequest(database, 100);
   database.resetQueries();
   await Promise.all([
     processDuePaymentReminders(env(database), new Date(now.getTime() + 15 * 60_000), provider),
