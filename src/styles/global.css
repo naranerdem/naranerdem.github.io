@@ -4201,8 +4201,8 @@ textarea:focus {
 
 .staff-team-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: minmax(15rem, 1fr) minmax(0, 25rem);
+  align-items: start;
   gap: 0.8rem;
   border-top: 1px solid var(--line);
   padding: 0.8rem 0;
@@ -4324,7 +4324,7 @@ textarea:focus {
 
 .staff-team-sessions li {
   display: grid;
-  grid-template-columns: minmax(12rem, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.35rem 0.75rem;
   border-top: 1px solid rgba(205, 211, 222, 0.65);
@@ -4337,9 +4337,18 @@ textarea:focus {
   overflow-wrap: break-word;
 }
 
-.staff-team-sessions li > span:not(.staff-current-session) {
+.staff-session-times {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.75rem;
+  min-width: 0;
   color: var(--muted);
-  white-space: nowrap;
+}
+
+.staff-session-times > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .staff-current-session {
@@ -4352,7 +4361,7 @@ textarea:focus {
 .staff-team-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 0.35rem;
   max-width: 25rem;
@@ -4593,9 +4602,9 @@ textarea:focus {
     gap: 0.2rem 0.55rem;
   }
 
-  .staff-team-sessions li > span:not(.staff-current-session) {
-    grid-column: 1 / -1;
-    white-space: normal;
+  .staff-session-times {
+    display: grid;
+    gap: 0.15rem;
   }
 }
 

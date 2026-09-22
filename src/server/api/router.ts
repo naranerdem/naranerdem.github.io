@@ -1282,10 +1282,11 @@ export async function handleApiRequest(
           timed(() => getPromotionReviewQueue(env, principal)),
         ]);
         const totalMs = performance.now() - startedAt;
-        return json({ ...queueResult.value, promotionItems: promotionResult.value.items }, 200, {
+        const { timing: paymentTiming, ...paymentQueue } = queueResult.value;
+        return json({ ...paymentQueue, promotionItems: promotionResult.value.items }, 200, {
           "Cache-Control": "no-store",
           // Only aggregate phase durations are exposed for bounded staff-page diagnostics.
-          "Server-Timing": `payment_queue;dur=${queueResult.durationMs.toFixed(1)}, promotion_queue;dur=${promotionResult.durationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
+          "Server-Timing": `payment_projection;dur=${paymentTiming.projectionMs.toFixed(1)}, payment_enrichment;dur=${paymentTiming.enrichmentMs.toFixed(1)}, payment_queue;dur=${queueResult.durationMs.toFixed(1)}, promotion_queue;dur=${promotionResult.durationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
         });
       } catch (caught) {
         return paymentReconciliationError(caught);

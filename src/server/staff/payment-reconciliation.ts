@@ -188,6 +188,7 @@ async function refreshInstallmentsForChild(env: WorkerEnv, request: PaymentReque
 
 export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincipal, nowDate = new Date()) {
   if (!hasStaffCapability(actor, "payment.view")) throw new PaymentReconciliationError("forbidden");
+  const queueStartedAt = performance.now();
   const now = nowDate.toISOString();
   const paymentRowsPromise = env.DB.prepare(`SELECT
     payment_request.id AS paymentRequestId, payment_request.payment_reference AS paymentReference,
@@ -374,6 +375,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   const [result, credits, discountCredits, cancelled, capacityRows, capacityLabels] = await Promise.all([
     paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, capacityRowsPromise, capacityLabelsPromise,
   ]);
+  const projectionMs = performance.now() - queueStartedAt;
+  const enrichmentStartedAt = performance.now();
   const capacityById = new Map(capacityRows.map((row) => [row.classSessionId, row]));
   const capacity = capacityLabels.results.map((label) => ({ ...label, ...(capacityById.get(label.id) ?? {
     capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, identityReviewCount: 0,
@@ -631,7 +634,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     INNER JOIN class_session ON class_session.id = waitlist_seat_offer.class_session_id
     WHERE waitlist_seat_offer.status IN ('converted', 'declined') AND waitlist_seat_offer.resolved_at >= datetime(?, '-7 days')
-    ORDER BY waitlist_seat_offer.resolved_at DESC LIMIT 20`).bind(now).all<Record<string, unknown>>()).results };
+    ORDER BY waitlist_seat_offer.resolved_at DESC LIMIT 20`).bind(now).all<Record<string, unknown>>()).results,
+  timing: {
+    projectionMs,
+    enrichmentMs: performance.now() - enrichmentStartedAt,
+  } };
 }
 
 /**

@@ -287,7 +287,7 @@ try {
   assert.match(teamPage, /<html lang="mn">/);
   assert.match(teamPage, /Ажилтнууд/);
   assert.match(teamSource, /\/api\/staff\/team/);
-  assert.match(teamSource, /Нэвтэрсэн төхөөрөмжүүд/);
+  assert.match(teamSource, /Төхөөрөмжүүд/);
   assert.match(teamSource, /Имэйл нэмэх/);
   assert.match(teamSource, /email-primary/);
   assert.match(teamSource, /email-remove/);

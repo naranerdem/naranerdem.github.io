@@ -13,6 +13,8 @@ const persistDir = mkdtempSync(path.join(tmpdir(), "naranerdem-credit-browser-")
 const testRunId = `browser-credit-${randomUUID()}`;
 const rawSessionToken = randomUUID();
 const sessionHash = createHash("sha256").update(rawSessionToken).digest("hex");
+const secondarySessionHash = createHash("sha256").update(`${testRunId}:tablet`).digest("hex");
+const unknownSessionHash = createHash("sha256").update(`${testRunId}:unknown`).digest("hex");
 const port = 18789 + Math.floor(Math.random() * 500);
 const baseUrl = `http://127.0.0.1:${port}`;
 const wranglerCli = path.resolve("node_modules/wrangler/wrangler-dist/cli.js");
@@ -35,9 +37,9 @@ async function capturePaymentPanel(page, name) {
 async function captureStaffSessionPanel(page) {
   if (!paymentPanelScreenshotDir) return;
   await page.goto(`${baseUrl}/staff/team/`);
-  const sessionToggle = page.getByRole("button", { name: /Нэвтэрсэн төхөөрөмжүүд/ });
+  const sessionToggle = page.getByRole("button", { name: /Төхөөрөмжүүд/ });
   await sessionToggle.click();
-  await page.locator(".staff-team-sessions li").waitFor({ state: "visible" });
+  await page.locator(".staff-team-sessions li").first().waitFor({ state: "visible" });
   await capturePaymentPanel(page, "staff-sessions-mobile.png");
   await page.setViewportSize({ width: 1200, height: 900 });
   await capturePaymentPanel(page, "staff-sessions-desktop.png");
@@ -122,12 +124,19 @@ function fixtureSql() {
         account_number = '0000000000', transfer_instruction = 'Browser test transfer', updated_at = ${sql(now)}
       WHERE singleton = 1;
     INSERT INTO staff_account (id, email_normalized, display_name, status, is_test, test_run_id, created_at, updated_at)
-      VALUES ('browser-credit-teacher', 'browser-credit-teacher@example.test', 'Browser Credit Teacher', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+      VALUES ('browser-credit-teacher', 'browser.credit.teacher@example.test', 'Browser Credit Teacher', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+        ('browser-credit-teacher-secondary', 'long.staff.member@example.test', 'Browser Credit Teacher With A Longer Name', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO staff_account_role (staff_account_id, role_code, assigned_at)
       VALUES ('browser-credit-teacher', 'teacher', ${sql(now)}),
-        ('browser-credit-teacher', 'admin', ${sql(now)});
-    INSERT INTO staff_session (id, staff_account_id, session_token_hash, created_at, expires_at, last_seen_at, is_test, test_run_id)
-      VALUES ('browser-credit-session', 'browser-credit-teacher', ${sql(sessionHash)}, ${sql(now)}, '2027-12-31T00:00:00.000Z', ${sql(now)}, 1, ${sql(testRunId)});
+        ('browser-credit-teacher', 'admin', ${sql(now)}),
+        ('browser-credit-teacher-secondary', 'teacher', ${sql(now)});
+    INSERT INTO staff_account_email (id, staff_account_id, email, email_normalized, is_primary, created_at, updated_at)
+      VALUES ('browser-credit-teacher-email', 'browser-credit-teacher', 'browser.credit.teacher@example.test', 'browser.credit.teacher@example.test', 1, ${sql(now)}, ${sql(now)}),
+        ('browser-credit-teacher-secondary-email', 'browser-credit-teacher-secondary', 'long.staff.member@example.test', 'long.staff.member@example.test', 1, ${sql(now)}, ${sql(now)});
+    INSERT INTO staff_session (id, staff_account_id, session_token_hash, created_at, expires_at, last_seen_at, client_label, is_test, test_run_id)
+      VALUES ('browser-credit-session', 'browser-credit-teacher', ${sql(sessionHash)}, ${sql(now)}, '2027-12-31T00:00:00.000Z', ${sql(now)}, 'Chrome / macOS', 1, ${sql(testRunId)}),
+        ('browser-credit-session-tablet', 'browser-credit-teacher', ${sql(secondarySessionHash)}, ${sql(now)}, '2027-12-31T00:00:00.000Z', ${sql(now)}, 'Safari / iPadOS', 1, ${sql(testRunId)}),
+        ('browser-credit-session-unknown', 'browser-credit-teacher', ${sql(unknownSessionHash)}, ${sql(now)}, '2027-12-31T00:00:00.000Z', ${sql(now)}, NULL, 1, ${sql(testRunId)});
     UPDATE discount_policy_setting SET family_multi_child_basis_points = 1000, updated_at = ${sql(now)} WHERE singleton = 1;
   `;
 }
@@ -2654,7 +2663,9 @@ async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = 
   await page.goto(`${baseUrl}/staff/payments/`);
   const paymentListResult = await paymentListResponse;
   if (capturePaymentTiming) {
-    const timing = `payment list local: ${(performance.now() - paymentListStartedAt).toFixed(1)} ms to API response; ${paymentListResult.headers()["server-timing"] || "no server timing"}; ${initialPaymentRequests.join(", ")}`;
+    const creditGroupReadyStartedAt = performance.now();
+    await page.locator('[data-group-toggle="Кредит / буцаалт"]').waitFor({ state: "visible" });
+    const timing = `payment list local: ${(performance.now() - paymentListStartedAt).toFixed(1)} ms to API response; ${(performance.now() - paymentListStartedAt).toFixed(1)} ms to payment UI ready (${(performance.now() - creditGroupReadyStartedAt).toFixed(1)} ms after API); ${paymentListResult.headers()["server-timing"] || "no server timing"}; ${initialPaymentRequests.join(", ")}`;
     console.log(timing);
     if (paymentPanelScreenshotDir) writeFileSync(path.join(paymentPanelScreenshotDir, "payment-list-timing.txt"), `${timing}\n`);
     page.off("request", requestObserver);
