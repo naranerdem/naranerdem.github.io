@@ -705,9 +705,10 @@ try {
     VALUES (?, ?, ?, 100000, ?, ?, 1, 'promotion-test');`,
   [`${cancelledCreditSource.id}-payment`, `${cancelledCreditSource.id}-request`, now, now, `${cancelledCreditSource.id}-payment-key`, now, now,
     `${cancelledCreditSource.id}-allocation`, `${cancelledCreditSource.id}-payment`, `${cancelledCreditSource.id}-initial`, now, now]);
-  await promotePaidDraftChild(env(database), actor, cancelledCreditSource.childId);
   await promotePaidDraftChild(env(database), actor, cancelledCreditTarget.childId);
   await cancelRegistration(env(database), actor, { registrationDraftChildId: cancelledCreditSource.childId, reason: "guardian_request" });
+  assert.equal(database.query(`SELECT canonical_student_id AS canonicalStudentId FROM registration_draft_child WHERE id = ?`, [cancelledCreditSource.childId])[0].canonicalStudentId,
+    null, "a legacy-style cancelled source can retain its draft-child-only ownership");
   const cancelledCreditId = database.query(`SELECT id FROM payment_credit WHERE received_payment_id = ?`, [`${cancelledCreditSource.id}-payment`])[0].id;
   const firstTransfer = { paymentCreditId: cancelledCreditId, targetRegistrationDraftChildId: cancelledCreditTarget.childId,
     amountMnt: 40000, reason: "Цуцлагдсан бүртгэлийн үлдэгдэл шилжүүлэв", operationId: "10000000-0000-4000-8000-000000000001" };

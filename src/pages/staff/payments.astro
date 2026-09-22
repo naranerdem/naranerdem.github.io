@@ -521,14 +521,13 @@ import "../../styles/global.css";
         if (discount) return `<article class="staff-payment-item"><div><strong>${escape(item.guardianName || "")}</strong><p>${escape(item.childNames || "")}</p><p><strong>${escape(mnt(item.availableAmountMnt))}</strong> хөнгөлөлтийн кредит</p><p class="staff-muted">${escape(({ family_multi_child: "Нэг гэр бүлийн хүүхэд", referral_referred: "Урилгаар бүртгүүлсэн", referral_referrer: "Амжилттай урилга" })[item.awardType] || "Хөнгөлөлт")}</p></div></article>`;
         const panel = state.paymentCreditPanels[item.id] || {};
         const pending = actionPending(item.id, "payment-credit");
-        const sourceCanonicalStudentId = item.sourceCanonicalStudentId || "";
         const targetByStudent = new Map();
         for (const candidate of state.data?.items || []) {
-          if (!candidate.canonicalEnrollmentId || !candidate.canonicalStudentId || candidate.canonicalStudentId === sourceCanonicalStudentId || targetByStudent.has(candidate.canonicalStudentId)) continue;
+          if (!candidate.canonicalEnrollmentId || !candidate.canonicalStudentId || candidate.registrationDraftChildId === item.sourceRegistrationDraftChildId || targetByStudent.has(candidate.canonicalStudentId)) continue;
           targetByStudent.set(candidate.canonicalStudentId, candidate);
         }
         const targets = [...targetByStudent.values()].sort((left, right) => `${left.childName}\u0000${classSchedule(left)}`.localeCompare(`${right.childName}\u0000${classSchedule(right)}`, "mn"));
-        const transferable = Boolean(state.data?.canManageCredits) && Number(item.sourceChildCount || 0) === 1 && Boolean(sourceCanonicalStudentId) && targets.length > 0;
+        const transferable = Boolean(state.data?.canManageCredits) && Number(item.sourceChildCount || 0) === 1 && targets.length > 0;
         const review = panel.review;
         const target = review?.targetRegistrationDraftChildId ? targets.find((candidate) => candidate.registrationDraftChildId === review.targetRegistrationDraftChildId) : null;
         const actionLabel = panel.mode === "transfer" ? "Кредит шилжүүлэх" : "Буцаан төлөлт бүртгэх";

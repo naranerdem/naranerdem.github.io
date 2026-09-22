@@ -120,10 +120,10 @@ export async function syncLegacyChildCreditEntries(database: D1Database, canonic
   ];
   const closes = [
     database.prepare(`INSERT OR IGNORE INTO child_credit_entry (
-      id, canonical_student_id, entry_kind, amount_mnt, origin_entry_id, reason,
+      id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, origin_entry_id, reason,
       is_test, test_run_id, created_at
     ) SELECT 'child-credit:payment-close:' || payment_credit.id || ':' || payment_credit.status,
-      root.canonical_student_id,
+      root.canonical_student_id, root.registration_draft_child_id,
       CASE WHEN payment_credit.status = 'refunded' THEN 'refund' ELSE 'credit_application' END,
       -(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit
         WHERE debit.origin_entry_id = root.id), 0)), root.id,
@@ -153,6 +153,46 @@ export async function syncLegacyChildCreditEntries(database: D1Database, canonic
       .bind(...(canonicalStudentId ? [canonicalStudentId] : [])),
   ];
   await database.batch([...roots, ...closes]);
+}
+
+// Some older cancelled registrations never reached canonical promotion. Their
+// refundable cash is still owned by one durable draft-child record, so it can
+// be redirected without pretending that it is a canonical-child discount.
+async function syncLegacyPaymentCreditForOwner(database: D1Database, registrationDraftChildId: string) {
+  await database.batch([
+    database.prepare(`INSERT OR IGNORE INTO child_credit_entry (
+      id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, source_payment_credit_id,
+      reason, is_test, test_run_id, created_at
+    ) SELECT 'child-credit:payment:' || payment_credit.id, child.canonical_student_id, child.id,
+      'payment_release', payment_credit.available_amount_mnt, payment_credit.id,
+      'Released payment credit', payment_credit.is_test, payment_credit.test_run_id, payment_credit.created_at
+      FROM payment_credit
+      INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_credit.received_payment_id
+      INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+      INNER JOIN registration_draft_child AS child ON child.id = payment_installment.registration_draft_child_id
+      WHERE child.id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM payment_allocation AS other_allocation
+          INNER JOIN payment_installment AS other_installment ON other_installment.id = other_allocation.payment_installment_id
+          WHERE other_allocation.received_payment_id = payment_credit.received_payment_id
+            AND other_installment.registration_draft_child_id != child.id
+        )`).bind(registrationDraftChildId),
+    database.prepare(`INSERT OR IGNORE INTO child_credit_entry (
+      id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, origin_entry_id, reason,
+      is_test, test_run_id, created_at
+    ) SELECT 'child-credit:payment-close:' || payment_credit.id || ':' || payment_credit.status,
+      root.canonical_student_id, root.registration_draft_child_id,
+      CASE WHEN payment_credit.status = 'refunded' THEN 'refund' ELSE 'credit_application' END,
+      -(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit
+        WHERE debit.origin_entry_id = root.id), 0)), root.id,
+      CASE WHEN payment_credit.status = 'refunded' THEN 'Marked refunded' ELSE 'Allocated by reinstatement' END,
+      payment_credit.is_test, payment_credit.test_run_id, payment_credit.updated_at
+      FROM payment_credit
+      INNER JOIN child_credit_entry AS root ON root.source_payment_credit_id = payment_credit.id
+      WHERE root.registration_draft_child_id = ? AND payment_credit.status IN ('refunded', 'allocated')
+        AND root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit
+          WHERE debit.origin_entry_id = root.id), 0) > 0`).bind(registrationDraftChildId),
+  ]);
 }
 
 interface CreditReconciliationQueueRow {
@@ -281,6 +321,7 @@ export async function childCreditSummary(database: D1Database, canonicalStudentI
 
 async function childCreditSummaryForOwner(database: D1Database, owner: ChildCreditOwner): Promise<ChildCreditSummary> {
   if (owner.canonicalStudentId) return childCreditSummary(database, owner.canonicalStudentId);
+  await syncLegacyPaymentCreditForOwner(database, owner.registrationDraftChildId);
   const result = await database.prepare(`SELECT root.id, root.canonical_student_id AS canonicalStudentId,
     root.registration_draft_child_id AS registrationDraftChildId, root.source_payment_credit_id AS sourcePaymentCreditId, root.entry_kind AS entryKind,
     root.amount_mnt AS amountMnt, root.created_at AS createdAt, root.reason, root.external_reference AS externalReference,
@@ -649,7 +690,7 @@ async function paymentCreditSource(database: D1Database, paymentCreditId: string
     .all<{ id: string; remainingAmountMnt: number; registrationDraftChildId: string; canonicalStudentId: string | null; isTest: number; testRunId: string | null }>();
   if (result.results.length !== 1) throw new ChildCreditError(result.results.length ? "invalid" : "not_found");
   const row = result.results[0];
-  if (!row.canonicalStudentId || Number(row.remainingAmountMnt) <= 0) throw new ChildCreditError("invalid");
+  if (Number(row.remainingAmountMnt) <= 0) throw new ChildCreditError("invalid");
   return {
     id: row.id,
     remainingAmountMnt: Number(row.remainingAmountMnt),

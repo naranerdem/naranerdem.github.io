@@ -322,7 +322,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     GROUP BY payment_installment.id
     ORDER BY parentClaimed DESC, payment_installment.effective_due_at < ? DESC,
       payment_installment.effective_due_at ASC, payment_request.created_at ASC`).bind(now).all<Record<string, unknown>>();
-  const credits = await env.DB.prepare(`SELECT payment_credit.id,
+  const creditsPromise = env.DB.prepare(`SELECT payment_credit.id,
     COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) AS availableAmountMnt,
     registration_draft.guardian_full_name AS guardianName, payment_request.payment_reference AS paymentReference,
     GROUP_CONCAT(DISTINCT registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childNames,
@@ -339,7 +339,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       AND COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) > 0
     GROUP BY payment_credit.id
     ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
-  const discountCredits = await env.DB.prepare(`SELECT root.id,
+  const discountCreditsPromise = env.DB.prepare(`SELECT root.id,
     root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt,
     registration_draft.guardian_full_name AS guardianName,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childNames,
@@ -352,7 +352,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     WHERE discount_award.status = 'active' AND root.entry_kind = 'discount_award_credit'
     GROUP BY root.id HAVING root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt > 0
     ORDER BY root.created_at`).all<Record<string, unknown>>();
-  const cancelled = await env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
+  const cancelledPromise = env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, class_session.display_label AS classLabel,
     class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
@@ -365,12 +365,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       AND audit_event.subject_id = registration_draft_child.id AND audit_event.action = 'registration_cancelled'
     WHERE registration_draft_child.status = 'cancelled'
     ORDER BY COALESCE(enrollment.cancelled_at, audit_event.occurred_at, registration_draft_child.updated_at) DESC LIMIT 50`).all<Record<string, unknown>>();
-  const capacityRows = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
-  const capacityLabels = await env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
+  const capacityRowsPromise = getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
+  const capacityLabelsPromise = env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
     FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
     ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
       start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
+  const [credits, discountCredits, cancelled, capacityRows, capacityLabels] = await Promise.all([
+    creditsPromise, discountCreditsPromise, cancelledPromise, capacityRowsPromise, capacityLabelsPromise,
+  ]);
   const capacityById = new Map(capacityRows.map((row) => [row.classSessionId, row]));
   const capacity = capacityLabels.results.map((label) => ({ ...label, ...(capacityById.get(label.id) ?? {
     capacity: 0, confirmedCount: 0, reservedInitialPaymentCount: 0, identityReviewCount: 0,
@@ -483,9 +486,19 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
             AND (payment_confirmation.status IS NULL OR payment_confirmation.status != 'undone')), 0) >= quote.base_amount_mnt`)
       .all<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }>()
     : { results: [] as Array<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }> };
+  // The family-credit proposal is only actionable for a confirmed child with
+  // an actual credit-settleable installment. Avoid resolving every collapsed
+  // row's family graph on the initial payment-list read.
+  const familySuggestionCandidateIds = rawItems.filter((item) => {
+    if (!item.canonicalEnrollmentId) return false;
+    const initial = effectiveById.get(String(item.installmentId));
+    const initialOutstanding = Math.max(0, Number(initial?.effectiveAmountMnt ?? item.expectedAmountMnt) - item.allocatedAmountMnt);
+    const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
+    const laterOutstanding = later ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
+    return (item.paymentPlanCode !== "two_installment" && initialOutstanding > 0) || laterOutstanding > 0;
+  }).map((item) => String(item.registrationDraftChildId));
   const familySuggestionByChild = new Map(await Promise.all(
-    hasStaffCapability(actor, "payment.manage") ? rawItems.map(async (item) => {
-      const childId = String(item.registrationDraftChildId);
+    hasStaffCapability(actor, "payment.manage") ? familySuggestionCandidateIds.map(async (childId) => {
       try {
         const suggestions = await familyCreditSuggestionsForChild(env, childId);
         return [childId, suggestions.find((suggestion) => suggestion.recipientChildId === childId) ?? null] as const;

@@ -2626,7 +2626,9 @@ async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = 
   // the destination receives ledger credit but no synthetic receipt or mark.
   const cancelledCashChildId = await fillIntake(page, "CancelledCashCredit", "single");
   await recordCashPayment(page, cancelledCashChildId, 1000);
-  await finalizeCashRegistration(page, cancelledCashChildId);
+  // Keep the source in the legacy cancelled-before-promotion shape that
+  // existing payment-credit rows use: it has one immutable allocation but no
+  // canonical child owner. Cancellation must still expose its cash balance.
   await cancelAndRestoreRegistration(page, cancelledCashChildId, { restore: false });
   await page.goto(`${baseUrl}/staff/payments/`);
   const creditGroup = page.locator('[data-group-toggle="Кредит / буцаалт"]');
