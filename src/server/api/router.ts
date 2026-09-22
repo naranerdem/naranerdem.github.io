@@ -1010,8 +1010,13 @@ export async function handleApiRequest(
 
   if (path === "/api/staff/session") {
     if (request.method !== "GET") return methodNotAllowed();
+    const authStartedAt = performance.now();
     const principal = await staffPrincipalForRequest(request, env);
-    if (!principal) return json({ authenticated: false }, 200, { "Cache-Control": "no-store" });
+    const authDurationMs = performance.now() - authStartedAt;
+    if (!principal) return json({ authenticated: false }, 200, {
+      "Cache-Control": "no-store",
+      "Server-Timing": `staff_auth;dur=${authDurationMs.toFixed(1)}`,
+    });
     return json({
       authenticated: true,
       displayName: principal.displayName,
@@ -1019,7 +1024,10 @@ export async function handleApiRequest(
       capabilities: principal.capabilities,
       expiresAt: principal.sessionExpiresAt,
       absoluteExpiresAt: principal.sessionAbsoluteExpiresAt,
-    }, 200, { "Cache-Control": "no-store" });
+    }, 200, {
+      "Cache-Control": "no-store",
+      "Server-Timing": `staff_auth;dur=${authDurationMs.toFixed(1)}`,
+    });
   }
 
   if (path === "/api/staff/dashboard-preferences") {
@@ -1266,11 +1274,13 @@ export async function handleApiRequest(
 
   if (path === "/api/staff/payments") {
     if (request.method === "GET") {
+      const authStartedAt = performance.now();
       const denied = await requireStaffCapability(request, env, "payment.view");
       if (denied) return denied;
       const principal = await staffPrincipalForRequest(request, env);
       if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
       try {
+        const authDurationMs = performance.now() - authStartedAt;
         const startedAt = performance.now();
         const timed = async <T,>(work: () => Promise<T>) => {
           const phaseStartedAt = performance.now();
@@ -1286,7 +1296,7 @@ export async function handleApiRequest(
         return json({ ...paymentQueue, promotionItems: promotionResult.value.items }, 200, {
           "Cache-Control": "no-store",
           // Only aggregate phase durations are exposed for bounded staff-page diagnostics.
-          "Server-Timing": `payment_projection;dur=${paymentTiming.projectionMs.toFixed(1)}, payment_enrichment;dur=${paymentTiming.enrichmentMs.toFixed(1)}, payment_queue;dur=${queueResult.durationMs.toFixed(1)}, promotion_queue;dur=${promotionResult.durationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
+          "Server-Timing": `staff_auth;dur=${authDurationMs.toFixed(1)}, payment_projection;dur=${paymentTiming.projectionMs.toFixed(1)}, payment_enrichment;dur=${paymentTiming.enrichmentMs.toFixed(1)}, payment_queue;dur=${queueResult.durationMs.toFixed(1)}, promotion_queue;dur=${promotionResult.durationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
         });
       } catch (caught) {
         return paymentReconciliationError(caught);

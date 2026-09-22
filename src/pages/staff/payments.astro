@@ -25,6 +25,7 @@ import "../../styles/global.css";
         <div class="staff-page-heading staff-payment-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1 class="staff-payment-page-title">Бүртгэл, төлбөр</h1></div><div class="staff-payment-toolbar-row"><div class="staff-inline-actions staff-payment-toolbar"><button id="payment-refresh" class="button secondary" type="button">Шинэчлэх</button><button id="payment-copy" class="button secondary" type="button" aria-label="Excel-д хуулах" title="Excel-д хуулах" disabled>Бэлтгэж байна…</button><button id="payment-export" class="button secondary" type="button" aria-label="TSV файл татах" title="TSV файл татах">Татах</button></div><a class="staff-back-link" href="/staff/">Буцах</a></div></div>
         <nav class="staff-registration-intake-nav" aria-label="Бүртгэлийн үйлдэл"><a class="text-button" href="/staff/registration-intake/">Шинэ бүртгэл оруулах</a></nav>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
+        <output id="payment-timing-diagnostics" class="staff-muted" hidden aria-live="polite"></output>
         <section id="payment-copy-fallback" class="staff-copy-fallback" aria-live="polite" hidden><p>Хөтөч хуулж зөвшөөрсөнгүй. Доорх хүснэгтийг гараар хуулна уу.</p><textarea readonly aria-label="Excel-д гараар хуулах хүснэгт"></textarea></section>
         <div id="payment-list" class="staff-payment-list"></div>
         <dialog id="registration-cancel-dialog" class="rules-dialog staff-cancellation-dialog" aria-labelledby="registration-cancel-dialog-title">
@@ -46,12 +47,32 @@ import "../../styles/global.css";
       const launchParams = new URLSearchParams(window.location.search);
       const launchRegistrationId = launchParams.get("registration");
       const launchCreated = launchParams.get("created") === "1";
+      // The timing surface is deliberately limited to staging and disposable
+      // localhost runs. It contains phase names and durations only.
+      const paymentTimingDiagnostics = launchParams.get("diagnostics") === "payment-timing"
+        && ["naran-erdem-staging.naranerdem-github-io.workers.dev", "127.0.0.1", "localhost"].includes(window.location.hostname);
+      const paymentTiming = {};
       const panelState = createStaffPanelState();
       const paymentDetailSelection = createPaymentDetailSelectionState(launchRegistrationId);
       const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, paymentCheckOperations: {}, paymentDrafts: {}, manualMessages: {}, corrections: {}, registrationViews: {}, transfers: {}, additionalClassPreviews: {}, familyDiscounts: {}, familyCreditApplications: {}, activePanels: {}, panelEpochs: {}, creditSubpanels: {}, paymentCreditPanels: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", openGroups: {}, openWaitlistSections: {}, refreshTimer: null, refreshing: false, queuedRefresh: null, canRegistrationExport: false, registrationReportCache: null, registrationReportVersion: 0, registrationReportLoading: false, cancellationConfirmation: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
+      const recordPaymentTiming = (name, startedAt, response = null) => {
+        if (!paymentTimingDiagnostics) return performance.now();
+        const endedAt = performance.now();
+        paymentTiming[name] = Number((endedAt - startedAt).toFixed(1));
+        if (response) paymentTiming[`${name}.server`] = response.headers.get("Server-Timing") || "unavailable";
+        return endedAt;
+      };
+      const publishPaymentTiming = () => {
+        if (!paymentTimingDiagnostics) return;
+        const lines = Object.entries(paymentTiming).map(([name, value]) => typeof value === "number" ? `${name}: ${value.toFixed(1)} ms` : `${name}: ${value}`);
+        const output = q("#payment-timing-diagnostics");
+        output.textContent = `Payment timing (staging only): ${lines.join(" · ")}`;
+        output.hidden = false;
+        console.info("payment-timing", lines.join(" | "));
+      };
       const setToolbarBusy = (selector, pending, busyLabel) => {
         setStaffButtonBusy(q(selector), pending, busyLabel);
       };
@@ -628,9 +649,12 @@ import "../../styles/global.css";
         }
         const scrollY = window.scrollY;
         try {
+          const requestStartedAt = performance.now();
           const response = await fetch("/api/staff/payments", { credentials: "same-origin", cache: "no-store" });
+          const responseReceivedAt = recordPaymentTiming("payments.headers", requestStartedAt, response);
           if (!response.ok) throw new Error("Төлбөрийн жагсаалтыг авч чадсангүй.");
           state.data = await response.json();
+          recordPaymentTiming("payments.body", responseReceivedAt);
           if (options.anchorChildId) {
             const anchored = state.data.items?.find((item) => item.registrationDraftChildId === options.anchorChildId);
             if (anchored) {
@@ -643,6 +667,11 @@ import "../../styles/global.css";
           state.openId = paymentDetailSelection.onRefresh(state.data.items);
           reconcileActionFeedback();
           render();
+          if (options.initialTiming) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            recordPaymentTiming("payments.ui", requestStartedAt);
+            publishPaymentTiming();
+          }
           scheduleGraceRefresh();
           requestAnimationFrame(() => {
             const anchor = [...document.querySelectorAll("[data-registration-child]")].find((node) => node.dataset.registrationChild === options.anchorChildId);
@@ -1586,7 +1615,21 @@ import "../../styles/global.css";
         state.cancellationConfirmation = null;
         confirmation.initiator?.focus({ preventScroll: true });
       });
-      (async () => { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; } state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; q("#payment-copy").hidden = !state.canRegistrationExport; setCopyReady(state.canRegistrationExport); show("tool-app"); try { await refresh(launchCreated ? "Бүртгэл үүсгэгдлээ." : "", launchRegistrationId ? { anchorChildId: launchRegistrationId } : {}); } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); } })().catch(() => show("tool-denied"));
+      (async () => {
+        const sessionStartedAt = performance.now();
+        const response = await fetch("/api/staff/session", { credentials: "same-origin" });
+        const sessionResponseAt = recordPaymentTiming("session.headers", sessionStartedAt, response);
+        const session = response.ok ? await response.json() : null;
+        recordPaymentTiming("session.body", sessionResponseAt);
+        if (!session?.authenticated || !(session.capabilities || []).includes("payment.view")) { show("tool-denied"); return; }
+        state.canRegistrationExport = (session.capabilities || []).includes("registration.view"); q("#payment-export").hidden = !state.canRegistrationExport; q("#payment-copy").hidden = !state.canRegistrationExport; setCopyReady(state.canRegistrationExport); show("tool-app");
+        try {
+          await refresh(launchCreated ? "Бүртгэл үүсгэгдлээ." : "", {
+            ...(launchRegistrationId ? { anchorChildId: launchRegistrationId } : {}),
+            initialTiming: paymentTimingDiagnostics,
+          });
+        } catch (error) { message(error.message || "Төлбөрийн жагсаалтыг авч чадсангүй."); }
+      })().catch(() => show("tool-denied"));
     </script>
   </body>
 </html>

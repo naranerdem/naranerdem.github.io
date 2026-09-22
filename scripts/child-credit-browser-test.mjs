@@ -2660,12 +2660,15 @@ async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = 
   if (capturePaymentTiming) page.on("request", requestObserver);
   const paymentListStartedAt = performance.now();
   const paymentListResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments") && response.request().method() === "GET");
-  await page.goto(`${baseUrl}/staff/payments/`);
+  await page.goto(`${baseUrl}/staff/payments/${capturePaymentTiming ? "?diagnostics=payment-timing" : ""}`);
   const paymentListResult = await paymentListResponse;
   if (capturePaymentTiming) {
     const creditGroupReadyStartedAt = performance.now();
     await page.locator('[data-group-toggle="Кредит / буцаалт"]').waitFor({ state: "visible" });
     const timing = `payment list local: ${(performance.now() - paymentListStartedAt).toFixed(1)} ms to API response; ${(performance.now() - paymentListStartedAt).toFixed(1)} ms to payment UI ready (${(performance.now() - creditGroupReadyStartedAt).toFixed(1)} ms after API); ${paymentListResult.headers()["server-timing"] || "no server timing"}; ${initialPaymentRequests.join(", ")}`;
+    const diagnosticText = await page.locator("#payment-timing-diagnostics").innerText();
+    assert.match(diagnosticText, /session\.headers: .*payments\.headers: .*payments\.ui:/,
+      "the opt-in timing surface reports the existing session and payment request phases without another fetch");
     console.log(timing);
     if (paymentPanelScreenshotDir) writeFileSync(path.join(paymentPanelScreenshotDir, "payment-list-timing.txt"), `${timing}\n`);
     page.off("request", requestObserver);
