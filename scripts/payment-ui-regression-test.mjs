@@ -20,6 +20,10 @@ assert.match(page, /payments\.ui/, "the timing surface measures readiness after 
 assert.match(router, /staff_auth;dur=/, "staff payment and session timing declare their authentication phase");
 assert.match(router, /payment_family_suggestions;dur=/, "the timing trace separately identifies actionable family-credit suggestion work");
 assert.match(router, /payment_response_projection;dur=/, "the timing trace separately identifies response shaping and workflow-list reads");
+assert.match(router, /family-credit\.suggestion/, "family-credit projections are available only from the protected payment detail route");
+assert.match(page, /loadFamilyCreditSuggestion/, "opening one payment detail loads its family-credit projection on demand");
+assert.match(page, /familyCreditSuggestions = \{\}/, "a list refresh discards stale detail-only family-credit projections");
+assert.match(page, /Гэр бүлийн кредитийг шалгаж байна…/, "cash collection waits visibly for the detail-only family-credit projection");
 assert.match(page, /localDateTime\(new Date\(\)\)/);
 assert.doesNotMatch(page, /toISOString\(\)\.slice\(0, 16\)/);
 assert.doesNotMatch(page, /finalizeAfter\?\.slice/);

@@ -51,7 +51,7 @@ import { cancelRegistration, reinstateRegistration, RegistrationCancellationErro
 import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets, recordClassTransferDifference } from "../staff/class-transfer";
 import { AdditionalClassPreviewError, getAdditionalClassPreview } from "../staff/additional-class-preview";
 import { AdditionalClassAdmissionError, createAdditionalClassAdmission, incorporateExistingAdditionalClass, previewExistingAdditionalClassIncorporation } from "../staff/additional-class-admission";
-import { applyFamilyCreditSuggestion, confirmFamilyDiscountMembership, FamilyDiscountError, familyDiscountDetail, findFamilyDiscountCandidates, previewFamilyDiscountMembership, recoverFamilyDiscountCredits } from "../staff/family-discounts";
+import { applyFamilyCreditSuggestion, confirmFamilyDiscountMembership, FamilyDiscountError, familyCreditSuggestionsForChild, familyDiscountDetail, findFamilyDiscountCandidates, previewFamilyDiscountMembership, recoverFamilyDiscountCredits } from "../staff/family-discounts";
 import { addManualChildCredit, applyChildCredit, ChildCreditError, correctChildCredit, leaveChildCreditUnused, refundPaymentCredit, transferChildCredit, transferPaymentCredit } from "../services/child-credit-ledger";
 import { adoptHistoricalConditionalFamilyAwards, authorizeContingentFamilyCredit, ConditionalFamilyDiscountError, historicalAdoptionChildIdsForDraft, previewHistoricalConditionalFamilyAdoption, setConditionalFamilyFailureDeadline } from "../services/conditional-family-discounts";
 import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
@@ -1443,6 +1443,13 @@ export async function handleApiRequest(
       }
       if (!hasStaffCapability(principal, "payment.manage")) {
         return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+      }
+      if (payload.action === "family-credit.suggestion") {
+        const recipientChildId = String(payload.registrationDraftChildId ?? "");
+        const paymentInstallmentId = String(payload.paymentInstallmentId ?? "");
+        const suggestions = await familyCreditSuggestionsForChild(env, recipientChildId);
+        return json({ suggestion: suggestions.find((suggestion) => suggestion.recipientChildId === recipientChildId
+          && suggestion.paymentInstallmentId === paymentInstallmentId) ?? null }, 200, { "Cache-Control": "no-store" });
       }
       if (payload.action === "family-credit.apply-suggestion") {
         return json({ ok: true, ...await applyFamilyCreditSuggestion(env, principal, {

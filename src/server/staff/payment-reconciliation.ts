@@ -391,8 +391,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   })) as Array<Record<string, unknown> & { installmentId: string; registrationDraftChildId: string; expectedAmountMnt: number; allocatedAmountMnt: number; cashAllocatedAmountMnt: number; parentClaimed: boolean; laterInstallmentId: string | null; laterAmountMnt: number | null; laterAllocatedAmountMnt: number; laterCashAllocatedAmountMnt: number }>;
   const childIds = [...new Set(rawItems.map((item) => String(item.registrationDraftChildId)))];
   const financialStartedAt = performance.now();
-  const cashReceiptByChild = await cashReceiptProjectionsForChildren(env.DB, childIds);
-  const effectiveById = new Map((await effectiveInstallmentsForRows(env.DB, rawItems.flatMap((item) => [
+  const installmentRows = rawItems.flatMap((item) => [
     {
     id: String(item.installmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 1,
     amountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),
@@ -401,7 +400,14 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       id: String(item.laterInstallmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 2,
       amountMnt: Number(item.laterAmountMnt), allocatedAmountMnt: Number(item.laterAllocatedAmountMnt),
     } : null,
-  ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>))).map((item) => [item.id, item]));
+  ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>);
+  const [cashReceiptByChild, effectiveRows, awardByChild, creditByChild] = await Promise.all([
+    cashReceiptProjectionsForChildren(env.DB, childIds),
+    effectiveInstallmentsForRows(env.DB, installmentRows),
+    discountAwardsForChildren(env.DB, childIds, true),
+    childCreditSummaryForChildren(env.DB, childIds),
+  ]);
+  const effectiveById = new Map(effectiveRows.map((item) => [item.id, item]));
   const settlementByInstallment = new Map(await Promise.all(rawItems.map(async (item) => {
     const effective = effectiveById.get(String(item.installmentId));
     return [String(item.installmentId), await pendingAdditionalClassCashSettlement(env.DB, {
@@ -411,7 +417,6 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       allocatedAmountMnt: item.allocatedAmountMnt,
     })] as const;
   })));
-  const awardByChild = await discountAwardsForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)), true);
   const awardIds = [...awardByChild.values()].flat().map((award) => award.id);
   const awardCreditRows = awardIds.length ? await env.DB.prepare(`SELECT root.source_discount_award_id AS awardId,
       root.amount_mnt AS rootAmountMnt, root.reserved_amount_mnt AS reservedAmountMnt,
@@ -425,7 +430,6 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     rootAmountMnt: Number(row.rootAmountMnt), reservedAmountMnt: Number(row.reservedAmountMnt),
     usedAmountMnt: Number(row.usedAmountMnt), availableAmountMnt: Number(row.availableAmountMnt),
   }]));
-  const creditByChild = await childCreditSummaryForChildren(env.DB, rawItems.map((item) => String(item.registrationDraftChildId)));
   // A credit-review state only affects a row with usable credit and an actual
   // eligible installment balance. Avoid the former two-per-row projection for
   // ordinary cash-only or already-settled registrations.
@@ -504,26 +508,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       .all<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }>()
     : { results: [] as Array<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }> };
   const conditionalMs = performance.now() - conditionalStartedAt;
-  // The family-credit proposal is only actionable for a confirmed child with
-  // an actual credit-settleable installment. Avoid resolving every collapsed
-  // row's family graph on the initial payment-list read.
-  const familySuggestionCandidateIds = rawItems.filter((item) => {
-    if (!item.canonicalEnrollmentId) return false;
-    const initial = effectiveById.get(String(item.installmentId));
-    const initialOutstanding = Math.max(0, Number(initial?.effectiveAmountMnt ?? item.expectedAmountMnt) - item.allocatedAmountMnt);
-    const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
-    const laterOutstanding = later ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
-    return (item.paymentPlanCode !== "two_installment" && initialOutstanding > 0) || laterOutstanding > 0;
-  }).map((item) => String(item.registrationDraftChildId));
+  // A family-credit proposal is only actionable inside an opened payment
+  // detail. Loading every collapsed row's family graph makes the ordinary
+  // payment list scale with unrelated family history, so the UI requests this
+  // projection on demand and the write path still revalidates it.
   const familySuggestionsStartedAt = performance.now();
-  const familySuggestionByChild = new Map(await Promise.all(
-    hasStaffCapability(actor, "payment.manage") ? familySuggestionCandidateIds.map(async (childId) => {
-      try {
-        const suggestions = await familyCreditSuggestionsForChild(env, childId);
-        return [childId, suggestions.find((suggestion) => suggestion.recipientChildId === childId) ?? null] as const;
-      } catch { return [childId, null] as const; }
-    }) : [],
-  ));
   const familySuggestionsMs = performance.now() - familySuggestionsStartedAt;
   const cancelledStartedAt = performance.now();
   const cancelledItems = await Promise.all(cancelled.results.map(async (item) => ({
@@ -591,7 +580,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       creditApplicationOutstandingMnt,
       creditReviewNeeded: Boolean(creditReview && creditReview.availableCreditMnt > 0 && creditReview.outstandingAmountMnt > 0 && !creditReview.reviewed),
       creditReviewResolved: Boolean(creditReview?.reviewed),
-      familyCreditSuggestion: familySuggestionByChild.get(String(item.registrationDraftChildId)) ?? null,
+      familyCreditSuggestion: null,
       conditionalFamilyQuote: conditionalQuoteByChild.get(String(item.registrationDraftChildId)) ?? null,
       historicalSettlementReview: historicalReviewReady ? historicalSettlementReview : null,
       conditionalContingentDonors: (conditionalQuoteByChild.get(String(item.registrationDraftChildId)) && creditApplicationInstallmentId
