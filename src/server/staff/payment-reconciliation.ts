@@ -390,6 +390,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     laterCashAllocatedAmountMnt: Number(item.laterCashAllocatedAmountMnt ?? 0),
   })) as Array<Record<string, unknown> & { installmentId: string; registrationDraftChildId: string; expectedAmountMnt: number; allocatedAmountMnt: number; cashAllocatedAmountMnt: number; parentClaimed: boolean; laterInstallmentId: string | null; laterAmountMnt: number | null; laterAllocatedAmountMnt: number; laterCashAllocatedAmountMnt: number }>;
   const childIds = [...new Set(rawItems.map((item) => String(item.registrationDraftChildId)))];
+  const financialStartedAt = performance.now();
   const cashReceiptByChild = await cashReceiptProjectionsForChildren(env.DB, childIds);
   const effectiveById = new Map((await effectiveInstallmentsForRows(env.DB, rawItems.flatMap((item) => [
     {
@@ -443,6 +444,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     try { return [installmentId, await creditPaymentReviewState(env.DB, childId, installmentId)] as const; }
     catch { return [installmentId, null] as const; }
   })));
+  const financialMs = performance.now() - financialStartedAt;
+  const conditionalStartedAt = performance.now();
   const conditionalQuotes = childIds.length ? await env.DB.prepare(`SELECT id, registration_draft_child_id AS childId,
       relationship_basis AS relationshipBasis, relationship_key AS relationshipKey, revision, state, base_amount_mnt AS baseAmountMnt, award_amount_mnt AS awardAmountMnt,
       conditional_failure_due_at AS conditionalFailureDueAt,
@@ -500,6 +503,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
             AND (payment_confirmation.status IS NULL OR payment_confirmation.status != 'undone')), 0) >= quote.base_amount_mnt`)
       .all<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }>()
     : { results: [] as Array<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }> };
+  const conditionalMs = performance.now() - conditionalStartedAt;
   // The family-credit proposal is only actionable for a confirmed child with
   // an actual credit-settleable installment. Avoid resolving every collapsed
   // row's family graph on the initial payment-list read.
@@ -511,6 +515,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const laterOutstanding = later ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
     return (item.paymentPlanCode !== "two_installment" && initialOutstanding > 0) || laterOutstanding > 0;
   }).map((item) => String(item.registrationDraftChildId));
+  const familySuggestionsStartedAt = performance.now();
   const familySuggestionByChild = new Map(await Promise.all(
     hasStaffCapability(actor, "payment.manage") ? familySuggestionCandidateIds.map(async (childId) => {
       try {
@@ -519,11 +524,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       } catch { return [childId, null] as const; }
     }) : [],
   ));
+  const familySuggestionsMs = performance.now() - familySuggestionsStartedAt;
+  const cancelledStartedAt = performance.now();
   const cancelledItems = await Promise.all(cancelled.results.map(async (item) => ({
     ...item,
     canReinstate: hasStaffCapability(actor, "registration.manage")
       && await getRegistrationReinstatementEligibility(env, String(item.registrationDraftChildId), nowDate),
   })));
+  const cancelledMs = performance.now() - cancelledStartedAt;
+  const responseProjectionStartedAt = performance.now();
   return { now, canManageDiscounts: hasStaffCapability(actor, "admin.settings.manage"),
   canManageCredits: hasStaffCapability(actor, "payment.manage"),
   canManageReferrals: hasStaffCapability(actor, "registration.manage"),
@@ -637,6 +646,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ORDER BY waitlist_seat_offer.resolved_at DESC LIMIT 20`).bind(now).all<Record<string, unknown>>()).results,
   timing: {
     projectionMs,
+    financialMs,
+    conditionalMs,
+    familySuggestionsMs,
+    cancelledMs,
+    responseProjectionMs: performance.now() - responseProjectionStartedAt,
     enrichmentMs: performance.now() - enrichmentStartedAt,
   } };
 }

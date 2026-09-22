@@ -18,6 +18,8 @@ assert.match(page, /payments\.headers/, "the timing surface measures payment res
 assert.match(page, /payments\.body/, "the timing surface measures payment JSON parsing separately");
 assert.match(page, /payments\.ui/, "the timing surface measures readiness after payment rendering");
 assert.match(router, /staff_auth;dur=/, "staff payment and session timing declare their authentication phase");
+assert.match(router, /payment_family_suggestions;dur=/, "the timing trace separately identifies actionable family-credit suggestion work");
+assert.match(router, /payment_response_projection;dur=/, "the timing trace separately identifies response shaping and workflow-list reads");
 assert.match(page, /localDateTime\(new Date\(\)\)/);
 assert.doesNotMatch(page, /toISOString\(\)\.slice\(0, 16\)/);
 assert.doesNotMatch(page, /finalizeAfter\?\.slice/);

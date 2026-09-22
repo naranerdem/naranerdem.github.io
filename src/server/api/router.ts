@@ -1296,7 +1296,7 @@ export async function handleApiRequest(
         return json({ ...paymentQueue, promotionItems: promotionResult.value.items }, 200, {
           "Cache-Control": "no-store",
           // Only aggregate phase durations are exposed for bounded staff-page diagnostics.
-          "Server-Timing": `staff_auth;dur=${authDurationMs.toFixed(1)}, payment_projection;dur=${paymentTiming.projectionMs.toFixed(1)}, payment_enrichment;dur=${paymentTiming.enrichmentMs.toFixed(1)}, payment_queue;dur=${queueResult.durationMs.toFixed(1)}, promotion_queue;dur=${promotionResult.durationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
+          "Server-Timing": `staff_auth;dur=${authDurationMs.toFixed(1)}, payment_projection;dur=${paymentTiming.projectionMs.toFixed(1)}, payment_financial;dur=${paymentTiming.financialMs.toFixed(1)}, payment_conditional;dur=${paymentTiming.conditionalMs.toFixed(1)}, payment_family_suggestions;dur=${paymentTiming.familySuggestionsMs.toFixed(1)}, payment_cancelled;dur=${paymentTiming.cancelledMs.toFixed(1)}, payment_response_projection;dur=${paymentTiming.responseProjectionMs.toFixed(1)}, payment_enrichment;dur=${paymentTiming.enrichmentMs.toFixed(1)}, payment_queue;dur=${queueResult.durationMs.toFixed(1)}, promotion_queue;dur=${promotionResult.durationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
         });
       } catch (caught) {
         return paymentReconciliationError(caught);
