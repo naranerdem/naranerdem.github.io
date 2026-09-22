@@ -163,8 +163,9 @@ assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'),
 assert.match(router, /RegistrationCancellationError/, "cancellation failures have their own typed server handling");
 assert.match(page, /Бүртгэлийг сэргээх/, "eligible cancelled registrations expose a separate restoration action");
 assert.match(page, /data-registration-reinstate=/, "restoration is bound to the authoritative cancelled registration child id");
-assert.match(page, /Буцаан төлөлт бүртгэх/, "the refund control is labelled as an action rather than an existing state");
-assert.match(page, /data-payment-credit-action="transfer"/, "released received-payment credit can open its reviewed transfer action without exposing discount credit as refundable cash");
+assert.match(page, /data-payment-credit-toggle=/, "a refundable balance has one compact open\/close control before its financial actions are shown");
+assert.match(page, /data-payment-credit-tab="transfer"/, "released received-payment credit can open its reviewed transfer action without exposing discount credit as refundable cash");
+assert.match(page, /Буцаалт бүртгэх/, "the refund tab is labelled as an action rather than an existing state");
 assert.match(page, /data-payment-credit-form/, "partial refund and transfer use an inline form with a bounded amount rather than an irreversible one-click action");
 assert.match(page, /data-payment-credit-confirm/, "the payment-credit operation has an explicit review confirmation before mutation");
 assert.match(page, /Төлбөрийн орлого, өмнөх хуваарилалт өөрчлөгдөхгүй/, "the review distinguishes a credit transfer from a new payment or rewritten allocation");

@@ -32,6 +32,18 @@ async function capturePaymentPanel(page, name) {
   await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name), fullPage: true });
 }
 
+async function captureStaffSessionPanel(page) {
+  if (!paymentPanelScreenshotDir) return;
+  await page.goto(`${baseUrl}/staff/team/`);
+  const sessionToggle = page.getByRole("button", { name: /Нэвтэрсэн төхөөрөмжүүд/ });
+  await sessionToggle.click();
+  await page.locator(".staff-team-sessions li").waitFor({ state: "visible" });
+  await capturePaymentPanel(page, "staff-sessions-mobile.png");
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await capturePaymentPanel(page, "staff-sessions-desktop.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+}
+
 function runWrangler(args, label) {
   // Wrangler's complete migration ledger now exceeds Node's default 1 MiB buffer.
   const result = spawnSync(process.execPath, [wranglerCli, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -1794,6 +1806,7 @@ try {
       { members: 2, awards: 2, creditRoots: 1 }, "family confirmation replay cannot duplicate the award or fully paid child's credit root");
     }
   } else if (process.env.CANCELLED_PAYMENT_CREDIT_BROWSER_ONLY === "1") {
+    if (process.env.PAYMENT_PANEL_CAPTURE_SESSIONS === "1") await captureStaffSessionPanel(page);
     await exerciseCancelledPaymentCreditFlow(page);
   } else {
   const cashChildId = await fillIntake(page, "CashBrowser");
@@ -2630,17 +2643,40 @@ async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = 
   // existing payment-credit rows use: it has one immutable allocation but no
   // canonical child owner. Cancellation must still expose its cash balance.
   await cancelAndRestoreRegistration(page, cancelledCashChildId, { restore: false });
+  const initialPaymentRequests = [];
+  const capturePaymentTiming = process.env.PAYMENT_PANEL_CAPTURE_TIMING === "1";
+  const requestObserver = (request) => {
+    if (request.url().includes("/api/staff/")) initialPaymentRequests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  };
+  if (capturePaymentTiming) page.on("request", requestObserver);
+  const paymentListStartedAt = performance.now();
+  const paymentListResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments") && response.request().method() === "GET");
   await page.goto(`${baseUrl}/staff/payments/`);
+  const paymentListResult = await paymentListResponse;
+  if (capturePaymentTiming) {
+    const timing = `payment list local: ${(performance.now() - paymentListStartedAt).toFixed(1)} ms to API response; ${paymentListResult.headers()["server-timing"] || "no server timing"}; ${initialPaymentRequests.join(", ")}`;
+    console.log(timing);
+    if (paymentPanelScreenshotDir) writeFileSync(path.join(paymentPanelScreenshotDir, "payment-list-timing.txt"), `${timing}\n`);
+    page.off("request", requestObserver);
+  }
   const creditGroup = page.locator('[data-group-toggle="Кредит / буцаалт"]');
   if (await creditGroup.getAttribute("aria-expanded") !== "true") await creditGroup.click();
   const cancelledCreditCard = page.locator(".staff-payment-item").filter({ hasText: "CancelledCashCredit" })
-    .filter({ has: page.locator('[data-payment-credit-action="transfer"]') });
+    .filter({ has: page.locator('[data-payment-credit-toggle]') });
   await cancelledCreditCard.waitFor({ state: "visible" });
-  await cancelledCreditCard.locator('[data-payment-credit-action="transfer"]').click();
+  await cancelledCreditCard.locator('[data-payment-credit-toggle]').click();
+  await cancelledCreditCard.locator('[data-payment-credit-tab="transfer"]').click();
   const cancelledCreditForm = cancelledCreditCard.locator('[data-payment-credit-form]');
   await cancelledCreditForm.locator('select[name="targetRegistrationDraftChildId"]').selectOption(targetChildId);
   await cancelledCreditForm.locator('input[name="amountMnt"]').fill("400");
   await cancelledCreditForm.locator('textarea[name="reason"]').fill("Cancelled cash credit browser transfer");
+  await cancelledCreditCard.locator('[data-payment-credit-tab="refund"]').click();
+  const refundDraft = cancelledCreditCard.locator('[data-payment-credit-form]');
+  await refundDraft.locator('input[name="amountMnt"]').fill("100");
+  await refundDraft.locator('textarea[name="reason"]').fill("Refund draft remains local");
+  await cancelledCreditCard.locator('[data-payment-credit-tab="transfer"]').click();
+  assert.equal(await cancelledCreditCard.locator('input[name="amountMnt"]').inputValue(), "400", "switching payment-credit tabs preserves the transfer amount draft");
+  assert.equal(await cancelledCreditCard.locator('textarea[name="reason"]').inputValue(), "Cancelled cash credit browser transfer", "switching payment-credit tabs preserves the transfer reason draft");
   await cancelledCreditForm.locator('button[type="submit"]').click();
   await cancelledCreditCard.getByText("Хүлээн авах хүүхэд:").waitFor({ state: "visible" });
   await cancelledCreditCard.getByText(existingTargetChildId ? "CreditBrowser" : "CancelledCashCreditRecipient", { exact: false }).last().waitFor({ state: "visible" });
@@ -2648,10 +2684,27 @@ async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = 
   await page.setViewportSize({ width: 1200, height: 900 });
   await capturePaymentPanel(page, "cancelled-payment-credit-review-desktop.png");
   await page.setViewportSize({ width: 390, height: 844 });
+  let releaseRefresh;
+  let refreshStarted;
+  const refreshGate = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshObserved = new Promise((resolve) => { refreshStarted = resolve; });
+  await page.route("**/api/staff/payments", async (route) => {
+    if (route.request().method() === "GET") {
+      refreshStarted();
+      await refreshGate;
+    }
+    await route.continue();
+  });
   const creditTransferRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments") && response.request().method() === "POST");
   await cancelledCreditCard.locator('[data-payment-credit-confirm]').click();
   const creditTransferResponse = await creditTransferRequest;
   if (!creditTransferResponse.ok()) throw new Error(`cancelled payment-credit transfer failed: ${await creditTransferResponse.text()}`);
+  await refreshObserved;
+  await cancelledCreditCard.getByText("Кредитийн өөрчлөлт хадгалагдлаа.").waitFor({ state: "visible" });
+  assert.equal(await cancelledCreditCard.getByText("Кредитийн өөрчлөлтийг хадгалж байна…").count(), 0,
+    "a confirmed credit settlement stops showing the saving state while its scoped refresh is still pending");
+  releaseRefresh();
+  await page.unroute("**/api/staff/payments");
   await page.reload();
   let cancelledCreditState = await dbJson(`SELECT payment_credit.id AS creditId, payment_credit.remaining_amount_mnt AS remainingAmountMnt,
       payment_credit.status,
@@ -2672,8 +2725,9 @@ async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = 
   const refreshedCreditGroup = page.locator('[data-group-toggle="Кредит / буцаалт"]');
   if (await refreshedCreditGroup.getAttribute("aria-expanded") !== "true") await refreshedCreditGroup.click();
   const refreshedCard = page.locator(".staff-payment-item").filter({ hasText: "CancelledCashCredit" })
-    .filter({ has: page.locator('[data-payment-credit-action="refund"]') });
-  await refreshedCard.locator('[data-payment-credit-action="refund"]').click();
+    .filter({ has: page.locator('[data-payment-credit-toggle]') });
+  await refreshedCard.locator('[data-payment-credit-toggle]').click();
+  await refreshedCard.locator('[data-payment-credit-tab="refund"]').click();
   const refundForm = refreshedCard.locator('[data-payment-credit-form]');
   await refundForm.locator('input[name="amountMnt"]').fill("200");
   await refundForm.locator('textarea[name="reason"]').fill("Cancelled cash credit browser refund");

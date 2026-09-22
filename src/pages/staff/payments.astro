@@ -539,13 +539,18 @@ import "../../styles/global.css";
         }
         const targets = [...targetByStudent.values()].sort((left, right) => `${left.childName}\u0000${classSchedule(left)}`.localeCompare(`${right.childName}\u0000${classSchedule(right)}`, "mn"));
         const transferable = Boolean(state.data?.canManageCredits) && Number(item.sourceChildCount || 0) === 1 && targets.length > 0;
+        const open = Boolean(panel.open);
+        const mode = panel.mode === "transfer" && transferable ? "transfer" : "refund";
+        const drafts = panel.drafts || {};
+        const draft = drafts[mode] || {};
         const review = panel.review;
         const target = review?.targetRegistrationDraftChildId ? targets.find((candidate) => candidate.registrationDraftChildId === review.targetRegistrationDraftChildId) : null;
-        const actionLabel = panel.mode === "transfer" ? "Кредит шилжүүлэх" : "Буцаан төлөлт бүртгэх";
-        const controls = state.data?.canManageCredits ? `<div class="staff-payment-actions"><button class="text-button ${panel.mode === "refund" ? "is-selected" : ""}" type="button" data-payment-credit-action="refund" data-payment-credit="${escape(item.id)}" ${pending ? "disabled" : ""}>Буцаан төлөлт бүртгэх</button>${transferable ? `<button class="text-button ${panel.mode === "transfer" ? "is-selected" : ""}" type="button" data-payment-credit-action="transfer" data-payment-credit="${escape(item.id)}" ${pending ? "disabled" : ""}>Кредит шилжүүлэх</button>` : ""}</div>` : "";
-        const form = panel.mode && !review ? `<form class="staff-payment-form staff-credit-subpanel" data-payment-credit-form="${escape(item.id)}" data-payment-credit-mode="${escape(panel.mode)}"><h4>${actionLabel}</h4>${panel.mode === "transfer" ? `<label>Хүүхэд сонгох<select name="targetRegistrationDraftChildId" required ${pending ? "disabled" : ""}><option value="">Сонгоно уу</option>${targets.map((candidate) => `<option value="${escape(candidate.registrationDraftChildId)}" ${panel.targetRegistrationDraftChildId === candidate.registrationDraftChildId ? "selected" : ""}>${escape(candidate.childName)} · ${escape(classSchedule(candidate))}</option>`).join("")}</select></label>` : ""}<label>Дүн<input name="amountMnt" type="number" min="1" max="${escape(item.availableAmountMnt)}" step="1" value="${escape(panel.amountMnt || "")}" required ${pending ? "disabled" : ""} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${pending ? "disabled" : ""}>${escape(panel.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="button secondary" type="submit" ${pending ? "disabled aria-busy=true" : ""}>${pending ? "Хадгалж байна…" : "Хянах"}</button><button class="text-button" type="button" data-payment-credit-dismiss="${escape(item.id)}" ${pending ? "disabled" : ""}>Болих</button></div></form>` : "";
-        const reviewMarkup = review ? `<section class="staff-payment-form staff-credit-subpanel" aria-live="polite" ${pending ? 'aria-busy="true"' : ""}><h4>${actionLabel} хянах</h4><p><strong>Эх үүсвэр:</strong> ${escape(item.childNames || "")}</p>${panel.mode === "transfer" ? `<p><strong>Хүлээн авах хүүхэд:</strong> ${escape(target?.childName || "Сонгосон хүүхэд")} · ${escape(target ? classSchedule(target) : "")}</p>` : ""}<p><strong>Дүн:</strong> ${escape(mnt(review.amountMnt))} · Үлдэх буцаах боломжтой дүн: <strong>${escape(mnt(Math.max(0, Number(item.availableAmountMnt) - Number(review.amountMnt))))}</strong></p><p class="staff-muted">Төлбөрийн орлого, өмнөх хуваарилалт өөрчлөгдөхгүй.</p><div class="staff-inline-actions"><button class="button primary" type="button" data-payment-credit-confirm="${escape(item.id)}" ${pending ? "disabled aria-busy=true" : ""}>${pending ? "Баталгаажуулж байна…" : "Баталгаажуулах"}</button><button class="text-button" type="button" data-payment-credit-edit="${escape(item.id)}" ${pending ? "disabled" : ""}>Засах</button><button class="text-button" type="button" data-payment-credit-dismiss="${escape(item.id)}" ${pending ? "disabled" : ""}>Болих</button></div></section>` : "";
-        return `<article class="staff-payment-item"><div><strong>${escape(item.guardianName || "")}</strong><p>${escape(item.childNames || "")}</p><p><strong>${escape(mnt(item.availableAmountMnt))}</strong> кредит / буцаалт</p></div>${controls}${form}${reviewMarkup}${actionFeedback(item.id, ["payment-credit"])}</article>`;
+        const controls = state.data?.canManageCredits ? `<div class="staff-payment-actions"><button class="text-button" type="button" data-payment-credit-toggle="${escape(item.id)}" aria-expanded="${open}" aria-controls="payment-credit-${escape(item.id)}" ${pending ? "disabled" : ""}>${open ? "Хаах" : "Нээх"}</button></div>` : "";
+        const tabs = `<div class="staff-payment-credit-tabs" role="tablist" aria-label="Кредитийн үйлдэл"><button class="text-button ${mode === "transfer" ? "is-selected" : ""}" type="button" role="tab" aria-selected="${mode === "transfer"}" data-payment-credit-tab="transfer" data-payment-credit="${escape(item.id)}" ${!transferable || review || pending ? "disabled" : ""}>Шилжүүлэх</button><button class="text-button ${mode === "refund" ? "is-selected" : ""}" type="button" role="tab" aria-selected="${mode === "refund"}" data-payment-credit-tab="refund" data-payment-credit="${escape(item.id)}" ${review || pending ? "disabled" : ""}>Буцаалт бүртгэх</button></div>`;
+        const form = !review ? `<form class="staff-payment-form staff-credit-subpanel staff-payment-credit-form" data-payment-credit-form="${escape(item.id)}" data-payment-credit-mode="${escape(mode)}">${mode === "transfer" ? `<label>Хүүхэд сонгох<select name="targetRegistrationDraftChildId" required ${pending ? "disabled" : ""}><option value="">Сонгоно уу</option>${targets.map((candidate) => `<option value="${escape(candidate.registrationDraftChildId)}" ${draft.targetRegistrationDraftChildId === candidate.registrationDraftChildId ? "selected" : ""}>${escape(candidate.childName)} · ${escape(classSchedule(candidate))}</option>`).join("")}</select></label>` : ""}<label>Дүн<input name="amountMnt" type="number" min="1" max="${escape(item.availableAmountMnt)}" step="1" value="${escape(draft.amountMnt || "")}" required ${pending ? "disabled" : ""} /></label><label class="${mode === "refund" ? "staff-wide" : ""}">Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${pending ? "disabled" : ""}>${escape(draft.reason || "")}</textarea></label><div class="staff-inline-actions staff-wide"><button class="button secondary" type="submit" ${pending ? "disabled aria-busy=true" : ""}>${pending ? "Хадгалж байна…" : "Хянах"}</button></div></form>` : "";
+        const reviewMarkup = review ? `<section class="staff-payment-form staff-credit-subpanel staff-payment-credit-form" aria-live="polite" ${pending ? 'aria-busy="true"' : ""}><h4>Хянах</h4><p><strong>Эх үүсвэр:</strong> ${escape(item.childNames || "")}</p>${review.mode === "transfer" ? `<p><strong>Хүлээн авах хүүхэд:</strong> ${escape(target?.childName || "Сонгосон хүүхэд")} · ${escape(target ? classSchedule(target) : "")}</p>` : ""}<p><strong>Дүн:</strong> ${escape(mnt(review.amountMnt))} · Үлдэх буцаах боломжтой дүн: <strong>${escape(mnt(Math.max(0, Number(item.availableAmountMnt) - Number(review.amountMnt))))}</strong></p><p class="staff-muted">Төлбөрийн орлого, өмнөх хуваарилалт өөрчлөгдөхгүй.</p><div class="staff-inline-actions"><button class="button primary" type="button" data-payment-credit-confirm="${escape(item.id)}" ${pending ? "disabled aria-busy=true" : ""}>${pending ? "Баталгаажуулж байна…" : "Баталгаажуулах"}</button><button class="text-button" type="button" data-payment-credit-edit="${escape(item.id)}" ${pending ? "disabled" : ""}>Засах</button><button class="text-button" type="button" data-payment-credit-dismiss="${escape(item.id)}" ${pending ? "disabled" : ""}>Хаах</button></div></section>` : "";
+        const detail = open && state.data?.canManageCredits ? `<div id="payment-credit-${escape(item.id)}" class="staff-payment-credit-detail">${tabs}${form}${reviewMarkup}</div>` : "";
+        return `<article class="staff-payment-item ${open ? "is-open" : ""}"><div><strong>${escape(item.guardianName || "")}</strong><p>${escape(item.childNames || "")}</p><p><strong>${escape(mnt(item.availableAmountMnt))}</strong> кредит / буцаалт</p></div>${controls}${detail}${actionFeedback(item.id, ["payment-credit"])}</article>`;
       }
       function recentResponseMarkup(item) { const accepted = item.status === "converted"; const open = state.openRecentOfferId === item.id; const detailId = `recent-offer-detail-${item.id}`; const toggle = `<div class="staff-payment-actions"><button class="text-button" type="button" data-recent-offer="${escape(item.id)}" aria-expanded="${open}" aria-controls="${escape(detailId)}">${open ? "Хаах" : "Нээх"}</button></div>`; const summary = `<div class="staff-payment-summary" data-recent-offer="${escape(item.id)}" role="button" tabindex="0" aria-expanded="false" aria-controls="${escape(detailId)}"><strong>${escape(item.childName)}</strong><p>${escape(classSchedule(item))}</p><p><strong>${accepted ? "Зөвшөөрсөн" : "Татгалзсан"}</strong> · ${escape(localLabel(item.resolvedAt))}</p></div>`; const detail = `<div id="${escape(detailId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p>${toggle}</div><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: <a href="tel:${escape(item.primaryPhone || "")}">${escape(item.primaryPhone || "")}</a></p></div>`; return `<article class="staff-payment-item ${open ? "is-open" : ""}">${open ? detail : `${summary}${toggle}`}</article>`; }
       function waitlistMarkup(item) { const open = state.openWaitlistId === item.id; const detailId = `waitlist-detail-${item.id}`; const toggle = `<div class="staff-payment-actions"><button class="text-button" type="button" data-waitlist-detail="${escape(item.id)}" aria-expanded="${open}" aria-controls="${escape(detailId)}">${open ? "Хаах" : "Нээх"}</button></div>`; const summary = `<div class="staff-payment-summary"><strong>${escape(item.childName)}</strong><p>${escape(classSchedule(item))}</p><p class="staff-muted">Хүлээлтэд ${item.fifoPosition}-рт</p></div>`; const detail = `<div id="${escape(detailId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p>${toggle}</div><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p><p>И-мэйл: ${escape(item.email || "")}</p>${item.guardianFacebookName ? `<p>Facebook: ${escape(item.guardianFacebookName)}</p>` : ""}${item.childFacebookName ? `<p>Хүүхдийн Facebook: ${escape(item.childFacebookName)}</p>` : ""}<p>Хүлээлтэд орсон: ${escape(localLabel(item.createdAt))}</p><p>Энэ ангид ${item.fifoPosition}-рт байна.</p></div>`; return `<article class="staff-payment-item ${open ? "is-open" : ""}">${open ? detail : `${summary}${toggle}`}</article>`; }
@@ -751,16 +756,31 @@ import "../../styles/global.css";
         if (target.dataset.additionalAdmissionRetry) { const childId = target.dataset.additionalAdmissionRetry; setActionPending(childId, "additional-confirmation", true); setActionFeedback(childId, "additional-confirmation", "Нэмэлт ангийн баталгаажуулалтыг дахин оролдож байна…"); render(); try { await post({ action: "additional-class.retry-confirmation", registrationDraftChildId: childId }); setActionFeedback(childId, "additional-confirmation", "Нэмэлт ангийн баталгаажуулалтыг шалгалаа."); await refresh("", { anchorChildId: childId }); } catch (error) { setActionPending(childId, "additional-confirmation", false); setActionFeedback(childId, "additional-confirmation", error.message || "Нэмэлт ангийн баталгаажуулалтыг дахин оролдож чадсангүй."); render(); } return; }
         if (target.dataset.additionalAdmissionOpen) { const targetItem = state.data.items.find((item) => item.registrationDraftChildId === target.dataset.additionalAdmissionOpen); if (!targetItem) { message("Нэмэлт ангийн бүртгэлийг жагсаалтаас олсонгүй."); return; } const remaining = Number(targetItem.expectedAmountMnt) - Number(targetItem.allocatedAmountMnt); const due = new Date(targetItem.remainingPaymentDueAt || targetItem.paymentDueAt) < new Date(state.data.now); state.openGroups[targetItem.historicalSettlementReview || (remaining <= 0 && !targetItem.canonicalEnrollmentId && targetItem.identityResolutionStatus === "needs_identity_review") ? "Шалгах шаардлагатай" : remaining <= 0 ? "Төлбөр баталгаажсан" : due ? "Хугацаа хэтэрсэн" : targetItem.seatConfirmationApproved ? "Хэсэгчлэн төлсөн" : "Төлбөр хүлээж байна"] = true; paymentDetailSelection.select(targetItem.installmentId); state.openId = paymentDetailSelection.selected(); render(); q(`[data-payment-detail="${targetItem.installmentId}"]`)?.focus(); return; }
         if (target.dataset.paymentDetail) { const id = target.dataset.paymentDetail; const closing = state.openId === id; if (closing) paymentDetailSelection.close(id); else paymentDetailSelection.select(id); state.openId = paymentDetailSelection.selected(); if (closing) { const item = state.data.items.find((entry) => entry.installmentId === id); if (item) closePanel(item.registrationDraftChildId); } render(); q(`[data-payment-detail="${id}"]`)?.focus(); return; }
-        if (target.dataset.paymentCreditAction) {
+        if (target.dataset.paymentCreditToggle) {
+          const creditId = target.dataset.paymentCreditToggle; const item = (state.data?.credits || []).find((credit) => credit.id === creditId);
+          if (!item || actionPending(creditId, "payment-credit")) return;
+          const panel = state.paymentCreditPanels[creditId] ||= { mode: "refund", drafts: {} };
+          panel.open = !panel.open;
+          render();
+          if (panel.open) q(`[data-payment-credit-form="${creditId}"] input[name="amountMnt"]`)?.focus();
+          else q(`[data-payment-credit-toggle="${creditId}"]`)?.focus();
+          return;
+        }
+        if (target.dataset.paymentCreditTab) {
           const creditId = target.dataset.paymentCredit; const item = (state.data?.credits || []).find((credit) => credit.id === creditId);
           if (!item || actionPending(creditId, "payment-credit")) return;
-          state.paymentCreditPanels[creditId] = { mode: target.dataset.paymentCreditAction };
+          const panel = state.paymentCreditPanels[creditId] ||= { open: true, mode: "refund", drafts: {} };
+          if (panel.review) return;
+          panel.mode = target.dataset.paymentCreditTab;
+          panel.open = true;
           render(); q(`[data-payment-credit-form="${creditId}"] input[name="amountMnt"]`)?.focus(); return;
         }
         if (target.dataset.paymentCreditDismiss) {
           const creditId = target.dataset.paymentCreditDismiss;
           if (actionPending(creditId, "payment-credit")) return;
-          delete state.paymentCreditPanels[creditId]; delete state.actionFeedback[creditId]; render(); return;
+          const panel = state.paymentCreditPanels[creditId];
+          if (panel) { delete panel.review; delete panel.operationId; panel.open = false; }
+          delete state.actionFeedback[creditId]; render(); q(`[data-payment-credit-toggle="${creditId}"]`)?.focus(); return;
         }
         if (target.dataset.paymentCreditEdit) {
           const creditId = target.dataset.paymentCreditEdit; const panel = state.paymentCreditPanels[creditId];
@@ -775,7 +795,7 @@ import "../../styles/global.css";
           let saved = false;
           try {
             panel.operationId ||= await secureStaffUuidV4();
-            const action = panel.mode === "transfer" ? "payment-credit.transfer" : "payment-credit.refund";
+            const action = review.mode === "transfer" ? "payment-credit.transfer" : "payment-credit.refund";
             const result = await post({ action, creditId, targetRegistrationDraftChildId: review.targetRegistrationDraftChildId,
               amountMnt: review.amountMnt, reason: review.reason, operationId: panel.operationId });
             applyPaymentCreditSettlement(creditId, result);
@@ -1313,12 +1333,13 @@ import "../../styles/global.css";
           if (!item || !panel || actionPending(creditId, "payment-credit")) return;
           const amountMnt = Number(form.elements.amountMnt?.value || 0); const reason = form.elements.reason?.value?.trim() || "";
           const targetRegistrationDraftChildId = form.elements.targetRegistrationDraftChildId?.value || "";
+          const mode = form.dataset.paymentCreditMode;
           if (!Number.isInteger(amountMnt) || amountMnt < 1 || amountMnt > Number(item.availableAmountMnt) || !reason
-            || (panel.mode === "transfer" && !targetRegistrationDraftChildId)) {
+            || (mode === "transfer" && !targetRegistrationDraftChildId)) {
             setActionFeedback(creditId, "payment-credit", "Дүн, шалтгаан болон хүлээн авах хүүхдийг зөв оруулна уу."); render(); return;
           }
-          panel.amountMnt = amountMnt; panel.reason = reason; panel.targetRegistrationDraftChildId = targetRegistrationDraftChildId;
-          panel.review = { amountMnt, reason, targetRegistrationDraftChildId };
+          panel.mode = mode; panel.drafts ||= {}; panel.drafts[mode] = { amountMnt, reason, targetRegistrationDraftChildId };
+          panel.review = { mode, amountMnt, reason, targetRegistrationDraftChildId };
           delete panel.operationId; render();
           q(`[data-payment-credit-confirm="${creditId}"]`)?.focus();
           return;
@@ -1412,8 +1433,21 @@ import "../../styles/global.css";
           ? `Санал болгож буй өөрчлөлт: ${mnt(amount)}. Боломжтой кредит хүрэлцэхгүй; засвар хадгалагдахгүй.`
           : `Санал болгож буй өөрчлөлт: ${mnt(amount)}. Үлдэх боломжтой кредит: ${mnt(after)}.`;
       }
-      q("#payment-list").addEventListener("input", (event) => { const input = event.target; const form = input.closest("form"); if (input.dataset.additionalIncomingFilter) { const panel = state.additionalClassPreviews[input.dataset.additionalIncomingFilter]; if (panel) { panel.incoming = { ...(panel.incoming || {}), query: input.value }; render(); } return; } if (form?.matches("[data-payment-form]") && !actionPending((state.data?.items || []).find((item) => item.installmentId === form.dataset.paymentForm || item.laterInstallmentId === form.dataset.paymentForm)?.registrationDraftChildId, "payment")) { const draft = state.paymentDrafts[form.dataset.paymentDraftKey]; if (draft) delete draft.idempotencyKey; } if (input.name === "amount") updateRemainingDeadline(form); updateCreditProposal(form); });
+      function syncPaymentCreditDraft(form) {
+        if (!form?.matches("[data-payment-credit-form]")) return false;
+        const creditId = form.dataset.paymentCreditForm; const panel = state.paymentCreditPanels[creditId];
+        if (!panel || panel.review || actionPending(creditId, "payment-credit")) return true;
+        panel.drafts ||= {};
+        panel.drafts[form.dataset.paymentCreditMode] = {
+          amountMnt: form.elements.amountMnt?.value || "",
+          reason: form.elements.reason?.value || "",
+          targetRegistrationDraftChildId: form.elements.targetRegistrationDraftChildId?.value || ""
+        };
+        return true;
+      }
+      q("#payment-list").addEventListener("input", (event) => { const input = event.target; const form = input.closest("form"); if (syncPaymentCreditDraft(form)) return; if (input.dataset.additionalIncomingFilter) { const panel = state.additionalClassPreviews[input.dataset.additionalIncomingFilter]; if (panel) { panel.incoming = { ...(panel.incoming || {}), query: input.value }; render(); } return; } if (form?.matches("[data-payment-form]") && !actionPending((state.data?.items || []).find((item) => item.installmentId === form.dataset.paymentForm || item.laterInstallmentId === form.dataset.paymentForm)?.registrationDraftChildId, "payment")) { const draft = state.paymentDrafts[form.dataset.paymentDraftKey]; if (draft) delete draft.idempotencyKey; } if (input.name === "amount") updateRemainingDeadline(form); updateCreditProposal(form); });
       q("#payment-list").addEventListener("change", async (event) => { const input = event.target;
+        if (syncPaymentCreditDraft(input.closest("form"))) return;
         const paymentForm = input.closest("[data-payment-form]");
         if (paymentForm && (input.name === "source" || input.name === "receivedAt")) { const draft = state.paymentDrafts[paymentForm.dataset.paymentDraftKey]; if (draft) delete draft.idempotencyKey; }
         if (input.dataset.familyDiscountSelect) {
