@@ -193,7 +193,7 @@ export async function getRegistrationCatalog(
   const [result, threshold, projections] = await Promise.all([
     statement.all<CatalogRow>(),
     getPublicSeatCountThresholdFromDatabase(database),
-    getClassCapacityProjections(database, environment, nowDate),
+    getClassCapacityProjections(database, environment, nowDate, undefined, { operationalOnly: true }),
   ]);
   const projectionByClassId = new Map(projections
     .map((projection) => [projection.classSessionId, projection]));

@@ -146,6 +146,107 @@ export async function syncLegacyChildCreditEntries(database: D1Database, canonic
   await database.batch([...roots, ...closes]);
 }
 
+interface CreditReconciliationQueueRow {
+  canonicalStudentId: string;
+  revision: number;
+}
+
+const RECONCILIATION_BATCH_SIZE = 32;
+const RECONCILIATION_LEASE_MS = 5 * 60_000;
+
+function changed(result: { meta?: { changes?: number } } | undefined): boolean {
+  return Number(result?.meta?.changes ?? 0) === 1;
+}
+
+async function enqueueCreditCatchup(database: D1Database, kind: "legacy_payment_credit" | "legacy_transfer_credit", now: string) {
+  const state = await database.prepare(`SELECT cursor_id AS cursorId, completed_at AS completedAt
+    FROM scheduler_reconciliation_sweep WHERE kind = ?`).bind(kind)
+    .first<{ cursorId: string; completedAt: string | null }>();
+  if (!state || state.completedAt) return 0;
+  const rows = kind === "legacy_payment_credit"
+    ? await database.prepare(`SELECT DISTINCT child.canonical_student_id AS canonicalStudentId
+      FROM registration_draft_child AS child
+      WHERE child.canonical_student_id IS NOT NULL AND child.canonical_student_id > ?
+        AND EXISTS (
+          SELECT 1 FROM payment_installment
+          INNER JOIN payment_credit ON payment_credit.payment_request_id = payment_installment.payment_request_id
+          WHERE payment_installment.registration_draft_child_id = child.id
+            AND payment_installment.installment_kind = 'initial'
+        )
+      ORDER BY child.canonical_student_id LIMIT ?`).bind(state.cursorId, RECONCILIATION_BATCH_SIZE)
+      .all<{ canonicalStudentId: string }>()
+    : await database.prepare(`SELECT DISTINCT enrollment.student_id AS canonicalStudentId
+      FROM enrollment
+      INNER JOIN class_transfer ON class_transfer.source_enrollment_id = enrollment.id
+      INNER JOIN class_transfer_credit ON class_transfer_credit.class_transfer_id = class_transfer.id
+      WHERE enrollment.student_id > ?
+      ORDER BY enrollment.student_id LIMIT ?`).bind(state.cursorId, RECONCILIATION_BATCH_SIZE)
+      .all<{ canonicalStudentId: string }>();
+  if (!rows.results.length) {
+    await database.prepare(`UPDATE scheduler_reconciliation_sweep
+      SET completed_at = ?, updated_at = ? WHERE kind = ? AND completed_at IS NULL`).bind(now, now, kind).run();
+    return 0;
+  }
+  const statements = rows.results.map((row) => database.prepare(`INSERT INTO child_credit_reconciliation_queue (
+      canonical_student_id, status, priority, revision, updated_at
+    ) VALUES (?, 'pending', 1, 1, ?)
+    ON CONFLICT(canonical_student_id) DO UPDATE SET
+      status = 'pending', priority = MIN(child_credit_reconciliation_queue.priority, excluded.priority),
+      revision = child_credit_reconciliation_queue.revision + 1, lease_expires_at = NULL,
+      completed_at = NULL, last_error_code = NULL, updated_at = excluded.updated_at`).bind(row.canonicalStudentId, now));
+  statements.push(database.prepare(`UPDATE scheduler_reconciliation_sweep SET cursor_id = ?, updated_at = ?
+    WHERE kind = ? AND cursor_id = ? AND completed_at IS NULL`).bind(
+    rows.results.at(-1)?.canonicalStudentId ?? state.cursorId, now, kind, state.cursorId,
+  ));
+  await database.batch(statements);
+  return rows.results.length;
+}
+
+// The queue rows are coalesced by canonical learner. A revision guard means a
+// credit write arriving during a claim survives for the next pass.
+export async function reconcileQueuedLegacyChildCreditEntries(database: D1Database, nowDate = new Date()) {
+  const now = nowIso(nowDate);
+  await database.batch([
+    database.prepare(`UPDATE child_credit_reconciliation_queue
+      SET status = 'pending', lease_expires_at = NULL, updated_at = ?
+      WHERE status = 'processing' AND lease_expires_at <= ?`).bind(now, now),
+  ]);
+  await enqueueCreditCatchup(database, "legacy_payment_credit", now);
+  await enqueueCreditCatchup(database, "legacy_transfer_credit", now);
+  const candidates = await database.prepare(`SELECT canonical_student_id AS canonicalStudentId, revision
+    FROM child_credit_reconciliation_queue WHERE status = 'pending'
+    ORDER BY priority, updated_at, canonical_student_id LIMIT ?`).bind(RECONCILIATION_BATCH_SIZE)
+    .all<CreditReconciliationQueueRow>();
+  let processed = 0;
+  for (const candidate of candidates.results) {
+    const claimed = await database.prepare(`UPDATE child_credit_reconciliation_queue
+      SET status = 'processing', lease_expires_at = ?, updated_at = ?
+      WHERE canonical_student_id = ? AND status = 'pending' AND revision = ?`).bind(
+      new Date(nowDate.getTime() + RECONCILIATION_LEASE_MS).toISOString(), now,
+      candidate.canonicalStudentId, candidate.revision,
+    ).run();
+    if (!changed(claimed)) continue;
+    try {
+      await syncLegacyChildCreditEntries(database, candidate.canonicalStudentId);
+      const completed = await database.prepare(`UPDATE child_credit_reconciliation_queue
+        SET status = 'completed', lease_expires_at = NULL, completed_at = ?, last_error_code = NULL, updated_at = ?
+        WHERE canonical_student_id = ? AND status = 'processing' AND revision = ?`).bind(
+        now, now, candidate.canonicalStudentId, candidate.revision,
+      ).run();
+      if (changed(completed)) processed += 1;
+    } catch (error) {
+      await database.prepare(`UPDATE child_credit_reconciliation_queue
+        SET lease_expires_at = ?, last_error_code = ?, updated_at = ?
+        WHERE canonical_student_id = ? AND status = 'processing' AND revision = ?`).bind(
+        new Date(nowDate.getTime() + RECONCILIATION_LEASE_MS).toISOString(),
+        error instanceof Error ? error.name : "reconciliation_failed", now,
+        candidate.canonicalStudentId, candidate.revision,
+      ).run();
+    }
+  }
+  return processed;
+}
+
 export async function childCreditSummary(database: D1Database, canonicalStudentId: string): Promise<ChildCreditSummary> {
   await syncLegacyChildCreditEntries(database, canonicalStudentId);
   const result = await database.prepare(`SELECT root.id, root.canonical_student_id AS canonicalStudentId, root.entry_kind AS entryKind,

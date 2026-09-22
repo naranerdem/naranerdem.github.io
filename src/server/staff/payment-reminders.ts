@@ -6,7 +6,7 @@ import { deliverQueuedEmail } from "../email/service";
 import { paymentReminderTemplate } from "../email/templates/payment-reminder";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { effectiveInstallmentsForRows } from "../services/discounts";
-import { creditPaymentReviewState, syncLegacyChildCreditEntries } from "../services/child-credit-ledger";
+import { creditPaymentReviewState, reconcileQueuedLegacyChildCreditEntries } from "../services/child-credit-ledger";
 import { pendingAdditionalClassCashSettlement } from "../services/additional-class-credit-settlement";
 
 export interface PaymentReminderSetting {
@@ -78,7 +78,21 @@ export async function updatePaymentReminderSetting(
   return value;
 }
 
-async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
+const RECONCILIATION_BATCH_SIZE = 32;
+const RECONCILIATION_LEASE_MS = 5 * 60_000;
+
+interface MilestoneReconciliationQueueRow {
+  paymentRequestId: string;
+  revision: number;
+}
+
+function requestFilter(ids: string[]) {
+  if (!ids.length) return { sql: "AND 1 = 0", values: [] as string[] };
+  return { sql: `AND payment_request.id IN (${ids.map(() => "?").join(", ")})`, values: ids };
+}
+
+async function ensureMilestonesForRequests(env: WorkerEnv, requestIds: string[], now: string): Promise<void> {
+  const filter = requestFilter(requestIds);
   await env.DB.batch([
     env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
       id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id,
@@ -90,7 +104,8 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
     INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
     WHERE payment_installment.installment_kind = 'initial' AND payment_installment.reminder_at IS NOT NULL
-      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'
+      ${filter.sql}`).bind(now, now, ...filter.values),
     env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
       id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id,
       channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
@@ -101,7 +116,8 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
     INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
     WHERE payment_installment.installment_kind = 'initial'
-      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'
+      ${filter.sql}`).bind(now, now, ...filter.values),
     env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
       id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id,
       channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
@@ -112,7 +128,8 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
     INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
     WHERE payment_installment.installment_kind = 'later' AND payment_installment.reminder_at IS NOT NULL
-      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'
+      ${filter.sql}`).bind(now, now, ...filter.values),
     env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
       id, milestone_key, registration_draft_id, registration_draft_child_id, payment_confirmation_id,
       channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
@@ -126,8 +143,78 @@ async function ensureMilestones(env: WorkerEnv, now: string): Promise<void> {
     INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
     WHERE payment_confirmation.status = 'finalized' AND payment_confirmation.seat_confirmation_approved = 1
       AND payment_confirmation.remaining_payment_due_at IS NOT NULL AND payment_confirmation.remaining_reminder_at IS NOT NULL
-      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`).bind(now, now),
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'
+      ${filter.sql}`).bind(now, now, ...filter.values),
   ]);
+}
+
+async function enqueueMilestoneCatchup(env: WorkerEnv, now: string) {
+  const state = await env.DB.prepare(`SELECT cursor_id AS cursorId, completed_at AS completedAt
+    FROM scheduler_reconciliation_sweep WHERE kind = 'payment_milestone'`).first<{
+      cursorId: string; completedAt: string | null;
+    }>();
+  if (!state || state.completedAt) return 0;
+  const rows = await env.DB.prepare(`SELECT id FROM payment_request WHERE id > ? ORDER BY id LIMIT ?`).bind(
+    state.cursorId, RECONCILIATION_BATCH_SIZE,
+  ).all<{ id: string }>();
+  if (!rows.results.length) {
+    await env.DB.prepare(`UPDATE scheduler_reconciliation_sweep
+      SET completed_at = ?, updated_at = ? WHERE kind = 'payment_milestone' AND completed_at IS NULL`).bind(now, now).run();
+    return 0;
+  }
+  const statements = rows.results.map((row) => env.DB.prepare(`INSERT INTO payment_milestone_reconciliation_queue (
+      payment_request_id, status, priority, revision, updated_at
+    ) VALUES (?, 'pending', 1, 1, ?)
+    ON CONFLICT(payment_request_id) DO UPDATE SET
+      status = 'pending', priority = MIN(payment_milestone_reconciliation_queue.priority, excluded.priority),
+      revision = payment_milestone_reconciliation_queue.revision + 1, lease_expires_at = NULL,
+      completed_at = NULL, last_error_code = NULL, updated_at = excluded.updated_at`).bind(row.id, now));
+  statements.push(env.DB.prepare(`UPDATE scheduler_reconciliation_sweep SET cursor_id = ?, updated_at = ?
+    WHERE kind = 'payment_milestone' AND cursor_id = ? AND completed_at IS NULL`).bind(
+    rows.results.at(-1)?.id ?? state.cursorId, now, state.cursorId,
+  ));
+  await env.DB.batch(statements);
+  return rows.results.length;
+}
+
+export async function reconcileQueuedPaymentNotificationMilestones(env: WorkerEnv, nowDate = new Date()) {
+  const now = nowDate.toISOString();
+  await env.DB.prepare(`UPDATE payment_milestone_reconciliation_queue
+    SET status = 'pending', lease_expires_at = NULL, updated_at = ?
+    WHERE status = 'processing' AND lease_expires_at <= ?`).bind(now, now).run();
+  await enqueueMilestoneCatchup(env, now);
+  const candidates = await env.DB.prepare(`SELECT payment_request_id AS paymentRequestId, revision
+    FROM payment_milestone_reconciliation_queue WHERE status = 'pending'
+    ORDER BY priority, updated_at, payment_request_id LIMIT ?`).bind(RECONCILIATION_BATCH_SIZE)
+    .all<MilestoneReconciliationQueueRow>();
+  let processed = 0;
+  for (const candidate of candidates.results) {
+    const claimed = await env.DB.prepare(`UPDATE payment_milestone_reconciliation_queue
+      SET status = 'processing', lease_expires_at = ?, updated_at = ?
+      WHERE payment_request_id = ? AND status = 'pending' AND revision = ?`).bind(
+      new Date(nowDate.getTime() + RECONCILIATION_LEASE_MS).toISOString(), now,
+      candidate.paymentRequestId, candidate.revision,
+    ).run();
+    if (changes(claimed) !== 1) continue;
+    try {
+      await ensureMilestonesForRequests(env, [candidate.paymentRequestId], now);
+      const completed = await env.DB.prepare(`UPDATE payment_milestone_reconciliation_queue
+        SET status = 'completed', lease_expires_at = NULL, completed_at = ?, last_error_code = NULL, updated_at = ?
+        WHERE payment_request_id = ? AND status = 'processing' AND revision = ?`).bind(
+        now, now, candidate.paymentRequestId, candidate.revision,
+      ).run();
+      if (changes(completed) === 1) processed += 1;
+    } catch (error) {
+      await env.DB.prepare(`UPDATE payment_milestone_reconciliation_queue
+        SET lease_expires_at = ?, last_error_code = ?, updated_at = ?
+        WHERE payment_request_id = ? AND status = 'processing' AND revision = ?`).bind(
+        new Date(nowDate.getTime() + RECONCILIATION_LEASE_MS).toISOString(),
+        error instanceof Error ? error.name : "reconciliation_failed", now,
+        candidate.paymentRequestId, candidate.revision,
+      ).run();
+    }
+  }
+  return processed;
 }
 
 async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Promise<ReminderContext | null> {
@@ -206,10 +293,11 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
   if (env.EMAIL_ENABLED !== "true" || !env.RESEND_API_KEY) return 0;
   const emailProvider = provider ?? createResendProvider(env.RESEND_API_KEY);
   const now = nowDate.toISOString();
-  // Reconcile legacy cancellation/transfer credit before deciding whether a
-  // cash demand needs staff credit review.
-  await syncLegacyChildCreditEntries(env.DB);
-  await ensureMilestones(env, now);
+  // Reconcile changed legacy credit before a due reminder checks the current
+  // credit review state. The child-level review below remains a synchronous
+  // safety net for any queue item that has not yet been claimed.
+  await reconcileQueuedLegacyChildCreditEntries(env.DB, nowDate);
+  await reconcileQueuedPaymentNotificationMilestones(env, nowDate);
   const due = await env.DB.prepare(`SELECT id, milestone_key AS milestoneKey, milestone_type AS milestoneType,
     registration_draft_id AS registrationDraftId, registration_draft_child_id AS registrationDraftChildId,
     payment_installment_id AS paymentInstallmentId, payment_confirmation_id AS paymentConfirmationId,

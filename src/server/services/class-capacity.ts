@@ -79,10 +79,12 @@ export async function getClassCapacityProjections(
   environment: AppEnvironment,
   nowDate = new Date(),
   classIds?: string[],
+  options: { operationalOnly?: boolean } = {},
 ): Promise<ClassCapacityProjection[]> {
   const production = environment === "production";
   const ids = [...new Set((classIds ?? []).filter(Boolean))];
   const classFilter = ids.length ? `AND class_session.id IN (${ids.map(() => "?").join(", ")})` : "";
+  const operationalFilter = options.operationalOnly ? "AND class_session.schedule_state = 'active'" : "";
   const testFilter = production ? `AND enrollment.is_test = 0` : "";
   const draftTestFilter = production ? `AND registration_capacity_hold.is_test = 0` : "";
   const offerTestFilter = production ? `AND waitlist_seat_offer.is_test = 0` : "";
@@ -150,7 +152,7 @@ export async function getClassCapacityProjections(
       WHERE status = 'active' ${waitlistTestFilter}
       GROUP BY class_session_id
     ) waiting ON waiting.class_session_id = class_session.id
-    WHERE 1 = 1 ${classTestFilter} ${classFilter}
+    WHERE 1 = 1 ${classTestFilter} ${classFilter} ${operationalFilter}
     ORDER BY CASE class_session.stage_code
       WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE class_session.weekday

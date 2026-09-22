@@ -227,7 +227,8 @@ export async function prepareWaitlistOffersForCapacityIncrease(
 // executes the condition with the write, so repeated/concurrent callers cannot
 // create two offers for one entry or overfill the class.
 export async function allocateWaitlistOffers(env: WorkerEnv, classSessionId?: string, nowDate = new Date()): Promise<Array<{ offer: OfferContext; token: string }>> {
-  const projections = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate, classSessionId ? [classSessionId] : undefined);
+  const projections = await getClassCapacityProjections(env.DB, env.APP_ENV, nowDate,
+    classSessionId ? [classSessionId] : undefined, { operationalOnly: true });
   const created: Array<{ offer: OfferContext; token: string }> = [];
   for (const projection of projections) {
     const prepared = await preparedOffers(env, projection.classSessionId, projection.freeSeats, nowDate);
