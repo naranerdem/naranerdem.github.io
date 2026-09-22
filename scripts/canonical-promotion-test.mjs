@@ -15,6 +15,7 @@ const paymentBundlePath = path.join(tempDir, "payment-reconciliation.mjs");
 const parentCommunicationBundlePath = path.join(tempDir, "parent-communication.mjs");
 const verificationBundlePath = path.join(tempDir, "email-verification.mjs");
 const familyDiscountBundlePath = path.join(tempDir, "family-discounts.mjs");
+const childCreditBundlePath = path.join(tempDir, "child-credit-ledger.mjs");
 
 function sqlite(input, json = false) {
   const result = spawnSync("sqlite3", json ? ["-json", databasePath] : [databasePath], {
@@ -178,8 +179,11 @@ try {
   if (discountsBundle.status !== 0) throw new Error(discountsBundle.stderr);
   const familyDiscountBundle = spawnSync(esbuild, ["src/server/staff/family-discounts.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${familyDiscountBundlePath}`], { encoding: "utf8" });
   if (familyDiscountBundle.status !== 0) throw new Error(familyDiscountBundle.stderr);
+  const childCreditBundled = spawnSync(esbuild, ["src/server/services/child-credit-ledger.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${childCreditBundlePath}`], { encoding: "utf8" });
+  if (childCreditBundled.status !== 0) throw new Error(childCreditBundled.stderr);
   const { getDiscountPolicySetting, updateDiscountPolicySetting, effectiveInstallments, DiscountPolicyError } = await import(pathToFileURL(discountBundlePath).href);
   const { FamilyDiscountError, confirmFamilyDiscountMembership, familyDiscountDetail, findFamilyDiscountCandidates, previewFamilyDiscountMembership, recoverFamilyDiscountCredits } = await import(pathToFileURL(familyDiscountBundlePath).href);
+  const { childCreditSummaryForChild, refundPaymentCredit, transferPaymentCredit } = await import(pathToFileURL(childCreditBundlePath).href);
   const database = new SqliteD1();
   database.query(`INSERT INTO academic_year (id, public_label, registration_status, is_current, is_test, test_run_id, created_at, updated_at)
     VALUES ('year', 'Тест жил', 'open', 1, 1, 'promotion-test', '${now}', '${now}');
@@ -692,6 +696,46 @@ try {
   await cancelRegistration(env(database), actor, { registrationDraftChildId: refundedReinstatement.childId, reason: "guardian_request" });
   database.query(`UPDATE payment_credit SET status = 'refunded', refunded_at = ? WHERE received_payment_id = ?`, [now, `${refundedReinstatement.id}-payment`]);
   await assert.rejects(() => reinstateRegistration(env(database), actor, { registrationDraftChildId: refundedReinstatement.childId }), RegistrationCancellationError, "a completed refund blocks reinstatement");
+
+  const cancelledCreditSource = seedDraft(database, "cancel-credit-source", { classId: "class-cancel", email: "cancel-credit-source@example.test" });
+  const cancelledCreditTarget = seedDraft(database, "cancel-credit-target", { classId: "class-2", email: "cancel-credit-target@example.test" });
+  database.query(`INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
+    VALUES (?, ?, 100000, ?, 'staff_manual_bank', 'confirmed', ?, ?, ?, ?, 1, 'promotion-test');
+    INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
+    VALUES (?, ?, ?, 100000, ?, ?, 1, 'promotion-test');`,
+  [`${cancelledCreditSource.id}-payment`, `${cancelledCreditSource.id}-request`, now, now, `${cancelledCreditSource.id}-payment-key`, now, now,
+    `${cancelledCreditSource.id}-allocation`, `${cancelledCreditSource.id}-payment`, `${cancelledCreditSource.id}-initial`, now, now]);
+  await promotePaidDraftChild(env(database), actor, cancelledCreditSource.childId);
+  await promotePaidDraftChild(env(database), actor, cancelledCreditTarget.childId);
+  await cancelRegistration(env(database), actor, { registrationDraftChildId: cancelledCreditSource.childId, reason: "guardian_request" });
+  const cancelledCreditId = database.query(`SELECT id FROM payment_credit WHERE received_payment_id = ?`, [`${cancelledCreditSource.id}-payment`])[0].id;
+  const firstTransfer = { paymentCreditId: cancelledCreditId, targetRegistrationDraftChildId: cancelledCreditTarget.childId,
+    amountMnt: 40000, reason: "Цуцлагдсан бүртгэлийн үлдэгдэл шилжүүлэв", operationId: "10000000-0000-4000-8000-000000000001" };
+  const transferred = await transferPaymentCredit(env(database), actor, firstTransfer, new Date(now));
+  assert.equal(transferred.idempotent, false, "a cancelled payment-credit transfer records one new operation");
+  assert.equal((await transferPaymentCredit(env(database), actor, firstTransfer, new Date(now))).idempotent, true, "lost-response retry resolves the original transfer instead of minting a second credit");
+  assert.deepEqual(database.query(`SELECT available_amount_mnt AS originalAmountMnt, remaining_amount_mnt AS remainingAmountMnt, status
+    FROM payment_credit WHERE id = ?`, [cancelledCreditId])[0], { originalAmountMnt: 100000, remainingAmountMnt: 60000, status: "available" },
+  "a partial transfer keeps one auditable refundable remainder rather than rewriting the receipt");
+  assert.equal((await childCreditSummaryForChild(database, cancelledCreditTarget.childId)).availableAmountMnt, 40000,
+    "the target receives exactly the transferred child-ledger credit and no cash receipt");
+  assert.equal(count(database, "received_payment", `id = '${cancelledCreditSource.id}-payment'`), 1, "transfer preserves the original receipt");
+  assert.equal(count(database, "payment_allocation", `received_payment_id = '${cancelledCreditSource.id}-payment'`), 1, "transfer preserves the original cash allocation");
+  assert.equal(await getRegistrationReinstatementEligibility(env(database), cancelledCreditSource.childId, new Date(now)), false,
+    "a partially used cancellation balance blocks reinstatement instead of restoring already redirected value");
+  await refundPaymentCredit(env(database), actor, { paymentCreditId: cancelledCreditId, amountMnt: 20000,
+    reason: "Хэсэгчлэн буцаан олгов", operationId: "10000000-0000-4000-8000-000000000002" }, new Date(now));
+  assert.deepEqual(database.query(`SELECT remaining_amount_mnt AS remainingAmountMnt, status FROM payment_credit WHERE id = ?`, [cancelledCreditId])[0],
+    { remainingAmountMnt: 40000, status: "available" }, "partial refund and transfer share one remaining balance");
+  await transferPaymentCredit(env(database), actor, { paymentCreditId: cancelledCreditId, targetRegistrationDraftChildId: cancelledCreditTarget.childId,
+    amountMnt: 40000, reason: "Үлдэгдэл шилжүүлэв", operationId: "10000000-0000-4000-8000-000000000003" }, new Date(now));
+  await assert.rejects(() => refundPaymentCredit(env(database), actor, { paymentCreditId: cancelledCreditId, amountMnt: 40000,
+    reason: "Үлдэгдэл буцаан олгов", operationId: "10000000-0000-4000-8000-000000000004" }, new Date(now)),
+  "an exhausted payment credit cannot be refunded after its remaining value was transferred");
+  assert.deepEqual(database.query(`SELECT remaining_amount_mnt AS remainingAmountMnt, status FROM payment_credit WHERE id = ?`, [cancelledCreditId])[0],
+    { remainingAmountMnt: 0, status: database.query(`SELECT status FROM payment_credit WHERE id = ?`, [cancelledCreditId])[0].status }, "the exhausted payment credit has no independently refundable remainder");
+  assert.equal((await childCreditSummaryForChild(database, cancelledCreditSource.childId)).availableAmountMnt, 0,
+    "the original refundable-credit root is fully debited exactly once across transfer/refund operations");
 
   const fullCancellation = seedDraft(database, "cancel-full", { classId: "class-cancel", email: "cancel-full@example.test" });
   await promotePaidDraftChild(env(database), actor, fullCancellation.childId);

@@ -38,6 +38,8 @@ interface ReinstatementCredit {
   receivedPaymentId: string;
   status: string;
   refundedAt: string | null;
+  availableAmountMnt: number;
+  remainingAmountMnt: number;
 }
 
 function changes(result: D1Result<unknown> | undefined): number { return result?.meta?.changes ?? 0; }
@@ -121,7 +123,9 @@ async function receivedPaymentCredits(env: WorkerEnv, childId: string): Promise<
 
 async function reinstatementCredits(env: WorkerEnv, childId: string): Promise<ReinstatementCredit[]> {
   const rows = await env.DB.prepare(`SELECT payment_credit.id, payment_credit.received_payment_id AS receivedPaymentId,
-    payment_credit.status, payment_credit.refunded_at AS refundedAt
+    payment_credit.status, payment_credit.refunded_at AS refundedAt,
+    payment_credit.available_amount_mnt AS availableAmountMnt,
+    COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) AS remainingAmountMnt
     FROM payment_credit
     INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_credit.received_payment_id
     INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
@@ -165,7 +169,8 @@ async function canReinstate(env: WorkerEnv, row: ReinstatementRow, nowDate: Date
     reinstatementCredits(env, row.childId),
     getClassCapacityProjections(env.DB, env.APP_ENV, nowDate, [row.classSessionId]),
   ]);
-  const creditIsSettled = credits.some((credit) => credit.status !== 'available' || credit.refundedAt);
+  const creditIsSettled = credits.some((credit) => credit.status !== 'available' || credit.refundedAt
+    || Number(credit.remainingAmountMnt) !== Number(credit.availableAmountMnt));
   return {
     eligible: Boolean(auditId) && !hasHistory && !hasReplacement && !hasOffer && !creditIsSettled
       && Boolean(capacity[0]) && capacity[0].freeSeats > 0,
@@ -226,7 +231,10 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
           AND recipient_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
           AND (source_quote.registration_draft_child_id = ? OR recipient_quote.registration_draft_child_id = ?))`)
     .bind(now, row.childId, now, row.childId, row.childId, row.childId, row.childId, now, row.childId, row.childId).run();
-  if (changes(gate) !== 1) {
+  // 0064's reconciliation trigger writes a queue row for this same status
+  // transition, so D1 reports more than one changed row. A zero still means
+  // this conditional gate lost its race; any positive count owns the change.
+  if (changes(gate) < 1) {
     const current = await rowForChild(env, row.childId);
     if (current?.childStatus === "cancelled") return { cancelled: false, idempotent: true, classSessionId: row.classSessionId, creditCount: 0 };
     const activeClaim = await env.DB.prepare(`SELECT 1 AS value FROM additional_class_admission
@@ -398,7 +406,7 @@ export async function reinstateRegistration(env: WorkerEnv, actor: StaffPrincipa
         AND scheduled_at > ? AND outbound_email_id IS NULL
         AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')`)
       .bind(now, row.childId, now, row.enrollmentId),
-    ...credits.map((credit) => env.DB.prepare(`UPDATE payment_credit SET status = 'allocated', updated_at = ?
+    ...credits.map((credit) => env.DB.prepare(`UPDATE payment_credit SET status = 'allocated', remaining_amount_mnt = 0, updated_at = ?
       WHERE id = ? AND status = 'available' AND refunded_at IS NULL
         AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')`)
       .bind(now, credit.id, row.enrollmentId)),
@@ -412,7 +420,9 @@ export async function reinstateRegistration(env: WorkerEnv, actor: StaffPrincipa
         env.APP_ENV, row.isTest, row.testRunId, now, row.enrollmentId),
   ];
   const results = await env.DB.batch(statements);
-  if (changes(results[0]) !== 1) {
+  // Reinstatement changes the same child status and therefore has the same
+  // queue-trigger side effect as cancellation.
+  if (changes(results[0]) < 1) {
     const current = await reinstatementRowForChild(env, row.childId);
     if (current && current.childStatus !== 'cancelled' && current.enrollmentStatus === 'confirmed') {
       return { reinstated: false, idempotent: true, classSessionId: row.classSessionId };

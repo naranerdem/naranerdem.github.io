@@ -2317,6 +2317,19 @@ textarea:focus {
   padding: 0.65rem;
 }
 
+/* Credit actions are a continuation of one payment row, not its compact
+   right-hand action column. */
+.staff-payment-item > .staff-credit-subpanel,
+.staff-payment-item > .staff-action-status {
+  grid-column: 1 / -1;
+}
+
+.staff-credit-subpanel > h4,
+.staff-credit-subpanel > p,
+.staff-credit-subpanel > .staff-inline-actions {
+  grid-column: 1 / -1;
+}
+
 .staff-credit-subpanel h4 {
   margin: 0;
   color: var(--blue-deep);

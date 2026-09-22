@@ -14,6 +14,7 @@ export interface ChildCreditRoot {
   id: string;
   canonicalStudentId: string | null;
   registrationDraftChildId: string | null;
+  sourcePaymentCreditId: string | null;
   entryKind: string;
   amountMnt: number;
   availableAmountMnt: number;
@@ -91,11 +92,19 @@ export async function syncLegacyChildCreditEntries(database: D1Database, canonic
       'payment_release', payment_credit.available_amount_mnt, payment_credit.id,
       'Released payment credit', payment_credit.is_test, payment_credit.test_run_id, payment_credit.created_at
       FROM payment_credit
-      INNER JOIN payment_request ON payment_request.id = payment_credit.payment_request_id
-      INNER JOIN payment_installment ON payment_installment.payment_request_id = payment_request.id
-        AND payment_installment.installment_kind = 'initial'
+      INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_credit.received_payment_id
+      INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
       INNER JOIN registration_draft_child AS child ON child.id = payment_installment.registration_draft_child_id
-      WHERE child.canonical_student_id IS NOT NULL${paymentFilter}`)
+      WHERE child.canonical_student_id IS NOT NULL
+        -- A released receipt is transferable only when it was allocated to one
+        -- child.  The cancellation path creates those credits that way; this
+        -- guard keeps an old shared receipt out of the child ledger.
+        AND NOT EXISTS (
+          SELECT 1 FROM payment_allocation AS other_allocation
+          INNER JOIN payment_installment AS other_installment ON other_installment.id = other_allocation.payment_installment_id
+          WHERE other_allocation.received_payment_id = payment_credit.received_payment_id
+            AND other_installment.registration_draft_child_id != child.id
+        )${paymentFilter}`)
       .bind(...(canonicalStudentId ? [canonicalStudentId] : [])),
     database.prepare(`INSERT OR IGNORE INTO child_credit_entry (
       id, canonical_student_id, entry_kind, amount_mnt, source_class_transfer_credit_id,
@@ -250,7 +259,7 @@ export async function reconcileQueuedLegacyChildCreditEntries(database: D1Databa
 export async function childCreditSummary(database: D1Database, canonicalStudentId: string): Promise<ChildCreditSummary> {
   await syncLegacyChildCreditEntries(database, canonicalStudentId);
   const result = await database.prepare(`SELECT root.id, root.canonical_student_id AS canonicalStudentId, root.entry_kind AS entryKind,
-    root.registration_draft_child_id AS registrationDraftChildId,
+    root.registration_draft_child_id AS registrationDraftChildId, root.source_payment_credit_id AS sourcePaymentCreditId,
     root.amount_mnt AS amountMnt, root.created_at AS createdAt, root.reason, root.external_reference AS externalReference,
     root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt
     FROM child_credit_entry AS root
@@ -273,7 +282,7 @@ export async function childCreditSummary(database: D1Database, canonicalStudentI
 async function childCreditSummaryForOwner(database: D1Database, owner: ChildCreditOwner): Promise<ChildCreditSummary> {
   if (owner.canonicalStudentId) return childCreditSummary(database, owner.canonicalStudentId);
   const result = await database.prepare(`SELECT root.id, root.canonical_student_id AS canonicalStudentId,
-    root.registration_draft_child_id AS registrationDraftChildId, root.entry_kind AS entryKind,
+    root.registration_draft_child_id AS registrationDraftChildId, root.source_payment_credit_id AS sourcePaymentCreditId, root.entry_kind AS entryKind,
     root.amount_mnt AS amountMnt, root.created_at AS createdAt, root.reason, root.external_reference AS externalReference,
     root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt
     FROM child_credit_entry AS root
@@ -613,6 +622,78 @@ function debitAdmissionGuard(env: WorkerEnv, owner: ChildCreditOwner, rootIds: s
       owner.canonicalStudentId ?? owner.registrationDraftChildId, amountMnt);
 }
 
+interface PaymentCreditSource {
+  id: string;
+  remainingAmountMnt: number;
+  owner: ChildCreditOwner;
+}
+
+async function paymentCreditSource(database: D1Database, paymentCreditId: string): Promise<PaymentCreditSource> {
+  const result = await database.prepare(`SELECT payment_credit.id,
+      COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) AS remainingAmountMnt,
+      registration_draft_child.id AS registrationDraftChildId,
+      registration_draft_child.canonical_student_id AS canonicalStudentId,
+      registration_draft_child.is_test AS isTest, registration_draft_child.test_run_id AS testRunId
+    FROM payment_credit
+    INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_credit.received_payment_id
+    INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    WHERE payment_credit.id = ? AND payment_credit.status = 'available'
+      AND NOT EXISTS (
+        SELECT 1 FROM payment_allocation AS other_allocation
+        INNER JOIN payment_installment AS other_installment ON other_installment.id = other_allocation.payment_installment_id
+        WHERE other_allocation.received_payment_id = payment_credit.received_payment_id
+          AND other_installment.registration_draft_child_id != registration_draft_child.id
+      )
+    GROUP BY payment_credit.id, registration_draft_child.id`).bind(paymentCreditId)
+    .all<{ id: string; remainingAmountMnt: number; registrationDraftChildId: string; canonicalStudentId: string | null; isTest: number; testRunId: string | null }>();
+  if (result.results.length !== 1) throw new ChildCreditError(result.results.length ? "invalid" : "not_found");
+  const row = result.results[0];
+  if (!row.canonicalStudentId || Number(row.remainingAmountMnt) <= 0) throw new ChildCreditError("invalid");
+  return {
+    id: row.id,
+    remainingAmountMnt: Number(row.remainingAmountMnt),
+    owner: {
+      registrationDraftChildId: row.registrationDraftChildId,
+      canonicalStudentId: row.canonicalStudentId,
+      isTest: Number(row.isTest),
+      testRunId: row.testRunId,
+    },
+  };
+}
+
+// This follows the same deliberately-invalid zero-entry pattern as a ledger
+// debit guard. It is a batch gate, not a durable entry: a competing refund or
+// transfer makes the whole operation roll back before any recipient credit is
+// created.
+function paymentCreditAdmissionGuard(env: WorkerEnv, source: PaymentCreditSource, amountMnt: number, now: string): D1PreparedStatement {
+  return env.DB.prepare(`INSERT INTO child_credit_entry (
+    id, canonical_student_id, registration_draft_child_id, entry_kind, amount_mnt, reason, is_test, test_run_id, created_at
+  ) SELECT ?, ?, ?, 'credit_application', 0, 'Payment-credit debit guard', ?, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM payment_credit
+      WHERE id = ? AND status = 'available'
+        AND COALESCE(remaining_amount_mnt, available_amount_mnt) >= ?
+    )`)
+    .bind(crypto.randomUUID(), source.owner.canonicalStudentId, source.owner.registrationDraftChildId,
+      source.owner.isTest, source.owner.testRunId, now, source.id, amountMnt);
+}
+
+function settlePaymentCredit(env: WorkerEnv, source: PaymentCreditSource, amountMnt: number,
+  settlement: "transfer" | "refund", actor: StaffPrincipal, now: string): D1PreparedStatement {
+  const terminalStatus = settlement === "refund" ? "refunded" : "allocated";
+  return env.DB.prepare(`UPDATE payment_credit
+    SET remaining_amount_mnt = COALESCE(remaining_amount_mnt, available_amount_mnt) - ?,
+      status = CASE WHEN COALESCE(remaining_amount_mnt, available_amount_mnt) = ? THEN ? ELSE 'available' END,
+      refunded_at = CASE WHEN ? = 'refund' AND COALESCE(remaining_amount_mnt, available_amount_mnt) = ? THEN ? ELSE refunded_at END,
+      refunded_by_staff_account_id = CASE WHEN ? = 'refund' AND COALESCE(remaining_amount_mnt, available_amount_mnt) = ? THEN ? ELSE refunded_by_staff_account_id END,
+      updated_at = ?
+    WHERE id = ? AND status = 'available'
+      AND COALESCE(remaining_amount_mnt, available_amount_mnt) >= ?`)
+    .bind(amountMnt, amountMnt, terminalStatus, settlement, amountMnt, now, settlement, amountMnt, actor.staffAccountId, now,
+      source.id, amountMnt);
+}
+
 // The receiver-side family shortcut is deliberately stricter than the
 // general transfer tool. The invalid zero-value insert is a transactional
 // guard: if the relationship, agreement, payment snapshot, or active award
@@ -708,6 +789,75 @@ export async function transferChildCredit(env: WorkerEnv, actor: StaffPrincipal,
     audit(env, actor, "child_credit_transferred", id, { sourceRegistrationDraftChildId: input.sourceRegistrationDraftChildId, targetRegistrationDraftChildId: input.targetRegistrationDraftChildId, amountMnt }, source.isTest, source.testRunId, now)];
   const idempotent = await runOperationBatch(env, id, key, statements, true);
   return { operationId: id, idempotent, source: await childCreditSummaryForOwner(env.DB, source), target: await childCreditSummaryForOwner(env.DB, target) };
+}
+
+// A released payment remains one received-payment record. Staff may redirect
+// part of its still-refundable value, but only by debiting that exact legacy
+// root and crediting the recipient in one ledger operation. No receipt or
+// payment allocation is copied to the recipient.
+export async function transferPaymentCredit(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentCreditId: string; targetRegistrationDraftChildId: string; amountMnt: number; reason: string; operationId: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new ChildCreditError("forbidden");
+  const amountMnt = positive(input.amountMnt); const reason = text(input.reason, 500); const id = operationId(input.operationId);
+  if (!amountMnt || !reason || !id || !input.paymentCreditId) throw new ChildCreditError("invalid");
+  const [source, target] = await Promise.all([
+    paymentCreditSource(env.DB, input.paymentCreditId),
+    creditOwnerForChild(env.DB, input.targetRegistrationDraftChildId),
+  ]);
+  if (!target.canonicalStudentId || source.owner.registrationDraftChildId === target.registrationDraftChildId
+    || source.owner.canonicalStudentId === target.canonicalStudentId) throw new ChildCreditError("invalid");
+  const key = fingerprint("transfer", source.owner.registrationDraftChildId, target.registrationDraftChildId, amountMnt, reason,
+    source.id, null, null);
+  if (await assertNewOperation(env.DB, id, key)) {
+    return { operationId: id, idempotent: true, source: await childCreditSummaryForOwner(env.DB, source.owner), target: await childCreditSummaryForOwner(env.DB, target) };
+  }
+  const sourceSummary = await childCreditSummaryForOwner(env.DB, source.owner);
+  const sourceRoot = sourceSummary.roots.find((root) => root.sourcePaymentCreditId === source.id);
+  if (!sourceRoot || sourceRoot.availableAmountMnt < amountMnt || source.remainingAmountMnt < amountMnt) throw new ChildCreditError("insufficient");
+  const now = nowIso(nowDate);
+  const statements = [
+    paymentCreditAdmissionGuard(env, source, amountMnt, now),
+    debitAdmissionGuard(env, source.owner, [sourceRoot.id], amountMnt, source.owner.isTest, source.owner.testRunId, now),
+    operationInsert(env, actor, id, "transfer", source.owner, target, amountMnt, reason, source.id, key, source.owner.isTest, source.owner.testRunId, now),
+    ...debitEntries(env, actor, source.owner, id, amountMnt, "credit_transfer_debit", [sourceRoot], reason, source.owner.isTest, source.owner.testRunId, now),
+    entryInsert(env, { owner: target, operationId: id, entryKind: "credit_transfer_credit", amountMnt, actor, reason,
+      externalReference: source.id, isTest: target.isTest, testRunId: target.testRunId, now }),
+    settlePaymentCredit(env, source, amountMnt, "transfer", actor, now),
+    audit(env, actor, "payment_credit_transferred", id, { paymentCreditId: source.id,
+      sourceRegistrationDraftChildId: source.owner.registrationDraftChildId, targetRegistrationDraftChildId: target.registrationDraftChildId, amountMnt },
+    source.owner.isTest, source.owner.testRunId, now),
+  ];
+  const idempotent = await runOperationBatch(env, id, key, statements, true);
+  return { operationId: id, idempotent, source: await childCreditSummaryForOwner(env.DB, source.owner), target: await childCreditSummaryForOwner(env.DB, target) };
+}
+
+export async function refundPaymentCredit(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentCreditId: string; amountMnt: number; reason: string; operationId: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new ChildCreditError("forbidden");
+  const amountMnt = positive(input.amountMnt); const reason = text(input.reason, 500); const id = operationId(input.operationId);
+  if (!amountMnt || !reason || !id || !input.paymentCreditId) throw new ChildCreditError("invalid");
+  const source = await paymentCreditSource(env.DB, input.paymentCreditId);
+  const key = fingerprint("refund", source.owner.registrationDraftChildId, null, amountMnt, reason, source.id, null, null);
+  if (await assertNewOperation(env.DB, id, key)) {
+    return { operationId: id, idempotent: true, source: await childCreditSummaryForOwner(env.DB, source.owner) };
+  }
+  const sourceSummary = await childCreditSummaryForOwner(env.DB, source.owner);
+  const sourceRoot = sourceSummary.roots.find((root) => root.sourcePaymentCreditId === source.id);
+  if (!sourceRoot || sourceRoot.availableAmountMnt < amountMnt || source.remainingAmountMnt < amountMnt) throw new ChildCreditError("insufficient");
+  const now = nowIso(nowDate);
+  const statements = [
+    paymentCreditAdmissionGuard(env, source, amountMnt, now),
+    debitAdmissionGuard(env, source.owner, [sourceRoot.id], amountMnt, source.owner.isTest, source.owner.testRunId, now),
+    operationInsert(env, actor, id, "refund", source.owner, null, amountMnt, reason, source.id, key, source.owner.isTest, source.owner.testRunId, now),
+    ...debitEntries(env, actor, source.owner, id, amountMnt, "refund", [sourceRoot], reason, source.owner.isTest, source.owner.testRunId, now),
+    settlePaymentCredit(env, source, amountMnt, "refund", actor, now),
+    audit(env, actor, "payment_credit_refunded", id, { paymentCreditId: source.id,
+      sourceRegistrationDraftChildId: source.owner.registrationDraftChildId, amountMnt }, source.owner.isTest, source.owner.testRunId, now),
+  ];
+  const idempotent = await runOperationBatch(env, id, key, statements, true);
+  return { operationId: id, idempotent, source: await childCreditSummaryForOwner(env.DB, source.owner) };
 }
 
 // Applies an already-previewed family-member suggestion as one ledger

@@ -52,7 +52,7 @@ import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiate
 import { AdditionalClassPreviewError, getAdditionalClassPreview } from "../staff/additional-class-preview";
 import { AdditionalClassAdmissionError, createAdditionalClassAdmission, incorporateExistingAdditionalClass, previewExistingAdditionalClassIncorporation } from "../staff/additional-class-admission";
 import { applyFamilyCreditSuggestion, confirmFamilyDiscountMembership, FamilyDiscountError, familyDiscountDetail, findFamilyDiscountCandidates, previewFamilyDiscountMembership, recoverFamilyDiscountCredits } from "../staff/family-discounts";
-import { addManualChildCredit, applyChildCredit, ChildCreditError, correctChildCredit, leaveChildCreditUnused, transferChildCredit } from "../services/child-credit-ledger";
+import { addManualChildCredit, applyChildCredit, ChildCreditError, correctChildCredit, leaveChildCreditUnused, refundPaymentCredit, transferChildCredit, transferPaymentCredit } from "../services/child-credit-ledger";
 import { adoptHistoricalConditionalFamilyAwards, authorizeContingentFamilyCredit, ConditionalFamilyDiscountError, historicalAdoptionChildIdsForDraft, previewHistoricalConditionalFamilyAdoption, setConditionalFamilyFailureDeadline } from "../services/conditional-family-discounts";
 import { generateParentManualMessage, ParentCommunicationError, resendParentEnrollmentSummary } from "../staff/parent-communication";
 import {
@@ -1519,7 +1519,18 @@ export async function handleApiRequest(
         case "payment.undo-tentative":
           return json({ ok: true, ...await undoTentativePaymentConfirmation(env, principal, String(payload.receivedPaymentId ?? "")) }, 200, { "Cache-Control": "no-store" });
         case "payment-credit.refund":
+          if (payload.operationId != null || payload.amountMnt != null || payload.reason != null) {
+            return json({ ok: true, ...await refundPaymentCredit(env, principal, {
+              paymentCreditId: String(payload.creditId ?? ""), amountMnt: Number(payload.amountMnt),
+              reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+            }) }, 200, { "Cache-Control": "no-store" });
+          }
           return json({ ok: true, ...await markPaymentCreditRefunded(env, principal, String(payload.creditId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        case "payment-credit.transfer":
+          return json({ ok: true, ...await transferPaymentCredit(env, principal, {
+            paymentCreditId: String(payload.creditId ?? ""), targetRegistrationDraftChildId: String(payload.targetRegistrationDraftChildId ?? ""),
+            amountMnt: Number(payload.amountMnt), reason: String(payload.reason ?? ""), operationId: String(payload.operationId ?? ""),
+          }) }, 201, { "Cache-Control": "no-store" });
         case "child-credit.manual-add":
           return json({ ok: true, ...await addManualChildCredit(env, principal, {
             registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), amountMnt: Number(payload.amountMnt),

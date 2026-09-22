@@ -847,6 +847,9 @@ async function cancelAndRestoreRegistration(page, childId, { restore: shouldRest
   await dialog.locator("[data-registration-cancel-confirm]").click();
   const cancelled = await cancelRequest;
   if (!cancelled.ok()) throw new Error(`registration cancellation failed: ${await cancelled.text()}`);
+  const cancellationResult = await cancelled.json();
+  assert.equal(cancellationResult.cancelled, true,
+    `the confirmed cancellation must complete its financial and audit batch: ${JSON.stringify(cancellationResult)}`);
   const afterCancel = await dbJson(`SELECT status, canonical_enrollment_id AS enrollmentId FROM registration_draft_child
     WHERE id = ${sql(childId)}`);
   assert.equal(afterCancel[0]?.status, "cancelled", "explicit dialog confirmation cancels the exact displayed registration");
@@ -1790,6 +1793,8 @@ try {
     assert.deepEqual({ members: Number(replayResult[0]?.members), awards: Number(replayResult[0]?.awards), creditRoots: Number(replayResult[0]?.creditRoots) },
       { members: 2, awards: 2, creditRoots: 1 }, "family confirmation replay cannot duplicate the award or fully paid child's credit root");
     }
+  } else if (process.env.CANCELLED_PAYMENT_CREDIT_BROWSER_ONLY === "1") {
+    await exerciseCancelledPaymentCreditFlow(page);
   } else {
   const cashChildId = await fillIntake(page, "CashBrowser");
   await recordPartialCashPayment(page, cashChildId);
@@ -2081,7 +2086,7 @@ try {
   const cancellationDialog = page.locator("#registration-cancel-dialog");
   await cancellationDialog.waitFor({ state: "visible" });
   await cancellationDialog.locator('[data-registration-cancel-confirm]').click();
-  await page.getByText("Бүртгэл цуцлагдлаа.").waitFor({ state: "visible" });
+  await page.locator(`[data-cancelled-detail="${targetChildId}"]`).waitFor({ state: "visible" });
   const cancelledTarget = await dbJson(`SELECT status, canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ${sql(targetChildId)}`);
   assert.equal(cancelledTarget[0].status, "cancelled", "pending additional target cancellation uses the existing guarded lifecycle");
   assert.equal(cancelledTarget[0].enrollmentId, null, "cancelling the pending target never creates a canonical enrollment");
@@ -2105,11 +2110,15 @@ try {
     WHERE source_registration_draft_child_id = ${sql(childId)} AND status = 'pending_confirmation' ORDER BY created_at DESC LIMIT 1`);
   assert.equal(expiringTarget.length, 1, "a later pending additional target is created through the rendered staff flow");
   execute(`UPDATE registration_draft SET status = 'expired' WHERE id = (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(expiringTarget[0].targetChildId)});`);
-  const expiryRecovery = await page.evaluate(async (draftChildId) => (await fetch("/api/staff/payments", {
+  const expiryRecovery = await page.evaluate(async (draftChildId) => {
+    const response = await fetch("/api/staff/payments", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ action: "additional-class.retry-confirmation", registrationDraftChildId: draftChildId }),
-  })).status, expiringTarget[0].targetChildId);
-  assert.equal(expiryRecovery, 200, "the normal retry endpoint resolves an expired target");
+    });
+    return { status: response.status, body: await response.json() };
+  }, expiringTarget[0].targetChildId);
+  assert.equal(expiryRecovery.status, 200, "the normal retry endpoint resolves an expired target");
+  assert.equal(expiryRecovery.body.state, "not_eligible", "the retry observes the expired draft rather than finalizing it");
   assert.equal((await dbJson(`SELECT status FROM additional_class_admission WHERE target_registration_draft_child_id = ${sql(expiringTarget[0].targetChildId)}`))[0]?.status, "expired",
     "an expired target no longer blocks unrelated source actions");
   const sourceCreditAfterExpiry = await dbJson(`SELECT COALESCE(SUM(amount_mnt), 0) AS netAmount FROM child_credit_entry
@@ -2309,6 +2318,8 @@ try {
   await applyCredit(page, restoreChildId, 1000);
   await finalizeCreditOnlyRegistration(page, restoreChildId);
   await cancelAndRestoreRegistration(page, restoreChildId);
+
+  await exerciseCancelledPaymentCreditFlow(page, childId);
 
   const higherTransferChildId = await fillIntake(page, "HigherTransferBrowser", "single");
   await addCredit(page, higherTransferChildId, 1000);
@@ -2600,6 +2611,94 @@ try {
   if (browser) await browser.close().catch(() => undefined);
   if (worker && !worker.killed) worker.kill("SIGTERM");
   rmSync(persistDir, { recursive: true, force: true });
+}
+
+async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = null) {
+  let targetChildId = existingTargetChildId;
+  if (!targetChildId) {
+    targetChildId = await fillIntake(page, "CancelledCashCreditRecipient", "single");
+    await recordCashPayment(page, targetChildId, 1000);
+    await finalizeCashRegistration(page, targetChildId);
+  }
+
+  // A cancelled paid enrollment exposes its received-money balance separately
+  // from discount credit. This is the real staff surface for transferring it;
+  // the destination receives ledger credit but no synthetic receipt or mark.
+  const cancelledCashChildId = await fillIntake(page, "CancelledCashCredit", "single");
+  await recordCashPayment(page, cancelledCashChildId, 1000);
+  await finalizeCashRegistration(page, cancelledCashChildId);
+  await cancelAndRestoreRegistration(page, cancelledCashChildId, { restore: false });
+  await page.goto(`${baseUrl}/staff/payments/`);
+  const creditGroup = page.locator('[data-group-toggle="Кредит / буцаалт"]');
+  if (await creditGroup.getAttribute("aria-expanded") !== "true") await creditGroup.click();
+  const cancelledCreditCard = page.locator(".staff-payment-item").filter({ hasText: "CancelledCashCredit" })
+    .filter({ has: page.locator('[data-payment-credit-action="transfer"]') });
+  await cancelledCreditCard.waitFor({ state: "visible" });
+  await cancelledCreditCard.locator('[data-payment-credit-action="transfer"]').click();
+  const cancelledCreditForm = cancelledCreditCard.locator('[data-payment-credit-form]');
+  await cancelledCreditForm.locator('select[name="targetRegistrationDraftChildId"]').selectOption(targetChildId);
+  await cancelledCreditForm.locator('input[name="amountMnt"]').fill("400");
+  await cancelledCreditForm.locator('textarea[name="reason"]').fill("Cancelled cash credit browser transfer");
+  await cancelledCreditForm.locator('button[type="submit"]').click();
+  await cancelledCreditCard.getByText("Хүлээн авах хүүхэд:").waitFor({ state: "visible" });
+  await cancelledCreditCard.getByText(existingTargetChildId ? "CreditBrowser" : "CancelledCashCreditRecipient", { exact: false }).last().waitFor({ state: "visible" });
+  await capturePaymentPanel(page, "cancelled-payment-credit-review-mobile.png");
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await capturePaymentPanel(page, "cancelled-payment-credit-review-desktop.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const creditTransferRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments") && response.request().method() === "POST");
+  await cancelledCreditCard.locator('[data-payment-credit-confirm]').click();
+  const creditTransferResponse = await creditTransferRequest;
+  if (!creditTransferResponse.ok()) throw new Error(`cancelled payment-credit transfer failed: ${await creditTransferResponse.text()}`);
+  await page.reload();
+  let cancelledCreditState = await dbJson(`SELECT payment_credit.id AS creditId, payment_credit.remaining_amount_mnt AS remainingAmountMnt,
+      payment_credit.status,
+      (SELECT COUNT(*) FROM received_payment WHERE id = payment_credit.received_payment_id) AS receiptCount,
+      (SELECT COUNT(*) FROM payment_allocation WHERE received_payment_id = payment_credit.received_payment_id) AS allocationCount
+    FROM payment_credit
+    WHERE payment_credit.payment_request_id = (SELECT id FROM payment_request WHERE registration_draft_id =
+      (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(cancelledCashChildId)}))`);
+  assert.deepEqual(cancelledCreditState[0] && { remainingAmountMnt: Number(cancelledCreditState[0].remainingAmountMnt), status: cancelledCreditState[0].status,
+    receiptCount: Number(cancelledCreditState[0].receiptCount), allocationCount: Number(cancelledCreditState[0].allocationCount) },
+  { remainingAmountMnt: 600, status: "available", receiptCount: 1, allocationCount: 1 }, "cancelled-payment credit transfer preserves its original cash history and leaves one partial refundable remainder");
+  const targetCreditAfterCancelledTransfer = await dbJson(`SELECT COUNT(*) AS count FROM child_credit_entry
+    WHERE registration_draft_child_id = ${sql(targetChildId)} AND entry_kind = 'credit_transfer_credit' AND amount_mnt = 400`);
+  assert.equal(Number(targetCreditAfterCancelledTransfer[0]?.count), 1, "the transferred cancelled-payment value appears exactly once as ordinary target credit");
+
+  // The same rendered balance can be partly refunded. Both this refund and a
+  // later competing settlement go through the real Worker API, not mock math.
+  const refreshedCreditGroup = page.locator('[data-group-toggle="Кредит / буцаалт"]');
+  if (await refreshedCreditGroup.getAttribute("aria-expanded") !== "true") await refreshedCreditGroup.click();
+  const refreshedCard = page.locator(".staff-payment-item").filter({ hasText: "CancelledCashCredit" })
+    .filter({ has: page.locator('[data-payment-credit-action="refund"]') });
+  await refreshedCard.locator('[data-payment-credit-action="refund"]').click();
+  const refundForm = refreshedCard.locator('[data-payment-credit-form]');
+  await refundForm.locator('input[name="amountMnt"]').fill("200");
+  await refundForm.locator('textarea[name="reason"]').fill("Cancelled cash credit browser refund");
+  await refundForm.locator('button[type="submit"]').click();
+  const refundRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments") && response.request().method() === "POST");
+  await refreshedCard.locator('[data-payment-credit-confirm]').click();
+  if (!(await refundRequest).ok()) throw new Error("cancelled payment-credit refund failed");
+  await page.reload();
+  cancelledCreditState = await dbJson(`SELECT id AS creditId, remaining_amount_mnt AS remainingAmountMnt, status
+    FROM payment_credit WHERE id = ${sql(cancelledCreditState[0].creditId)}`);
+  assert.deepEqual(cancelledCreditState[0] && { remainingAmountMnt: Number(cancelledCreditState[0].remainingAmountMnt), status: cancelledCreditState[0].status },
+    { remainingAmountMnt: 400, status: "available" }, "a partial refund preserves the independently transferable remainder");
+
+  const competing = await page.evaluate(async ({ creditId, targetRegistrationDraftChildId }) => Promise.all([
+    fetch("/api/staff/payments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      action: "payment-credit.refund", creditId, amountMnt: 400, reason: "Competing browser refund", operationId: crypto.randomUUID(),
+    }) }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    fetch("/api/staff/payments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      action: "payment-credit.transfer", creditId, targetRegistrationDraftChildId, amountMnt: 400, reason: "Competing browser transfer", operationId: crypto.randomUUID(),
+    }) }).then(async (response) => ({ status: response.status, body: await response.json() })),
+  ]), { creditId: cancelledCreditState[0].creditId, targetRegistrationDraftChildId: targetChildId });
+  assert.equal(competing.filter((result) => result.status >= 200 && result.status < 300).length, 1,
+    `only one competing refund/transfer can settle the final 400 MNT: ${JSON.stringify(competing)}`);
+  const exhaustedState = await dbJson(`SELECT remaining_amount_mnt AS remainingAmountMnt FROM payment_credit
+    WHERE id = ${sql(cancelledCreditState[0].creditId)}`);
+  assert.equal(Number(exhaustedState[0]?.remainingAmountMnt), 0,
+    "competing payment-credit settlements cannot leave duplicate spendable value");
 }
 
 async function expectSingleVisiblePanel(row) {

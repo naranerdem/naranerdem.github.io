@@ -164,7 +164,11 @@ assert.match(router, /RegistrationCancellationError/, "cancellation failures hav
 assert.match(page, /Бүртгэлийг сэргээх/, "eligible cancelled registrations expose a separate restoration action");
 assert.match(page, /data-registration-reinstate=/, "restoration is bound to the authoritative cancelled registration child id");
 assert.match(page, /Буцаан төлөлт бүртгэх/, "the refund control is labelled as an action rather than an existing state");
-assert.match(page, /Энэ нь мөнгийг бодитоор буцаан олгосныг бүртгэнэ/, "refund confirmation explains its accounting meaning before mutation");
+assert.match(page, /data-payment-credit-action="transfer"/, "released received-payment credit can open its reviewed transfer action without exposing discount credit as refundable cash");
+assert.match(page, /data-payment-credit-form/, "partial refund and transfer use an inline form with a bounded amount rather than an irreversible one-click action");
+assert.match(page, /data-payment-credit-confirm/, "the payment-credit operation has an explicit review confirmation before mutation");
+assert.match(page, /Төлбөрийн орлого, өмнөх хуваарилалт өөрчлөгдөхгүй/, "the review distinguishes a credit transfer from a new payment or rewritten allocation");
+assert.match(router, /case "payment-credit\.transfer"/, "the protected payment endpoint routes released-payment credit transfer separately from child-ledger transfer");
 assert.match(registerPage, /hasCancelledRegistration/, "parent status recognizes a terminal cancellation");
 assert.match(registerPage, /Суудал баталгаажаагүй байна\.<br>Төлбөр төлснөөр суудал баталгаажна\./, "an ordinary initial-payment hold explains that payment confirms the seat");
 assert.match(registerPage, /Таны мэдэгдлийг хүлээн авлаа\. Бид төлбөрийг шалгаж баталгаажуулна\./, "parent payment claims receive a positive, non-final confirmation");

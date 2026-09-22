@@ -322,15 +322,21 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     GROUP BY payment_installment.id
     ORDER BY parentClaimed DESC, payment_installment.effective_due_at < ? DESC,
       payment_installment.effective_due_at ASC, payment_request.created_at ASC`).bind(now).all<Record<string, unknown>>();
-  const credits = await env.DB.prepare(`SELECT payment_credit.id, payment_credit.available_amount_mnt AS availableAmountMnt,
+  const credits = await env.DB.prepare(`SELECT payment_credit.id,
+    COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) AS availableAmountMnt,
     registration_draft.guardian_full_name AS guardianName, payment_request.payment_reference AS paymentReference,
-    GROUP_CONCAT(DISTINCT registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childNames
+    GROUP_CONCAT(DISTINCT registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childNames,
+    MIN(registration_draft_child.id) AS sourceRegistrationDraftChildId,
+    MIN(registration_draft_child.canonical_student_id) AS sourceCanonicalStudentId,
+    COUNT(DISTINCT registration_draft_child.id) AS sourceChildCount
     FROM payment_credit
     INNER JOIN payment_request ON payment_request.id = payment_credit.payment_request_id
-    INNER JOIN payment_installment ON payment_installment.payment_request_id = payment_request.id AND payment_installment.installment_kind = 'initial'
+    INNER JOIN payment_allocation ON payment_allocation.received_payment_id = payment_credit.received_payment_id
+    INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
     INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
     WHERE payment_credit.status = 'available'
+      AND COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) > 0
     GROUP BY payment_credit.id
     ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
   const discountCredits = await env.DB.prepare(`SELECT root.id,
@@ -1480,7 +1486,7 @@ export async function markPaymentCreditRefunded(env: WorkerEnv, actor: StaffPrin
     FROM payment_credit WHERE id = ? AND status = 'available'`).bind(creditId).first<{ id: string; paymentRequestId: string; isTest: number; testRunId: string | null }>();
   if (!row) throw new PaymentReconciliationError("not_found");
   const now = nowDate.toISOString();
-  const result = await env.DB.prepare(`UPDATE payment_credit SET status = 'refunded', refunded_at = ?, refunded_by_staff_account_id = ?, updated_at = ?
+  const result = await env.DB.prepare(`UPDATE payment_credit SET status = 'refunded', remaining_amount_mnt = 0, refunded_at = ?, refunded_by_staff_account_id = ?, updated_at = ?
     WHERE id = ? AND status = 'available'`).bind(now, actor.staffAccountId, now, row.id).run();
   if (changes(result) !== 1) throw new PaymentReconciliationError("conflict");
   await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
