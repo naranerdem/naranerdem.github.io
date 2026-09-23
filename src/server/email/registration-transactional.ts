@@ -385,12 +385,15 @@ export async function sendEnrollmentConfirmationEmail(
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
       + COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
         WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
+    COALESCE((SELECT outstanding.remaining_payment_due_at FROM staff_outstanding_payment_approval AS outstanding
+      WHERE outstanding.registration_draft_child_id = registration_draft_child.id AND outstanding.status = 'active'
+      ORDER BY outstanding.updated_at DESC LIMIT 1),
     (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
       INNER JOIN received_payment AS receipt ON receipt.id = confirmation.received_payment_id
       INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = receipt.id
       WHERE allocation.payment_installment_id = payment_installment.id
         AND confirmation.status = 'finalized' AND confirmation.remaining_payment_due_at IS NOT NULL
-      ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1) AS remainingPaymentDueAt,
+      ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1)) AS remainingPaymentDueAt,
     COALESCE(
       enrollment_referral_code.code,
       (SELECT shared_code.code FROM enrollment_referral_code AS shared_code

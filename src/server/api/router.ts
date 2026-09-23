@@ -33,6 +33,7 @@ import {
 } from "../services/registration-submission";
 import {
   claimParentPayment,
+  confirmOutstandingPaymentEnrollment,
   confirmSeatForSufficientPayment,
   getRegistrationExportRows,
   getInitialPaymentQueue,
@@ -43,9 +44,12 @@ import {
   PaymentReconciliationError,
   recordCheckedNotFound,
   recordManualPayment,
+  previewOutstandingPaymentWaiver,
   releaseUnpaidSeat,
   undoTentativePaymentConfirmation,
+  updateOutstandingPaymentDeadline,
   updatePaymentConfirmationGraceSetting,
+  waiveOutstandingPayment,
 } from "../staff/payment-reconciliation";
 import { cancelRegistration, reinstateRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
 import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets, recordClassTransferDifference } from "../staff/class-transfer";
@@ -1505,6 +1509,32 @@ export async function handleApiRequest(
               reason: String((payload.conditionalQuote as Record<string, unknown>).reason ?? ""),
             } : undefined,
           ) }, 200, { "Cache-Control": "no-store" });
+        case "payment.confirm-outstanding":
+          return json({ ok: true, ...await confirmOutstandingPaymentEnrollment(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""),
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            remainingPaymentDueAt: String(payload.remainingPaymentDueAt ?? ""),
+            operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.outstanding-deadline":
+          return json({ ok: true, ...await updateOutstandingPaymentDeadline(env, principal, {
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            remainingPaymentDueAt: String(payload.remainingPaymentDueAt ?? ""),
+            expectedDueAt: String(payload.expectedDueAt ?? ""),
+            operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.waiver-preview":
+          return json({ ok: true, ...await previewOutstandingPaymentWaiver(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""),
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.waive-outstanding":
+          return json({ ok: true, ...await waiveOutstandingPayment(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""),
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            reviewFingerprint: String(payload.reviewFingerprint ?? ""),
+            operationId: String(payload.operationId ?? ""), reason: String(payload.reason ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
         case "payment.review-historical-settlement":
           return json({ ok: true, ...await reviewHistoricalQualifiedPayment(env, principal, {
             paymentRequestId: String(payload.paymentRequestId ?? ""),

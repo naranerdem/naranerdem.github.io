@@ -83,6 +83,8 @@ assert.match(paymentService, /priorConfirmation/, "server reads the durable prio
 assert.match(paymentService, /needsRemainingDeadline/, "server requires a deadline only while a confirmed partial balance remains");
 assert.match(paymentService, /allInitialSatisfied \|\| Boolean\(input\.approveSeatConfirmation\)/, "server automatically approves the seat at the effective initial-payment threshold");
 assert.match(paymentService, /confirmSeatForSufficientPayment/, "a separate correction action can approve an already-recorded sufficient payment without another receipt");
+assert.match(paymentService, /confirmOutstandingPaymentEnrollment/, "staff can confirm a real enrollment with no receipt through a separate durable approval");
+assert.match(paymentService, /waiveOutstandingPayment/, "fee waivers use a reviewed staff operation rather than a payment-credit shortcut");
 assert.match(paymentService, /suppliedRemainingDueAt \?\? priorConfirmation\?\.remainingDueAt/, "later partial payments preserve an existing deadline when staff does not replace it");
 assert.match(paymentService, /ownReferralCode/, "payment queue projects an active confirmed-enrollment referral code");
 assert.match(paymentService, /creditApplicationInstallmentId/, "the payment queue identifies the actual outstanding obligation for a credit decision");
@@ -279,7 +281,11 @@ assert.match(page, /Хуулагдлаа\./, "clipboard success is reported only
 assert.match(page, /payment-copy-fallback/, "clipboard denial offers a selectable manual-copy fallback");
 assert.match(page, /staff-payment-toolbar/, "payment toolbar has a dedicated compact utility layout");
 assert.match(page, /staff-payment-heading[\s\S]*staff-payment-toolbar-row[\s\S]*staff-payment-toolbar[\s\S]*staff-back-link/, "title, operational toolbar, and back navigation have separate header structure");
-assert.match(page, /const sections = \["Төлбөр баталгаажсан", "Хэсэгчлэн төлсөн", "Хугацаа хэтэрсэн", "Төлбөр хүлээж байна", "Шалгах шаардлагатай", "Кредит \/ буцаалт", "Хүлээлгийн жагсаалт"\]/, "staff sections follow the requested current-operational order, with credits before waitlist and cancelled history last");
+assert.match(page, /"Баталгаажсан, төлбөр хүлээж байна"/, "a zero-paid confirmed enrollment has a truthful distinct payment-list state");
+assert.match(page, /"Төлбөрөөс чөлөөлсөн"/, "waived unpaid fees remain visibly distinct from cash settlement");
+assert.match(page, /data-outstanding-confirm=/, "staff can explicitly review a zero-paid enrollment confirmation");
+assert.match(page, /data-outstanding-waiver-preview=/, "a confirmed unpaid enrollment has a reviewed fee-waiver entry point");
+assert.match(page, /Төлбөр орсон гэж тэмдэглэхгүй/, "zero-payment confirmation does not claim a receipt was recorded");
 assert.match(page, /const groupOpen = \(title\) => state\.openGroups\[title\] \?\? false/, "all top-level sections start collapsed on an ordinary fresh entry");
 assert.match(page, /return state\.openWaitlistSections\[key\] \?\? selected/, "waitlist subsections start collapsed unless an explicit selected-record navigation opens one");
 assert.match(page, /state\.openGroups\["Хүлээлгийн жагсаалт"\] = true/, "explicit waitlist navigation opens only its enclosing group");

@@ -130,6 +130,260 @@ async function installmentsForRequest(env: WorkerEnv, paymentRequestId: string):
   return raw.map((row) => ({ ...row, amountMnt: effective.get(row.id)?.effectiveAmountMnt ?? row.amountMnt }));
 }
 
+interface OutstandingApprovalRow {
+  id: string;
+  operationId: string;
+  paymentRequestId: string;
+  registrationDraftChildId: string;
+  initialPaymentInstallmentId: string;
+  status: "active" | "settled" | "waived";
+  remainingPaymentDueAt: string;
+  updatedAt: string;
+  isTest: number;
+  testRunId: string | null;
+}
+
+async function outstandingApprovalForChild(env: WorkerEnv, childId: string): Promise<OutstandingApprovalRow | null> {
+  return env.DB.prepare(`SELECT id, operation_id AS operationId, payment_request_id AS paymentRequestId,
+      registration_draft_child_id AS registrationDraftChildId, initial_payment_installment_id AS initialPaymentInstallmentId,
+      status, remaining_payment_due_at AS remainingPaymentDueAt, updated_at AS updatedAt,
+      is_test AS isTest, test_run_id AS testRunId
+    FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = ?`).bind(childId).first<OutstandingApprovalRow>();
+}
+
+async function sha256(value: unknown): Promise<string> {
+  const encoded = new TextEncoder().encode(JSON.stringify(value));
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function settleOutstandingApprovalIfResolved(env: WorkerEnv, childId: string, now: string): Promise<void> {
+  const approval = await outstandingApprovalForChild(env, childId);
+  if (!approval || approval.status !== "active") return;
+  const installments = await installmentsForRequest(env, approval.paymentRequestId);
+  const remaining = installments.filter((item) => item.registrationDraftChildId === childId && item.status !== "released")
+    .reduce((total, item) => total + Math.max(0, item.amountMnt - item.allocatedAmountMnt), 0);
+  if (remaining > 0) return;
+  const result = await env.DB.prepare(`UPDATE staff_outstanding_payment_approval
+    SET status = 'settled', settled_at = ?, updated_at = ? WHERE id = ? AND status = 'active'`)
+    .bind(now, now, approval.id).run();
+  if (changes(result)) {
+    await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
+      WHERE registration_draft_child_id = ? AND status IN ('pending', 'failed', 'sending')`)
+      .bind(now, childId).run();
+  }
+}
+
+export async function confirmOutstandingPaymentEnrollment(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentRequestId: string; registrationDraftChildId: string; remainingPaymentDueAt: string; operationId: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const request = await requestForId(env, input.paymentRequestId);
+  const childId = String(input.registrationDraftChildId ?? "");
+  const id = operationId(input.operationId);
+  const dueAt = iso(input.remainingPaymentDueAt);
+  if (!childId || !id || !dueAt || new Date(dueAt) <= nowDate) throw new PaymentReconciliationError("invalid");
+  const existingOperation = await env.DB.prepare(`SELECT registration_draft_child_id AS childId
+    FROM staff_outstanding_payment_approval WHERE operation_id = ?`).bind(id).first<{ childId: string }>();
+  if (existingOperation) {
+    if (existingOperation.childId !== childId) throw new PaymentReconciliationError("conflict");
+    return { idempotent: true, approvalId: (await outstandingApprovalForChild(env, childId))?.id ?? null };
+  }
+  const existing = await outstandingApprovalForChild(env, childId);
+  if (existing) {
+    if (existing.paymentRequestId !== request.id) throw new PaymentReconciliationError("conflict");
+    return { idempotent: true, approvalId: existing.id };
+  }
+  const installments = await installmentsForRequest(env, request.id);
+  const initial = installments.find((item) => item.registrationDraftChildId === childId && item.installmentKind === "initial");
+  if (!initial || initial.status === "released" || initial.allocatedAmountMnt > 0 || initial.amountMnt <= 0) {
+    throw new PaymentReconciliationError("invalid");
+  }
+  const conditional = await env.DB.prepare(`SELECT 1 AS value FROM conditional_family_discount_quote
+    WHERE registration_draft_child_id = ? AND state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed') LIMIT 1`)
+    .bind(childId).first();
+  if (conditional) throw new PaymentReconciliationError("invalid");
+  const reminder = await getPaymentReminderSetting(env);
+  const now = nowDate.toISOString();
+  const approvalId = crypto.randomUUID();
+  const reminderAt = new Date(new Date(dueAt).getTime() - reminder.initialReminderLeadMinutes * 60_000).toISOString();
+  const inserted = await env.DB.prepare(`INSERT INTO staff_outstanding_payment_approval (
+      id, operation_id, payment_request_id, registration_draft_child_id, initial_payment_installment_id,
+      status, remaining_payment_due_at, remaining_reminder_lead_minutes, remaining_reminder_at,
+      approved_by_staff_account_id, approved_at, updated_at, is_test, test_run_id
+    ) SELECT ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, payment_request.is_test, payment_request.test_run_id
+      FROM payment_request
+      INNER JOIN registration_draft_child ON registration_draft_child.registration_draft_id = payment_request.registration_draft_id
+      INNER JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+        AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active'
+      WHERE payment_request.id = ? AND registration_draft_child.id = ?
+        AND registration_draft_child.status != 'cancelled' AND registration_draft_child.canonical_enrollment_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM staff_outstanding_payment_approval
+          WHERE registration_draft_child_id = registration_draft_child.id)`)
+    .bind(approvalId, id, request.id, childId, initial.id, dueAt, reminder.initialReminderLeadMinutes, reminderAt,
+      actor.staffAccountId, now, now, request.id, childId).run();
+  if (!changes(inserted)) {
+    const current = await outstandingApprovalForChild(env, childId);
+    if (current?.operationId === id || current?.paymentRequestId === request.id) return { idempotent: true, approvalId: current.id };
+    throw new PaymentReconciliationError("conflict");
+  }
+  await env.DB.prepare(`INSERT INTO audit_event (
+    id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+    metadata_json, environment, is_test, test_run_id, created_at
+  ) VALUES (?, ?, 'staff', ?, 'outstanding_payment_enrollment_confirmed',
+    'staff_outstanding_payment_approval', ?, ?, ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), now, actor.staffAccountId, approvalId,
+      JSON.stringify({ operationId: id, paymentRequestId: request.id, registrationDraftChildId: childId,
+        initialPaymentInstallmentId: initial.id, remainingPaymentDueAt: dueAt }),
+      env.APP_ENV, request.isTest, request.testRunId, now).run();
+  // The pending-registration milestones belong to the old capacity-hold
+  // lifecycle. A confirmed enrollment uses the approval's separate reminder
+  // milestone, so an already queued hold reminder must not race it.
+  await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
+    WHERE registration_draft_child_id = ? AND milestone_type IN ('initial_reminder', 'initial_overdue')
+      AND status IN ('pending', 'failed', 'sending')`).bind(now, childId).run();
+  const promotion = await promotePaidDraftChild(env, actor, childId, null, nowDate);
+  return { idempotent: false, approvalId, promotion };
+}
+
+export async function updateOutstandingPaymentDeadline(env: WorkerEnv, actor: StaffPrincipal, input: {
+  registrationDraftChildId: string; remainingPaymentDueAt: string; expectedDueAt: string; operationId: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const childId = String(input.registrationDraftChildId ?? "");
+  const id = operationId(input.operationId);
+  const nextDueAt = iso(input.remainingPaymentDueAt);
+  const expectedDueAt = iso(input.expectedDueAt);
+  if (!childId || !id || !nextDueAt || !expectedDueAt || new Date(nextDueAt) <= nowDate) throw new PaymentReconciliationError("invalid");
+  const existing = await env.DB.prepare(`SELECT staff_outstanding_payment_approval_id AS approvalId
+    FROM staff_outstanding_payment_deadline_change WHERE operation_id = ?`).bind(id).first<{ approvalId: string }>();
+  if (existing) return { idempotent: true, approvalId: existing.approvalId };
+  const approval = await outstandingApprovalForChild(env, childId);
+  if (!approval || approval.status !== "active" || approval.remainingPaymentDueAt !== expectedDueAt) throw new PaymentReconciliationError("conflict");
+  const reminder = await getPaymentReminderSetting(env);
+  const now = nowDate.toISOString();
+  const changeId = crypto.randomUUID();
+  const reminderAt = new Date(new Date(nextDueAt).getTime() - reminder.initialReminderLeadMinutes * 60_000).toISOString();
+  const results = await env.DB.batch([
+    env.DB.prepare(`INSERT INTO staff_outstanding_payment_deadline_change (
+      id, operation_id, staff_outstanding_payment_approval_id, previous_due_at, next_due_at,
+      changed_by_staff_account_id, changed_at, is_test, test_run_id
+    ) SELECT ?, ?, id, remaining_payment_due_at, ?, ?, ?, is_test, test_run_id
+      FROM staff_outstanding_payment_approval WHERE id = ? AND status = 'active' AND remaining_payment_due_at = ?`)
+      .bind(changeId, id, nextDueAt, actor.staffAccountId, now, approval.id, expectedDueAt),
+    env.DB.prepare(`UPDATE staff_outstanding_payment_approval SET remaining_payment_due_at = ?,
+      remaining_reminder_lead_minutes = ?, remaining_reminder_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'active' AND remaining_payment_due_at = ?
+        AND EXISTS (SELECT 1 FROM staff_outstanding_payment_deadline_change WHERE id = ?)`)
+      .bind(nextDueAt, reminder.initialReminderLeadMinutes, reminderAt, now, approval.id, expectedDueAt, changeId),
+  ]);
+  if (!changes(results[1])) throw new PaymentReconciliationError("conflict");
+  await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+    metadata_json, environment, is_test, test_run_id, created_at)
+    VALUES (?, ?, 'staff', ?, 'outstanding_payment_deadline_extended', 'staff_outstanding_payment_approval', ?, ?, ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), now, actor.staffAccountId, approval.id,
+      JSON.stringify({ operationId: id, previousDueAt: expectedDueAt, nextDueAt }), env.APP_ENV, approval.isTest, approval.testRunId, now).run();
+  return { idempotent: false, approvalId: approval.id, remainingPaymentDueAt: nextDueAt };
+}
+
+interface WaiverInstallmentPreview {
+  installmentId: string;
+  installmentKind: "initial" | "later";
+  installmentNumber: number;
+  effectiveAmountMnt: number;
+  allocatedAmountMnt: number;
+  waivedAmountMnt: number;
+}
+
+interface WaiverPreview {
+  paymentRequestId: string;
+  registrationDraftChildId: string;
+  installments: WaiverInstallmentPreview[];
+  totalWaivedAmountMnt: number;
+  reviewFingerprint: string;
+}
+
+async function waiverPreviewForChild(env: WorkerEnv, paymentRequestId: string, childId: string): Promise<WaiverPreview> {
+  const request = await requestForId(env, paymentRequestId);
+  const child = await env.DB.prepare(`SELECT registration_draft_child.id, registration_draft_child.canonical_enrollment_id AS enrollmentId,
+      registration_draft_child.status, enrollment.status AS enrollmentStatus
+    FROM registration_draft_child
+    LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+    WHERE registration_draft_child.id = ? AND registration_draft_child.registration_draft_id = ?`)
+    .bind(childId, request.registrationDraftId).first<{ id: string; enrollmentId: string | null; status: string; enrollmentStatus: string | null }>();
+  if (!child || child.status === "cancelled" || child.enrollmentStatus !== "confirmed") throw new PaymentReconciliationError("invalid");
+  const installments = (await installmentsForRequest(env, request.id)).filter((item) => item.registrationDraftChildId === childId && item.status !== "released");
+  const previews = installments.map((item) => ({
+    installmentId: item.id,
+    installmentKind: item.installmentKind,
+    installmentNumber: item.installmentNumber,
+    effectiveAmountMnt: item.amountMnt,
+    allocatedAmountMnt: item.allocatedAmountMnt,
+  waivedAmountMnt: Math.max(0, item.amountMnt - item.allocatedAmountMnt),
+  })).filter((item) => item.waivedAmountMnt > 0);
+  if (!previews.length) throw new PaymentReconciliationError("already_paid");
+  return {
+    paymentRequestId: request.id,
+    registrationDraftChildId: childId,
+    installments: previews,
+    totalWaivedAmountMnt: previews.reduce((total, item) => total + item.waivedAmountMnt, 0),
+    reviewFingerprint: await sha256({ paymentRequestId: request.id, registrationDraftChildId: childId, installments: previews }),
+  };
+}
+
+export async function previewOutstandingPaymentWaiver(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentRequestId: string; registrationDraftChildId: string;
+}) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  return waiverPreviewForChild(env, String(input.paymentRequestId ?? ""), String(input.registrationDraftChildId ?? ""));
+}
+
+export async function waiveOutstandingPayment(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentRequestId: string; registrationDraftChildId: string; reviewFingerprint: string; operationId: string; reason: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const id = operationId(input.operationId);
+  const reason = typeof input.reason === "string" ? input.reason.normalize("NFKC").trim() : "";
+  if (!id || !/^[0-9a-f]{64}$/i.test(String(input.reviewFingerprint ?? "")) || !reason || reason.length > 500) {
+    throw new PaymentReconciliationError("invalid");
+  }
+  const existing = await env.DB.prepare(`SELECT id, registration_draft_child_id AS childId, payment_request_id AS requestId
+    FROM payment_fee_waiver WHERE operation_id = ?`).bind(id).first<{ id: string; childId: string; requestId: string }>();
+  if (existing) {
+    if (existing.childId !== input.registrationDraftChildId || existing.requestId !== input.paymentRequestId) throw new PaymentReconciliationError("conflict");
+    return { idempotent: true, waiverId: existing.id };
+  }
+  const preview = await waiverPreviewForChild(env, String(input.paymentRequestId ?? ""), String(input.registrationDraftChildId ?? ""));
+  if (preview.reviewFingerprint !== input.reviewFingerprint) throw new PaymentReconciliationError("conflict");
+  const request = await requestForId(env, preview.paymentRequestId);
+  const now = nowDate.toISOString();
+  const waiverId = crypto.randomUUID();
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`INSERT INTO payment_fee_waiver (
+      id, operation_id, payment_request_id, registration_draft_child_id, reason, review_fingerprint,
+      waived_by_staff_account_id, waived_at, is_test, test_run_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(waiverId, id, request.id, preview.registrationDraftChildId, reason, preview.reviewFingerprint,
+        actor.staffAccountId, now, request.isTest, request.testRunId),
+    ...preview.installments.map((item) => env.DB.prepare(`INSERT INTO payment_fee_waiver_installment (
+      payment_fee_waiver_id, payment_installment_id, waived_amount_mnt, expected_applied_amount_mnt
+    ) VALUES (?, ?, ?, ?)`)
+      .bind(waiverId, item.installmentId, item.waivedAmountMnt, item.allocatedAmountMnt)),
+    env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
+      WHERE registration_draft_child_id = ? AND status IN ('pending', 'failed', 'sending')`).bind(now, preview.registrationDraftChildId),
+    env.DB.prepare(`UPDATE staff_outstanding_payment_approval SET status = 'waived', waived_at = ?, updated_at = ?
+      WHERE registration_draft_child_id = ? AND status = 'active'`).bind(now, now, preview.registrationDraftChildId),
+    audit(env, actor, "outstanding_payment_waived", "payment_fee_waiver", waiverId,
+      { operationId: id, registrationDraftChildId: preview.registrationDraftChildId, paymentRequestId: request.id,
+        totalWaivedAmountMnt: preview.totalWaivedAmountMnt, installments: preview.installments.map((item) => ({
+          installmentId: item.installmentId, amountMnt: item.waivedAmountMnt,
+        })), reason }, request, now),
+  ];
+  await env.DB.batch(statements);
+  await refreshInstallmentsForChild(env, request, preview.registrationDraftChildId, now);
+  return { idempotent: false, waiverId, totalWaivedAmountMnt: preview.totalWaivedAmountMnt };
+}
+
 export async function getPaymentConfirmationGraceSetting(env: WorkerEnv): Promise<PaymentConfirmationGraceSetting> {
   const row = await env.DB.prepare(`SELECT grace_minutes AS graceMinutes, updated_at AS updatedAt
     FROM payment_confirmation_grace_setting WHERE singleton = 1`).first<PaymentConfirmationGraceSetting>();
@@ -262,7 +516,10 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterDueAt,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN received_payment.id END) AS tentativePaymentId,
     MAX(CASE WHEN payment_confirmation.status = 'tentative' THEN payment_confirmation.finalize_after END) AS finalizeAfter,
-    MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.seat_confirmation_approved ELSE 0 END) AS seatConfirmationApproved,
+    MAX(CASE WHEN payment_confirmation.status IN ('tentative', 'finalized') THEN payment_confirmation.seat_confirmation_approved ELSE 0 END)
+      + CASE WHEN EXISTS(SELECT 1 FROM staff_outstanding_payment_approval AS outstanding
+        WHERE outstanding.registration_draft_child_id = registration_draft_child.id
+          AND outstanding.status IN ('active', 'settled', 'waived')) THEN 1 ELSE 0 END AS seatConfirmationApproved,
     EXISTS(SELECT 1 FROM payment_confirmation AS unapproved_confirmation
       INNER JOIN payment_allocation AS unapproved_allocation ON unapproved_allocation.received_payment_id = unapproved_confirmation.received_payment_id
       INNER JOIN payment_installment AS unapproved_installment ON unapproved_installment.id = unapproved_allocation.payment_installment_id
@@ -271,11 +528,20 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
         AND unapproved_confirmation.seat_confirmation_approved = 0
         AND unapproved_installment.registration_draft_child_id = registration_draft_child.id
         AND unapproved_installment.installment_kind = 'initial') AS hasUnapprovedInitialConfirmation,
+    COALESCE((SELECT outstanding.remaining_payment_due_at FROM staff_outstanding_payment_approval AS outstanding
+      WHERE outstanding.registration_draft_child_id = registration_draft_child.id AND outstanding.status = 'active'
+      ORDER BY outstanding.updated_at DESC LIMIT 1),
     (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
       WHERE confirmation.payment_request_id = payment_request.id
         AND confirmation.status IN ('tentative', 'finalized')
         AND confirmation.remaining_payment_due_at IS NOT NULL
-      ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1) AS remainingPaymentDueAt,
+      ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1)) AS remainingPaymentDueAt,
+    (SELECT outstanding.status FROM staff_outstanding_payment_approval AS outstanding
+      WHERE outstanding.registration_draft_child_id = registration_draft_child.id
+      ORDER BY outstanding.approved_at DESC LIMIT 1) AS outstandingPaymentApprovalStatus,
+    (SELECT outstanding.id FROM staff_outstanding_payment_approval AS outstanding
+      WHERE outstanding.registration_draft_child_id = registration_draft_child.id
+      ORDER BY outstanding.approved_at DESC LIMIT 1) AS outstandingPaymentApprovalId,
     COALESCE(
       (SELECT code FROM enrollment_referral_code
         WHERE enrollment_id = registration_draft_child.canonical_enrollment_id AND status = 'active'
@@ -393,14 +659,23 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       AND audit_event.subject_id = registration_draft_child.id AND audit_event.action = 'registration_cancelled'
     WHERE registration_draft_child.status = 'cancelled'
     ORDER BY COALESCE(enrollment.cancelled_at, audit_event.occurred_at, registration_draft_child.updated_at) DESC LIMIT 50`).all<Record<string, unknown>>();
+  const waiverRowsPromise = env.DB.prepare(`SELECT payment_fee_waiver.id, payment_fee_waiver.registration_draft_child_id AS childId,
+      payment_fee_waiver.reason, payment_fee_waiver.waived_at AS waivedAt,
+      COALESCE(SUM(payment_fee_waiver_installment.waived_amount_mnt), 0) AS amountMnt
+    FROM payment_fee_waiver
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_fee_waiver.registration_draft_child_id
+    LEFT JOIN payment_fee_waiver_installment ON payment_fee_waiver_installment.payment_fee_waiver_id = payment_fee_waiver.id
+    WHERE registration_draft_child.status != 'cancelled'
+    GROUP BY payment_fee_waiver.id
+    ORDER BY payment_fee_waiver.waived_at DESC`).all<{ id: string; childId: string; reason: string; waivedAt: string; amountMnt: number }>();
   const capacityRowsPromise = getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
   const capacityLabelsPromise = env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
     FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
     ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
       start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
-  const [result, credits, discountCredits, cancelled, capacityRows, capacityLabels] = await Promise.all([
-    paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, capacityRowsPromise, capacityLabelsPromise,
+  const [result, credits, discountCredits, cancelled, waiverRows, capacityRows, capacityLabels] = await Promise.all([
+    paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, waiverRowsPromise, capacityRowsPromise, capacityLabelsPromise,
   ]);
   const projectionMs = performance.now() - queueStartedAt;
   const enrichmentStartedAt = performance.now();
@@ -417,6 +692,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     laterCashAllocatedAmountMnt: Number(item.laterCashAllocatedAmountMnt ?? 0),
   })) as Array<Record<string, unknown> & { installmentId: string; registrationDraftChildId: string; expectedAmountMnt: number; allocatedAmountMnt: number; cashAllocatedAmountMnt: number; parentClaimed: boolean; laterInstallmentId: string | null; laterAmountMnt: number | null; laterAllocatedAmountMnt: number; laterCashAllocatedAmountMnt: number }>;
   const childIds = [...new Set(rawItems.map((item) => String(item.registrationDraftChildId)))];
+  const waiverByChild = new Map<string, Array<{ id: string; reason: string; waivedAt: string; amountMnt: number }>>();
+  for (const row of waiverRows.results) {
+    waiverByChild.set(row.childId, [...(waiverByChild.get(row.childId) ?? []), {
+      id: row.id, reason: row.reason, waivedAt: row.waivedAt, amountMnt: Number(row.amountMnt),
+    }]);
+  }
   const financialStartedAt = performance.now();
   const installmentRows = rawItems.flatMap((item) => [
     {
@@ -574,6 +855,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const credit = creditByChild.get(String(item.registrationDraftChildId));
     const initialOutstandingMnt = Math.max(0, expectedAmountMnt - item.allocatedAmountMnt);
     const settlement = settlementByInstallment.get(String(item.installmentId)) ?? null;
+    const waiverHistory = waiverByChild.get(String(item.registrationDraftChildId)) ?? [];
     const reservedCreditMnt = settlement?.reservedCreditMnt ?? 0;
     const cashRequiredMnt = settlement?.cashRequiredMnt ?? initialOutstandingMnt;
     const laterOutstandingMnt = later && item.laterInstallmentId
@@ -603,6 +885,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       cashRequiredMnt,
     totalRemainingMnt: Math.max(0, totalExpectedMnt - item.allocatedAmountMnt - item.laterAllocatedAmountMnt),
       availableCreditMnt: credit?.availableAmountMnt ?? 0,
+      totalFeeWaivedMnt: waiverHistory.reduce((total, waiver) => total + waiver.amountMnt, 0),
+      waiverHistory,
       creditEntries: credit?.roots ?? [],
       creditApplicationInstallmentId,
       creditApplicationOutstandingMnt,
@@ -1346,6 +1630,9 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
     // of one funded subset has been revalidated under its own fence.
     await finalizeFundedSameSubmissionQuotes(env, request.registrationDraftId, nowDate);
     const state = await refreshInstallmentsAndDraft(env, request, now);
+    const settledChildren = await env.DB.prepare(`SELECT registration_draft_child_id AS childId FROM staff_outstanding_payment_approval
+      WHERE payment_request_id = ? AND status = 'active'`).bind(request.id).all<{ childId: string }>();
+    await Promise.all(settledChildren.results.map((child) => settleOutstandingApprovalIfResolved(env, child.childId, now)));
     const promotion = await promotePaidDraftChildren(env, systemActor, request.registrationDraftId, nowDate);
     await env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
       metadata_json, environment, is_test, test_run_id, created_at) VALUES (?, ?, 'system', 'payment-finalizer',
@@ -1365,6 +1652,20 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
       try { await sendPaymentConfirmedEmail(env, request.registrationDraftId, row.id); } catch { /* durable retry */ }
     }
     finalized += 1;
+  }
+
+  // A staff-approved zero-payment enrollment may initially wait for identity
+  // resolution.  It has no receipt/finalize-after row to wake this finalizer,
+  // so retry only the bounded active approvals that still lack an enrollment.
+  const outstandingRows = await env.DB.prepare(`SELECT staff_outstanding_payment_approval.registration_draft_child_id AS childId
+    FROM staff_outstanding_payment_approval
+    INNER JOIN registration_draft_child ON registration_draft_child.id = staff_outstanding_payment_approval.registration_draft_child_id
+    WHERE staff_outstanding_payment_approval.status = 'active'
+      AND registration_draft_child.canonical_enrollment_id IS NULL
+      AND registration_draft_child.status != 'cancelled'
+    ORDER BY staff_outstanding_payment_approval.updated_at LIMIT 100`).all<{ childId: string }>();
+  for (const row of outstandingRows.results) {
+    try { await promotePaidDraftChild(env, systemActor, row.childId, null, nowDate); } catch { /* retryable identity/promotion work */ }
   }
 
   // Credit applications are accounting adjustments, not received payments.

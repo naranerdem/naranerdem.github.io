@@ -29,6 +29,7 @@ interface ReminderContext {
   email: string; normalizedEmail: string; childName: string; classLabel: string | null;
   installmentId: string; registrationDraftChildId: string; installmentNumber: number; rawAmountMnt: number; allocatedAmountMnt: number; amountMnt: number; dueAt: string | null; installmentStatus: string; holdStatus: string | null;
   enrollmentStatus: string | null; confirmationStatus: string | null; seatConfirmationApproved: number | null;
+  staffOutstandingPaymentApproved: number;
   availableCreditMnt: number; conditionalFailureAwaitingDeadline: number;
   parentClaimed: number; bankName: string | null; accountHolderName: string | null; accountNumber: string | null;
   iban: string | null; transferInstruction: string | null;
@@ -145,6 +146,22 @@ async function ensureMilestonesForRequests(env: WorkerEnv, requestIds: string[],
       AND payment_confirmation.remaining_payment_due_at IS NOT NULL AND payment_confirmation.remaining_reminder_at IS NOT NULL
       AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'
       ${filter.sql}`).bind(now, now, ...filter.values),
+    env.DB.prepare(`INSERT OR IGNORE INTO payment_notification_milestone (
+      id, milestone_key, registration_draft_id, registration_draft_child_id, payment_installment_id,
+      channel, milestone_type, scheduled_at, status, created_at, updated_at, is_test, test_run_id
+    ) SELECT staff_outstanding_payment_approval.id || ':outstanding-reminder:email',
+      staff_outstanding_payment_approval.id || ':outstanding-reminder:email',
+      payment_request.registration_draft_id, staff_outstanding_payment_approval.registration_draft_child_id,
+      staff_outstanding_payment_approval.initial_payment_installment_id,
+      'email', 'partial_balance_reminder', staff_outstanding_payment_approval.remaining_reminder_at,
+      'pending', ?, ?, staff_outstanding_payment_approval.is_test, staff_outstanding_payment_approval.test_run_id
+    FROM staff_outstanding_payment_approval
+    INNER JOIN payment_request ON payment_request.id = staff_outstanding_payment_approval.payment_request_id
+    INNER JOIN registration_draft_child ON registration_draft_child.id = staff_outstanding_payment_approval.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = payment_request.registration_draft_id
+    WHERE staff_outstanding_payment_approval.status = 'active'
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'
+      ${filter.sql}`).bind(now, now, ...filter.values),
   ]);
 }
 
@@ -232,6 +249,7 @@ async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Pro
           WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
             AND conditional_family_discount_quote.state = 'qualification_failed'
             AND conditional_failure_due_at IS NOT NULL ORDER BY updated_at DESC LIMIT 1),
+        staff_outstanding_payment_approval.remaining_payment_due_at,
         payment_confirmation.remaining_payment_due_at, payment_installment.effective_due_at)
     END AS dueAt,
     EXISTS(SELECT 1 FROM conditional_family_discount_quote
@@ -252,6 +270,7 @@ async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Pro
     payment_installment.status AS installmentStatus, registration_capacity_hold.status AS holdStatus,
     enrollment.status AS enrollmentStatus, payment_confirmation.status AS confirmationStatus,
     payment_confirmation.seat_confirmation_approved AS seatConfirmationApproved,
+    CASE WHEN staff_outstanding_payment_approval.status = 'active' THEN 1 ELSE 0 END AS staffOutstandingPaymentApproved,
     EXISTS(SELECT 1 FROM payment_evidence WHERE payment_evidence.payment_request_id = payment_request.id AND payment_evidence.evidence_type = 'parent_claim') AS parentClaimed,
     payment_collection_settings.bank_name AS bankName, payment_collection_settings.account_holder_name AS accountHolderName,
     payment_collection_settings.account_number AS accountNumber, payment_collection_settings.iban,
@@ -262,6 +281,8 @@ async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Pro
       SELECT payment_request_id FROM payment_confirmation WHERE id = ?
     ) AND payment_installment.registration_draft_child_id = registration_draft_child.id AND payment_installment.installment_kind = 'initial')
     LEFT JOIN payment_confirmation ON payment_confirmation.id = ?
+    LEFT JOIN staff_outstanding_payment_approval ON staff_outstanding_payment_approval.initial_payment_installment_id = payment_installment.id
+      AND staff_outstanding_payment_approval.status = 'active'
     LEFT JOIN payment_request ON payment_request.id = payment_installment.payment_request_id
     LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.hold_type = 'initial_payment'
@@ -285,7 +306,8 @@ function eligible(milestone: MilestoneRow, context: ReminderContext | null): boo
   if (milestone.milestoneType === "later_reminder") {
     return context.enrollmentStatus === "confirmed" && ["pending", "partially_paid"].includes(context.installmentStatus);
   }
-  return context.confirmationStatus === "finalized" && Boolean(context.seatConfirmationApproved)
+  return (context.confirmationStatus === "finalized" && Boolean(context.seatConfirmationApproved)
+      || Boolean(context.staffOutstandingPaymentApproved))
     && context.enrollmentStatus === "confirmed" && ["pending", "partially_paid"].includes(context.installmentStatus);
 }
 

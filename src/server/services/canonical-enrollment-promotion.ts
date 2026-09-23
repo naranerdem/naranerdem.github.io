@@ -55,6 +55,7 @@ interface PromotionRow {
   initialInstallmentPaid: number;
   laterInstallmentOutstanding: number;
   partialSeatApproved: number;
+  staffOutstandingPaymentApproved: number;
   conditionalQuotePending: number;
   conditionalSeatApproved: number;
   activeInitialHold: number;
@@ -223,7 +224,10 @@ function promotionPaymentEligibleSql(childIdExpression: string): string {
     OR EXISTS (SELECT 1 FROM credit_application_confirmation
       WHERE credit_application_confirmation.registration_draft_child_id = ${childIdExpression}
         AND credit_application_confirmation.status = 'finalized'
-        AND credit_application_confirmation.seat_confirmation_approved = 1)))
+        AND credit_application_confirmation.seat_confirmation_approved = 1)
+    OR EXISTS (SELECT 1 FROM staff_outstanding_payment_approval
+      WHERE staff_outstanding_payment_approval.registration_draft_child_id = ${childIdExpression}
+        AND staff_outstanding_payment_approval.status IN ('active', 'settled', 'waived'))))
     OR EXISTS (SELECT 1 FROM payment_confirmation
       INNER JOIN conditional_family_discount_quote ON conditional_family_discount_quote.id = payment_confirmation.conditional_quote_id
       WHERE conditional_family_discount_quote.registration_draft_child_id = ${childIdExpression}
@@ -233,7 +237,8 @@ function promotionPaymentEligibleSql(childIdExpression: string): string {
 
 function promotionPaymentEligible(row: PromotionRow): boolean {
   if (row.conditionalQuotePending) return Boolean(row.conditionalSeatApproved);
-  return Boolean(row.partialSeatApproved || (row.initialInstallmentPaid && !row.laterInstallmentOutstanding));
+  return Boolean(row.partialSeatApproved || row.staffOutstandingPaymentApproved
+    || (row.initialInstallmentPaid && !row.laterInstallmentOutstanding));
 }
 
 // A pending additional admission may count only its own frozen reservations
@@ -821,7 +826,13 @@ async function rowForChild(database: D1Database, childId: string): Promise<Promo
       OR EXISTS(SELECT 1 FROM credit_application_confirmation
         WHERE credit_application_confirmation.registration_draft_child_id = registration_draft_child.id
           AND credit_application_confirmation.status = 'finalized'
-          AND credit_application_confirmation.seat_confirmation_approved = 1)) AS partialSeatApproved,
+          AND credit_application_confirmation.seat_confirmation_approved = 1)
+      OR EXISTS(SELECT 1 FROM staff_outstanding_payment_approval
+        WHERE staff_outstanding_payment_approval.registration_draft_child_id = registration_draft_child.id
+          AND staff_outstanding_payment_approval.status IN ('active', 'settled', 'waived'))) AS partialSeatApproved,
+    EXISTS(SELECT 1 FROM staff_outstanding_payment_approval
+      WHERE staff_outstanding_payment_approval.registration_draft_child_id = registration_draft_child.id
+        AND staff_outstanding_payment_approval.status IN ('active', 'settled', 'waived')) AS staffOutstandingPaymentApproved,
     EXISTS(SELECT 1 FROM conditional_family_discount_quote
       WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
         AND conditional_family_discount_quote.state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')) AS conditionalQuotePending,

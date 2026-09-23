@@ -107,6 +107,7 @@ const { sendParentAccessEmail, verifyEmailToken } = await import(pathToFileURL(e
 const { getParentDashboard } = await import(pathToFileURL(parentAccessBundle).href);
 const {
   claimParentPayment,
+  confirmOutstandingPaymentEnrollment,
   confirmSeatForSufficientPayment,
   finalizeDuePaymentConfirmations,
   getRegistrationExportRows,
@@ -114,10 +115,13 @@ const {
   markPaymentCreditRefunded,
   recordCheckedNotFound,
   recordManualPayment,
+  previewOutstandingPaymentWaiver,
   previewHistoricalSettlementIncidentReconciliation,
   reconcileHistoricalSettlementIncident,
   reviewHistoricalQualifiedPayment,
   releaseUnpaidSeat,
+  updateOutstandingPaymentDeadline,
+  waiveOutstandingPayment,
 } = await import(pathToFileURL(paymentReconciliationBundle).href);
 const {
   getInitialPaymentQueue: getReleasedInitialPaymentQueue,
@@ -2089,6 +2093,76 @@ try {
   assert.ok(count(database, "payment_confirmation", `payment_request_id = '${approvedPartialRequest.id}' AND seat_confirmation_approved = 1 AND status = 'finalized'`) >= 1,
     "later settlement never removes the earlier durable seat approval");
   assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}' AND status = 'confirmed'`), 1, "later settlement preserves the existing canonical enrollment");
+
+  const zeroApprovalDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-14T10:00:00.000Z"));
+  const zeroApprovalChallenge = addChallenge(database, zeroApprovalDraft.draftId, zeroApprovalDraft.normalizedEmail,
+    "2026-08-14T10:00:00.000Z", "2026-08-15T10:00:00.000Z");
+  await confirmRegistrationChallenge(env(database), zeroApprovalChallenge, session("2026-08-14T10:01:00.000Z", "2026-08-16T10:01:00.000Z"), new Date("2026-08-14T10:01:00.000Z"));
+  const zeroApprovalRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [zeroApprovalDraft.draftId])[0];
+  const zeroApprovalChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [zeroApprovalDraft.draftId])[0];
+  const zeroApprovalInstallment = database.query(`SELECT id, amount_mnt AS amountMnt FROM payment_installment WHERE payment_request_id = ?`, [zeroApprovalRequest.id])[0];
+  const zeroApprovalOperation = randomUUID();
+  const zeroApproval = await confirmOutstandingPaymentEnrollment(env(database), paymentStaff, {
+    paymentRequestId: zeroApprovalRequest.id, registrationDraftChildId: zeroApprovalChild.id,
+    remainingPaymentDueAt: "2026-09-15T10:00:00.000Z", operationId: zeroApprovalOperation,
+  }, new Date("2026-08-14T10:02:00.000Z"));
+  assert.equal(zeroApproval.idempotent, false, "staff can explicitly confirm an unpaid enrollment with a due date");
+  const zeroApprovalRetry = await confirmOutstandingPaymentEnrollment(env(database), paymentStaff, {
+    paymentRequestId: zeroApprovalRequest.id, registrationDraftChildId: zeroApprovalChild.id,
+    remainingPaymentDueAt: "2026-09-15T10:00:00.000Z", operationId: zeroApprovalOperation,
+  }, new Date("2026-08-14T10:02:30.000Z"));
+  assert.equal(zeroApprovalRetry.idempotent, true, "lost-response retry reuses the same zero-payment approval");
+  const zeroApprovalEnrollment = database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ?`, [zeroApprovalChild.id])[0];
+  assert.ok(zeroApprovalEnrollment.enrollmentId, "zero-payment approval creates a canonical enrollment without a receipt");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${zeroApprovalRequest.id}'`), 0, "zero-payment approval creates no received-payment record");
+  assert.equal(count(database, "payment_allocation", `payment_installment_id = '${zeroApprovalInstallment.id}'`), 0, "zero-payment approval creates no cash allocation");
+  assert.equal(count(database, "child_credit_entry", `registration_draft_child_id = '${zeroApprovalChild.id}'`), 0, "zero-payment approval creates no child credit");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${zeroApprovalChild.id}' AND status = 'active'`), 0,
+    "the confirmed enrollment replaces its provisional hold without relying on an elapsed deadline");
+  await updateOutstandingPaymentDeadline(env(database), paymentStaff, {
+    registrationDraftChildId: zeroApprovalChild.id, expectedDueAt: "2026-09-15T10:00:00.000Z",
+    remainingPaymentDueAt: "2026-09-22T10:00:00.000Z", operationId: randomUUID(),
+  }, new Date("2026-08-14T10:03:00.000Z"));
+  assert.equal(database.query(`SELECT remaining_payment_due_at AS dueAt FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = ?`, [zeroApprovalChild.id])[0].dueAt,
+    "2026-09-22T10:00:00.000Z", "staff can extend the outstanding-payment deadline without changing the enrollment");
+  await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: zeroApprovalRequest.id, allocations: [{ installmentId: zeroApprovalInstallment.id, amountMnt: Number(zeroApprovalInstallment.amountMnt) }],
+    source: "staff_manual_bank", idempotencyKey: "zero-approved-later-payment",
+  }, new Date("2026-08-14T10:04:00.000Z"));
+  await finalizeDuePaymentConfirmations(env(database), new Date("2026-08-14T10:10:00.000Z"));
+  assert.equal(database.query(`SELECT status FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = ?`, [zeroApprovalChild.id])[0].status,
+    "settled", "a later ordinary payment settles the outstanding approval without replacing the enrollment");
+  assert.equal(count(database, "enrollment", `id = '${zeroApprovalEnrollment.enrollmentId}' AND status = 'confirmed'`), 1,
+    "a later payment retains the existing confirmed enrollment");
+
+  const waiverDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-14T10:20:00.000Z"));
+  const waiverChallenge = addChallenge(database, waiverDraft.draftId, waiverDraft.normalizedEmail,
+    "2026-08-14T10:20:00.000Z", "2026-08-15T10:20:00.000Z");
+  await confirmRegistrationChallenge(env(database), waiverChallenge, session("2026-08-14T10:21:00.000Z", "2026-08-16T10:21:00.000Z"), new Date("2026-08-14T10:21:00.000Z"));
+  const waiverRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [waiverDraft.draftId])[0];
+  const waiverChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [waiverDraft.draftId])[0];
+  await confirmOutstandingPaymentEnrollment(env(database), paymentStaff, {
+    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id,
+    remainingPaymentDueAt: "2026-09-15T10:00:00.000Z", operationId: randomUUID(),
+  }, new Date("2026-08-14T10:22:00.000Z"));
+  const waiverPreview = await previewOutstandingPaymentWaiver(env(database), paymentStaff, {
+    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id,
+  });
+  const waiverResult = await waiveOutstandingPayment(env(database), paymentStaff, {
+    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id, reviewFingerprint: waiverPreview.reviewFingerprint,
+    operationId: randomUUID(), reason: "Тестийн зөвшөөрөл",
+  }, new Date("2026-08-14T10:23:00.000Z"));
+  assert.equal(waiverResult.totalWaivedAmountMnt, waiverPreview.totalWaivedAmountMnt, "the reviewed waiver writes exactly its inspected unpaid amount");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${waiverRequest.id}'`), 0, "waiving a fee does not invent a receipt");
+  assert.equal(count(database, "payment_credit", `payment_request_id = '${waiverRequest.id}'`), 0, "waiving a fee does not create refundable payment credit");
+  await assert.rejects(waiveOutstandingPayment(env(database), paymentStaff, {
+    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id, reviewFingerprint: waiverPreview.reviewFingerprint,
+    operationId: randomUUID(), reason: "Хоёр дахь зэрэгцээ оролдлого",
+  }, new Date("2026-08-14T10:23:30.000Z")), "a stale competing waiver cannot apply the same remaining fee twice");
+  assert.equal(database.query(`SELECT status FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = ?`, [waiverChild.id])[0].status,
+    "waived", "waiver closes the separate outstanding-payment reminder lifecycle");
+  assert.equal(count(database, "enrollment", `id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = '${waiverChild.id}') AND status = 'confirmed'`), 1,
+    "waiver preserves the active confirmed enrollment");
   await claimParentPayment(database, cashRequest.id, cashDraft.draftId, cashSession.rawToken, new Date("2026-08-15T10:00:00.000Z"));
   await assert.rejects(claimParentPayment(database, cashRequest.id, cashDraft.draftId, "not-this-family", new Date("2026-08-15T10:00:00.000Z")), "another session cannot claim a family's payment");
   const released = await releaseUnpaidSeat(env(database), paymentStaff, cashRequest.id, new Date("2026-08-15T10:00:00.000Z"));
