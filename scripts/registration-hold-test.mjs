@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,6 +37,9 @@ const childCreditBundle = path.join(tempDir, "child-credit-ledger.mjs");
 const paymentRemindersBundle = path.join(tempDir, "payment-reminders.mjs");
 const publicSeatCountThresholdBundle = path.join(tempDir, "public-seat-count-threshold.mjs");
 const conditionalFamilyDiscountBundle = path.join(tempDir, "conditional-family-discounts.mjs");
+const additionalClassCreditSettlementBundle = path.join(tempDir, "additional-class-credit-settlement.mjs");
+const paymentProjectionReferenceRoot = path.join(tempDir, "payment-projection-reference");
+const paymentProjectionReferenceBundle = path.join(tempDir, "payment-projection-reference.mjs");
 const releasedRegistrationBundle = path.join(tempDir, "released-registration-submission.mjs");
 const releasedPaymentReconciliationBundle = path.join(tempDir, "released-payment-reconciliation.mjs");
 bundle("src/server/services/registration-submission.ts", registrationBundle);
@@ -58,6 +61,16 @@ bundle("src/server/services/child-credit-ledger.ts", childCreditBundle);
 bundle("src/server/staff/payment-reminders.ts", paymentRemindersBundle);
 bundle("src/server/staff/public-seat-count-threshold.ts", publicSeatCountThresholdBundle);
 bundle("src/server/services/conditional-family-discounts.ts", conditionalFamilyDiscountBundle);
+bundle("src/server/services/additional-class-credit-settlement.ts", additionalClassCreditSettlementBundle);
+mkdirSync(paymentProjectionReferenceRoot);
+const projectionArchive = spawnSync("git", ["archive", "--format=tar", "22c83ae827c1908035dda839ac19af77d39f0997"], {
+  encoding: null,
+  maxBuffer: 32 * 1024 * 1024,
+});
+if (projectionArchive.status !== 0) throw new Error(`could not archive the payment-projection reference: ${projectionArchive.stderr?.toString() || "unknown error"}`);
+const projectionExtract = spawnSync("tar", ["-xf", "-", "-C", paymentProjectionReferenceRoot], { input: projectionArchive.stdout, encoding: "utf8" });
+if (projectionExtract.status !== 0) throw new Error(`could not extract the payment-projection reference: ${projectionExtract.stderr}`);
+bundle(path.join(paymentProjectionReferenceRoot, "src/server/staff/payment-reconciliation.ts"), paymentProjectionReferenceBundle);
 bundle(path.join(releasedRuntimeRoot, "src/server/services/registration-submission.ts"), releasedRegistrationBundle);
 bundle(path.join(releasedRuntimeRoot, "src/server/staff/payment-reconciliation.ts"), releasedPaymentReconciliationBundle);
 const {
@@ -114,6 +127,8 @@ const { registrationCorrectionDetail, replaceRegistrationEmail, saveRegistration
 const { getInitialPaymentDeadlineSetting, updateInitialPaymentDeadlineSetting } = await import(pathToFileURL(initialPaymentDeadlineBundle).href);
 const { addManualChildCredit, applyChildCredit, childCreditSummary, correctChildCredit, creditPaymentReviewState, leaveChildCreditUnused, transferChildCredit } = await import(pathToFileURL(childCreditBundle).href);
 const { processDuePaymentReminders } = await import(pathToFileURL(paymentRemindersBundle).href);
+const { pendingAdditionalClassCashSettlements } = await import(pathToFileURL(additionalClassCreditSettlementBundle).href);
+const { getInitialPaymentQueue: getPaymentProjectionReferenceQueue } = await import(pathToFileURL(paymentProjectionReferenceBundle).href);
 
 function sqlValue(value) {
   if (value === null || value === undefined) return "NULL";
@@ -237,6 +252,84 @@ function submission(classId, waitlistId, children = 1, paymentPlanCode = "single
 
 function count(database, table, where = "1 = 1") {
   return Number(database.query(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`)[0].count);
+}
+
+// Reference the pre-batch, one-installment lookup verbatim at the test
+// boundary. This keeps the queue optimization honest without using it on a
+// write path or weakening the current authoritative settlement helper.
+async function referenceAdditionalClassCashSettlement(database, input) {
+  const row = await database.prepare(`SELECT admission.id AS admissionId,
+      admission.proposed_existing_credit_mnt + admission.proposed_source_award_credit_mnt AS proposedCreditMnt,
+      COALESCE(SUM(reservation.amount_mnt), 0) AS reservedCreditMnt
+    FROM additional_class_admission AS admission
+    INNER JOIN additional_class_credit_reservation AS reservation
+      ON reservation.admission_id = admission.id AND reservation.status = 'pending'
+      AND reservation.target_payment_installment_id = ?
+    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = admission.source_enrollment_id
+    INNER JOIN registration_draft_child AS source_child ON source_child.id = admission.source_registration_draft_child_id
+    INNER JOIN registration_draft_child AS target_child ON target_child.id = admission.target_registration_draft_child_id
+    LEFT JOIN child_credit_entry AS existing_root ON existing_root.id = reservation.source_credit_entry_id
+    WHERE admission.target_registration_draft_child_id = ?
+      AND admission.status = 'pending_confirmation'
+      AND source_enrollment.status = 'confirmed' AND source_enrollment.transferred_out_at IS NULL
+      AND source_enrollment.student_id = admission.canonical_student_id
+      AND source_child.status != 'cancelled' AND target_child.status != 'cancelled'
+      AND (reservation.reservation_kind != 'existing_credit'
+        OR (existing_root.id IS NOT NULL AND existing_root.reserved_amount_mnt >= reservation.amount_mnt))
+    GROUP BY admission.id
+    HAVING reservedCreditMnt = proposedCreditMnt AND reservedCreditMnt > 0`)
+    .bind(input.paymentInstallmentId, input.registrationDraftChildId)
+    .first();
+  if (!row) return null;
+  const reservedCreditMnt = Number(row.reservedCreditMnt);
+  const outstandingMnt = Math.max(0, input.effectiveAmountMnt - input.allocatedAmountMnt);
+  if (!Number.isSafeInteger(reservedCreditMnt) || reservedCreditMnt <= 0 || reservedCreditMnt > outstandingMnt) return null;
+  return { admissionId: row.admissionId, reservedCreditMnt, cashRequiredMnt: outstandingMnt - reservedCreditMnt };
+}
+
+async function assertQueueCreditReviewEquivalence(database, queue, label) {
+  for (const item of queue.items) {
+    const installmentId = item.creditApplicationInstallmentId;
+    if (!installmentId) {
+      assert.equal(item.creditReviewNeeded, false, `${label}: a row without an applicable installment has no credit-review action`);
+      assert.equal(item.creditReviewResolved, false, `${label}: a row without an applicable installment has no resolved credit-review state`);
+      continue;
+    }
+    let reference = null;
+    try {
+      reference = await creditPaymentReviewState(database, item.registrationDraftChildId, installmentId);
+    } catch {
+      // The original per-row helper deliberately treats an inapplicable row as
+      // no review state. The batched projection must do the same.
+    }
+    const expectedNeeded = Boolean(reference && reference.availableCreditMnt > 0
+      && reference.outstandingAmountMnt > 0 && !reference.reviewed);
+    assert.equal(item.creditReviewNeeded, expectedNeeded,
+      `${label}: batched leave-unused review keeps the per-child/per-installment eligibility decision`);
+    assert.equal(item.creditReviewResolved, Boolean(reference?.reviewed),
+      `${label}: batched leave-unused review keeps the original reviewed state`);
+  }
+}
+
+function paymentProjectionComparison(queue) {
+  const itemFields = [
+    "registrationDraftChildId", "paymentRequestId", "installmentId", "paymentPlanCode",
+    "expectedAmountMnt", "rawExpectedAmountMnt", "allocatedAmountMnt", "totalExpectedMnt",
+    "totalPaidMnt", "totalCashAllocatedMnt", "totalCashReceivedMnt", "attributableCashExcessMnt",
+    "totalCreditAppliedMnt", "totalRemainingMnt", "availableCreditMnt", "reservedCreditMnt",
+    "cashRequiredMnt", "creditApplicationInstallmentId", "creditApplicationOutstandingMnt",
+    "creditReviewNeeded", "creditReviewResolved", "laterInstallmentId", "laterAmountMnt",
+    "laterAllocatedAmountMnt", "laterCashAllocatedAmountMnt", "canConfirmSeat", "dueAt", "laterDueAt",
+  ];
+  const pick = (row, fields) => Object.fromEntries(fields.map((field) => [field, row[field] ?? null]));
+  return {
+    items: queue.items.map((item) => pick(item, itemFields))
+      .sort((left, right) => String(left.installmentId).localeCompare(String(right.installmentId))),
+    credits: queue.credits.map((credit) => pick(credit, ["id", "creditKind", "availableAmountMnt", "guardianName", "childNames", "paymentReference"]))
+      .sort((left, right) => String(left.id).localeCompare(String(right.id))),
+    capacity: queue.capacity.map((entry) => pick(entry, ["id", "capacity", "confirmedCount", "reservedInitialPaymentCount", "identityReviewCount", "waitlistOfferCount", "transferReservationCount", "makeupReservationCount", "remainingSeats"]))
+      .sort((left, right) => String(left.id).localeCompare(String(right.id))),
+  };
 }
 
 function addChallenge(database, draftId, email, now, expiresAt) {
@@ -1116,6 +1209,10 @@ try {
   assert.equal(creditedAgreement.totalCreditAppliedMnt, 100000, "staff see applied credit separately from cash payment history");
   assert.equal(creditedAgreement.totalRemainingMnt, 400000, "the next outstanding installment is reduced by the authoritative credit allocation");
   assert.equal(creditedAgreement.creditApplicationInstallmentId, approvedTwoLater.id, "the staff credit action targets the actual later obligation after the initial installment is satisfied");
+  const referenceCreditQueue = await getPaymentProjectionReferenceQueue(env(database), paymentStaff, new Date('2026-08-13T09:25:30.000Z'));
+  assert.deepEqual(paymentProjectionComparison(creditQueue), paymentProjectionComparison(referenceCreditQueue),
+    "the optimized payment list preserves the 22c83ae financial projection, list membership, and existing actions on identical mixed pre-partial-settlement data");
+  await assertQueueCreditReviewEquivalence(database, creditQueue, "unreviewed partial credit");
   const preparedPaymentProjectionQueries = [];
   const tracedPaymentDatabase = {
     prepare(sql) { preparedPaymentProjectionQueries.push(sql); return database.prepare(sql); },
@@ -1202,11 +1299,17 @@ try {
   }, new Date('2026-08-13T09:27:30.000Z'));
   assert.equal((await creditPaymentReviewState(database, approvedTwoChild.id, approvedTwoLater.id)).reviewed, true,
     "an explicit leave-unused decision releases only this reviewed demand to the ordinary scheduler");
+  await assertQueueCreditReviewEquivalence(database,
+    await getInitialPaymentQueue(env(database), paymentStaff, new Date('2026-08-13T09:27:31.000Z')),
+    "explicitly reviewed partial credit");
   await addManualChildCredit(env(database), paymentStaff, {
     registrationDraftChildId: approvedTwoChild.id, amountMnt: 1, reason: "Шинэ нөхцөл", operationId: randomUUID(),
   }, new Date('2026-08-13T09:28:00.000Z'));
   assert.equal((await creditPaymentReviewState(database, approvedTwoChild.id, approvedTwoLater.id)).reviewed, false,
     "a changed credit balance invalidates an earlier leave-unused decision and requires review again");
+  await assertQueueCreditReviewEquivalence(database,
+    await getInitialPaymentQueue(env(database), paymentStaff, new Date('2026-08-13T09:28:01.000Z')),
+    "credit changed after a leave-unused decision");
   const reminderProvider = { async send() { return { providerMessageId: randomUUID() }; } };
   const reminderNow = new Date('2026-12-01T10:00:00.000Z');
   await processDuePaymentReminders(env(database, { RESEND_API_KEY: 'test-reminder-key', STAGING_EMAIL_OVERRIDE_TO: 'safe@example.test' }), reminderNow, reminderProvider);
@@ -1334,6 +1437,35 @@ try {
     "the payment queue identifies the frozen contingent credit separately from an applied payment");
   assert.equal(onePaymentTargetQueue.cashRequiredMnt, 535000,
     "the payment queue asks only for the authoritative cash remainder while the reservation remains valid");
+  const reservationComparisonInputs = [
+    {
+      registrationDraftChildId: onePaymentTargetId,
+      paymentInstallmentId: onePaymentTargetQueue.installmentId,
+      effectiveAmountMnt: Number(onePaymentTargetQueue.expectedAmountMnt),
+      allocatedAmountMnt: Number(onePaymentTargetQueue.allocatedAmountMnt),
+    },
+    {
+      registrationDraftChildId: approvedTwoChild.id,
+      paymentInstallmentId: approvedTwoLater.id,
+      effectiveAmountMnt: 450000,
+      allocatedAmountMnt: 100000,
+    },
+    {
+      registrationDraftChildId: onePaymentTargetId,
+      paymentInstallmentId: "missing-installment",
+      effectiveAmountMnt: Number(onePaymentTargetQueue.expectedAmountMnt),
+      allocatedAmountMnt: 0,
+    },
+  ];
+  const batchedReservations = await pendingAdditionalClassCashSettlements(database, reservationComparisonInputs);
+  const referenceReservations = await Promise.all(reservationComparisonInputs.map(async (input) => [
+    input.paymentInstallmentId,
+    await referenceAdditionalClassCashSettlement(database, input),
+  ]));
+  assert.deepEqual(Object.fromEntries(batchedReservations), Object.fromEntries(referenceReservations.filter(([, value]) => value)),
+    "the batched additional-class reservation lookup matches the released per-installment predicate for mixed matching and nonmatching rows");
+  assert.equal((await pendingAdditionalClassCashSettlements(database, [])).size, 0,
+    "an empty payment queue performs no reservation projection and has no invented cash settlement");
   const onePaymentTargetRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [onePaymentAdmission.draftId])[0];
   await recordManualPayment(env(database), paymentStaff, {
     paymentRequestId: onePaymentTargetRequest.id,
