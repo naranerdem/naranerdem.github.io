@@ -1,4 +1,4 @@
-import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
+import type { D1Database, D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { getPaymentReminderSetting } from "./payment-reminders";
 import { getRegistrationReinstatementEligibility } from "./registration-cancellation";
@@ -6,8 +6,8 @@ import { promotePaidDraftChild, promotePaidDraftChildren, recordAdditionalAdmiss
 import { getClassCapacityProjections } from "../services/class-capacity";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { discountAwardsForChildren, effectiveInstallmentsForRows, recalculateDiscountAwardBalances } from "../services/discounts";
-import { childCreditSummaryForChildren, creditPaymentReviewState } from "../services/child-credit-ledger";
-import { pendingAdditionalClassCashSettlement } from "../services/additional-class-credit-settlement";
+import { childCreditSummaryForChildren } from "../services/child-credit-ledger";
+import { pendingAdditionalClassCashSettlements } from "../services/additional-class-credit-settlement";
 import { finalizeFundedSameSubmissionQuotes, materializeConditionalFamilyAwardCredit, recoverFundedConditionalFamilyQuotes } from "../services/conditional-family-discounts";
 import { cashReceiptProjectionsForChildren } from "../services/cash-receipt-projection";
 import { familyCreditSuggestionsForChild } from "./family-discounts";
@@ -41,6 +41,33 @@ interface InstallmentRow {
   effectiveDueAt: string;
   status: "pending" | "partially_paid" | "paid" | "released";
   allocatedAmountMnt: number;
+}
+
+interface PaymentQueueCreditReviewInput {
+  childId: string;
+  paymentInstallmentId: string;
+  availableCreditMnt: number;
+  outstandingAmountMnt: number;
+}
+
+async function paymentQueueCreditReviews(database: D1Database, inputs: PaymentQueueCreditReviewInput[]) {
+  const unique = [...new Map(inputs.map((input) => [input.paymentInstallmentId, input])).values()];
+  if (!unique.length) return new Map<string, boolean>();
+  const rows = await database.prepare(`SELECT registration_draft_child_id AS childId,
+      payment_installment_id AS paymentInstallmentId, available_credit_mnt AS availableCreditMnt,
+      outstanding_amount_mnt AS outstandingAmountMnt
+    FROM child_credit_payment_review
+    WHERE decision = 'leave_unused' AND payment_installment_id IN (${unique.map(() => "?").join(", ")})`)
+    .bind(...unique.map((input) => input.paymentInstallmentId))
+    .all<{ childId: string; paymentInstallmentId: string; availableCreditMnt: number; outstandingAmountMnt: number }>();
+  const reviewed = new Map<string, boolean>();
+  for (const input of unique) {
+    reviewed.set(input.paymentInstallmentId, rows.results.some((row) => row.childId === input.childId
+      && row.paymentInstallmentId === input.paymentInstallmentId
+      && Number(row.availableCreditMnt) === input.availableCreditMnt
+      && Number(row.outstandingAmountMnt) === input.outstandingAmountMnt));
+  }
+  return reviewed;
 }
 
 export interface PaymentConfirmationGraceSetting {
@@ -408,15 +435,16 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     childCreditSummaryForChildren(env.DB, childIds),
   ]);
   const effectiveById = new Map(effectiveRows.map((item) => [item.id, item]));
-  const settlementByInstallment = new Map(await Promise.all(rawItems.map(async (item) => {
+  const settlementInputs = rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
-    return [String(item.installmentId), await pendingAdditionalClassCashSettlement(env.DB, {
+    return {
       registrationDraftChildId: String(item.registrationDraftChildId),
       paymentInstallmentId: String(item.installmentId),
       effectiveAmountMnt: Number(effective?.effectiveAmountMnt ?? item.expectedAmountMnt),
       allocatedAmountMnt: item.allocatedAmountMnt,
-    })] as const;
-  })));
+    };
+  });
+  const settlementByInstallment = await pendingAdditionalClassCashSettlements(env.DB, settlementInputs);
   const awardIds = [...awardByChild.values()].flat().map((award) => award.id);
   const awardCreditRows = awardIds.length ? await env.DB.prepare(`SELECT root.source_discount_award_id AS awardId,
       root.amount_mnt AS rootAmountMnt, root.reserved_amount_mnt AS reservedAmountMnt,
@@ -442,12 +470,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const laterOutstanding = later ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
     const installmentId = item.paymentPlanCode !== "two_installment" && initialOutstanding > 0 ? String(item.installmentId)
       : laterOutstanding > 0 && item.laterInstallmentId ? String(item.laterInstallmentId) : null;
-    return installmentId ? [{ childId, installmentId }] : [];
+    return installmentId ? [{ childId, paymentInstallmentId: installmentId,
+      availableCreditMnt: Number(creditByChild.get(childId)?.availableAmountMnt || 0),
+      outstandingAmountMnt: installmentId === String(item.installmentId) ? initialOutstanding : laterOutstanding,
+    }] : [];
   });
-  const creditReviewByInstallment = new Map(await Promise.all(creditReviewInputs.map(async ({ childId, installmentId }) => {
-    try { return [installmentId, await creditPaymentReviewState(env.DB, childId, installmentId)] as const; }
-    catch { return [installmentId, null] as const; }
-  })));
+  const creditReviewByInstallment = await paymentQueueCreditReviews(env.DB, creditReviewInputs);
   const financialMs = performance.now() - financialStartedAt;
   const conditionalStartedAt = performance.now();
   const conditionalQuotes = childIds.length ? await env.DB.prepare(`SELECT id, registration_draft_child_id AS childId,
@@ -557,7 +585,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const creditApplicationInstallmentId = creditMaySettleInitial && initialOutstandingMnt > 0 ? String(item.installmentId)
       : laterOutstandingMnt > 0 ? String(item.laterInstallmentId) : null;
     const creditApplicationOutstandingMnt = creditMaySettleInitial && initialOutstandingMnt > 0 ? initialOutstandingMnt : laterOutstandingMnt;
-    const creditReview = creditApplicationInstallmentId ? creditReviewByInstallment.get(creditApplicationInstallmentId) : null;
+    const creditReviewResolved = creditApplicationInstallmentId ? Boolean(creditReviewByInstallment.get(creditApplicationInstallmentId)) : false;
     const historicalSettlementReview = historicalReviewByChild.get(String(item.registrationDraftChildId));
     const historicalReviewReady = Boolean(historicalSettlementReview && initialOutstandingMnt === 0
       && !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved));
@@ -578,8 +606,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       creditEntries: credit?.roots ?? [],
       creditApplicationInstallmentId,
       creditApplicationOutstandingMnt,
-      creditReviewNeeded: Boolean(creditReview && creditReview.availableCreditMnt > 0 && creditReview.outstandingAmountMnt > 0 && !creditReview.reviewed),
-      creditReviewResolved: Boolean(creditReview?.reviewed),
+      creditReviewNeeded: Boolean(creditApplicationInstallmentId && Number(credit?.availableAmountMnt || 0) > 0 && creditApplicationOutstandingMnt > 0 && !creditReviewResolved),
+      creditReviewResolved,
       familyCreditSuggestion: null,
       conditionalFamilyQuote: conditionalQuoteByChild.get(String(item.registrationDraftChildId)) ?? null,
       historicalSettlementReview: historicalReviewReady ? historicalSettlementReview : null,

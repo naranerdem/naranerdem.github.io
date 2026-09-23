@@ -1116,6 +1116,36 @@ try {
   assert.equal(creditedAgreement.totalCreditAppliedMnt, 100000, "staff see applied credit separately from cash payment history");
   assert.equal(creditedAgreement.totalRemainingMnt, 400000, "the next outstanding installment is reduced by the authoritative credit allocation");
   assert.equal(creditedAgreement.creditApplicationInstallmentId, approvedTwoLater.id, "the staff credit action targets the actual later obligation after the initial installment is satisfied");
+  const preparedPaymentProjectionQueries = [];
+  const tracedPaymentDatabase = {
+    prepare(sql) { preparedPaymentProjectionQueries.push(sql); return database.prepare(sql); },
+    batch(statements) { return database.batch(statements); },
+  };
+  const tracedCreditQueue = await getInitialPaymentQueue(env(tracedPaymentDatabase), paymentStaff, new Date('2026-08-13T09:25:30.000Z'));
+  const tracedCreditedAgreement = tracedCreditQueue.items.find((item) => item.paymentRequestId === approvedTwoRequest.id);
+  assert.deepEqual({
+    totalPaidMnt: tracedCreditedAgreement.totalPaidMnt,
+    totalCreditAppliedMnt: tracedCreditedAgreement.totalCreditAppliedMnt,
+    totalRemainingMnt: tracedCreditedAgreement.totalRemainingMnt,
+    creditApplicationInstallmentId: tracedCreditedAgreement.creditApplicationInstallmentId,
+    creditReviewNeeded: tracedCreditedAgreement.creditReviewNeeded,
+  }, {
+    totalPaidMnt: creditedAgreement.totalPaidMnt,
+    totalCreditAppliedMnt: creditedAgreement.totalCreditAppliedMnt,
+    totalRemainingMnt: creditedAgreement.totalRemainingMnt,
+    creditApplicationInstallmentId: creditedAgreement.creditApplicationInstallmentId,
+    creditReviewNeeded: creditedAgreement.creditReviewNeeded,
+  }, "the batched payment projection preserves a partially settled credit agreement");
+  assert.equal(preparedPaymentProjectionQueries.filter((sql) => sql.includes("WITH requested(registrationDraftChildId, paymentInstallmentId)")).length, 1,
+    "the queue resolves additional-class cash reservations once for all visible payment rows");
+  assert.equal(preparedPaymentProjectionQueries.filter((sql) => sql.includes("FROM child_credit_payment_review") && sql.includes("payment_installment_id IN")).length, 1,
+    "the queue resolves leave-unused decisions once for all eligible credit installments");
+  const settlementPlan = sqlite("EXPLAIN QUERY PLAN SELECT admission.id FROM additional_class_credit_reservation AS reservation INNER JOIN additional_class_admission AS admission ON admission.id = reservation.admission_id WHERE reservation.target_payment_installment_id = 'plan-test' AND reservation.status = 'pending'");
+  assert.match(settlementPlan, /idx_additional_class_credit_reservation_target/,
+    "the scoped reservation projection uses the target-installment index");
+  const reviewPlan = sqlite("EXPLAIN QUERY PLAN SELECT payment_installment_id FROM child_credit_payment_review WHERE decision = 'leave_unused' AND payment_installment_id IN ('plan-test')");
+  assert.match(reviewPlan, /idx_child_credit_payment_review_installment/,
+    "the batched leave-unused lookup uses the installment index");
   await assert.rejects(correctChildCredit(env(database), paymentStaff, {
     registrationDraftChildId: approvedTwoChild.id, entryId: manualRoot.id, adjustmentMnt: -200000, reason: "Хэт засвар", operationId: randomUUID(),
   }, new Date('2026-08-13T09:26:00.000Z')), (error) => error?.code === "insufficient",
