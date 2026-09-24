@@ -84,7 +84,14 @@ assert.match(paymentService, /needsRemainingDeadline/, "server requires a deadli
 assert.match(paymentService, /allInitialSatisfied \|\| Boolean\(input\.approveSeatConfirmation\)/, "server automatically approves the seat at the effective initial-payment threshold");
 assert.match(paymentService, /confirmSeatForSufficientPayment/, "a separate correction action can approve an already-recorded sufficient payment without another receipt");
 assert.match(paymentService, /confirmOutstandingPaymentEnrollment/, "staff can confirm a real enrollment with no receipt through a separate durable approval");
-assert.match(paymentService, /waiveOutstandingPayment/, "fee waivers use a reviewed staff operation rather than a payment-credit shortcut");
+assert.match(paymentService, /applyEnrollmentFeeAdjustment/, "active enrollment discounts use a reviewed agreement-scoped operation rather than a payment-credit shortcut");
+assert.match(paymentService, /child\.status !== "cancelled" && child\.enrollmentStatus !== "cancelled"/, "debt waivers reject active enrollments server-side");
+assert.match(page, /button\("special", "Тусгай"/, "special payment actions live in one compact bottom tab");
+assert.match(page, /Хөнгөлөлтийн дүн/, "the special tab offers an absolute enrollment discount amount");
+assert.match(page, /data-enrollment-discount-preview/, "the discount has an explicit reviewed preview before saving");
+assert.match(page, /data-enrollment-discount-confirm/, "the discount confirmation preserves a separate durable operation");
+assert.match(page, /feeAfterExistingAdjustmentsMnt/, "the discount review distinguishes the existing fee from the additional adjustment");
+assert.doesNotMatch(page, /\$\{zeroConfirmation\}\$\{outstandingDeadline\}\$\{remaining > 0/, "ordinary payment entry no longer starts with special approval/deadline forms");
 assert.match(paymentService, /suppliedRemainingDueAt \?\? priorConfirmation\?\.remainingDueAt/, "later partial payments preserve an existing deadline when staff does not replace it");
 assert.match(paymentService, /ownReferralCode/, "payment queue projects an active confirmed-enrollment referral code");
 assert.match(paymentService, /creditApplicationInstallmentId/, "the payment queue identifies the actual outstanding obligation for a credit decision");
@@ -284,7 +291,8 @@ assert.match(page, /staff-payment-heading[\s\S]*staff-payment-toolbar-row[\s\S]*
 assert.match(page, /"Баталгаажсан, төлбөр хүлээж байна"/, "a zero-paid confirmed enrollment has a truthful distinct payment-list state");
 assert.match(page, /"Төлбөрөөс чөлөөлсөн"/, "waived unpaid fees remain visibly distinct from cash settlement");
 assert.match(page, /data-outstanding-confirm=/, "staff can explicitly review a zero-paid enrollment confirmation");
-assert.match(page, /data-outstanding-waiver-preview=/, "a confirmed unpaid enrollment has a reviewed fee-waiver entry point");
+assert.doesNotMatch(page, /\$\{waiver\}/, "ordinary active-enrollment payment panels do not render the legacy debt-waiver form");
+assert.match(page, /specialOptions/, "the special panel keeps only the selected compact action form open");
 assert.match(page, /Төлбөр орсон гэж тэмдэглэхгүй/, "zero-payment confirmation does not claim a receipt was recorded");
 assert.match(page, /const groupOpen = \(title\) => state\.openGroups\[title\] \?\? false/, "all top-level sections start collapsed on an ordinary fresh entry");
 assert.match(page, /return state\.openWaitlistSections\[key\] \?\? selected/, "waitlist subsections start collapsed unless an explicit selected-record navigation opens one");

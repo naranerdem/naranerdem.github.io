@@ -33,6 +33,7 @@ import {
 } from "../services/registration-submission";
 import {
   claimParentPayment,
+  applyEnrollmentFeeAdjustment,
   confirmOutstandingPaymentEnrollment,
   confirmSeatForSufficientPayment,
   getRegistrationExportRows,
@@ -45,6 +46,7 @@ import {
   recordCheckedNotFound,
   recordManualPayment,
   previewOutstandingPaymentWaiver,
+  previewEnrollmentFeeAdjustment,
   releaseUnpaidSeat,
   undoTentativePaymentConfirmation,
   updateOutstandingPaymentDeadline,
@@ -1522,6 +1524,18 @@ export async function handleApiRequest(
             remainingPaymentDueAt: String(payload.remainingPaymentDueAt ?? ""),
             expectedDueAt: String(payload.expectedDueAt ?? ""),
             operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.enrollment-discount-preview":
+          return json({ ok: true, ...await previewEnrollmentFeeAdjustment(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""),
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), amountMnt: Number(payload.amountMnt),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.enrollment-discount-apply":
+          return json({ ok: true, ...await applyEnrollmentFeeAdjustment(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""),
+            registrationDraftChildId: String(payload.registrationDraftChildId ?? ""), amountMnt: Number(payload.amountMnt),
+            reviewFingerprint: String(payload.reviewFingerprint ?? ""), operationId: String(payload.operationId ?? ""),
+            reason: String(payload.reason ?? ""),
           }) }, 200, { "Cache-Control": "no-store" });
         case "payment.waiver-preview":
           return json({ ok: true, ...await previewOutstandingPaymentWaiver(env, principal, {

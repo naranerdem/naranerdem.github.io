@@ -40,6 +40,7 @@ export interface EffectiveInstallmentInput {
 
 export interface EffectiveInstallment extends EffectiveInstallmentInput {
   discountAmountMnt: number;
+  enrollmentFeeAdjustmentMnt: number;
   feeWaiverAmountMnt: number;
   effectiveAmountMnt: number;
 }
@@ -231,7 +232,7 @@ export function effectiveInstallments(inputs: EffectiveInstallmentInput[], award
         : Math.floor((applicableAward * remainingUnpaid[index]) / remainingTotal);
       allocatedDiscount += ordinaryDiscount;
       const discountAmount = deferredByIndex[index] + ordinaryDiscount;
-      result.push({ ...installment, discountAmountMnt: discountAmount, feeWaiverAmountMnt: 0,
+      result.push({ ...installment, discountAmountMnt: discountAmount, enrollmentFeeAdjustmentMnt: 0, feeWaiverAmountMnt: 0,
         effectiveAmountMnt: installment.amountMnt - discountAmount });
     }
   }
@@ -241,9 +242,14 @@ export function effectiveInstallments(inputs: EffectiveInstallmentInput[], award
 export async function effectiveInstallmentsForRows(database: D1Database, inputs: EffectiveInstallmentInput[]): Promise<EffectiveInstallment[]> {
   if (!inputs.length) return [];
   const childIds = [...new Set(inputs.map((item) => item.registrationDraftChildId))];
-  const [active, pendingAdditional, pendingConditional, waiverRows] = await Promise.all([
+  const [active, pendingAdditional, pendingConditional, adjustmentRows, waiverRows] = await Promise.all([
     activeDiscountAwardsForChildren(database, childIds), pendingAdditionalClassAwardsForChildren(database, childIds),
     pendingConditionalFamilyAwardsForChildren(database, childIds),
+    database.prepare(`SELECT payment_installment_id AS installmentId, COALESCE(SUM(adjusted_amount_mnt), 0) AS amountMnt
+      FROM enrollment_fee_adjustment_installment
+      WHERE payment_installment_id IN (${inputs.map(() => "?").join(", ")})
+      GROUP BY payment_installment_id`).bind(...inputs.map((item) => item.id))
+      .all<{ installmentId: string; amountMnt: number }>(),
     database.prepare(`SELECT payment_installment_id AS installmentId, COALESCE(SUM(waived_amount_mnt), 0) AS amountMnt
       FROM payment_fee_waiver_installment
       WHERE payment_installment_id IN (${inputs.map(() => "?").join(", ")})
@@ -252,10 +258,13 @@ export async function effectiveInstallmentsForRows(database: D1Database, inputs:
   ]);
   for (const [childId, awards] of pendingAdditional) active.set(childId, [...(active.get(childId) ?? []), ...awards]);
   for (const [childId, awards] of pendingConditional) active.set(childId, [...(active.get(childId) ?? []), ...awards]);
+  const adjustmentByInstallment = new Map(adjustmentRows.results.map((row) => [row.installmentId, Number(row.amountMnt)]));
   const waiverByInstallment = new Map(waiverRows.results.map((row) => [row.installmentId, Number(row.amountMnt)]));
   return effectiveInstallments(inputs, active).map((row) => {
-    const feeWaiverAmountMnt = Math.min(row.effectiveAmountMnt, waiverByInstallment.get(row.id) ?? 0);
-    return { ...row, feeWaiverAmountMnt, effectiveAmountMnt: row.effectiveAmountMnt - feeWaiverAmountMnt };
+    const enrollmentFeeAdjustmentMnt = Math.min(row.effectiveAmountMnt, adjustmentByInstallment.get(row.id) ?? 0);
+    const afterAdjustment = row.effectiveAmountMnt - enrollmentFeeAdjustmentMnt;
+    const feeWaiverAmountMnt = Math.min(afterAdjustment, waiverByInstallment.get(row.id) ?? 0);
+    return { ...row, enrollmentFeeAdjustmentMnt, feeWaiverAmountMnt, effectiveAmountMnt: afterAdjustment - feeWaiverAmountMnt };
   });
 }
 

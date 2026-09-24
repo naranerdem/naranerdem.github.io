@@ -37,7 +37,19 @@ export async function getParentDashboard(env: WorkerEnv, rawSessionToken: string
     COALESCE(activity_offering.title, class_session.stage_code) AS offeringLabel,
     COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) || ' ' || COALESCE(class_meeting_rule.start_time, class_session.start_time) || '–' || COALESCE(class_meeting_rule.end_time, class_session.end_time) AS classLabel,
     registration_draft_child.status AS childStatus, enrollment.status AS enrollmentStatus,
-    enrollment_referral_code.code AS referralCode,
+    COALESCE(enrollment_referral_code.code, (SELECT shared_code.code
+      FROM enrollment_referral_code AS shared_code
+      INNER JOIN enrollment AS shared_enrollment ON shared_enrollment.id = shared_code.enrollment_id
+      WHERE shared_code.student_id = enrollment.student_id AND shared_code.status = 'active'
+        AND shared_enrollment.status = 'confirmed' AND shared_enrollment.transferred_out_at IS NULL
+        AND EXISTS (SELECT 1 FROM registration_draft_child AS qualifying_child
+          INNER JOIN payment_installment AS qualifying_installment ON qualifying_installment.registration_draft_child_id = qualifying_child.id
+          LEFT JOIN payment_allocation AS qualifying_allocation ON qualifying_allocation.payment_installment_id = qualifying_installment.id
+          LEFT JOIN payment_confirmation AS qualifying_confirmation ON qualifying_confirmation.received_payment_id = qualifying_allocation.received_payment_id
+          LEFT JOIN child_credit_entry AS qualifying_credit ON qualifying_credit.payment_installment_id = qualifying_installment.id AND qualifying_credit.entry_kind = 'credit_application'
+          WHERE qualifying_child.canonical_enrollment_id = shared_enrollment.id AND qualifying_installment.status != 'released'
+            AND ((qualifying_allocation.id IS NOT NULL AND COALESCE(qualifying_confirmation.status, 'finalized') != 'undone') OR qualifying_credit.id IS NOT NULL))
+      ORDER BY shared_code.activated_at ASC, shared_code.id ASC LIMIT 1)) AS referralCode,
     payment_installment.id AS installmentId, payment_installment.installment_number AS installmentNumber,
     payment_installment.amount_mnt AS amountMnt,
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
@@ -64,6 +76,13 @@ export async function getParentDashboard(env: WorkerEnv, rawSessionToken: string
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
     LEFT JOIN enrollment_referral_code ON enrollment_referral_code.enrollment_id = enrollment.id AND enrollment_referral_code.status = 'active'
+      AND EXISTS (SELECT 1 FROM registration_draft_child AS qualifying_child
+        INNER JOIN payment_installment AS qualifying_installment ON qualifying_installment.registration_draft_child_id = qualifying_child.id
+        LEFT JOIN payment_allocation AS qualifying_allocation ON qualifying_allocation.payment_installment_id = qualifying_installment.id
+        LEFT JOIN payment_confirmation AS qualifying_confirmation ON qualifying_confirmation.received_payment_id = qualifying_allocation.received_payment_id
+        LEFT JOIN child_credit_entry AS qualifying_credit ON qualifying_credit.payment_installment_id = qualifying_installment.id AND qualifying_credit.entry_kind = 'credit_application'
+        WHERE qualifying_child.canonical_enrollment_id = enrollment.id AND qualifying_installment.status != 'released'
+          AND ((qualifying_allocation.id IS NOT NULL AND COALESCE(qualifying_confirmation.status, 'finalized') != 'undone') OR qualifying_credit.id IS NOT NULL))
     WHERE registration_draft.canonical_guardian_account_id = ? AND registration_draft.is_test = ?
     GROUP BY payment_installment.id
     ORDER BY registration_draft.created_at DESC, registration_draft_child.position, payment_installment.installment_number`)

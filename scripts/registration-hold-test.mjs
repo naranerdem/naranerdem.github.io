@@ -106,6 +106,7 @@ const { registrationWriteEnabled } = await import(pathToFileURL(gatesBundle).hre
 const { sendParentAccessEmail, verifyEmailToken } = await import(pathToFileURL(emailVerificationBundle).href);
 const { getParentDashboard } = await import(pathToFileURL(parentAccessBundle).href);
 const {
+  applyEnrollmentFeeAdjustment,
   claimParentPayment,
   confirmOutstandingPaymentEnrollment,
   confirmSeatForSufficientPayment,
@@ -116,12 +117,12 @@ const {
   recordCheckedNotFound,
   recordManualPayment,
   previewOutstandingPaymentWaiver,
+  previewEnrollmentFeeAdjustment,
   previewHistoricalSettlementIncidentReconciliation,
   reconcileHistoricalSettlementIncident,
   reviewHistoricalQualifiedPayment,
   releaseUnpaidSeat,
   updateOutstandingPaymentDeadline,
-  waiveOutstandingPayment,
 } = await import(pathToFileURL(paymentReconciliationBundle).href);
 const {
   getInitialPaymentQueue: getReleasedInitialPaymentQueue,
@@ -2094,7 +2095,9 @@ try {
     "later settlement never removes the earlier durable seat approval");
   assert.equal(count(database, "enrollment", `id = '${approvedPartialChild.enrollmentId}' AND status = 'confirmed'`), 1, "later settlement preserves the existing canonical enrollment");
 
-  const zeroApprovalDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-14T10:00:00.000Z"));
+  const zeroApprovalInput = submission("class-second-offering");
+  zeroApprovalInput.children[0].givenName = `Төлбөргүй ${randomUUID().slice(0, 8)}`;
+  const zeroApprovalDraft = await createRegistrationDraft(env(database), zeroApprovalInput, new Date("2026-08-14T10:00:00.000Z"));
   const zeroApprovalChallenge = addChallenge(database, zeroApprovalDraft.draftId, zeroApprovalDraft.normalizedEmail,
     "2026-08-14T10:00:00.000Z", "2026-08-15T10:00:00.000Z");
   await confirmRegistrationChallenge(env(database), zeroApprovalChallenge, session("2026-08-14T10:01:00.000Z", "2026-08-16T10:01:00.000Z"), new Date("2026-08-14T10:01:00.000Z"));
@@ -2113,10 +2116,12 @@ try {
   }, new Date("2026-08-14T10:02:30.000Z"));
   assert.equal(zeroApprovalRetry.idempotent, true, "lost-response retry reuses the same zero-payment approval");
   const zeroApprovalEnrollment = database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ?`, [zeroApprovalChild.id])[0];
-  assert.ok(zeroApprovalEnrollment.enrollmentId, "zero-payment approval creates a canonical enrollment without a receipt");
+  assert.ok(zeroApprovalEnrollment.enrollmentId, `zero-payment approval creates a canonical enrollment without a receipt: ${JSON.stringify(zeroApproval)}`);
   assert.equal(count(database, "received_payment", `payment_request_id = '${zeroApprovalRequest.id}'`), 0, "zero-payment approval creates no received-payment record");
   assert.equal(count(database, "payment_allocation", `payment_installment_id = '${zeroApprovalInstallment.id}'`), 0, "zero-payment approval creates no cash allocation");
   assert.equal(count(database, "child_credit_entry", `registration_draft_child_id = '${zeroApprovalChild.id}'`), 0, "zero-payment approval creates no child credit");
+  assert.equal(count(database, "enrollment_referral_code", `enrollment_id = '${zeroApprovalEnrollment.enrollmentId}'`), 0,
+    "an unpaid confirmed enrollment cannot generate a referral code merely through staff approval");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${zeroApprovalChild.id}' AND status = 'active'`), 0,
     "the confirmed enrollment replaces its provisional hold without relying on an elapsed deadline");
   await updateOutstandingPaymentDeadline(env(database), paymentStaff, {
@@ -2135,34 +2140,46 @@ try {
   assert.equal(count(database, "enrollment", `id = '${zeroApprovalEnrollment.enrollmentId}' AND status = 'confirmed'`), 1,
     "a later payment retains the existing confirmed enrollment");
 
-  const waiverDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-14T10:20:00.000Z"));
-  const waiverChallenge = addChallenge(database, waiverDraft.draftId, waiverDraft.normalizedEmail,
+  const adjustmentInput = submission("class-second-offering");
+  adjustmentInput.children[0].givenName = `Хөнгөлөлт ${randomUUID().slice(0, 8)}`;
+  const adjustmentDraft = await createRegistrationDraft(env(database), adjustmentInput, new Date("2026-08-14T10:20:00.000Z"));
+  const adjustmentChallenge = addChallenge(database, adjustmentDraft.draftId, adjustmentDraft.normalizedEmail,
     "2026-08-14T10:20:00.000Z", "2026-08-15T10:20:00.000Z");
-  await confirmRegistrationChallenge(env(database), waiverChallenge, session("2026-08-14T10:21:00.000Z", "2026-08-16T10:21:00.000Z"), new Date("2026-08-14T10:21:00.000Z"));
-  const waiverRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [waiverDraft.draftId])[0];
-  const waiverChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [waiverDraft.draftId])[0];
+  await confirmRegistrationChallenge(env(database), adjustmentChallenge, session("2026-08-14T10:21:00.000Z", "2026-08-16T10:21:00.000Z"), new Date("2026-08-14T10:21:00.000Z"));
+  const adjustmentRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [adjustmentDraft.draftId])[0];
+  const adjustmentChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [adjustmentDraft.draftId])[0];
   await confirmOutstandingPaymentEnrollment(env(database), paymentStaff, {
-    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id,
+    paymentRequestId: adjustmentRequest.id, registrationDraftChildId: adjustmentChild.id,
     remainingPaymentDueAt: "2026-09-15T10:00:00.000Z", operationId: randomUUID(),
   }, new Date("2026-08-14T10:22:00.000Z"));
-  const waiverPreview = await previewOutstandingPaymentWaiver(env(database), paymentStaff, {
-    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id,
+  await assert.rejects(previewOutstandingPaymentWaiver(env(database), paymentStaff, {
+    paymentRequestId: adjustmentRequest.id, registrationDraftChildId: adjustmentChild.id,
+  }), "an active enrollment cannot be routed through a debt waiver");
+  const firstAdjustment = await previewEnrollmentFeeAdjustment(env(database), paymentStaff, {
+    paymentRequestId: adjustmentRequest.id, registrationDraftChildId: adjustmentChild.id, amountMnt: 20000,
   });
-  const waiverResult = await waiveOutstandingPayment(env(database), paymentStaff, {
-    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id, reviewFingerprint: waiverPreview.reviewFingerprint,
-    operationId: randomUUID(), reason: "Тестийн зөвшөөрөл",
+  const firstAdjustmentResult = await applyEnrollmentFeeAdjustment(env(database), paymentStaff, {
+    paymentRequestId: adjustmentRequest.id, registrationDraftChildId: adjustmentChild.id, amountMnt: 20000,
+    reviewFingerprint: firstAdjustment.reviewFingerprint, operationId: randomUUID(), reason: "Тестийн хөнгөлөлт",
   }, new Date("2026-08-14T10:23:00.000Z"));
-  assert.equal(waiverResult.totalWaivedAmountMnt, waiverPreview.totalWaivedAmountMnt, "the reviewed waiver writes exactly its inspected unpaid amount");
-  assert.equal(count(database, "received_payment", `payment_request_id = '${waiverRequest.id}'`), 0, "waiving a fee does not invent a receipt");
-  assert.equal(count(database, "payment_credit", `payment_request_id = '${waiverRequest.id}'`), 0, "waiving a fee does not create refundable payment credit");
-  await assert.rejects(waiveOutstandingPayment(env(database), paymentStaff, {
-    paymentRequestId: waiverRequest.id, registrationDraftChildId: waiverChild.id, reviewFingerprint: waiverPreview.reviewFingerprint,
-    operationId: randomUUID(), reason: "Хоёр дахь зэрэгцээ оролдлого",
-  }, new Date("2026-08-14T10:23:30.000Z")), "a stale competing waiver cannot apply the same remaining fee twice");
-  assert.equal(database.query(`SELECT status FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = ?`, [waiverChild.id])[0].status,
-    "waived", "waiver closes the separate outstanding-payment reminder lifecycle");
-  assert.equal(count(database, "enrollment", `id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = '${waiverChild.id}') AND status = 'confirmed'`), 1,
-    "waiver preserves the active confirmed enrollment");
+  assert.equal(firstAdjustmentResult.additionalDiscountMnt, 20000, "the reviewed adjustment records the exact selected enrollment discount");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${adjustmentRequest.id}'`), 0, "a discount does not invent a receipt");
+  assert.equal(count(database, "payment_credit", `payment_request_id = '${adjustmentRequest.id}'`), 0, "a discount does not create refundable payment credit");
+  const afterPartialAdjustment = await previewEnrollmentFeeAdjustment(env(database), paymentStaff, {
+    paymentRequestId: adjustmentRequest.id, registrationDraftChildId: adjustmentChild.id,
+    amountMnt: firstAdjustment.outstandingAmountMnt,
+  });
+  await applyEnrollmentFeeAdjustment(env(database), paymentStaff, {
+    paymentRequestId: adjustmentRequest.id, registrationDraftChildId: adjustmentChild.id,
+    amountMnt: afterPartialAdjustment.additionalDiscountMnt, reviewFingerprint: afterPartialAdjustment.reviewFingerprint,
+    operationId: randomUUID(), reason: "Үлдэгдлийг тэглэх тест",
+  }, new Date("2026-08-14T10:23:30.000Z"));
+  assert.equal(database.query(`SELECT status FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = ?`, [adjustmentChild.id])[0].status,
+    "settled", "a full unpaid-fee discount settles the reminder lifecycle without recording cash");
+  assert.equal(count(database, "enrollment", `id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = '${adjustmentChild.id}') AND status = 'confirmed'`), 1,
+    "an enrollment discount preserves the active enrollment");
+  assert.equal(count(database, "enrollment_referral_code", `enrollment_id = (SELECT canonical_enrollment_id FROM registration_draft_child WHERE id = '${adjustmentChild.id}')`), 0,
+    "a full unpaid-fee discount does not turn non-cash fee relief into a referral qualification");
   await claimParentPayment(database, cashRequest.id, cashDraft.draftId, cashSession.rawToken, new Date("2026-08-15T10:00:00.000Z"));
   await assert.rejects(claimParentPayment(database, cashRequest.id, cashDraft.draftId, "not-this-family", new Date("2026-08-15T10:00:00.000Z")), "another session cannot claim a family's payment");
   const released = await releaseUnpaidSeat(env(database), paymentStaff, cashRequest.id, new Date("2026-08-15T10:00:00.000Z"));

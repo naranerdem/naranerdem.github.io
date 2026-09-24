@@ -400,6 +400,13 @@ export async function sendEnrollmentConfirmationEmail(
         INNER JOIN enrollment AS shared_enrollment ON shared_enrollment.id = shared_code.enrollment_id
         WHERE shared_code.student_id = enrollment.student_id AND shared_code.status = 'active'
           AND shared_enrollment.status = 'confirmed' AND shared_enrollment.transferred_out_at IS NULL
+          AND EXISTS (SELECT 1 FROM registration_draft_child AS qualifying_child
+            INNER JOIN payment_installment AS qualifying_installment ON qualifying_installment.registration_draft_child_id = qualifying_child.id
+            LEFT JOIN payment_allocation AS qualifying_allocation ON qualifying_allocation.payment_installment_id = qualifying_installment.id
+            LEFT JOIN payment_confirmation AS qualifying_confirmation ON qualifying_confirmation.received_payment_id = qualifying_allocation.received_payment_id
+            LEFT JOIN child_credit_entry AS qualifying_credit ON qualifying_credit.payment_installment_id = qualifying_installment.id AND qualifying_credit.entry_kind = 'credit_application'
+            WHERE qualifying_child.canonical_enrollment_id = shared_enrollment.id AND qualifying_installment.status != 'released'
+              AND ((qualifying_allocation.id IS NOT NULL AND COALESCE(qualifying_confirmation.status, 'finalized') != 'undone') OR qualifying_credit.id IS NOT NULL))
         ORDER BY shared_code.activated_at ASC, shared_code.id ASC LIMIT 1)
     ) AS referralCode
     FROM registration_draft
@@ -415,6 +422,13 @@ export async function sendEnrollmentConfirmationEmail(
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
     LEFT JOIN enrollment_referral_code ON enrollment_referral_code.enrollment_id = enrollment.id AND enrollment_referral_code.status = 'active'
+      AND EXISTS (SELECT 1 FROM registration_draft_child AS qualifying_child
+        INNER JOIN payment_installment AS qualifying_installment ON qualifying_installment.registration_draft_child_id = qualifying_child.id
+        LEFT JOIN payment_allocation AS qualifying_allocation ON qualifying_allocation.payment_installment_id = qualifying_installment.id
+        LEFT JOIN payment_confirmation AS qualifying_confirmation ON qualifying_confirmation.received_payment_id = qualifying_allocation.received_payment_id
+        LEFT JOIN child_credit_entry AS qualifying_credit ON qualifying_credit.payment_installment_id = qualifying_installment.id AND qualifying_credit.entry_kind = 'credit_application'
+        WHERE qualifying_child.canonical_enrollment_id = enrollment.id AND qualifying_installment.status != 'released'
+          AND ((qualifying_allocation.id IS NOT NULL AND COALESCE(qualifying_confirmation.status, 'finalized') != 'undone') OR qualifying_credit.id IS NOT NULL))
     WHERE registration_draft.id = ? AND registration_draft.status != 'cancelled'
       ${childId ? "AND registration_draft_child.id = ?" : ""}
     GROUP BY payment_installment.id

@@ -1352,6 +1352,13 @@ async function registrationStatusForDraft(
     LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
     LEFT JOIN enrollment_referral_code ON enrollment_referral_code.enrollment_id = enrollment.id
       AND enrollment_referral_code.status = 'active'
+      AND EXISTS (SELECT 1 FROM registration_draft_child AS qualifying_child
+        INNER JOIN payment_installment AS qualifying_installment ON qualifying_installment.registration_draft_child_id = qualifying_child.id
+        LEFT JOIN payment_allocation AS qualifying_allocation ON qualifying_allocation.payment_installment_id = qualifying_installment.id
+        LEFT JOIN payment_confirmation AS qualifying_confirmation ON qualifying_confirmation.received_payment_id = qualifying_allocation.received_payment_id
+        LEFT JOIN child_credit_entry AS qualifying_credit ON qualifying_credit.payment_installment_id = qualifying_installment.id AND qualifying_credit.entry_kind = 'credit_application'
+        WHERE qualifying_child.canonical_enrollment_id = enrollment.id AND qualifying_installment.status != 'released'
+          AND ((qualifying_allocation.id IS NOT NULL AND COALESCE(qualifying_confirmation.status, 'finalized') != 'undone') OR qualifying_credit.id IS NOT NULL))
     LEFT JOIN activity_offering ON activity_offering.id = selected_class.activity_offering_id
     WHERE registration_draft_child.registration_draft_id = ?
     ORDER BY registration_draft_child.position

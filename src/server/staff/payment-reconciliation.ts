@@ -303,6 +303,104 @@ interface WaiverPreview {
   reviewFingerprint: string;
 }
 
+interface EnrollmentFeeAdjustmentPreview {
+  paymentRequestId: string;
+  registrationDraftChildId: string;
+  installments: Array<WaiverInstallmentPreview & { priorAdjustmentMnt: number }>;
+  feeAfterExistingAdjustmentsMnt: number;
+  additionalDiscountMnt: number;
+  revisedFeeMnt: number;
+  paidAmountMnt: number;
+  outstandingAmountMnt: number;
+  reviewFingerprint: string;
+}
+
+async function enrollmentFeeAdjustmentPreviewForChild(env: WorkerEnv, paymentRequestId: string, childId: string, amountMnt: unknown): Promise<EnrollmentFeeAdjustmentPreview> {
+  const request = await requestForId(env, paymentRequestId);
+  const amount = positive(amountMnt);
+  const child = await env.DB.prepare(`SELECT registration_draft_child.id, registration_draft_child.status,
+      enrollment.status AS enrollmentStatus
+    FROM registration_draft_child
+    LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+    WHERE registration_draft_child.id = ? AND registration_draft_child.registration_draft_id = ?`)
+    .bind(childId, request.registrationDraftId).first<{ id: string; status: string; enrollmentStatus: string | null }>();
+  if (!child || child.status === "cancelled" || child.enrollmentStatus !== "confirmed" || !amount) throw new PaymentReconciliationError("invalid");
+  const installments = (await installmentsForRequest(env, request.id)).filter((item) => item.registrationDraftChildId === childId && item.status !== "released");
+  const priorRows = installments.length ? await env.DB.prepare(`SELECT payment_installment_id AS installmentId,
+      COALESCE(SUM(adjusted_amount_mnt), 0) AS amountMnt
+    FROM enrollment_fee_adjustment_installment
+    WHERE payment_installment_id IN (${installments.map(() => "?").join(", ")}) GROUP BY payment_installment_id`)
+    .bind(...installments.map((item) => item.id)).all<{ installmentId: string; amountMnt: number }>() : { results: [] };
+  const priorByInstallment = new Map(priorRows.results.map((row) => [row.installmentId, Number(row.amountMnt)]));
+  const feeAfterExistingAdjustmentsMnt = installments.reduce((total, item) => total + item.amountMnt, 0);
+  const paidAmountMnt = installments.reduce((total, item) => total + item.allocatedAmountMnt, 0);
+  const remaining = Math.max(0, feeAfterExistingAdjustmentsMnt - paidAmountMnt);
+  if (amount > remaining) throw new PaymentReconciliationError("invalid");
+  let unassigned = amount;
+  const preview = installments.map((item) => {
+    const available = Math.max(0, item.amountMnt - item.allocatedAmountMnt);
+    const adjustedAmountMnt = Math.min(available, unassigned);
+    unassigned -= adjustedAmountMnt;
+    return {
+      installmentId: item.id, installmentKind: item.installmentKind, installmentNumber: item.installmentNumber,
+      effectiveAmountMnt: item.amountMnt, allocatedAmountMnt: item.allocatedAmountMnt,
+      waivedAmountMnt: adjustedAmountMnt, priorAdjustmentMnt: priorByInstallment.get(item.id) ?? 0,
+    };
+  }).filter((item) => item.waivedAmountMnt > 0);
+  if (unassigned > 0 || !preview.length) throw new PaymentReconciliationError("invalid");
+  const review = { paymentRequestId: request.id, registrationDraftChildId: childId, installments: preview,
+    feeAfterExistingAdjustmentsMnt, additionalDiscountMnt: amount, revisedFeeMnt: feeAfterExistingAdjustmentsMnt - amount,
+    paidAmountMnt, outstandingAmountMnt: remaining - amount };
+  return { ...review, reviewFingerprint: await sha256(review) };
+}
+
+export async function previewEnrollmentFeeAdjustment(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentRequestId: string; registrationDraftChildId: string; amountMnt: number;
+}) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  return enrollmentFeeAdjustmentPreviewForChild(env, String(input.paymentRequestId ?? ""), String(input.registrationDraftChildId ?? ""), input.amountMnt);
+}
+
+export async function applyEnrollmentFeeAdjustment(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentRequestId: string; registrationDraftChildId: string; amountMnt: number; reviewFingerprint: string; operationId: string; reason: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const id = operationId(input.operationId);
+  const reason = typeof input.reason === "string" ? input.reason.normalize("NFKC").trim() : "";
+  if (!id || !/^[0-9a-f]{64}$/i.test(String(input.reviewFingerprint ?? "")) || !reason || reason.length > 500) throw new PaymentReconciliationError("invalid");
+  const existing = await env.DB.prepare(`SELECT id, registration_draft_child_id AS childId, payment_request_id AS requestId
+    FROM enrollment_fee_adjustment WHERE operation_id = ?`).bind(id).first<{ id: string; childId: string; requestId: string }>();
+  if (existing) {
+    if (existing.childId !== input.registrationDraftChildId || existing.requestId !== input.paymentRequestId) throw new PaymentReconciliationError("conflict");
+    return { idempotent: true, adjustmentId: existing.id };
+  }
+  const preview = await enrollmentFeeAdjustmentPreviewForChild(env, String(input.paymentRequestId ?? ""), String(input.registrationDraftChildId ?? ""), input.amountMnt);
+  if (preview.reviewFingerprint !== input.reviewFingerprint) throw new PaymentReconciliationError("conflict");
+  const request = await requestForId(env, preview.paymentRequestId);
+  const now = nowDate.toISOString(); const adjustmentId = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO enrollment_fee_adjustment (
+      id, operation_id, payment_request_id, registration_draft_child_id, reason, review_fingerprint,
+      adjusted_by_staff_account_id, adjusted_at, is_test, test_run_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(adjustmentId, id, request.id, preview.registrationDraftChildId, reason, preview.reviewFingerprint,
+        actor.staffAccountId, now, request.isTest, request.testRunId),
+    ...preview.installments.map((item) => env.DB.prepare(`INSERT INTO enrollment_fee_adjustment_installment (
+      enrollment_fee_adjustment_id, payment_installment_id, adjusted_amount_mnt, expected_applied_amount_mnt,
+      expected_effective_amount_mnt, expected_prior_adjustment_mnt
+    ) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(adjustmentId, item.installmentId, item.waivedAmountMnt, item.allocatedAmountMnt,
+        item.effectiveAmountMnt + item.priorAdjustmentMnt, item.priorAdjustmentMnt)),
+    audit(env, actor, "enrollment_fee_discounted", "enrollment_fee_adjustment", adjustmentId,
+      { operationId: id, registrationDraftChildId: preview.registrationDraftChildId, paymentRequestId: request.id,
+        amountMnt: preview.additionalDiscountMnt, feeAfterExistingAdjustmentsMnt: preview.feeAfterExistingAdjustmentsMnt,
+        revisedFeeMnt: preview.revisedFeeMnt, paidAmountMnt: preview.paidAmountMnt, outstandingAmountMnt: preview.outstandingAmountMnt, reason }, request, now),
+  ]);
+  await refreshInstallmentsForChild(env, request, preview.registrationDraftChildId, now);
+  await settleOutstandingApprovalIfResolved(env, preview.registrationDraftChildId, now);
+  return { idempotent: false, adjustmentId, ...preview };
+}
+
 async function waiverPreviewForChild(env: WorkerEnv, paymentRequestId: string, childId: string): Promise<WaiverPreview> {
   const request = await requestForId(env, paymentRequestId);
   const child = await env.DB.prepare(`SELECT registration_draft_child.id, registration_draft_child.canonical_enrollment_id AS enrollmentId,
@@ -311,7 +409,9 @@ async function waiverPreviewForChild(env: WorkerEnv, paymentRequestId: string, c
     LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
     WHERE registration_draft_child.id = ? AND registration_draft_child.registration_draft_id = ?`)
     .bind(childId, request.registrationDraftId).first<{ id: string; enrollmentId: string | null; status: string; enrollmentStatus: string | null }>();
-  if (!child || child.status === "cancelled" || child.enrollmentStatus !== "confirmed") throw new PaymentReconciliationError("invalid");
+  // 0066 is retained for existing history. New waivers are only an explicit
+  // closure of an already-ended agreement that still has a durable debt.
+  if (!child || (child.status !== "cancelled" && child.enrollmentStatus !== "cancelled")) throw new PaymentReconciliationError("invalid");
   const installments = (await installmentsForRequest(env, request.id)).filter((item) => item.registrationDraftChildId === childId && item.status !== "released");
   const previews = installments.map((item) => ({
     installmentId: item.id,
@@ -545,12 +645,26 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     COALESCE(
       (SELECT code FROM enrollment_referral_code
         WHERE enrollment_id = registration_draft_child.canonical_enrollment_id AND status = 'active'
+          AND EXISTS (SELECT 1 FROM registration_draft_child AS qualifying_child
+            INNER JOIN payment_installment AS qualifying_installment ON qualifying_installment.registration_draft_child_id = qualifying_child.id
+            LEFT JOIN payment_allocation AS qualifying_allocation ON qualifying_allocation.payment_installment_id = qualifying_installment.id
+            LEFT JOIN payment_confirmation AS qualifying_confirmation ON qualifying_confirmation.received_payment_id = qualifying_allocation.received_payment_id
+            LEFT JOIN child_credit_entry AS qualifying_credit ON qualifying_credit.payment_installment_id = qualifying_installment.id AND qualifying_credit.entry_kind = 'credit_application'
+            WHERE qualifying_child.canonical_enrollment_id = registration_draft_child.canonical_enrollment_id AND qualifying_installment.status != 'released'
+              AND ((qualifying_allocation.id IS NOT NULL AND COALESCE(qualifying_confirmation.status, 'finalized') != 'undone') OR qualifying_credit.id IS NOT NULL))
         ORDER BY activated_at DESC, id DESC LIMIT 1),
       (SELECT code FROM enrollment_referral_code
         INNER JOIN enrollment AS referral_enrollment ON referral_enrollment.id = enrollment_referral_code.enrollment_id
         WHERE enrollment_referral_code.student_id = registration_draft_child.canonical_student_id
           AND enrollment_referral_code.status = 'active' AND referral_enrollment.status = 'confirmed'
           AND referral_enrollment.transferred_out_at IS NULL
+          AND EXISTS (SELECT 1 FROM registration_draft_child AS qualifying_child
+            INNER JOIN payment_installment AS qualifying_installment ON qualifying_installment.registration_draft_child_id = qualifying_child.id
+            LEFT JOIN payment_allocation AS qualifying_allocation ON qualifying_allocation.payment_installment_id = qualifying_installment.id
+            LEFT JOIN payment_confirmation AS qualifying_confirmation ON qualifying_confirmation.received_payment_id = qualifying_allocation.received_payment_id
+            LEFT JOIN child_credit_entry AS qualifying_credit ON qualifying_credit.payment_installment_id = qualifying_installment.id AND qualifying_credit.entry_kind = 'credit_application'
+            WHERE qualifying_child.canonical_enrollment_id = referral_enrollment.id AND qualifying_installment.status != 'released'
+              AND ((qualifying_allocation.id IS NOT NULL AND COALESCE(qualifying_confirmation.status, 'finalized') != 'undone') OR qualifying_credit.id IS NOT NULL))
         ORDER BY enrollment_referral_code.activated_at ASC, enrollment_referral_code.id ASC LIMIT 1)
     ) AS ownReferralCode,
     (SELECT captured_code FROM registration_draft_referral
@@ -668,14 +782,23 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     WHERE registration_draft_child.status != 'cancelled'
     GROUP BY payment_fee_waiver.id
     ORDER BY payment_fee_waiver.waived_at DESC`).all<{ id: string; childId: string; reason: string; waivedAt: string; amountMnt: number }>();
+  const adjustmentRowsPromise = env.DB.prepare(`SELECT enrollment_fee_adjustment.id,
+      enrollment_fee_adjustment.registration_draft_child_id AS childId, enrollment_fee_adjustment.reason,
+      enrollment_fee_adjustment.adjusted_at AS adjustedAt,
+      COALESCE(SUM(enrollment_fee_adjustment_installment.adjusted_amount_mnt), 0) AS amountMnt
+    FROM enrollment_fee_adjustment
+    INNER JOIN enrollment_fee_adjustment_installment
+      ON enrollment_fee_adjustment_installment.enrollment_fee_adjustment_id = enrollment_fee_adjustment.id
+    GROUP BY enrollment_fee_adjustment.id
+    ORDER BY enrollment_fee_adjustment.adjusted_at DESC`).all<{ id: string; childId: string; reason: string; adjustedAt: string; amountMnt: number }>();
   const capacityRowsPromise = getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
   const capacityLabelsPromise = env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
     FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
     ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
       start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
-  const [result, credits, discountCredits, cancelled, waiverRows, capacityRows, capacityLabels] = await Promise.all([
-    paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, waiverRowsPromise, capacityRowsPromise, capacityLabelsPromise,
+  const [result, credits, discountCredits, cancelled, waiverRows, adjustmentRows, capacityRows, capacityLabels] = await Promise.all([
+    paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, waiverRowsPromise, adjustmentRowsPromise, capacityRowsPromise, capacityLabelsPromise,
   ]);
   const projectionMs = performance.now() - queueStartedAt;
   const enrichmentStartedAt = performance.now();
@@ -696,6 +819,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   for (const row of waiverRows.results) {
     waiverByChild.set(row.childId, [...(waiverByChild.get(row.childId) ?? []), {
       id: row.id, reason: row.reason, waivedAt: row.waivedAt, amountMnt: Number(row.amountMnt),
+    }]);
+  }
+  const adjustmentByChild = new Map<string, Array<{ id: string; reason: string; adjustedAt: string; amountMnt: number }>>();
+  for (const row of adjustmentRows.results) {
+    adjustmentByChild.set(row.childId, [...(adjustmentByChild.get(row.childId) ?? []), {
+      id: row.id, reason: row.reason, adjustedAt: row.adjustedAt, amountMnt: Number(row.amountMnt),
     }]);
   }
   const financialStartedAt = performance.now();
@@ -887,6 +1016,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       availableCreditMnt: credit?.availableAmountMnt ?? 0,
       totalFeeWaivedMnt: waiverHistory.reduce((total, waiver) => total + waiver.amountMnt, 0),
       waiverHistory,
+      enrollmentDiscountHistory: adjustmentByChild.get(String(item.registrationDraftChildId)) ?? [],
       creditEntries: credit?.roots ?? [],
       creditApplicationInstallmentId,
       creditApplicationOutstandingMnt,

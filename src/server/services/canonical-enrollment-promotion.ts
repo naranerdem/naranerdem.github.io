@@ -2,7 +2,7 @@ import { sha256 } from "../auth/crypto";
 import type { D1Database, D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "../staff/authorization";
 import { sendEnrollmentConfirmationEmail } from "../email/registration-transactional";
-import { ensureEnrollmentReferralCode } from "./referral-codes";
+import { ensureEnrollmentReferralCode, enrollmentHasQualifyingPayment } from "./referral-codes";
 import { awardReferrerDiscountForReferral, effectiveInstallmentsForRows, getDiscountPolicySettingFromDatabase, recalculateDiscountAwardBalances, reverseReferralAwardForSameFamily } from "./discounts";
 import { ensureDiscountAwardCredit, releaseAdditionalAdmissionCreditReservations } from "./child-credit-ledger";
 import { pendingAdditionalClassCashSettlement } from "./additional-class-credit-settlement";
@@ -916,6 +916,9 @@ async function settleCapturedReferralAfterPromotion(env: WorkerEnv, row: Pick<Pr
   studentId: string, guardianId: string, now: string): Promise<void> {
   const referral = await capturedReferral(env.DB, row.childId);
   if (!referral) return;
+  const enrollment = await env.DB.prepare(`SELECT canonical_enrollment_id AS enrollmentId
+    FROM registration_draft_child WHERE id = ?`).bind(row.childId).first<{ enrollmentId: string | null }>();
+  if (!enrollment?.enrollmentId || !(await enrollmentHasQualifyingPayment(env.DB, enrollment.enrollmentId))) return;
   if (referral.referringStudentId === studentId || referral.referringGuardianId === guardianId) {
     await reverseReferralAwardForSameFamily(env, row.childId, now);
     return;
