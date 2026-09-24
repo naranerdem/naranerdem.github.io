@@ -2176,6 +2176,20 @@ textarea:focus {
   margin-top: 0.75rem;
 }
 
+.staff-special-payment-actions {
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.staff-special-payment-options {
+  justify-content: flex-start;
+}
+
+.staff-special-payment-actions > .staff-payment-form {
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 0.75rem;
+}
+
 .staff-panel-region > .staff-payment-form,
 .staff-panel-region > .staff-transfer-panel {
   margin-bottom: 0;

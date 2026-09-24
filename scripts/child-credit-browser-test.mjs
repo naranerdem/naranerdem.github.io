@@ -9,7 +9,8 @@ import { chromium } from "@playwright/test";
 // This is a disposable local Worker/D1 integration test. Its session is a
 // normally hashed test-only staff_session; no runtime authentication bypass is
 // added to the Worker or production configuration.
-const persistDir = mkdtempSync(path.join(tmpdir(), "naranerdem-credit-browser-"));
+const reusablePersistDir = process.env.NARANERDEM_BROWSER_PERSIST_DIR || "";
+const persistDir = reusablePersistDir || mkdtempSync(path.join(tmpdir(), "naranerdem-credit-browser-"));
 const testRunId = `browser-credit-${randomUUID()}`;
 const rawSessionToken = randomUUID();
 const sessionHash = createHash("sha256").update(rawSessionToken).digest("hex");
@@ -32,6 +33,14 @@ async function capturePaymentPanel(page, name) {
   if (!paymentPanelScreenshotDir) return;
   mkdirSync(paymentPanelScreenshotDir, { recursive: true });
   await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name), fullPage: true });
+}
+
+async function capturePaymentDetail(page, row, name) {
+  if (!paymentPanelScreenshotDir) return;
+  mkdirSync(paymentPanelScreenshotDir, { recursive: true });
+  await row.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await page.waitForTimeout(50);
+  await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name) });
 }
 
 async function captureStaffSessionPanel(page) {
@@ -428,34 +437,88 @@ async function recordCashPayment(page, childId, amount, {
   return submitted;
 }
 
-async function captureDuplicateAndZeroGraceStates(page) {
+async function captureSpecialPaymentStates(page, scenario) {
   execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 0");
-  const settledChildId = await fillIntake(page, "ZeroGraceCapture", "single");
-  await recordCashPayment(page, settledChildId, 1000, { successText: "Төлбөр бүртгэгдэж, суудал баталгаажлаа." });
-  const settledRow = page.locator(`[data-registration-child="${settledChildId}"]`);
-  await settledRow.getByText("Төлбөр бүртгэгдэж, суудал баталгаажлаа.").waitFor({ state: "visible" });
-  await capturePaymentPanel(page, "zero-grace-confirmed.png");
+  try {
+    if (scenario === "none") {
+      const settledChildId = await fillIntake(page, "ZeroGraceCapture", "single");
+      await recordCashPayment(page, settledChildId, 1000, { successText: "Төлбөр бүртгэгдэж, суудал баталгаажлаа." });
+      const settledRow = page.locator(`[data-registration-child="${settledChildId}"]`);
+      await settledRow.locator("[data-special-open]").click();
+      await settledRow.getByText("Энэ бүртгэлд тусгай төлбөрийн үйлдэл одоогоор алга.").waitFor({ state: "visible" });
+      await capturePaymentDetail(page, settledRow, "special-no-action-mobile.png");
+      return;
+    }
 
-  const unpaidChildId = await fillIntake(page, "DuplicateCapture", "two_installment");
-  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(unpaidChildId)}`);
-  const unpaidRow = page.locator(`[data-registration-child="${unpaidChildId}"]`);
-  await unpaidRow.waitFor({ state: "visible" });
-  assert.equal(await unpaidRow.locator(".staff-later-payment-form").count(), 0,
-    "an unpaid initial installment never exposes the later-payment form");
-  const cancellation = unpaidRow.locator("[data-registration-cancel-form]");
-  const cancellationDisclosure = cancellation.locator("xpath=ancestor::details[1]");
-  if (!(await cancellationDisclosure.evaluate((element) => element.open))) await cancellationDisclosure.locator("summary").click();
-  await cancellation.locator('select[name="reason"]').selectOption("duplicate_registration");
-  await cancellation.locator('input[name="retainedRegistrationDraftChildId"]').fill(settledChildId);
-  await cancellation.locator('button[type="submit"]').click();
-  const dialog = page.locator("#registration-cancel-dialog");
-  await dialog.waitFor({ state: "visible" });
-  assert.match(await dialog.innerText(), /Давхар бүртгэл/, "the confirmation names the selected duplicate reason");
-  await capturePaymentPanel(page, "duplicate-cancellation-confirmation.png");
-  await dialog.locator("[data-registration-cancel-dismiss]").click();
-  assert.equal((await dbJson(`SELECT status FROM registration_draft_child WHERE id = ${sql(unpaidChildId)}`))[0]?.status,
-    "awaiting_initial_payment", "dismissing the duplicate-cancellation confirmation leaves the unpaid record unchanged");
-  execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 5");
+    if (scenario === "zero" || scenario === "deadline") {
+      const unpaidChildId = await fillIntake(page, "SpecialZeroCapture", "two_installment");
+      await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(unpaidChildId)}`);
+      const unpaidRow = page.locator(`[data-registration-child="${unpaidChildId}"]`);
+      await unpaidRow.waitFor({ state: "visible" });
+      assert.equal(await unpaidRow.locator(".staff-later-payment-form").count(), 0,
+        "an unpaid initial installment never exposes the later-payment form");
+      await capturePaymentDetail(page, unpaidRow, "ordinary-payment-panel-mobile.png");
+      await unpaidRow.locator("[data-special-open]").click();
+      await unpaidRow.getByRole("button", { name: "Төлбөргүй баталгаажуулах" }).click();
+      const zeroForm = unpaidRow.locator("[data-outstanding-confirm]");
+      await zeroForm.waitFor({ state: "visible" });
+      await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-mobile.png");
+      await page.setViewportSize({ width: 1024, height: 900 });
+      await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-desktop.png");
+      await page.setViewportSize({ width: 390, height: 844 });
+      if (scenario === "zero") return;
+      let refreshIntercepted = false;
+      await page.route("**/api/staff/payments", async (route) => {
+        if (route.request().method() === "GET" && !refreshIntercepted) {
+          refreshIntercepted = true;
+          await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "capture refresh interruption" }) });
+          return;
+        }
+        await route.continue();
+      });
+      const zeroRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+        && response.request().method() === "POST" && response.request().postData()?.includes("payment.confirm-outstanding"));
+      await zeroForm.locator('button[type="submit"]').click();
+      const zeroResponse = await zeroRequest;
+      if (!zeroResponse.ok()) throw new Error(`zero-payment confirmation failed: ${await zeroResponse.text()}`);
+      await unpaidRow.getByText("Бүртгэл баталгаажсан. Жагсаалтыг шинэчилж чадсангүй; Шинэчлэхийг сонгоно уу.").waitFor({ state: "visible" });
+      await page.unroute("**/api/staff/payments");
+      await page.reload();
+      await unpaidRow.waitFor({ state: "visible" });
+      await unpaidRow.locator("[data-special-open]").click();
+      await unpaidRow.getByRole("button", { name: "Хугацаа сунгах" }).click();
+      await unpaidRow.locator("[data-outstanding-deadline]").waitFor({ state: "visible" });
+      await capturePaymentDetail(page, unpaidRow, "special-deadline-mobile.png");
+      return;
+    }
+
+    const discountChildId = await fillIntake(page, "SpecialDiscountCapture", "two_installment");
+    await recordCashPayment(page, discountChildId, 500, {
+      successText: "Төлбөр бүртгэгдэж, суудал баталгаажлаа.",
+    });
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(discountChildId)}`);
+    const discountRow = page.locator(`[data-registration-child="${discountChildId}"]`);
+    await discountRow.waitFor({ state: "visible" });
+    await discountRow.locator("[data-special-open]").click();
+    await discountRow.getByRole("button", { name: "Хөнгөлөлт өгөх" }).click();
+    const discountForm = discountRow.locator("[data-enrollment-discount-preview]");
+    await discountForm.waitFor({ state: "visible" });
+    await discountForm.locator('input[name="amountMnt"]').fill("100");
+    await discountForm.locator('textarea[name="reason"]').fill("Browser special discount review");
+    await capturePaymentDetail(page, discountRow, "special-discount-entry-mobile.png");
+    const discountRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.enrollment-discount-preview"));
+    await discountForm.locator('button[type="submit"]').click();
+    const discountResponse = await discountRequest;
+    if (!discountResponse.ok()) throw new Error(`enrollment-discount review failed: ${await discountResponse.text()}`);
+    await discountRow.getByText("Хөнгөлөлтийг хянах").waitFor({ state: "visible" });
+    await page.setViewportSize({ width: 768, height: 900 });
+    await capturePaymentDetail(page, discountRow, "special-discount-review-intermediate.png");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await capturePaymentDetail(page, discountRow, "special-discount-review-mobile.png");
+  } finally {
+    execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 5");
+  }
 }
 
 async function recordApprovedPartialCashPayment(page, childId, amount) {
@@ -897,7 +960,9 @@ async function cancelAndRestoreRegistration(page, childId, { restore: shouldRest
 }
 
 try {
-  runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "local migrations");
+  if (process.env.NARANERDEM_BROWSER_SKIP_MIGRATIONS !== "1") {
+    runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "local migrations");
+  }
   execute(fixtureSql());
   worker = spawn(process.execPath, [wranglerCli, "dev", "--env", "staging", "--local", "--persist-to", persistDir,
     "--ip", "127.0.0.1", "--port", String(port), "--test-scheduled", "--var", `APP_ORIGIN:${baseUrl}`], { stdio: ["ignore", "pipe", "pipe"] });
@@ -906,28 +971,33 @@ try {
   await waitForWorker();
 
   browser = await chromium.launch({ headless: true });
-  const publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
-    childName: "PublicTwoInstallment",
-    email: "browser-public-two@example.test",
-    paymentPlanCode: "two_installment",
-    expectedInitialAmount: 500,
-  });
-  const publicOnePaymentChildId = await submitPublicRegistration(browser, {
-    childName: "PublicOnePayment",
-    email: "browser-public-one@example.test",
-    paymentPlanCode: "single",
-    expectedInitialAmount: 1000,
-  });
-  assert.ok(publicTwoInstallmentChildId && publicOnePaymentChildId,
-    "both public payment-plan journeys return durable registration children");
+  const captureScenario = process.env.PAYMENT_PANEL_CAPTURE_SCENARIO;
+  let publicTwoInstallmentChildId;
+  let publicOnePaymentChildId;
+  if (!captureScenario) {
+    publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
+      childName: "PublicTwoInstallment",
+      email: "browser-public-two@example.test",
+      paymentPlanCode: "two_installment",
+      expectedInitialAmount: 500,
+    });
+    publicOnePaymentChildId = await submitPublicRegistration(browser, {
+      childName: "PublicOnePayment",
+      email: "browser-public-one@example.test",
+      paymentPlanCode: "single",
+      expectedInitialAmount: 1000,
+    });
+    assert.ok(publicTwoInstallmentChildId && publicOnePaymentChildId,
+      "both public payment-plan journeys return durable registration children");
+  }
   context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   await context.tracing.start({ screenshots: true, snapshots: true });
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   page = await context.newPage();
 
-  if (process.env.PAYMENT_PANEL_CAPTURE_STATES === "1") await captureDuplicateAndZeroGraceStates(page);
-
-  if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
+  if (captureScenario) {
+    await captureSpecialPaymentStates(page, captureScenario);
+  } else if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
     const uxContext = await browser.newContext({ viewport: { width: 1200, height: 900 } });
     const uxPage = await uxContext.newPage();
     await installTurnstileTestWidget(uxPage);
@@ -2632,7 +2702,7 @@ try {
   if (publicContext) await publicContext.close().catch(() => undefined);
   if (browser) await browser.close().catch(() => undefined);
   if (worker && !worker.killed) worker.kill("SIGTERM");
-  rmSync(persistDir, { recursive: true, force: true });
+  if (!reusablePersistDir) rmSync(persistDir, { recursive: true, force: true });
 }
 
 async function exerciseCancelledPaymentCreditFlow(page, existingTargetChildId = null) {

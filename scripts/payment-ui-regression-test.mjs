@@ -293,7 +293,9 @@ assert.match(page, /"Төлбөрөөс чөлөөлсөн"/, "waived unpaid fee
 assert.match(page, /data-outstanding-confirm=/, "staff can explicitly review a zero-paid enrollment confirmation");
 assert.doesNotMatch(page, /\$\{waiver\}/, "ordinary active-enrollment payment panels do not render the legacy debt-waiver form");
 assert.match(page, /specialOptions/, "the special panel keeps only the selected compact action form open");
-assert.match(page, /Төлбөр орсон гэж тэмдэглэхгүй/, "zero-payment confirmation does not claim a receipt was recorded");
+assert.match(page, /Төлбөр орсон гэж бүртгэхгүй/, "zero-payment confirmation does not claim a receipt was recorded");
+assert.match(page, /staff-special-payment-actions/, "the selected special action has an explicit full-width owner");
+assert.match(page, /data-special-action-cancel=/, "special-action cancellation preserves its draft without making a financial request");
 assert.match(page, /const groupOpen = \(title\) => state\.openGroups\[title\] \?\? false/, "all top-level sections start collapsed on an ordinary fresh entry");
 assert.match(page, /return state\.openWaitlistSections\[key\] \?\? selected/, "waitlist subsections start collapsed unless an explicit selected-record navigation opens one");
 assert.match(page, /state\.openGroups\["Хүлээлгийн жагсаалт"\] = true/, "explicit waitlist navigation opens only its enclosing group");
