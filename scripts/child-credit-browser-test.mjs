@@ -38,7 +38,7 @@ async function capturePaymentPanel(page, name) {
 async function capturePaymentDetail(page, row, name) {
   if (!paymentPanelScreenshotDir) return;
   mkdirSync(paymentPanelScreenshotDir, { recursive: true });
-  await row.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await row.evaluate((element) => element.scrollIntoView({ block: "center" }));
   await page.waitForTimeout(50);
   await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name) });
 }
@@ -484,6 +484,10 @@ async function captureSpecialPaymentStates(page, scenario) {
       await unpaidRow.getByText("Бүртгэл баталгаажсан. Жагсаалтыг шинэчилж чадсангүй; Шинэчлэхийг сонгоно уу.").waitFor({ state: "visible" });
       await page.unroute("**/api/staff/payments");
       await page.reload();
+      if (!await unpaidRow.isVisible()) {
+        await unpaidRow.locator('xpath=ancestor::div[starts-with(@id, "group-")][1]')
+          .locator('xpath=preceding-sibling::h2[1]//button[@data-group-toggle]').click();
+      }
       await unpaidRow.waitFor({ state: "visible" });
       await unpaidRow.locator("[data-special-open]").click();
       await unpaidRow.getByRole("button", { name: "Хугацаа сунгах" }).click();
@@ -492,10 +496,29 @@ async function captureSpecialPaymentStates(page, scenario) {
       return;
     }
 
-    const discountChildId = await fillIntake(page, "SpecialDiscountCapture", "two_installment");
-    await recordCashPayment(page, discountChildId, 500, {
-      successText: "Төлбөр бүртгэгдэж, суудал баталгаажлаа.",
+    const discountChildId = await fillIntake(page, "SpecialDiscountCapture", "single");
+    await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(discountChildId)}`);
+    const pendingDiscountRow = page.locator(`[data-registration-child="${discountChildId}"]`);
+    const partialPaymentForm = pendingDiscountRow.locator("[data-payment-form]");
+    await partialPaymentForm.locator('input[name="amount"]').fill("500");
+    await partialPaymentForm.locator('[data-seat-approval] input').check();
+    await partialPaymentForm.locator('input[name="remainingDueAt"]').fill("2027-01-01T10:00");
+    let paymentRefreshIntercepted = false;
+    await page.route("**/api/staff/payments", async (route) => {
+      if (route.request().method() === "GET" && !paymentRefreshIntercepted) {
+        paymentRefreshIntercepted = true;
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "capture refresh interruption" }) });
+        return;
+      }
+      await route.continue();
     });
+    const partialPaymentRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.record"));
+    await partialPaymentForm.locator('button[type="submit"]').click();
+    if (!(await partialPaymentRequest).ok()) throw new Error("special-discount partial payment failed");
+    await pendingDiscountRow.getByText("Төлбөр бүртгэгдлээ. Жагсаалтыг шинэчилж чадсангүй; дахин дарахаас өмнө Шинэчлэхийг сонгоно уу.").waitFor({ state: "visible" });
+    await page.unroute("**/api/staff/payments");
+    await finalizeCashRegistration(page, discountChildId);
     await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(discountChildId)}`);
     const discountRow = page.locator(`[data-registration-child="${discountChildId}"]`);
     await discountRow.waitFor({ state: "visible" });
@@ -505,17 +528,18 @@ async function captureSpecialPaymentStates(page, scenario) {
     await discountForm.waitFor({ state: "visible" });
     await discountForm.locator('input[name="amountMnt"]').fill("100");
     await discountForm.locator('textarea[name="reason"]').fill("Browser special discount review");
-    await capturePaymentDetail(page, discountRow, "special-discount-entry-mobile.png");
+    await capturePaymentDetail(page, discountForm, "special-discount-entry-mobile.png");
     const discountRequest = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.enrollment-discount-preview"));
     await discountForm.locator('button[type="submit"]').click();
     const discountResponse = await discountRequest;
     if (!discountResponse.ok()) throw new Error(`enrollment-discount review failed: ${await discountResponse.text()}`);
-    await discountRow.getByText("Хөнгөлөлтийг хянах").waitFor({ state: "visible" });
+    const discountReviewForm = discountRow.locator("[data-enrollment-discount-confirm]");
+    await discountReviewForm.getByText("Хөнгөлөлтийг хянах").waitFor({ state: "visible" });
     await page.setViewportSize({ width: 768, height: 900 });
-    await capturePaymentDetail(page, discountRow, "special-discount-review-intermediate.png");
+    await capturePaymentDetail(page, discountReviewForm, "special-discount-review-intermediate.png");
     await page.setViewportSize({ width: 390, height: 844 });
-    await capturePaymentDetail(page, discountRow, "special-discount-review-mobile.png");
+    await capturePaymentDetail(page, discountReviewForm, "special-discount-review-mobile.png");
   } finally {
     execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 5");
   }
