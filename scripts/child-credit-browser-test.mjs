@@ -43,6 +43,16 @@ async function capturePaymentDetail(page, row, name) {
   await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name) });
 }
 
+async function assertDateTimeFitsField(input, message) {
+  const bounds = await input.evaluate((element) => {
+    const field = element.getBoundingClientRect();
+    const label = element.closest("label")?.getBoundingClientRect();
+    return { fieldLeft: field.left, fieldRight: field.right, labelLeft: label?.left, labelRight: label?.right };
+  });
+  assert.ok(bounds.fieldLeft >= bounds.labelLeft - 0.5 && bounds.fieldRight <= bounds.labelRight + 0.5,
+    `${message}: ${JSON.stringify(bounds)}`);
+}
+
 async function captureStaffSessionPanel(page) {
   if (!paymentPanelScreenshotDir) return;
   await page.goto(`${baseUrl}/staff/team/`);
@@ -457,13 +467,20 @@ async function captureSpecialPaymentStates(page, scenario) {
       await unpaidRow.waitFor({ state: "visible" });
       assert.equal(await unpaidRow.locator(".staff-later-payment-form").count(), 0,
         "an unpaid initial installment never exposes the later-payment form");
+      await assertDateTimeFitsField(unpaidRow.locator('form[data-payment-form] input[name="receivedAt"]'),
+        "ordinary payment received-at control fits its label");
       await capturePaymentDetail(page, unpaidRow, "ordinary-payment-panel-mobile.png");
       await unpaidRow.locator("[data-special-open]").click();
       await unpaidRow.getByRole("button", { name: "Төлбөргүй баталгаажуулах" }).click();
       const zeroForm = unpaidRow.locator("[data-outstanding-confirm]");
       await zeroForm.waitFor({ state: "visible" });
+      await assertDateTimeFitsField(zeroForm.locator('input[type="datetime-local"]'),
+        "zero-payment deadline control fits its label");
       await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-mobile.png");
       await page.setViewportSize({ width: 1024, height: 900 });
+      const desktopDateTimeWidth = await zeroForm.locator('input[type="datetime-local"]').evaluate((input) => input.getBoundingClientRect().width);
+      assert.ok(desktopDateTimeWidth <= 384,
+        `payment date-time control stays at its 24rem desktop maximum (was ${desktopDateTimeWidth}px)`);
       await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-desktop.png");
       await page.setViewportSize({ width: 390, height: 844 });
       if (scenario === "zero") return;
@@ -491,7 +508,10 @@ async function captureSpecialPaymentStates(page, scenario) {
       await unpaidRow.waitFor({ state: "visible" });
       await unpaidRow.locator("[data-special-open]").click();
       await unpaidRow.getByRole("button", { name: "Хугацаа сунгах" }).click();
-      await unpaidRow.locator("[data-outstanding-deadline]").waitFor({ state: "visible" });
+      const deadlineForm = unpaidRow.locator("[data-outstanding-deadline]");
+      await deadlineForm.waitFor({ state: "visible" });
+      await assertDateTimeFitsField(deadlineForm.locator('input[type="datetime-local"]'),
+        "deadline-extension control fits its label");
       await capturePaymentDetail(page, unpaidRow, "special-deadline-mobile.png");
       return;
     }

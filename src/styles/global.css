@@ -2232,6 +2232,13 @@ textarea:focus {
   padding: 0.48rem 0.6rem;
 }
 
+.staff-payment-form input[type="datetime-local"] {
+  box-sizing: border-box;
+  width: min(100%, 24rem);
+  max-width: 100%;
+  min-width: 0;
+}
+
 .staff-payment-form .staff-wide {
   grid-column: 1 / -1;
 }
