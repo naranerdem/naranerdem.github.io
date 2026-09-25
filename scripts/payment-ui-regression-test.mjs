@@ -28,6 +28,7 @@ assert.match(page, /localDateTime\(new Date\(\)\)/);
 assert.doesNotMatch(page, /toISOString\(\)\.slice\(0, 16\)/);
 assert.doesNotMatch(page, /finalizeAfter\?\.slice/);
 assert.match(styles, /\.staff-payment-form input\[type="datetime-local"\][\s\S]*width: min\(100%, 24rem\)[\s\S]*max-width: 100%/, "payment date-time controls stay within their panel on phones and are bounded on desktop");
+assert.match(styles, /\.staff-payment-form label\s*\{[\s\S]*min-width: 0/, "payment form labels may shrink within their grid track around native date-time controls");
 assert.match(page, /remaining <= 0 \? "Төлбөр баталгаажсан"/);
 assert.match(page, /family_multi_child: "Нэг гэр бүлийн хүүхэд"/);
 assert.match(page, /data-discount-reverse=/, "admins have an auditable per-award correction control");

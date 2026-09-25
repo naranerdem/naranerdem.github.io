@@ -2215,6 +2215,7 @@ textarea:focus {
 
 .staff-payment-form label {
   display: grid;
+  min-width: 0;
   gap: 0.25rem;
   color: var(--muted);
   font-size: 0.84rem;

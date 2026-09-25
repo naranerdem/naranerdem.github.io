@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { chromium } from "@playwright/test";
+import { chromium, devices, webkit } from "@playwright/test";
 
 // This is a disposable local Worker/D1 integration test. Its session is a
 // normally hashed test-only staff_session; no runtime authentication bypass is
@@ -28,6 +28,8 @@ let publicContext;
 let passed = false;
 let failureDetails = "";
 const paymentPanelScreenshotDir = process.env.PAYMENT_PANEL_SCREENSHOT_DIR || "";
+const paymentPanelBrowser = process.env.PAYMENT_PANEL_BROWSER || "chromium";
+const usingWebKit = paymentPanelBrowser === "webkit" || paymentPanelBrowser === "webkit-desktop";
 
 async function capturePaymentPanel(page, name) {
   if (!paymentPanelScreenshotDir) return;
@@ -43,14 +45,57 @@ async function capturePaymentDetail(page, row, name) {
   await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name) });
 }
 
+async function capturePaymentForm(form, name) {
+  if (!paymentPanelScreenshotDir) return;
+  mkdirSync(paymentPanelScreenshotDir, { recursive: true });
+  await form.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await form.screenshot({ path: path.join(paymentPanelScreenshotDir, name) });
+}
+
 async function assertDateTimeFitsField(input, message) {
   const bounds = await input.evaluate((element) => {
     const field = element.getBoundingClientRect();
-    const label = element.closest("label")?.getBoundingClientRect();
-    return { fieldLeft: field.left, fieldRight: field.right, labelLeft: label?.left, labelRight: label?.right };
+    const labelElement = element.closest("label");
+    const label = labelElement?.getBoundingClientRect();
+    const labelStyle = labelElement ? getComputedStyle(labelElement) : undefined;
+    const panel = element.closest(".staff-payment-detail")?.getBoundingClientRect();
+    const parent = element.parentElement?.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return {
+      fieldLeft: field.left,
+      fieldRight: field.right,
+      fieldWidth: field.width,
+      labelLeft: label?.left,
+      labelRight: label?.right,
+      labelMinWidth: labelStyle?.minWidth,
+      panelLeft: panel?.left,
+      panelRight: panel?.right,
+      parentWidth: parent?.width,
+      width: style.width,
+      minWidth: style.minWidth,
+      maxWidth: style.maxWidth,
+      boxSizing: style.boxSizing,
+      paddingLeft: style.paddingLeft,
+      paddingRight: style.paddingRight,
+    };
   });
-  assert.ok(bounds.fieldLeft >= bounds.labelLeft - 0.5 && bounds.fieldRight <= bounds.labelRight + 0.5,
+  if (process.env.PAYMENT_PANEL_LAYOUT_DIAGNOSTICS === "1") {
+    console.log(`${message}: ${JSON.stringify(bounds)}`);
+  }
+  assert.ok(bounds.fieldLeft >= bounds.labelLeft - 0.5 && bounds.fieldRight <= bounds.labelRight + 0.5
+    && bounds.fieldLeft >= bounds.panelLeft - 0.5 && bounds.fieldRight <= bounds.panelRight + 0.5,
     `${message}: ${JSON.stringify(bounds)}`);
+  assert.equal(bounds.labelMinWidth, "0px", `${message}: label grid item may not retain an automatic minimum width`);
+}
+
+async function assertDateTimeEditable(input, message) {
+  const original = await input.inputValue();
+  await input.focus();
+  assert.equal(await input.evaluate((element) => document.activeElement === element), true,
+    `${message}: native date-time control accepts keyboard focus`);
+  await input.fill("2026-10-03T10:15");
+  assert.equal(await input.inputValue(), "2026-10-03T10:15", `${message}: native date-time control accepts editing`);
+  await input.fill(original);
 }
 
 async function captureStaffSessionPanel(page) {
@@ -467,9 +512,11 @@ async function captureSpecialPaymentStates(page, scenario) {
       await unpaidRow.waitFor({ state: "visible" });
       assert.equal(await unpaidRow.locator(".staff-later-payment-form").count(), 0,
         "an unpaid initial installment never exposes the later-payment form");
-      await assertDateTimeFitsField(unpaidRow.locator('form[data-payment-form] input[name="receivedAt"]'),
+      const receivedAtInput = unpaidRow.locator('form[data-payment-form] input[name="receivedAt"]');
+      await assertDateTimeFitsField(receivedAtInput,
         "ordinary payment received-at control fits its label");
       await capturePaymentDetail(page, unpaidRow, "ordinary-payment-panel-mobile.png");
+      await assertDateTimeEditable(receivedAtInput, "ordinary payment received-at control");
       await unpaidRow.locator("[data-special-open]").click();
       await unpaidRow.getByRole("button", { name: "Төлбөргүй баталгаажуулах" }).click();
       const zeroForm = unpaidRow.locator("[data-outstanding-confirm]");
@@ -477,11 +524,13 @@ async function captureSpecialPaymentStates(page, scenario) {
       await assertDateTimeFitsField(zeroForm.locator('input[type="datetime-local"]'),
         "zero-payment deadline control fits its label");
       await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-mobile.png");
+      await capturePaymentForm(zeroForm, "special-zero-confirmation-closeup-mobile.png");
       await page.setViewportSize({ width: 1024, height: 900 });
       const desktopDateTimeWidth = await zeroForm.locator('input[type="datetime-local"]').evaluate((input) => input.getBoundingClientRect().width);
       assert.ok(desktopDateTimeWidth <= 384,
         `payment date-time control stays at its 24rem desktop maximum (was ${desktopDateTimeWidth}px)`);
       await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-desktop.png");
+      await capturePaymentForm(zeroForm, "special-zero-confirmation-closeup-desktop.png");
       await page.setViewportSize({ width: 390, height: 844 });
       if (scenario === "zero") return;
       let refreshIntercepted = false;
@@ -510,9 +559,12 @@ async function captureSpecialPaymentStates(page, scenario) {
       await unpaidRow.getByRole("button", { name: "Хугацаа сунгах" }).click();
       const deadlineForm = unpaidRow.locator("[data-outstanding-deadline]");
       await deadlineForm.waitFor({ state: "visible" });
-      await assertDateTimeFitsField(deadlineForm.locator('input[type="datetime-local"]'),
+      const deadlineInput = deadlineForm.locator('input[type="datetime-local"]');
+      await assertDateTimeFitsField(deadlineInput,
         "deadline-extension control fits its label");
+      await assertDateTimeEditable(deadlineInput, "deadline-extension control");
       await capturePaymentDetail(page, unpaidRow, "special-deadline-mobile.png");
+      await capturePaymentForm(deadlineForm, "special-deadline-closeup-mobile.png");
       return;
     }
 
@@ -1014,7 +1066,8 @@ try {
   worker.stderr.on("data", (chunk) => { workerOutput += String(chunk); });
   await waitForWorker();
 
-  browser = await chromium.launch({ headless: true });
+  const browserType = usingWebKit ? webkit : chromium;
+  browser = await browserType.launch({ headless: true });
   const captureScenario = process.env.PAYMENT_PANEL_CAPTURE_SCENARIO;
   let publicTwoInstallmentChildId;
   let publicOnePaymentChildId;
@@ -1034,7 +1087,9 @@ try {
     assert.ok(publicTwoInstallmentChildId && publicOnePaymentChildId,
       "both public payment-plan journeys return durable registration children");
   }
-  context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  context = await browser.newContext(paymentPanelBrowser === "webkit"
+    ? { ...devices["iPhone 13"] }
+    : { viewport: { width: 390, height: 844 } });
   await context.tracing.start({ screenshots: true, snapshots: true });
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   page = await context.newPage();
