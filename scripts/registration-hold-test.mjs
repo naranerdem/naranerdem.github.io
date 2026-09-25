@@ -9,9 +9,6 @@ import { spawnSync } from "node:child_process";
 const tempDir = mkdtempSync(path.join(tmpdir(), "naranerdem-registration-holds-"));
 const databasePath = path.join(tempDir, "registration.sqlite3");
 const esbuild = path.resolve("node_modules/esbuild/bin/esbuild");
-// Keep the released-runtime comparison explicit, while allowing release
-// verification to point at its preserved checkout when needed.
-const releasedRuntimeRoot = process.env.NARANERDEM_RELEASED_RUNTIME_ROOT || "/private/tmp/naranerdem-release-8e86-runtime";
 
 function bundle(source, output) {
   const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
@@ -39,6 +36,7 @@ const publicSeatCountThresholdBundle = path.join(tempDir, "public-seat-count-thr
 const conditionalFamilyDiscountBundle = path.join(tempDir, "conditional-family-discounts.mjs");
 const additionalClassCreditSettlementBundle = path.join(tempDir, "additional-class-credit-settlement.mjs");
 const paymentProjectionReferenceRoot = path.join(tempDir, "payment-projection-reference");
+const releasedRuntimeReferenceRoot = path.join(tempDir, "released-runtime-reference");
 const paymentProjectionReferenceBundle = path.join(tempDir, "payment-projection-reference.mjs");
 const releasedRegistrationBundle = path.join(tempDir, "released-registration-submission.mjs");
 const releasedPaymentReconciliationBundle = path.join(tempDir, "released-payment-reconciliation.mjs");
@@ -63,6 +61,7 @@ bundle("src/server/staff/public-seat-count-threshold.ts", publicSeatCountThresho
 bundle("src/server/services/conditional-family-discounts.ts", conditionalFamilyDiscountBundle);
 bundle("src/server/services/additional-class-credit-settlement.ts", additionalClassCreditSettlementBundle);
 mkdirSync(paymentProjectionReferenceRoot);
+mkdirSync(releasedRuntimeReferenceRoot);
 const projectionArchive = spawnSync("git", ["archive", "--format=tar", "22c83ae827c1908035dda839ac19af77d39f0997"], {
   encoding: null,
   maxBuffer: 32 * 1024 * 1024,
@@ -71,8 +70,18 @@ if (projectionArchive.status !== 0) throw new Error(`could not archive the payme
 const projectionExtract = spawnSync("tar", ["-xf", "-", "-C", paymentProjectionReferenceRoot], { input: projectionArchive.stdout, encoding: "utf8" });
 if (projectionExtract.status !== 0) throw new Error(`could not extract the payment-projection reference: ${projectionExtract.stderr}`);
 bundle(path.join(paymentProjectionReferenceRoot, "src/server/staff/payment-reconciliation.ts"), paymentProjectionReferenceBundle);
-bundle(path.join(releasedRuntimeRoot, "src/server/services/registration-submission.ts"), releasedRegistrationBundle);
-bundle(path.join(releasedRuntimeRoot, "src/server/staff/payment-reconciliation.ts"), releasedPaymentReconciliationBundle);
+const releasedRuntimeArchive = spawnSync("git", ["archive", "--format=tar", "8e86fd980b0a01e665efabed975b3e95a2e9d7fb"], {
+  encoding: null,
+  maxBuffer: 32 * 1024 * 1024,
+});
+if (releasedRuntimeArchive.status !== 0) throw new Error(`could not archive the released runtime reference: ${releasedRuntimeArchive.stderr?.toString() || "unknown error"}`);
+const releasedRuntimeExtract = spawnSync("tar", ["-xf", "-", "-C", releasedRuntimeReferenceRoot], {
+  input: releasedRuntimeArchive.stdout,
+  encoding: "utf8",
+});
+if (releasedRuntimeExtract.status !== 0) throw new Error(`could not extract the released runtime reference: ${releasedRuntimeExtract.stderr}`);
+bundle(path.join(releasedRuntimeReferenceRoot, "src/server/services/registration-submission.ts"), releasedRegistrationBundle);
+bundle(path.join(releasedRuntimeReferenceRoot, "src/server/staff/payment-reconciliation.ts"), releasedPaymentReconciliationBundle);
 const {
   changeDraftEmail,
   claimRegistrationEmailSend,
@@ -108,6 +117,7 @@ const { getParentDashboard } = await import(pathToFileURL(parentAccessBundle).hr
 const {
   applyEnrollmentFeeAdjustment,
   claimParentPayment,
+  correctFinalizedManualPayment,
   confirmOutstandingPaymentEnrollment,
   confirmSeatForSufficientPayment,
   finalizeDuePaymentConfirmations,
@@ -117,6 +127,7 @@ const {
   recordCheckedNotFound,
   recordManualPayment,
   previewOutstandingPaymentWaiver,
+  previewFinalizedManualPaymentCorrection,
   previewEnrollmentFeeAdjustment,
   previewHistoricalSettlementIncidentReconciliation,
   reconcileHistoricalSettlementIncident,
@@ -131,7 +142,7 @@ const {
 const { registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } = await import(pathToFileURL(registrationCorrectionBundle).href);
 const { getInitialPaymentDeadlineSetting, updateInitialPaymentDeadlineSetting } = await import(pathToFileURL(initialPaymentDeadlineBundle).href);
 const { addManualChildCredit, applyChildCredit, childCreditSummary, correctChildCredit, creditPaymentReviewState, leaveChildCreditUnused, transferChildCredit } = await import(pathToFileURL(childCreditBundle).href);
-const { processDuePaymentReminders } = await import(pathToFileURL(paymentRemindersBundle).href);
+const { processDuePaymentReminders, reconcileQueuedPaymentNotificationMilestones } = await import(pathToFileURL(paymentRemindersBundle).href);
 const { pendingAdditionalClassCashSettlements } = await import(pathToFileURL(additionalClassCreditSettlementBundle).href);
 const { getInitialPaymentQueue: getPaymentProjectionReferenceQueue } = await import(pathToFileURL(paymentProjectionReferenceBundle).href);
 
@@ -478,6 +489,76 @@ try {
   const paymentStaff = { staffAccountId: 'staff-payment-test', displayName: 'Тест Багш', roles: ['teacher'],
     capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
  const registrationStaff = { ...paymentStaff, capabilities: ['registration.manage'] };
+  if (process.env.PAYMENT_RECEIPT_CORRECTION_ONLY) {
+    database.query(`UPDATE offering_course_pricing SET first_installment_amount_mnt = 650000,
+      second_installment_amount_mnt = 650000, updated_at = ? WHERE activity_offering_id = 'offering-test';
+      UPDATE payment_confirmation_grace_setting SET grace_minutes = 0, updated_at = ? WHERE singleton = 1;
+      UPDATE class_session SET capacity = 100, updated_at = ? WHERE id = 'class-priced'`, [iso(120), iso(120), iso(120)]);
+    const input = submission("class-priced", undefined, 1, "two_installment");
+    const draft = await createRegistrationDraft(env(database), input, new Date(iso(121)));
+    const request = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [draft.draftId])[0];
+    const child = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [draft.draftId])[0];
+    const initialQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(121)));
+    const initial = initialQueue.items.find((item) => item.registrationDraftChildId === child.id);
+    const receipt = await recordManualPayment(env(database), paymentStaff, { paymentRequestId: request.id,
+      allocations: [{ installmentId: initial.installmentId, amountMnt: 650000 }], source: "staff_manual_bank",
+      idempotencyKey: "focused-correction-original-650000" }, new Date(iso(122)));
+    const installments = [{ amountMnt: 400000, dueOn: "2026-08-15" }, { amountMnt: 400000, dueOn: "2026-12-01" }, { amountMnt: 500000, dueOn: "2027-02-28" }];
+    const review = await previewFinalizedManualPaymentCorrection(env(database), paymentStaff, {
+      receivedPaymentId: receipt.id, correctedAmountMnt: 400000, revisedInstallments: installments });
+    assert.equal(review.totalUnpaidMnt, 900000, "combined review retains the 1.3m fee and reports the 900k balance");
+    const corrected = await correctFinalizedManualPayment(env(database), paymentStaff, { receivedPaymentId: receipt.id,
+      correctedAmountMnt: 400000, revisedInstallments: installments, reason: "Бодит орсон дүн 400,000₮ байсан.",
+      reviewFingerprint: review.reviewFingerprint, operationId: "11111111-2222-4333-8444-555555555555" }, new Date(iso(123)));
+    assert.ok(corrected.correctedPaymentId, "combined correction produces the linked replacement receipt");
+    assert.equal((await correctFinalizedManualPayment(env(database), paymentStaff, { receivedPaymentId: receipt.id,
+      correctedAmountMnt: 400000, revisedInstallments: installments, reason: "Бодит орсон дүн 400,000₮ байсан.",
+      reviewFingerprint: review.reviewFingerprint, operationId: "11111111-2222-4333-8444-555555555555" }, new Date(iso(124)))).idempotent, true,
+    "a lost-response retry is idempotent");
+    assert.deepEqual(database.query(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt, status FROM payment_installment
+      WHERE payment_request_id = ? AND status != 'released' ORDER BY installment_number`, [request.id]), [
+      { amountMnt: 400000, dueAt: "2026-08-15T15:59:59.999Z", status: "paid" },
+      { amountMnt: 400000, dueAt: "2026-12-01T15:59:59.999Z", status: "pending" },
+      { amountMnt: 500000, dueAt: "2027-02-28T15:59:59.999Z", status: "pending" },
+    ], "the revised three-installment schedule is durable with Mongolia deadlines");
+    const afterCorrection = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-09-01T08:00:00.000Z"));
+    const correctedItem = afterCorrection.items.find((item) => item.registrationDraftChildId === child.id);
+    assert.equal(correctedItem.totalRemainingMnt, 900000, "the queue reports the 900k remainder");
+    assert.equal(correctedItem.nextScheduledInstallment.installmentNumber, 2, "the second installment is next");
+    await recordManualPayment(env(database), paymentStaff, { paymentRequestId: request.id,
+      allocations: [{ installmentId: correctedItem.nextScheduledInstallment.id, amountMnt: 400000 }], source: "staff_manual_bank",
+      idempotencyKey: "focused-correction-second-installment" }, new Date("2026-12-01T12:00:00.000Z"));
+    const partial = (await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-12-02T08:00:00.000Z"))).items
+      .find((item) => item.registrationDraftChildId === child.id);
+    assert.equal(partial.totalRemainingMnt, 500000, "later payment leaves the final installment outstanding");
+    assert.equal(partial.nextScheduledInstallment.installmentNumber, 3, "the normal payment path exposes the third installment");
+    await reconcileQueuedPaymentNotificationMilestones(env(database), new Date("2026-12-02T08:00:00.000Z"));
+    assert.ok(count(database, "payment_notification_milestone", `registration_draft_child_id = '${child.id}'`) >= 1,
+      "the revised schedule remains in reminder reconciliation");
+    const staleInput = submission("class-priced", undefined, 1, "two_installment");
+    staleInput.children[0].givenName = "Хуучирсан Хяналт";
+    const staleDraft = await createRegistrationDraft(env(database), staleInput, new Date(iso(125)));
+    const staleRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [staleDraft.draftId])[0];
+    const staleChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [staleDraft.draftId])[0];
+    const staleItem = (await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(125)))).items
+      .find((item) => item.registrationDraftChildId === staleChild.id);
+    const staleReceipt = await recordManualPayment(env(database), paymentStaff, { paymentRequestId: staleRequest.id,
+      allocations: [{ installmentId: staleItem.installmentId, amountMnt: 650000 }], source: "staff_manual_bank",
+      idempotencyKey: "focused-correction-stale-original" }, new Date(iso(126)));
+    const staleReview = await previewFinalizedManualPaymentCorrection(env(database), paymentStaff, { receivedPaymentId: staleReceipt.id,
+      correctedAmountMnt: 400000, revisedInstallments: installments });
+    database.query(`UPDATE payment_installment SET updated_at = ? WHERE payment_request_id = ? AND installment_kind = 'later'`, [iso(127), staleRequest.id]);
+    await assert.rejects(correctFinalizedManualPayment(env(database), paymentStaff, { receivedPaymentId: staleReceipt.id,
+      correctedAmountMnt: 400000, revisedInstallments: installments, reason: "Хуучирсан хяналт",
+      reviewFingerprint: staleReview.reviewFingerprint, operationId: "66666666-7777-4888-8999-aaaaaaaaaaaa" }, new Date(iso(128))),
+    (error) => error?.code === "conflict", "a changed schedule rejects the combined confirmation");
+    assert.equal(database.query(`SELECT status FROM payment_confirmation WHERE received_payment_id = ?`, [staleReceipt.id])[0].status, "finalized",
+      "a stale combined review leaves the original receipt finalized");
+    assert.equal(count(database, "payment_receipt_correction", `original_received_payment_id = '${staleReceipt.id}'`), 0,
+      "a stale combined review leaves no partial correction record");
+    console.log("ok focused finalized receipt correction and installment schedule regression");
+    process.exit(0);
+  }
   async function createAdditionalClassAdmission(workerEnv, actor, input, nowDate) {
     const existing = await workerEnv.DB.prepare(`SELECT 1 AS value FROM additional_class_admission WHERE idempotency_key = ?`)
       .bind(input.idempotencyKey).first();
@@ -2230,6 +2311,94 @@ try {
   assert.ok(count(database, "guardian_account") >= 3, "routine sufficient payments and teacher-approved partials become canonical guardians only after finalization");
   assert.ok(count(database, "student") >= 3, "routine sufficient payments and teacher-approved partials create canonical students while ordinary partial or released payments do not");
 
+  // The historical closure path intentionally fills this shared fixture before
+  // its final assertions. A receipt-correction-only run expands it so the
+  // focused financial regression can reach its isolated fixture.
+  if (process.env.PAYMENT_RECEIPT_CORRECTION_ONLY) {
+    database.query("UPDATE class_session SET capacity = 100, updated_at = ? WHERE id = 'class-second-offering'", [iso(120)]);
+    database.query(`UPDATE offering_course_pricing SET first_installment_amount_mnt = 650000,
+      second_installment_amount_mnt = 650000, updated_at = ? WHERE activity_offering_id = 'offering-test'`, [iso(120)]);
+    database.query(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 0, updated_at = ? WHERE singleton = 1`, [iso(120)]);
+    const input = submission("class-priced", undefined, 1, "two_installment");
+    input.children[0].givenName = "Төлбөр Засвар";
+    const draft = await createRegistrationDraft(env(database), input, new Date(iso(121)));
+    const request = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [draft.draftId])[0];
+    const child = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [draft.draftId])[0];
+    const queueBefore = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(121)));
+    const queueItem = queueBefore.items.find((item) => item.registrationDraftChildId === child.id);
+    const receipt = await recordManualPayment(env(database), paymentStaff, {
+      paymentRequestId: request.id, allocations: [{ installmentId: queueItem.installmentId, amountMnt: 650000 }],
+      source: "staff_manual_bank", idempotencyKey: "focused-correction-original-650000",
+    }, new Date(iso(122)));
+    const revisedInstallments = [
+      { amountMnt: 400000, dueOn: "2026-08-15" },
+      { amountMnt: 400000, dueOn: "2026-12-01" },
+      { amountMnt: 500000, dueOn: "2027-02-28" },
+    ];
+    const review = await previewFinalizedManualPaymentCorrection(env(database), paymentStaff, {
+      receivedPaymentId: receipt.id, correctedAmountMnt: 400000, revisedInstallments,
+    });
+    assert.equal(review.totalUnpaidMnt, 900000, "the combined review retains the 1.3m fee and exposes the 900k remainder");
+    assert.deepEqual(review.revisedInstallments.map((entry) => entry.amountMnt), [400000, 400000, 500000],
+      "the combined review identifies all three scheduled obligations");
+    const corrected = await correctFinalizedManualPayment(env(database), paymentStaff, {
+      receivedPaymentId: receipt.id, correctedAmountMnt: 400000, revisedInstallments,
+      reason: "Бодит орсон дүн 400,000₮ байсан.", reviewFingerprint: review.reviewFingerprint,
+      operationId: "11111111-2222-4333-8444-555555555555",
+    }, new Date(iso(123)));
+    assert.ok(corrected.correctedPaymentId, "the reviewed correction creates its linked replacement receipt");
+    const correctedReplay = await correctFinalizedManualPayment(env(database), paymentStaff, {
+      receivedPaymentId: receipt.id, correctedAmountMnt: 400000, revisedInstallments,
+      reason: "Бодит орсон дүн 400,000₮ байсан.", reviewFingerprint: review.reviewFingerprint,
+      operationId: "11111111-2222-4333-8444-555555555555",
+    }, new Date(iso(124)));
+    assert.equal(correctedReplay.idempotent, true, "a lost response retries the same combined operation without another correction");
+    assert.deepEqual(database.query(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt, status
+      FROM payment_installment WHERE payment_request_id = ? AND status != 'released' ORDER BY installment_number`, [request.id]), [
+      { amountMnt: 400000, dueAt: "2026-08-15T15:59:59.999Z", status: "paid" },
+      { amountMnt: 400000, dueAt: "2026-12-01T15:59:59.999Z", status: "pending" },
+      { amountMnt: 500000, dueAt: "2027-02-28T15:59:59.999Z", status: "pending" },
+    ], "the correction and schedule revision commit atomically with Mongolia end-of-day deadlines");
+    assert.equal(count(database, "payment_receipt_correction", `original_received_payment_id = '${receipt.id}'`), 1,
+      "the original receipt has exactly one linked correction");
+    const afterCorrection = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-09-01T08:00:00.000Z"));
+    const correctedItem = afterCorrection.items.find((item) => item.registrationDraftChildId === child.id);
+    assert.equal(correctedItem.totalRemainingMnt, 900000, "the list reports the durable 900k balance");
+    assert.equal(correctedItem.nextScheduledInstallment.installmentNumber, 2, "the next payment entry follows the revised schedule");
+    await recordManualPayment(env(database), paymentStaff, {
+      paymentRequestId: request.id, allocations: [{ installmentId: correctedItem.nextScheduledInstallment.id, amountMnt: 400000 }],
+      source: "staff_manual_bank", idempotencyKey: "focused-correction-second-installment",
+    }, new Date("2026-12-01T12:00:00.000Z"));
+    const afterSecond = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-12-02T08:00:00.000Z"));
+    const partialItem = afterSecond.items.find((item) => item.registrationDraftChildId === child.id);
+    assert.equal(partialItem.totalRemainingMnt, 500000, "a later payment leaves the final installment, not a fabricated second-payment state");
+    assert.equal(partialItem.nextScheduledInstallment.installmentNumber, 3, "the third installment remains available for normal payment entry");
+    await reconcileQueuedPaymentNotificationMilestones(env(database), new Date("2026-12-02T08:00:00.000Z"));
+    assert.ok(count(database, "payment_notification_milestone", `registration_draft_child_id = '${child.id}'`) >= 1,
+      "the revised obligations remain in the existing reminder reconciliation lifecycle");
+
+    const staleInput = submission("class-priced", undefined, 1, "two_installment");
+    const staleDraft = await createRegistrationDraft(env(database), staleInput, new Date(iso(125)));
+    const staleRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [staleDraft.draftId])[0];
+    const staleChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [staleDraft.draftId])[0];
+    const staleQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(125)));
+    const staleItem = staleQueue.items.find((item) => item.registrationDraftChildId === staleChild.id);
+    const staleReceipt = await recordManualPayment(env(database), paymentStaff, { paymentRequestId: staleRequest.id,
+      allocations: [{ installmentId: staleItem.installmentId, amountMnt: 650000 }], source: "staff_manual_bank", idempotencyKey: "focused-correction-stale-original" }, new Date(iso(126)));
+    const staleReview = await previewFinalizedManualPaymentCorrection(env(database), paymentStaff, { receivedPaymentId: staleReceipt.id,
+      correctedAmountMnt: 400000, revisedInstallments });
+    database.query(`UPDATE payment_installment SET updated_at = ? WHERE payment_request_id = ? AND installment_kind = 'later'`, [iso(127), staleRequest.id]);
+    await assert.rejects(correctFinalizedManualPayment(env(database), paymentStaff, { receivedPaymentId: staleReceipt.id, correctedAmountMnt: 400000,
+      revisedInstallments, reason: "Хуучирсан хяналт", reviewFingerprint: staleReview.reviewFingerprint,
+      operationId: "66666666-7777-4888-8999-aaaaaaaaaaaa" }, new Date(iso(128))), (error) => error?.code === "conflict",
+    "a changed reviewed schedule rejects before it undoes the original receipt");
+    assert.equal(database.query(`SELECT status FROM payment_confirmation WHERE received_payment_id = ?`, [staleReceipt.id])[0].status, "finalized",
+      "a stale combined review leaves the original receipt and schedule untouched");
+    assert.equal(count(database, "payment_receipt_correction", `original_received_payment_id = '${staleReceipt.id}'`), 0,
+      "a stale combined review cannot leave a partial correction lineage");
+    console.log("ok focused finalized receipt correction and installment schedule regression");
+    process.exit(0);
+  }
   const closureDraft = await createRegistrationDraft(env(database), submission("class-second-offering"), new Date("2026-08-13T09:50:00.000Z"));
   const closureChallenge = addChallenge(
     database,
@@ -3034,6 +3203,74 @@ try {
     WHERE referral.registration_draft_child_id = ? AND award.award_type = 'referral_referred'`, [externalIncomingChild])[0],
   { status: 'captured', awardStatus: 'active' },
   'external referral lineage is neither disqualified nor reversed by incorporation or replay');
+
+  // A finalized manual receipt is corrected by a linked replacement, never by
+  // overwriting the original evidence. This mirrors the reported 650k -> 400k
+  // case while retaining the original two-installment 1.3m agreement.
+  database.query(`UPDATE offering_course_pricing SET first_installment_amount_mnt = 650000,
+    second_installment_amount_mnt = 650000, updated_at = ? WHERE activity_offering_id = 'offering-test'`, [iso(90)]);
+  database.query(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 0, updated_at = ? WHERE singleton = 1`, [iso(90)]);
+  const receiptCorrectionInput = submission("class-priced", undefined, 1, "two_installment");
+  receiptCorrectionInput.children[0].givenName = "Засвар Дүн";
+  const receiptCorrectionDraft = await createRegistrationDraft(env(database), receiptCorrectionInput, new Date(iso(91)));
+  const receiptCorrectionRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [receiptCorrectionDraft.draftId])[0];
+  const receiptCorrectionChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [receiptCorrectionDraft.draftId])[0];
+  const receiptCorrectionQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(91)));
+  const receiptCorrectionItem = receiptCorrectionQueue.items.find((item) => item.registrationDraftChildId === receiptCorrectionChild.id);
+  const erroneousReceipt = await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: receiptCorrectionRequest.id,
+    allocations: [{ installmentId: receiptCorrectionItem.installmentId, amountMnt: 650000 }],
+    source: "staff_manual_bank", idempotencyKey: "receipt-correction-original-650000",
+  }, new Date(iso(92)));
+  const receiptCorrectionPreview = await previewFinalizedManualPaymentCorrection(env(database), paymentStaff, {
+    receivedPaymentId: erroneousReceipt.id, correctedAmountMnt: 400000,
+  });
+  assert.deepEqual({ original: receiptCorrectionPreview.originalReceivedAmountMnt, corrected: receiptCorrectionPreview.correctedReceivedAmountMnt,
+    initialRemaining: receiptCorrectionPreview.remainingInitialMnt, totalRemaining: receiptCorrectionPreview.totalUnpaidMnt },
+  { original: 650000, corrected: 400000, initialRemaining: 250000, totalRemaining: 900000 },
+  "the correction preview preserves the 1.3m agreement and exposes the 900k remaining balance without inventing dates");
+  const corrected = await correctFinalizedManualPayment(env(database), paymentStaff, {
+    receivedPaymentId: erroneousReceipt.id, correctedAmountMnt: 400000, reason: "Бодит орсон дүн 400,000₮ байсан.",
+    reviewFingerprint: receiptCorrectionPreview.reviewFingerprint, operationId: "11111111-2222-4333-8444-555555555555",
+  }, new Date(iso(93)));
+  assert.equal(corrected.idempotent, false, "the reviewed correction applies once");
+  const correctionReplay = await correctFinalizedManualPayment(env(database), paymentStaff, {
+    receivedPaymentId: erroneousReceipt.id, correctedAmountMnt: 400000, reason: "Бодит орсон дүн 400,000₮ байсан.",
+    reviewFingerprint: receiptCorrectionPreview.reviewFingerprint, operationId: "11111111-2222-4333-8444-555555555555",
+  }, new Date(iso(94)));
+  assert.equal(correctionReplay.idempotent, true, "a lost-response retry returns the original correction instead of creating another receipt");
+  assert.deepEqual(database.query(`SELECT received_payment.id AS receiptId, received_payment.received_amount_mnt AS amountMnt,
+      payment_confirmation.status, payment_confirmation.seat_confirmation_approved AS seatApproved
+    FROM received_payment INNER JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
+    WHERE received_payment.payment_request_id = ? ORDER BY received_payment.created_at`, [receiptCorrectionRequest.id]), [
+    { receiptId: erroneousReceipt.id, amountMnt: 650000, status: "undone", seatApproved: 1 },
+    { receiptId: corrected.correctedPaymentId, amountMnt: 400000, status: "finalized", seatApproved: 1 },
+  ], "the original receipt remains auditable while only the linked 400k replacement contributes to projections");
+  assert.deepEqual(database.query(`SELECT installment_kind AS kind, amount_mnt AS amountMnt, status,
+      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS paidMnt
+    FROM payment_installment LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+    LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
+    WHERE payment_installment.payment_request_id = ? GROUP BY payment_installment.id ORDER BY installment_number`, [receiptCorrectionRequest.id]), [
+    { kind: "initial", amountMnt: 650000, status: "partially_paid", paidMnt: 400000 },
+    { kind: "later", amountMnt: 650000, status: "pending", paidMnt: 0 },
+  ], "the initial 250k and scheduled later 650k remain due without a discount, credit, or fee rewrite");
+  assert.equal(database.query(`SELECT status FROM enrollment WHERE id = ?`, [database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ?`, [receiptCorrectionChild.id])[0].enrollmentId])[0].status,
+  "confirmed", "the correction preserves enrollment and therefore its seat and attendance identity");
+  assert.equal(count(database, "course_attendance", `enrollment_id = '${receiptCorrectionChild.id}:enrollment'`), 0,
+    "the correction neither writes nor erases attendance");
+  assert.equal(count(database, "payment_receipt_correction", `original_received_payment_id = '${erroneousReceipt.id}'`), 1,
+    "the correction has one durable original-to-replacement lineage record");
+  assert.equal(count(database, "audit_event", `subject_type = 'payment_receipt_correction' AND subject_id = '${corrected.correctionId}'`), 1,
+    "the correction records the actor-scoped audit event and reason");
+  await reconcileQueuedPaymentNotificationMilestones(env(database), new Date(iso(94)));
+  assert.ok(["pending", "processing", "completed"].includes(
+    database.query(`SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?`, [receiptCorrectionRequest.id])[0].status,
+  ), "the correction queues existing reminder reconciliation without assuming this broad batch claims its row first");
+  await assert.rejects(correctFinalizedManualPayment(env(database), paymentStaff, {
+    receivedPaymentId: erroneousReceipt.id, correctedAmountMnt: 350000, reason: "Өөр засвар",
+    reviewFingerprint: receiptCorrectionPreview.reviewFingerprint, operationId: "66666666-7777-4888-8999-aaaaaaaaaaaa",
+  }, new Date(iso(95))), (error) => error?.code === "invalid" || error?.code === "conflict",
+  "a second or stale correction cannot alter the same finalized receipt");
 
   console.log("ok staged registration capacity, confirmation, waitlist, and Turnstile tests");
 } finally {

@@ -174,6 +174,360 @@ async function settleOutstandingApprovalIfResolved(env: WorkerEnv, childId: stri
   }
 }
 
+interface ManualReceiptCorrectionSnapshot {
+  paymentRequestId: string; registrationDraftId: string; childId: string; enrollmentId: string;
+  originalPaymentId: string; originalPaymentUpdatedAt: string; originalAmountMnt: number; source: PaymentSource; receivedAt: string;
+  confirmationId: string; confirmationUpdatedAt: string; seatApproved: number;
+  installmentId: string; installmentAmountMnt: number; installmentUpdatedAt: string;
+  childUpdatedAt: string; draftUpdatedAt: string; enrollmentUpdatedAt: string;
+  dependencyCount: number;
+}
+
+async function manualReceiptCorrectionSnapshot(env: WorkerEnv, receivedPaymentId: string): Promise<ManualReceiptCorrectionSnapshot | null> {
+  const row = await env.DB.prepare(`SELECT payment_request.id AS paymentRequestId, payment_request.registration_draft_id AS registrationDraftId,
+      child.id AS childId, child.canonical_enrollment_id AS enrollmentId, child.updated_at AS childUpdatedAt,
+      draft.updated_at AS draftUpdatedAt, enrollment.updated_at AS enrollmentUpdatedAt,
+      payment.id AS originalPaymentId, payment.updated_at AS originalPaymentUpdatedAt,
+      payment.received_amount_mnt AS originalAmountMnt, payment.payment_source AS source, payment.received_at AS receivedAt,
+      confirmation.id AS confirmationId, confirmation.updated_at AS confirmationUpdatedAt,
+      confirmation.seat_confirmation_approved AS seatApproved,
+      installment.id AS installmentId, installment.amount_mnt AS installmentAmountMnt, installment.updated_at AS installmentUpdatedAt,
+      (SELECT COUNT(*) FROM payment_allocation WHERE received_payment_id = payment.id) AS allocationCount,
+      (SELECT COUNT(DISTINCT payment_installment.registration_draft_child_id) FROM payment_allocation
+        INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+        WHERE payment_allocation.received_payment_id = payment.id) AS allocationChildCount,
+      (SELECT COUNT(*) FROM received_payment AS later
+        LEFT JOIN payment_confirmation AS later_confirmation ON later_confirmation.received_payment_id = later.id
+        WHERE later.payment_request_id = payment_request.id AND later.id != payment.id
+          AND (later_confirmation.status IS NULL OR later_confirmation.status != 'undone'))
+      + (SELECT COUNT(*) FROM payment_credit WHERE payment_request_id = payment_request.id)
+      + (SELECT COUNT(*) FROM payment_receipt_correction WHERE corrected_received_payment_id = payment.id)
+      + (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = child.id)
+      + (SELECT COUNT(*) FROM enrollment_fee_adjustment WHERE registration_draft_child_id = child.id)
+      + (SELECT COUNT(*) FROM payment_fee_waiver WHERE registration_draft_child_id = child.id)
+      + (SELECT COUNT(*) FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = child.id)
+      + (SELECT COUNT(*) FROM registration_draft_referral WHERE registration_draft_child_id = child.id)
+      + (SELECT COUNT(*) FROM payment_notification_milestone WHERE registration_draft_child_id = child.id AND status IN ('sending', 'sent'))
+      AS dependencyCount
+    FROM received_payment AS payment
+    INNER JOIN payment_confirmation AS confirmation ON confirmation.received_payment_id = payment.id AND confirmation.status = 'finalized'
+    INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = payment.id
+    INNER JOIN payment_installment AS installment ON installment.id = allocation.payment_installment_id
+    INNER JOIN payment_request ON payment_request.id = payment.payment_request_id
+    INNER JOIN registration_draft_child AS child ON child.id = installment.registration_draft_child_id
+    INNER JOIN registration_draft AS draft ON draft.id = child.registration_draft_id
+    INNER JOIN enrollment ON enrollment.id = child.canonical_enrollment_id AND enrollment.status = 'confirmed'
+    WHERE payment.id = ? AND payment.payment_source IN ('staff_manual_bank', 'staff_manual_cash')
+      AND installment.installment_kind = 'initial' AND installment.status = 'paid'
+      AND child.status != 'cancelled' AND draft.status != 'cancelled'`).bind(receivedPaymentId)
+    .first<ManualReceiptCorrectionSnapshot & { allocationCount: number; allocationChildCount: number }>();
+  if (!row || Number(row.allocationCount) !== 1 || Number(row.allocationChildCount) !== 1 || Number(row.dependencyCount) !== 0) return null;
+  return { ...row, originalAmountMnt: Number(row.originalAmountMnt), installmentAmountMnt: Number(row.installmentAmountMnt),
+    seatApproved: Number(row.seatApproved), dependencyCount: Number(row.dependencyCount) };
+}
+
+async function manualReceiptCorrectionReview(env: WorkerEnv, receivedPaymentId: string, correctedAmountMnt: number) {
+  const snapshot = await manualReceiptCorrectionSnapshot(env, receivedPaymentId);
+  if (!snapshot || !Number.isInteger(correctedAmountMnt) || correctedAmountMnt <= 0
+    || correctedAmountMnt >= snapshot.originalAmountMnt || correctedAmountMnt > snapshot.installmentAmountMnt) {
+    throw new PaymentReconciliationError("invalid");
+  }
+  const reviewFingerprint = await sha256({ ...snapshot, correctedAmountMnt });
+  return { snapshot, correctedAmountMnt, remainingInitialMnt: snapshot.installmentAmountMnt - correctedAmountMnt,
+    totalUnpaidMnt: snapshot.installmentAmountMnt - correctedAmountMnt, reviewFingerprint };
+}
+
+export async function previewFinalizedManualPaymentCorrection(env: WorkerEnv, actor: StaffPrincipal, input: {
+  receivedPaymentId: string; correctedAmountMnt: number; revisedInstallments?: InstallmentScheduleInput[];
+}) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const review = await manualReceiptCorrectionReview(env, String(input.receivedPaymentId ?? ""), Number(input.correctedAmountMnt));
+  const installments = await installmentsForRequest(env, review.snapshot.paymentRequestId);
+  const schedule = input.revisedInstallments
+    ? await reviewedInstallmentSchedule(env, review.snapshot.paymentRequestId, review.snapshot.childId, input.revisedInstallments,
+      new Map([[review.snapshot.installmentId, review.correctedAmountMnt]])) : null;
+  const totalUnpaidMnt = installments.reduce((total, installment) => total + Math.max(0,
+    installment.amountMnt - (installment.id === review.snapshot.installmentId ? review.correctedAmountMnt : installment.allocatedAmountMnt)), 0);
+  return { originalReceivedAmountMnt: review.snapshot.originalAmountMnt, correctedReceivedAmountMnt: review.correctedAmountMnt,
+    remainingInitialMnt: review.remainingInitialMnt, totalUnpaidMnt, receivedAt: review.snapshot.receivedAt,
+    installmentId: review.snapshot.installmentId, revisedInstallments: schedule?.entries ?? null,
+    reviewFingerprint: schedule ? await sha256({ correction: review.reviewFingerprint, schedule: schedule.reviewFingerprint }) : review.reviewFingerprint };
+}
+
+export async function correctFinalizedManualPayment(env: WorkerEnv, actor: StaffPrincipal, input: {
+  receivedPaymentId: string; correctedAmountMnt: number; reason: string; reviewFingerprint: string; operationId: string;
+  revisedInstallments?: InstallmentScheduleInput[];
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, "payment.manage")) throw new PaymentReconciliationError("forbidden");
+  const operation = operationId(input.operationId); const reason = String(input.reason ?? "").normalize("NFKC").trim();
+  if (!operation || !reason || reason.length > 500) throw new PaymentReconciliationError("invalid");
+  const existing = await env.DB.prepare(`SELECT original_received_payment_id AS originalPaymentId FROM payment_receipt_correction WHERE operation_id = ?`)
+    .bind(operation).first<{ originalPaymentId: string }>();
+  if (existing) {
+    if (existing.originalPaymentId !== input.receivedPaymentId) throw new PaymentReconciliationError("conflict");
+    return { operationId: operation, idempotent: true };
+  }
+  const review = await manualReceiptCorrectionReview(env, String(input.receivedPaymentId ?? ""), Number(input.correctedAmountMnt));
+  const request = await requestForId(env, review.snapshot.paymentRequestId);
+  const scheduleReview = input.revisedInstallments
+    ? await reviewedInstallmentSchedule(env, request.id, review.snapshot.childId, input.revisedInstallments,
+      new Map([[review.snapshot.installmentId, review.correctedAmountMnt]])) : null;
+  // The review token always covers the entire requested operation. A receipt-
+  // only correction uses its receipt snapshot; a combined operation additionally
+  // binds every proposed installment and its reviewed state.
+  const expectedFingerprint = scheduleReview
+    ? await sha256({ correction: review.reviewFingerprint, schedule: scheduleReview.reviewFingerprint })
+    : review.reviewFingerprint;
+  if (String(input.reviewFingerprint ?? "") !== expectedFingerprint) throw new PaymentReconciliationError("conflict");
+  const now = nowDate.toISOString();
+  const correctedPaymentId = crypto.randomUUID(); const correctedConfirmationId = crypto.randomUUID(); const correctionId = crypto.randomUUID();
+  // A D1 batch is serialized, but a zero-row optimistic update is not itself a
+  // transaction error. Fold the reviewed schedule versions into the first
+  // guarded write so a stale schedule prevents the correction as a whole.
+  const scheduleGuardSql = scheduleReview ? scheduleReview.snapshot.installments.map(() =>
+    ` AND EXISTS (SELECT 1 FROM payment_installment AS reviewed_installment WHERE reviewed_installment.id = ? AND reviewed_installment.updated_at = ?)`).join("") : "";
+  const scheduleGuardValues = scheduleReview ? scheduleReview.snapshot.installments.flatMap((entry) => [entry.id, entry.updatedAt]) : [];
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`UPDATE payment_confirmation SET status = 'undone', undone_at = ?, undone_by_staff_account_id = ?, updated_at = ?
+      WHERE id = ? AND status = 'finalized' AND updated_at = ?
+        AND NOT EXISTS (SELECT 1 FROM received_payment AS later
+          LEFT JOIN payment_confirmation AS later_confirmation ON later_confirmation.received_payment_id = later.id
+          WHERE later.payment_request_id = ? AND later.id != ?
+            AND (later_confirmation.status IS NULL OR later_confirmation.status != 'undone'))
+        AND NOT EXISTS (SELECT 1 FROM payment_credit WHERE payment_request_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM child_credit_entry WHERE registration_draft_child_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM enrollment_fee_adjustment WHERE registration_draft_child_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM payment_fee_waiver WHERE registration_draft_child_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM registration_draft_referral WHERE registration_draft_child_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM payment_notification_milestone WHERE registration_draft_child_id = ? AND status IN ('sending', 'sent'))${scheduleGuardSql}`)
+      .bind(now, actor.staffAccountId, now, review.snapshot.confirmationId, review.snapshot.confirmationUpdatedAt,
+        request.id, review.snapshot.originalPaymentId, request.id, review.snapshot.childId, review.snapshot.childId,
+        review.snapshot.childId, review.snapshot.childId, review.snapshot.childId, review.snapshot.childId, ...scheduleGuardValues),
+    env.DB.prepare(`INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source,
+      reconciliation_status, confirmed_at, confirmed_by_staff_account_id, idempotency_key, created_at, updated_at, is_test, test_run_id)
+      SELECT ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request
+      WHERE id = ? AND EXISTS (SELECT 1 FROM payment_confirmation WHERE id = ? AND status = 'undone' AND updated_at = ?)`).bind(
+      correctedPaymentId, request.id, review.correctedAmountMnt, review.snapshot.receivedAt, review.snapshot.source,
+      now, actor.staffAccountId, `payment-correction:${operation}`, now, now, request.id, review.snapshot.confirmationId, now),
+    env.DB.prepare(`INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt,
+      allocated_at, allocated_by_staff_account_id, created_at, is_test, test_run_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request
+      WHERE id = ? AND EXISTS (SELECT 1 FROM payment_confirmation WHERE id = ? AND status = 'undone' AND updated_at = ?)`)
+      .bind(crypto.randomUUID(), correctedPaymentId, review.snapshot.installmentId, review.correctedAmountMnt, now, actor.staffAccountId, now,
+        request.id, review.snapshot.confirmationId, now),
+    env.DB.prepare(`INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after,
+      seat_confirmation_approved, created_at, updated_at, finalized_at, is_test, test_run_id)
+      SELECT ?, ?, ?, 'finalized', ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request
+      WHERE id = ? AND EXISTS (SELECT 1 FROM payment_confirmation WHERE id = ? AND status = 'undone' AND updated_at = ?)`)
+      .bind(correctedConfirmationId, correctedPaymentId, request.id, now, review.snapshot.seatApproved, now, now, now,
+        request.id, review.snapshot.confirmationId, now),
+    env.DB.prepare(`UPDATE payment_installment SET status = 'partially_paid', paid_at = NULL, updated_at = ?
+      WHERE id = ? AND status = 'paid' AND updated_at = ?
+        AND EXISTS (SELECT 1 FROM payment_confirmation WHERE id = ? AND status = 'undone' AND updated_at = ?)`)
+      .bind(now, review.snapshot.installmentId, review.snapshot.installmentUpdatedAt, review.snapshot.confirmationId, now),
+    env.DB.prepare(`INSERT INTO payment_receipt_correction (id, operation_id, original_received_payment_id, corrected_received_payment_id,
+      payment_request_id, registration_draft_child_id, original_received_amount_mnt, corrected_received_amount_mnt,
+      reason, review_fingerprint, corrected_by_staff_account_id, corrected_at, is_test, test_run_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request
+      WHERE id = ? AND EXISTS (SELECT 1 FROM payment_confirmation WHERE id = ? AND status = 'undone' AND updated_at = ?)`)
+      .bind(correctionId, operation, review.snapshot.originalPaymentId, correctedPaymentId, request.id, review.snapshot.childId,
+        review.snapshot.originalAmountMnt, review.correctedAmountMnt, reason, review.reviewFingerprint, actor.staffAccountId, now,
+        request.id, review.snapshot.confirmationId, now),
+    env.DB.prepare(`INSERT INTO payment_evidence (id, payment_request_id, received_payment_id, registration_draft_id, evidence_type,
+      recorded_at, recorded_by_staff_account_id, metadata_json, created_at, is_test, test_run_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request
+      WHERE id = ? AND EXISTS (SELECT 1 FROM payment_receipt_correction WHERE id = ?)`)
+      .bind(crypto.randomUUID(), request.id, correctedPaymentId, request.registrationDraftId, review.snapshot.source, now, actor.staffAccountId,
+        JSON.stringify({ correctionOfReceivedPaymentId: review.snapshot.originalPaymentId, correctionId, operationId: operation }), now, request.id, correctionId),
+    env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at)
+      SELECT ?, ?, 'staff', ?, 'finalized_manual_payment_corrected', 'payment_receipt_correction', ?, ?, ?,
+        is_test, test_run_id, ?
+      FROM payment_request WHERE id = ? AND EXISTS (SELECT 1 FROM payment_receipt_correction WHERE id = ?)`)
+      .bind(crypto.randomUUID(), now, actor.staffAccountId, correctionId, JSON.stringify({ operationId: operation,
+        originalReceivedPaymentId: review.snapshot.originalPaymentId, correctedReceivedPaymentId: correctedPaymentId,
+        originalAmountMnt: review.snapshot.originalAmountMnt, correctedAmountMnt: review.correctedAmountMnt,
+        installmentId: review.snapshot.installmentId, reason }), env.APP_ENV, now, request.id, correctionId),
+  ];
+  if (scheduleReview) {
+    const revisionId = crypto.randomUUID(); const reminder = await getPaymentReminderSetting(env);
+    statements.push(env.DB.prepare(`INSERT INTO payment_installment_schedule_revision (id, operation_id, payment_request_id,
+      registration_draft_child_id, reason, review_fingerprint, revised_by_staff_account_id, revised_at, is_test, test_run_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request WHERE id = ?
+        AND EXISTS (SELECT 1 FROM payment_receipt_correction WHERE id = ?)`)
+      .bind(revisionId, `${operation}:schedule`, request.id, review.snapshot.childId, reason, scheduleReview.reviewFingerprint, actor.staffAccountId, now, request.id, correctionId));
+    for (const prior of scheduleReview.snapshot.installments) statements.push(env.DB.prepare(`INSERT INTO payment_installment_schedule_revision_entry
+      (id, payment_installment_schedule_revision_id, payment_installment_id, installment_number, amount_mnt, due_at, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(crypto.randomUUID(), revisionId, prior.id, prior.installmentNumber, prior.amountMnt, prior.dueAt, prior.status, now));
+    for (let index = 0; index < scheduleReview.entries.length; index += 1) {
+      const entry = scheduleReview.entries[index]; const prior = scheduleReview.snapshot.installments[index]; const id = prior?.id ?? crypto.randomUUID();
+      const allocated = Number(prior?.id === review.snapshot.installmentId ? review.correctedAmountMnt : prior?.allocatedAmountMnt ?? 0);
+      const status = allocated >= entry.amountMnt ? 'paid' : allocated > 0 ? 'partially_paid' : 'pending';
+      const reminderAt = new Date(new Date(entry.dueAt).getTime() - reminder.initialReminderLeadMinutes * 60_000).toISOString();
+      if (prior) statements.push(env.DB.prepare(`UPDATE payment_installment SET installment_number=?, installment_kind=?, amount_mnt=?, original_due_at=?, effective_due_at=?, reminder_at=?, status=?, paid_at=CASE WHEN ?='paid' THEN paid_at ELSE NULL END, updated_at=?
+        WHERE id=? AND updated_at=? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id=?)`)
+        .bind(index + 1, index === 0 ? 'initial' : 'later', entry.amountMnt, entry.dueAt, entry.dueAt, reminderAt, status, status, now,
+          id, prior.id === review.snapshot.installmentId ? now : prior.updatedAt, revisionId));
+      else statements.push(env.DB.prepare(`INSERT INTO payment_installment (id,payment_request_id,registration_draft_child_id,installment_number,installment_kind,amount_mnt,original_due_at,effective_due_at,reminder_lead_minutes,reminder_at,status,created_at,updated_at,is_test,test_run_id)
+        SELECT ?,?,?,?,?,?,?,?,?,?,?,?, ?,is_test,test_run_id FROM payment_request WHERE id=? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id=?)`)
+        .bind(id, request.id, review.snapshot.childId, index + 1, 'later', entry.amountMnt, entry.dueAt, entry.dueAt, reminder.initialReminderLeadMinutes, reminderAt, status, now, now, request.id, revisionId));
+    }
+  }
+  const results = await env.DB.batch(statements);
+  const correctionWriteCount = 8;
+  const scheduleSnapshots = scheduleReview?.snapshot.installments.length ?? 0;
+  const scheduleEntries = scheduleReview?.entries.length ?? 0;
+  const scheduleResults = scheduleReview ? results.slice(correctionWriteCount, correctionWriteCount + 1 + scheduleSnapshots + scheduleEntries) : [];
+  if (changes(results[0]) !== 1 || changes(results[4]) !== 1 || changes(results[5]) !== 1
+    || (scheduleReview && scheduleResults.some((result) => changes(result) !== 1))) throw new PaymentReconciliationError("conflict");
+  await recalculateDiscountAwardBalances(env.DB, review.snapshot.childId, now);
+  return { operationId: operation, idempotent: false, correctionId, correctedPaymentId,
+    remainingInitialMnt: review.remainingInitialMnt };
+}
+
+type InstallmentScheduleInput = { amountMnt: number; dueOn: string };
+type InstallmentScheduleRow = { id: string; installmentNumber: number; installmentKind: string; amountMnt: number;
+  allocatedAmountMnt: number; status: string; dueAt: string; updatedAt: string };
+
+function mongoliaEndOfDay(value: string): string | null {
+  const matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? ""));
+  if (!matched) return null;
+  const [year, month, day] = matched.slice(1).map(Number);
+  const local = new Date(Date.UTC(year, month - 1, day, 15, 59, 59, 999));
+  return local.getUTCFullYear() === year && local.getUTCMonth() === month - 1 && local.getUTCDate() === day ? local.toISOString() : null;
+}
+
+async function installmentScheduleSnapshot(env: WorkerEnv, paymentRequestId: string, childId: string) {
+  const request = await requestForId(env, paymentRequestId);
+  const child = await env.DB.prepare(`SELECT registration_draft_child.id, registration_draft_child.canonical_enrollment_id AS enrollmentId,
+      registration_draft_child.status, registration_draft_child.updated_at AS updatedAt
+    FROM registration_draft_child INNER JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
+      AND enrollment.status = 'confirmed'
+    WHERE registration_draft_child.id = ? AND registration_draft_child.registration_draft_id = ?`).bind(childId, request.registrationDraftId)
+    .first<{ id: string; enrollmentId: string; status: string; updatedAt: string }>();
+  if (!child || child.status === 'cancelled') throw new PaymentReconciliationError('invalid');
+  const rows = await env.DB.prepare(`SELECT installment.id, installment.installment_number AS installmentNumber,
+      installment.installment_kind AS installmentKind, installment.amount_mnt AS amountMnt, installment.status,
+      installment.effective_due_at AS dueAt, installment.updated_at AS updatedAt,
+      COALESCE(SUM(CASE WHEN confirmation.status = 'undone' THEN 0 ELSE allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt
+    FROM payment_installment AS installment LEFT JOIN payment_allocation AS allocation ON allocation.payment_installment_id = installment.id
+    LEFT JOIN payment_confirmation AS confirmation ON confirmation.received_payment_id = allocation.received_payment_id
+    WHERE installment.payment_request_id = ? AND installment.registration_draft_child_id = ? AND installment.status != 'released'
+    GROUP BY installment.id ORDER BY installment.installment_number`).bind(paymentRequestId, childId).all<InstallmentScheduleRow>();
+  const dependencies = await env.DB.prepare(`SELECT
+      (SELECT COUNT(*) FROM payment_credit WHERE payment_request_id = ?) +
+      (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ?) +
+      (SELECT COUNT(*) FROM enrollment_fee_adjustment WHERE registration_draft_child_id = ?) +
+      (SELECT COUNT(*) FROM payment_fee_waiver WHERE registration_draft_child_id = ?) +
+      (SELECT COUNT(*) FROM payment_notification_milestone WHERE registration_draft_child_id = ? AND status IN ('sending', 'sent')) AS count`)
+    .bind(paymentRequestId, childId, childId, childId, childId).first<{ count: number }>();
+  if (!rows.results.length || Number(dependencies?.count ?? 0)) throw new PaymentReconciliationError('invalid');
+  return { request, child, installments: rows.results.map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) })) };
+}
+
+async function reviewedInstallmentSchedule(env: WorkerEnv, paymentRequestId: string, childId: string, entries: InstallmentScheduleInput[], allocationOverrides = new Map<string, number>()) {
+  const snapshot = await installmentScheduleSnapshot(env, paymentRequestId, childId);
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 4) throw new PaymentReconciliationError('invalid');
+  const reviewed = entries.map((entry) => ({ amountMnt: Number(entry.amountMnt), dueAt: mongoliaEndOfDay(entry.dueOn), dueOn: entry.dueOn }));
+  if (reviewed.some((entry) => !Number.isInteger(entry.amountMnt) || entry.amountMnt <= 0 || !entry.dueAt)
+    || reviewed.some((entry, index) => index > 0 && String(entry.dueAt) <= String(reviewed[index - 1].dueAt))) throw new PaymentReconciliationError('invalid');
+  const totalCurrent = snapshot.installments.reduce((total, entry) => total + entry.amountMnt, 0);
+  const adjustedInstallments = snapshot.installments.map((entry) => ({ ...entry, allocatedAmountMnt: allocationOverrides.get(entry.id) ?? entry.allocatedAmountMnt }));
+  if (reviewed.reduce((total, entry) => total + entry.amountMnt, 0) !== totalCurrent
+    || adjustedInstallments.some((entry, index) => Number(entry.allocatedAmountMnt) > Number(reviewed[index]?.amountMnt ?? 0))) throw new PaymentReconciliationError('invalid');
+  const reviewFingerprint = await sha256({ childUpdatedAt: snapshot.child.updatedAt, installments: adjustedInstallments, entries: reviewed });
+  return { snapshot: { ...snapshot, installments: adjustedInstallments }, entries: reviewed as Array<{ amountMnt: number; dueAt: string; dueOn: string }>, reviewFingerprint };
+}
+
+export async function previewInstallmentScheduleRevision(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentRequestId: string; registrationDraftChildId: string; installments: InstallmentScheduleInput[];
+}) {
+  if (!hasStaffCapability(actor, 'payment.manage')) throw new PaymentReconciliationError('forbidden');
+  const review = await reviewedInstallmentSchedule(env, String(input.paymentRequestId ?? ''), String(input.registrationDraftChildId ?? ''), input.installments);
+  return { reviewFingerprint: review.reviewFingerprint, previous: review.snapshot.installments,
+    revised: review.entries, totalFeeMnt: review.entries.reduce((total, entry) => total + entry.amountMnt, 0),
+    totalRemainingMnt: review.entries.reduce((total, entry, index) => total + Math.max(0, entry.amountMnt - Number(review.snapshot.installments[index]?.allocatedAmountMnt ?? 0)), 0) };
+}
+
+export async function reviseInstallmentSchedule(env: WorkerEnv, actor: StaffPrincipal, input: {
+  paymentRequestId: string; registrationDraftChildId: string; installments: InstallmentScheduleInput[];
+  reason: string; reviewFingerprint: string; operationId: string;
+}, nowDate = new Date()) {
+  if (!hasStaffCapability(actor, 'payment.manage')) throw new PaymentReconciliationError('forbidden');
+  const operation = operationId(input.operationId); const reason = String(input.reason ?? '').normalize('NFKC').trim();
+  if (!operation || !reason || reason.length > 500) throw new PaymentReconciliationError('invalid');
+  const existing = await env.DB.prepare(`SELECT payment_request_id AS paymentRequestId, registration_draft_child_id AS childId
+    FROM payment_installment_schedule_revision WHERE operation_id = ?`).bind(operation).first<{ paymentRequestId: string; childId: string }>();
+  if (existing) {
+    if (existing.paymentRequestId !== input.paymentRequestId || existing.childId !== input.registrationDraftChildId) throw new PaymentReconciliationError('conflict');
+    return { operationId: operation, idempotent: true };
+  }
+  const review = await reviewedInstallmentSchedule(env, String(input.paymentRequestId ?? ''), String(input.registrationDraftChildId ?? ''), input.installments);
+  if (review.reviewFingerprint !== String(input.reviewFingerprint ?? '')) throw new PaymentReconciliationError('conflict');
+  const now = nowDate.toISOString(); const revisionId = crypto.randomUUID();
+  const reminder = await getPaymentReminderSetting(env);
+  // See the combined correction path above. The revision record is created
+  // only if every reviewed installment still has the same version.
+  const scheduleGuardSql = review.snapshot.installments.map(() =>
+    ` AND EXISTS (SELECT 1 FROM payment_installment AS reviewed_installment WHERE reviewed_installment.id = ? AND reviewed_installment.updated_at = ?)`).join("");
+  const scheduleGuardValues = review.snapshot.installments.flatMap((entry) => [entry.id, entry.updatedAt]);
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`INSERT INTO payment_installment_schedule_revision (id, operation_id, payment_request_id,
+      registration_draft_child_id, reason, review_fingerprint, revised_by_staff_account_id, revised_at, is_test, test_run_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request WHERE id = ?${scheduleGuardSql}`)
+      .bind(revisionId, operation, review.snapshot.request.id, review.snapshot.child.id, reason, review.reviewFingerprint,
+        actor.staffAccountId, now, review.snapshot.request.id, ...scheduleGuardValues),
+    ...review.snapshot.installments.map((entry) => env.DB.prepare(`INSERT INTO payment_installment_schedule_revision_entry
+      (id, payment_installment_schedule_revision_id, payment_installment_id, installment_number, amount_mnt, due_at, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(crypto.randomUUID(), revisionId, entry.id, entry.installmentNumber, entry.amountMnt, entry.dueAt, entry.status, now)),
+  ];
+  for (let index = 0; index < review.entries.length; index += 1) {
+    const entry = review.entries[index]; const previous = review.snapshot.installments[index];
+    const installmentId = previous?.id ?? crypto.randomUUID();
+    const allocated = Number(previous?.allocatedAmountMnt ?? 0);
+    const status = allocated >= entry.amountMnt ? 'paid' : allocated > 0 ? 'partially_paid' : 'pending';
+    const reminderAt = new Date(new Date(entry.dueAt).getTime() - reminder.initialReminderLeadMinutes * 60_000).toISOString();
+    if (previous) {
+      statements.push(env.DB.prepare(`UPDATE payment_installment SET installment_number = ?, installment_kind = ?, amount_mnt = ?,
+        original_due_at = ?, effective_due_at = ?, reminder_at = ?, status = ?, paid_at = CASE WHEN ? = 'paid' THEN paid_at ELSE NULL END,
+        updated_at = ? WHERE id = ? AND updated_at = ?
+          AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id = ?)`)
+        .bind(index + 1, index === 0 ? 'initial' : 'later', entry.amountMnt, entry.dueAt, entry.dueAt, reminderAt, status, status, now,
+          previous.id, previous.updatedAt, revisionId));
+    } else {
+      statements.push(env.DB.prepare(`INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id,
+        installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at,
+        status, created_at, updated_at, is_test, test_run_id)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request
+        WHERE id = ? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id = ?)`)
+        .bind(installmentId, review.snapshot.request.id, review.snapshot.child.id, index + 1, index === 0 ? 'initial' : 'later', entry.amountMnt,
+          entry.dueAt, entry.dueAt, reminder.initialReminderLeadMinutes, reminderAt, status, now, now, review.snapshot.request.id, revisionId));
+    }
+  }
+  for (const stale of review.snapshot.installments.slice(review.entries.length)) {
+    statements.push(env.DB.prepare(`UPDATE payment_installment SET status = 'released', updated_at = ?
+      WHERE id = ? AND updated_at = ? AND NOT EXISTS (SELECT 1 FROM payment_allocation WHERE payment_installment_id = ?)
+        AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id = ?)`)
+      .bind(now, stale.id, stale.updatedAt, stale.id, revisionId));
+  }
+  statements.push(env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+    metadata_json, environment, is_test, test_run_id, created_at)
+    SELECT ?, ?, 'staff', ?, 'payment_installment_schedule_revised', 'payment_installment_schedule_revision', ?, ?, ?, is_test, test_run_id, ?
+    FROM payment_request WHERE id = ? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id = ?)`)
+    .bind(crypto.randomUUID(), now, actor.staffAccountId, revisionId, JSON.stringify({ operationId: operation, reason, previous: review.snapshot.installments, revised: review.entries }),
+      env.APP_ENV, now, review.snapshot.request.id, revisionId));
+  const results = await env.DB.batch(statements);
+  const snapshotCount = review.snapshot.installments.length;
+  const scheduleResults = results.slice(1 + snapshotCount, 1 + snapshotCount + review.entries.length + Math.max(0, snapshotCount - review.entries.length));
+  const snapshotResults = results.slice(1, 1 + snapshotCount);
+  if (changes(results[0]) !== 1 || snapshotResults.some((result) => changes(result) !== 1)
+    || scheduleResults.some((result) => changes(result) !== 1)) throw new PaymentReconciliationError('conflict');
+  await recalculateDiscountAwardBalances(env.DB, review.snapshot.child.id, now);
+  return { operationId: operation, idempotent: false, revisionId, installments: review.entries };
+}
+
 export async function confirmOutstandingPaymentEnrollment(env: WorkerEnv, actor: StaffPrincipal, input: {
   paymentRequestId: string; registrationDraftChildId: string; remainingPaymentDueAt: string; operationId: string;
 }, nowDate = new Date()) {
@@ -828,16 +1182,35 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     }]);
   }
   const financialStartedAt = performance.now();
-  const installmentRows = rawItems.flatMap((item) => [
-    {
-    id: String(item.installmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 1,
-    amountMnt: Number(item.expectedAmountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt),
-    },
-    item.laterInstallmentId && item.laterAmountMnt != null ? {
-      id: String(item.laterInstallmentId), registrationDraftChildId: String(item.registrationDraftChildId), installmentNumber: 2,
-      amountMnt: Number(item.laterAmountMnt), allocatedAmountMnt: Number(item.laterAllocatedAmountMnt),
-    } : null,
-  ].filter(Boolean) as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; amountMnt: number }>);
+  const allInstallments = childIds.length ? await env.DB.prepare(`SELECT installment.id,
+      installment.registration_draft_child_id AS registrationDraftChildId, installment.installment_number AS installmentNumber,
+      installment.installment_kind AS installmentKind, installment.amount_mnt AS amountMnt,
+      installment.effective_due_at AS dueAt, installment.status,
+      COALESCE(SUM(CASE WHEN confirmation.status = 'undone' THEN 0 ELSE allocation.allocated_amount_mnt END), 0)
+        + COALESCE((SELECT SUM(-credit.amount_mnt) FROM child_credit_entry AS credit
+          WHERE credit.payment_installment_id = installment.id AND credit.entry_kind = 'credit_application'), 0) AS allocatedAmountMnt,
+      COALESCE(SUM(CASE WHEN confirmation.status = 'undone' THEN 0 ELSE allocation.allocated_amount_mnt END), 0) AS cashAllocatedAmountMnt
+    FROM payment_installment AS installment
+    LEFT JOIN payment_allocation AS allocation ON allocation.payment_installment_id = installment.id
+    LEFT JOIN payment_confirmation AS confirmation ON confirmation.received_payment_id = allocation.received_payment_id
+    WHERE installment.registration_draft_child_id IN (${childIds.map(() => '?').join(', ')})
+      AND installment.status != 'released'
+    GROUP BY installment.id ORDER BY installment.registration_draft_child_id, installment.installment_number`).bind(...childIds).all<{
+      id: string; registrationDraftChildId: string; installmentNumber: number; installmentKind: string; amountMnt: number;
+      dueAt: string; status: string; allocatedAmountMnt: number; cashAllocatedAmountMnt: number;
+    }>() : { results: [] as Array<{ id: string; registrationDraftChildId: string; installmentNumber: number; installmentKind: string; amountMnt: number; dueAt: string; status: string; allocatedAmountMnt: number; cashAllocatedAmountMnt: number }> };
+  const correctionReceipts = childIds.length ? await env.DB.prepare(`SELECT installment.registration_draft_child_id AS childId,
+      payment.id AS receivedPaymentId, payment.received_amount_mnt AS amountMnt, payment.received_at AS receivedAt
+    FROM received_payment AS payment INNER JOIN payment_confirmation AS confirmation
+      ON confirmation.received_payment_id = payment.id AND confirmation.status = 'finalized'
+    INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = payment.id
+    INNER JOIN payment_installment AS installment ON installment.id = allocation.payment_installment_id
+    WHERE installment.registration_draft_child_id IN (${childIds.map(() => '?').join(', ')})
+      AND payment.payment_source IN ('staff_manual_bank', 'staff_manual_cash')
+    GROUP BY payment.id HAVING COUNT(*) = 1`).bind(...childIds).all<{ childId: string; receivedPaymentId: string; amountMnt: number; receivedAt: string }>()
+    : { results: [] as Array<{ childId: string; receivedPaymentId: string; amountMnt: number; receivedAt: string }> };
+  const installmentRows = allInstallments.results.map((item) => ({ ...item, installmentNumber: Number(item.installmentNumber),
+    amountMnt: Number(item.amountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt), cashAllocatedAmountMnt: Number(item.cashAllocatedAmountMnt) }));
   const [cashReceiptByChild, effectiveRows, awardByChild, creditByChild] = await Promise.all([
     cashReceiptProjectionsForChildren(env.DB, childIds),
     effectiveInstallmentsForRows(env.DB, installmentRows),
@@ -845,6 +1218,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     childCreditSummaryForChildren(env.DB, childIds),
   ]);
   const effectiveById = new Map(effectiveRows.map((item) => [item.id, item]));
+  const correctionReceiptCandidates = new Map<string, Array<{ receivedPaymentId: string; amountMnt: number; receivedAt: string }>>();
+  for (const row of correctionReceipts.results) correctionReceiptCandidates.set(row.childId, [...(correctionReceiptCandidates.get(row.childId) ?? []),
+    { receivedPaymentId: row.receivedPaymentId, amountMnt: Number(row.amountMnt), receivedAt: row.receivedAt }]);
+  const correctionReceiptByChild = new Map([...correctionReceiptCandidates.entries()]
+    .filter(([, entries]) => entries.length === 1).map(([childId, entries]) => [childId, entries[0]]));
   const settlementInputs = rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
     return {
@@ -876,10 +1254,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     if (!Number(creditByChild.get(childId)?.availableAmountMnt || 0)) return [];
     const initial = effectiveById.get(String(item.installmentId));
     const initialOutstanding = Math.max(0, Number(initial?.effectiveAmountMnt ?? item.expectedAmountMnt) - item.allocatedAmountMnt);
-    const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
-    const laterOutstanding = later ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
+    const nextLater = installmentRows.filter((entry) => entry.registrationDraftChildId === childId && entry.installmentKind === "later" && entry.status !== "released")
+      .map((entry) => ({ ...entry, effectiveAmountMnt: Number(effectiveById.get(entry.id)?.effectiveAmountMnt ?? entry.amountMnt) }))
+      .find((entry) => entry.effectiveAmountMnt > entry.allocatedAmountMnt);
+    const laterOutstanding = nextLater ? Math.max(0, nextLater.effectiveAmountMnt - nextLater.allocatedAmountMnt) : 0;
     const installmentId = item.paymentPlanCode !== "two_installment" && initialOutstanding > 0 ? String(item.installmentId)
-      : laterOutstanding > 0 && item.laterInstallmentId ? String(item.laterInstallmentId) : null;
+      : laterOutstanding > 0 && nextLater ? nextLater.id : null;
     return installmentId ? [{ childId, paymentInstallmentId: installmentId,
       availableCreditMnt: Number(creditByChild.get(childId)?.availableAmountMnt || 0),
       outstandingAmountMnt: installmentId === String(item.installmentId) ? initialOutstanding : laterOutstanding,
@@ -970,16 +1350,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   canManageTransfers: hasStaffCapability(actor, "registration.manage"),
   canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
     const effective = effectiveById.get(String(item.installmentId));
-    const later = item.laterInstallmentId ? effectiveById.get(String(item.laterInstallmentId)) : null;
+    const activeInstallments = installmentRows.filter((entry) => entry.registrationDraftChildId === String(item.registrationDraftChildId))
+      .map((entry) => ({ ...entry, effectiveAmountMnt: Number(effectiveById.get(entry.id)?.effectiveAmountMnt ?? entry.amountMnt) }));
     const awards = (awardByChild.get(String(item.registrationDraftChildId)) ?? []).map((award) => ({ ...award,
       creditState: awardCreditById.get(award.id) ?? null,
     }));
     const expectedAmountMnt = effective?.effectiveAmountMnt ?? item.expectedAmountMnt;
-    const rawLaterAmountMnt = item.laterAmountMnt == null ? null : Number(item.laterAmountMnt);
-    const effectiveLaterAmountMnt = later?.effectiveAmountMnt ?? rawLaterAmountMnt;
-    const totalExpectedMnt = expectedAmountMnt + Number(effectiveLaterAmountMnt ?? 0);
-    const totalPaidMnt = item.cashAllocatedAmountMnt + item.laterCashAllocatedAmountMnt;
-    const totalCreditAppliedMnt = item.allocatedAmountMnt + item.laterAllocatedAmountMnt - totalPaidMnt;
+    const totalExpectedMnt = activeInstallments.reduce((total, entry) => total + entry.effectiveAmountMnt, 0);
+    const totalPaidMnt = activeInstallments.reduce((total, entry) => total + entry.cashAllocatedAmountMnt, 0);
+    const totalCreditAppliedMnt = activeInstallments.reduce((total, entry) => total + entry.allocatedAmountMnt, 0) - totalPaidMnt;
     const cashReceipt = cashReceiptByChild.get(String(item.registrationDraftChildId));
     const credit = creditByChild.get(String(item.registrationDraftChildId));
     const initialOutstandingMnt = Math.max(0, expectedAmountMnt - item.allocatedAmountMnt);
@@ -987,23 +1366,25 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const waiverHistory = waiverByChild.get(String(item.registrationDraftChildId)) ?? [];
     const reservedCreditMnt = settlement?.reservedCreditMnt ?? 0;
     const cashRequiredMnt = settlement?.cashRequiredMnt ?? initialOutstandingMnt;
-    const laterOutstandingMnt = later && item.laterInstallmentId
-      ? Math.max(0, Number(later.effectiveAmountMnt) - item.laterAllocatedAmountMnt) : 0;
+    const nextScheduledInstallment = activeInstallments.find((entry) => entry.installmentKind === "later"
+      && entry.effectiveAmountMnt > entry.allocatedAmountMnt) ?? null;
+    const laterOutstandingMnt = nextScheduledInstallment
+      ? Math.max(0, nextScheduledInstallment.effectiveAmountMnt - nextScheduledInstallment.allocatedAmountMnt) : 0;
     // A two-installment agreement's first installment is deliberately
     // cash-only. Credit review belongs to its final scheduled installment,
     // even while the first installment is still outstanding.
     const creditMaySettleInitial = item.paymentPlanCode !== "two_installment";
     const creditApplicationInstallmentId = creditMaySettleInitial && initialOutstandingMnt > 0 ? String(item.installmentId)
-      : laterOutstandingMnt > 0 ? String(item.laterInstallmentId) : null;
+      : laterOutstandingMnt > 0 ? nextScheduledInstallment?.id ?? null : null;
     const creditApplicationOutstandingMnt = creditMaySettleInitial && initialOutstandingMnt > 0 ? initialOutstandingMnt : laterOutstandingMnt;
     const creditReviewResolved = creditApplicationInstallmentId ? Boolean(creditReviewByInstallment.get(creditApplicationInstallmentId)) : false;
     const historicalSettlementReview = historicalReviewByChild.get(String(item.registrationDraftChildId));
     const historicalReviewReady = Boolean(historicalSettlementReview && initialOutstandingMnt === 0
       && !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved));
     return { ...item, rawExpectedAmountMnt: Number(item.expectedAmountMnt), expectedAmountMnt,
-      rawLaterAmountMnt,
-      laterAmountMnt: effectiveLaterAmountMnt,
-      rawTotalAmountMnt: Number(item.expectedAmountMnt) + Number(rawLaterAmountMnt ?? 0),
+      rawLaterAmountMnt: nextScheduledInstallment?.amountMnt ?? null,
+      laterAmountMnt: nextScheduledInstallment?.effectiveAmountMnt ?? null,
+      rawTotalAmountMnt: activeInstallments.reduce((total, entry) => total + entry.amountMnt, 0),
       effectiveTotalAmountMnt: totalExpectedMnt,
       totalPaidMnt,
       totalCashAllocatedMnt: cashReceipt?.cashAllocatedMnt ?? totalPaidMnt,
@@ -1012,7 +1393,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       totalCreditAppliedMnt,
       reservedCreditMnt,
       cashRequiredMnt,
-    totalRemainingMnt: Math.max(0, totalExpectedMnt - item.allocatedAmountMnt - item.laterAllocatedAmountMnt),
+      totalRemainingMnt: activeInstallments.reduce((total, entry) => total + Math.max(0, entry.effectiveAmountMnt - entry.allocatedAmountMnt), 0),
+      installments: activeInstallments.map((entry) => ({ id: entry.id, installmentNumber: entry.installmentNumber,
+        installmentKind: entry.installmentKind, amountMnt: entry.effectiveAmountMnt, rawAmountMnt: entry.amountMnt,
+        allocatedAmountMnt: entry.allocatedAmountMnt, cashAllocatedAmountMnt: entry.cashAllocatedAmountMnt,
+        dueAt: entry.dueAt, status: entry.status })),
+      nextScheduledInstallment: nextScheduledInstallment ? { id: nextScheduledInstallment.id,
+        installmentNumber: nextScheduledInstallment.installmentNumber, amountMnt: nextScheduledInstallment.effectiveAmountMnt,
+        allocatedAmountMnt: nextScheduledInstallment.allocatedAmountMnt, dueAt: nextScheduledInstallment.dueAt } : null,
+      finalizedManualReceipt: correctionReceiptByChild.get(String(item.registrationDraftChildId)) ?? null,
       availableCreditMnt: credit?.availableAmountMnt ?? 0,
       totalFeeWaivedMnt: waiverHistory.reduce((total, waiver) => total + waiver.amountMnt, 0),
       waiverHistory,

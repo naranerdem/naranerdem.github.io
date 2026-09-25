@@ -63,7 +63,7 @@ assert.match(page, /result\.finalizedImmediately[\s\S]*Төлбөр бүртгэ
   "a zero-minute finalization reports the completed state rather than a correction-window wait");
 assert.match(page, /Boolean\(form\.elements\.approveSeat\?\.checked && !form\.elements\.approveSeat\?\.disabled\)/, "a disabled sufficient state cannot submit a stale incomplete-payment override");
 assert.match(page, /const alreadyApproved = !seat;/, "later payments remain usable when no seat-approval control is rendered");
-assert.match(page, /const laterOutstanding = item\.laterInstallmentId/, "the confirmed-record projection calculates the later installment's effective outstanding balance");
+assert.match(page, /const nextScheduledInstallment = item\.nextScheduledInstallment/, "the confirmed-record projection selects the next outstanding scheduled installment");
 assert.match(page, /staff-later-payment-form/, "a confirmed two-installment record exposes the ordinary later-payment form");
 assert.match(page, /activePanel\(item\.registrationDraftChildId\) === "payment"/, "the later-payment form opens only in the shared payment panel");
 assert.match(page, /data-payment-open=/, "the action strip has an explicit payment-panel opener");
@@ -72,9 +72,13 @@ assert.match(page, /if \(!deadline\) return;/, "the initial-payment deadline ini
 assert.match(page, /улаанбаатар|ulaanbaatarDateTimeIso/i, "received transaction dates are parsed as the displayed Ulaanbaatar local time");
 assert.match(page, /paymentDrafts/, "payment form values and operation identity survive a failed refresh");
 assert.match(page, /Төлбөр бүртгэгдлээ\. Жагсаалтыг шинэчилж чадсангүй/, "a saved payment followed by refresh failure is reported truthfully");
-assert.match(page, /Хоёр дахь төлбөрийн хугацаа:/, "the later-payment form identifies the authoritative second-installment due date");
-assert.match(page, /entry\.installmentId === installmentId \|\| entry\.laterInstallmentId === installmentId/,
-  "the rendered payment handler accepts the selected later-installment identifier");
+assert.match(page, /Төлбөрийн хугацаа:/, "the later-payment form identifies the authoritative scheduled due date");
+assert.match(page, /function paymentItemForInstallment\(installmentId\)/,
+  "the rendered payment handler accepts any selected installment in a revised schedule");
+assert.match(page, /data-payment-tool="receipt-correction"/, "finalized receipt correction is a compact control in the ordinary payment panel");
+assert.match(page, /data-payment-tool="schedule"/, "schedule revision is a compact control in the ordinary payment panel");
+assert.match(page, /data-finalized-payment-correction-schedule/, "a correction can include a reviewed installment schedule without a second mutation");
+assert.match(page, /revisedInstallments: draft\.entries/, "the reviewed correction submits the same schedule snapshot that was displayed to staff");
 assert.match(page, /allocations: \[\{ installmentId, amountMnt \}\]/,
   "later cash uses the existing ordinary payment allocation route rather than a separate accounting path");
 assert.match(page, /Үлдсэн төлбөрийн хугацаа: \$\{escape\(localLabel\(item\.remainingPaymentDueAt\)\)\}/, "an approved partial payment shows its existing remaining-balance deadline");

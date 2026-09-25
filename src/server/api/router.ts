@@ -34,6 +34,7 @@ import {
 import {
   claimParentPayment,
   applyEnrollmentFeeAdjustment,
+  correctFinalizedManualPayment,
   confirmOutstandingPaymentEnrollment,
   confirmSeatForSufficientPayment,
   getRegistrationExportRows,
@@ -45,7 +46,10 @@ import {
   PaymentReconciliationError,
   recordCheckedNotFound,
   recordManualPayment,
+  reviseInstallmentSchedule,
   previewOutstandingPaymentWaiver,
+  previewFinalizedManualPaymentCorrection,
+  previewInstallmentScheduleRevision,
   previewEnrollmentFeeAdjustment,
   releaseUnpaidSeat,
   undoTentativePaymentConfirmation,
@@ -1501,6 +1505,28 @@ export async function handleApiRequest(
             approveSeatConfirmation: Boolean(payload.approveSeatConfirmation),
             remainingPaymentDueAt: typeof payload.remainingPaymentDueAt === "string" ? payload.remainingPaymentDueAt : undefined,
             proceedWithoutFamilyCredit: payload.proceedWithoutFamilyCredit === true,
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.finalized-receipt-correction-preview":
+          return json({ ok: true, ...await previewFinalizedManualPaymentCorrection(env, principal, {
+            receivedPaymentId: String(payload.receivedPaymentId ?? ""), correctedAmountMnt: Number(payload.correctedAmountMnt),
+            revisedInstallments: Array.isArray(payload.revisedInstallments) ? payload.revisedInstallments.map((entry) => ({ amountMnt: Number((entry as Record<string, unknown>).amountMnt), dueOn: String((entry as Record<string, unknown>).dueOn ?? "") })) : undefined,
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.finalized-receipt-correct":
+          return json({ ok: true, ...await correctFinalizedManualPayment(env, principal, {
+            receivedPaymentId: String(payload.receivedPaymentId ?? ""), correctedAmountMnt: Number(payload.correctedAmountMnt),
+            reason: String(payload.reason ?? ""), reviewFingerprint: String(payload.reviewFingerprint ?? ""),
+            operationId: String(payload.operationId ?? ""), revisedInstallments: Array.isArray(payload.revisedInstallments) ? payload.revisedInstallments.map((entry) => ({ amountMnt: Number((entry as Record<string, unknown>).amountMnt), dueOn: String((entry as Record<string, unknown>).dueOn ?? "") })) : undefined,
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.installment-schedule-preview":
+          return json({ ok: true, ...await previewInstallmentScheduleRevision(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""), registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            installments: Array.isArray(payload.installments) ? payload.installments.map((entry) => ({ amountMnt: Number((entry as Record<string, unknown>).amountMnt), dueOn: String((entry as Record<string, unknown>).dueOn ?? "") })) : [],
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.installment-schedule-revise":
+          return json({ ok: true, ...await reviseInstallmentSchedule(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""), registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            installments: Array.isArray(payload.installments) ? payload.installments.map((entry) => ({ amountMnt: Number((entry as Record<string, unknown>).amountMnt), dueOn: String((entry as Record<string, unknown>).dueOn ?? "") })) : [],
+            reason: String(payload.reason ?? ""), reviewFingerprint: String(payload.reviewFingerprint ?? ""), operationId: String(payload.operationId ?? ""),
           }) }, 200, { "Cache-Control": "no-store" });
         case "payment.confirm-seat":
           return json({ ok: true, ...await confirmSeatForSufficientPayment(
