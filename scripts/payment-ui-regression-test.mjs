@@ -16,6 +16,7 @@ assert.match(page, /get\("diagnostics"\) === "datetime-layout"/, "date-time layo
 assert.match(page, /data-datetime-layout-output/, "the browser-local date-time diagnostics have a dedicated readout");
 assert.match(page, /navigator\.clipboard\.writeText/, "the date-time diagnostics can be copied without transmitting telemetry");
 assert.match(page, /dateTimeLayoutAsset\('link\[rel="stylesheet"\]'\)/, "the date-time diagnostics identify the stylesheet actually loaded by the browser");
+assert.match(page, /syncNativeDateTimeSizing\(\)[\s\S]*getComputedStyle\(input\)\.boxSizing === "content-box"/, "native content-box date-time controls receive compensation only when their computed style requires it");
 assert.match(page, /session\.headers/, "the timing surface measures session response-header latency");
 assert.match(page, /session\.body/, "the timing surface measures session JSON parsing separately");
 assert.match(page, /payments\.headers/, "the timing surface measures payment response-header latency");
@@ -31,7 +32,8 @@ assert.match(page, /Гэр бүлийн кредитийг шалгаж байн
 assert.match(page, /localDateTime\(new Date\(\)\)/);
 assert.doesNotMatch(page, /toISOString\(\)\.slice\(0, 16\)/);
 assert.doesNotMatch(page, /finalizeAfter\?\.slice/);
-assert.match(styles, /\.staff-payment-form input\[type="datetime-local"\][\s\S]*width: min\(100%, 24rem\)[\s\S]*max-width: 100%/, "payment date-time controls stay within their panel on phones and are bounded on desktop");
+assert.match(styles, /\.staff-payment-form input\[type="datetime-local"\][\s\S]*box-sizing: border-box[\s\S]*width: min\(100%, 24rem\)[\s\S]*max-width: 100%/, "payment date-time controls use their full bounded width when the native control honors border-box");
+assert.match(styles, /\.staff-datetime-content-box[\s\S]*width: calc\(min\(100%, 24rem\) - 1\.2rem - 2px\)[\s\S]*max-width: calc\(100% - 1\.2rem - 2px\)/, "content-box native controls reserve their padding and borders inside the payment panel");
 assert.match(styles, /\.staff-payment-form label\s*\{[\s\S]*min-width: 0/, "payment form labels may shrink within their grid track around native date-time controls");
 assert.match(page, /remaining <= 0 \? "Төлбөр баталгаажсан"/);
 assert.match(page, /family_multi_child: "Нэг гэр бүлийн хүүхэд"/);

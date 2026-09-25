@@ -99,6 +99,18 @@ async function assertDateTimeEditable(input, message) {
   await input.fill(original);
 }
 
+async function assertContentBoxDateTimeCompensation(input, message) {
+  await input.evaluate((element) => {
+    element.style.setProperty("box-sizing", "content-box", "important");
+    element.classList.add("staff-datetime-content-box");
+  });
+  await assertDateTimeFitsField(input, message);
+  await input.evaluate((element) => {
+    element.style.removeProperty("box-sizing");
+    element.classList.remove("staff-datetime-content-box");
+  });
+}
+
 async function captureStaffSessionPanel(page) {
   if (!paymentPanelScreenshotDir) return;
   await page.goto(`${baseUrl}/staff/team/`);
@@ -538,6 +550,8 @@ async function captureSpecialPaymentStates(page, scenario) {
       }
       await assertDateTimeFitsField(zeroForm.locator('input[type="datetime-local"]'),
         "zero-payment deadline control fits its label");
+      await assertContentBoxDateTimeCompensation(zeroForm.locator('input[type="datetime-local"]'),
+        "content-box zero-payment deadline control stays within its label");
       await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-mobile.png");
       await capturePaymentForm(zeroForm, "special-zero-confirmation-closeup-mobile.png");
       await page.setViewportSize({ width: 1024, height: 900 });

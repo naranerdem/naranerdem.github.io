@@ -84,6 +84,11 @@ import "../../styles/global.css";
         if (input.closest("[data-outstanding-deadline]")) return "Төлбөрийн хугацаа сунгах";
         return "Огноо, цаг";
       }
+      function syncNativeDateTimeSizing() {
+        for (const input of document.querySelectorAll('.staff-payment-form input[type="datetime-local"]')) {
+          input.classList.toggle("staff-datetime-content-box", getComputedStyle(input).boxSizing === "content-box");
+        }
+      }
       function updateDateTimeLayoutDiagnostics() {
         if (!dateTimeLayoutDiagnostics) return;
         const diagnostics = q("#datetime-layout-diagnostics");
@@ -118,6 +123,7 @@ import "../../styles/global.css";
           `Label rect: ${JSON.stringify(dateTimeLayoutRect(label))}`,
           `Panel rect: ${JSON.stringify(panelRect)}; inner ${JSON.stringify(panelInner)}`,
           `Input sizing: width ${inputStyle.width}; min ${inputStyle.minWidth}; max ${inputStyle.maxWidth}; box ${inputStyle.boxSizing}; padding ${inputStyle.paddingLeft}/${inputStyle.paddingRight}; border ${inputStyle.borderLeftWidth}/${inputStyle.borderRightWidth}`,
+          `Native content-box compensation: ${input.classList.contains("staff-datetime-content-box") ? "applied" : "not needed"}`,
           `Input type: font ${inputStyle.fontSize}; text-size-adjust ${inputStyle.webkitTextSizeAdjust || inputStyle.textSizeAdjust || "auto"}`,
           `Parent layout: label ${labelStyle.display}, min ${labelStyle.minWidth}, width ${labelStyle.width}; form ${formStyle.display}, columns ${formStyle.gridTemplateColumns}, gap ${formStyle.gap}`,
         ].join("\n");
@@ -777,6 +783,7 @@ import "../../styles/global.css";
           const item = (state.data?.items || []).find((entry) => entry.installmentId === form.dataset.paymentForm || entry.laterInstallmentId === form.dataset.paymentForm);
           if (item) setStaffButtonBusy(form.querySelector('button[type="submit"]'), actionPending(item.registrationDraftChildId, "payment"), "Төлбөр бүртгэж байна…");
         });
+        syncNativeDateTimeSizing();
         scheduleDateTimeLayoutDiagnostics();
       }
       function scheduleGraceRefresh() {

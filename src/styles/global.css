@@ -2240,6 +2240,11 @@ textarea:focus {
   min-width: 0;
 }
 
+.staff-payment-form input[type="datetime-local"].staff-datetime-content-box {
+  width: calc(min(100%, 24rem) - 1.2rem - 2px);
+  max-width: calc(100% - 1.2rem - 2px);
+}
+
 .staff-datetime-layout-diagnostics {
   position: fixed;
   right: 0.75rem;
