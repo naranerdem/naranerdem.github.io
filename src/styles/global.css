@@ -2240,6 +2240,47 @@ textarea:focus {
   min-width: 0;
 }
 
+.staff-datetime-layout-diagnostics {
+  position: fixed;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 20;
+  width: min(30rem, calc(100vw - 1.5rem));
+  max-height: min(60vh, 32rem);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: 0 0.35rem 1.25rem rgba(19, 37, 70, 0.2);
+}
+
+.staff-datetime-layout-diagnostics details { padding: 0.55rem 0.65rem; }
+
+.staff-datetime-layout-diagnostics summary {
+  color: var(--blue-deep);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.staff-datetime-layout-diagnostics pre {
+  margin: 0.6rem 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--ink);
+  font: 0.72rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+[data-datetime-layout-outline-target="input"] {
+  outline: 2px solid #d34215 !important;
+  outline-offset: 2px;
+}
+
+[data-datetime-layout-outline-target="panel"] {
+  outline: 2px solid #073aaf !important;
+  outline-offset: 2px;
+}
+
 .staff-payment-form .staff-wide {
   grid-column: 1 / -1;
 }

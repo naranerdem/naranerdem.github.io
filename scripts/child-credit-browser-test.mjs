@@ -30,6 +30,7 @@ let failureDetails = "";
 const paymentPanelScreenshotDir = process.env.PAYMENT_PANEL_SCREENSHOT_DIR || "";
 const paymentPanelBrowser = process.env.PAYMENT_PANEL_BROWSER || "chromium";
 const usingWebKit = paymentPanelBrowser === "webkit" || paymentPanelBrowser === "webkit-desktop";
+const paymentLayoutDiagnostics = process.env.PAYMENT_PANEL_UI_DIAGNOSTICS === "1";
 
 async function capturePaymentPanel(page, name) {
   if (!paymentPanelScreenshotDir) return;
@@ -507,7 +508,7 @@ async function captureSpecialPaymentStates(page, scenario) {
 
     if (scenario === "zero" || scenario === "deadline") {
       const unpaidChildId = await fillIntake(page, "SpecialZeroCapture", "two_installment");
-      await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(unpaidChildId)}`);
+      await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(unpaidChildId)}${paymentLayoutDiagnostics ? "&diagnostics=datetime-layout" : ""}`);
       const unpaidRow = page.locator(`[data-registration-child="${unpaidChildId}"]`);
       await unpaidRow.waitFor({ state: "visible" });
       assert.equal(await unpaidRow.locator(".staff-later-payment-form").count(), 0,
@@ -521,6 +522,20 @@ async function captureSpecialPaymentStates(page, scenario) {
       await unpaidRow.getByRole("button", { name: "Төлбөргүй баталгаажуулах" }).click();
       const zeroForm = unpaidRow.locator("[data-outstanding-confirm]");
       await zeroForm.waitFor({ state: "visible" });
+      if (paymentLayoutDiagnostics) {
+        const diagnostics = page.locator("#datetime-layout-diagnostics");
+        await diagnostics.waitFor({ state: "visible" });
+        await zeroForm.locator('input[type="datetime-local"]').focus();
+        await page.waitForTimeout(50);
+        const output = diagnostics.locator("[data-datetime-layout-output]");
+        assert.match(await output.textContent() || "", /Client asset: \/_astro\//, "diagnostics reports the browser-loaded client asset");
+        assert.match(await output.textContent() || "", /Stylesheet: \/_astro\/global\./, "diagnostics reports the browser-loaded stylesheet asset");
+        assert.match(await output.textContent() || "", /0₮ баталгаажуулалтын хугацаа/, "diagnostics follows the focused special deadline");
+        await diagnostics.locator("summary").click();
+        await capturePaymentForm(diagnostics, "datetime-layout-diagnostics-mobile.png");
+        await diagnostics.locator("[data-datetime-layout-outlines]").check();
+        assert.equal(await zeroForm.locator('input[type="datetime-local"]').getAttribute("data-datetime-layout-outline-target"), "input", "diagnostic outline targets the current date-time control without layout mutation");
+      }
       await assertDateTimeFitsField(zeroForm.locator('input[type="datetime-local"]'),
         "zero-payment deadline control fits its label");
       await capturePaymentDetail(page, unpaidRow, "special-zero-confirmation-mobile.png");

@@ -26,6 +26,9 @@ import "../../styles/global.css";
         <nav class="staff-registration-intake-nav" aria-label="Бүртгэлийн үйлдэл"><a class="text-button" href="/staff/registration-intake/">Шинэ бүртгэл оруулах</a></nav>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
         <output id="payment-timing-diagnostics" class="staff-muted" hidden aria-live="polite"></output>
+        <aside id="datetime-layout-diagnostics" class="staff-datetime-layout-diagnostics" hidden aria-live="polite">
+          <details><summary>Огноо, цагийн байрлалын оношлогоо</summary><pre data-datetime-layout-output></pre><div class="staff-inline-actions"><button class="text-button" type="button" data-datetime-layout-copy>Хуулах</button><label class="staff-check"><input type="checkbox" data-datetime-layout-outlines /><span>Хүрээ харуулах</span></label></div></details>
+        </aside>
         <section id="payment-copy-fallback" class="staff-copy-fallback" aria-live="polite" hidden><p>Хөтөч хуулж зөвшөөрсөнгүй. Доорх хүснэгтийг гараар хуулна уу.</p><textarea readonly aria-label="Excel-д гараар хуулах хүснэгт"></textarea></section>
         <div id="payment-list" class="staff-payment-list"></div>
         <dialog id="registration-cancel-dialog" class="rules-dialog staff-cancellation-dialog" aria-labelledby="registration-cancel-dialog-title">
@@ -49,15 +52,84 @@ import "../../styles/global.css";
       const launchCreated = launchParams.get("created") === "1";
       // The timing surface is deliberately limited to staging and disposable
       // localhost runs. It contains phase names and durations only.
+      const diagnosticHosts = ["naran-erdem-staging.naranerdem-github-io.workers.dev", "127.0.0.1", "localhost"];
       const paymentTimingDiagnostics = launchParams.get("diagnostics") === "payment-timing"
-        && ["naran-erdem-staging.naranerdem-github-io.workers.dev", "127.0.0.1", "localhost"].includes(window.location.hostname);
+        && diagnosticHosts.includes(window.location.hostname);
+      const dateTimeLayoutDiagnostics = launchParams.get("diagnostics") === "datetime-layout"
+        && diagnosticHosts.includes(window.location.hostname);
       const paymentTiming = {};
+      let dateTimeLayoutOutlines = false;
+      let dateTimeLayoutFrame = 0;
       const panelState = createStaffPanelState();
       const paymentDetailSelection = createPaymentDetailSelectionState(launchRegistrationId);
       const state = { data: null, openId: "", pendingId: "", pendingActions: {}, actionFeedback: {}, paymentCheckOperations: {}, paymentDrafts: {}, manualMessages: {}, corrections: {}, registrationViews: {}, transfers: {}, additionalClassPreviews: {}, familyDiscounts: {}, familyCreditApplications: {}, familyCreditSuggestions: {}, outstandingWaivers: {}, enrollmentDiscounts: {}, specialActions: {}, specialDrafts: {}, activePanels: {}, panelEpochs: {}, creditSubpanels: {}, paymentCreditPanels: {}, detailId: "", openWaitlistId: "", openOfferId: "", openRecentOfferId: "", openCancelledId: "", openGroups: {}, openWaitlistSections: {}, refreshTimer: null, refreshing: false, queuedRefresh: null, canRegistrationExport: false, registrationReportCache: null, registrationReportVersion: 0, registrationReportLoading: false, cancellationConfirmation: null };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
+      const dateTimeLayoutAsset = (selector) => [...document.querySelectorAll(selector)].map((node) => node.src || node.href).find((value) => String(value).includes("/_astro/")) || "not found";
+      const dateTimeLayoutPath = (value) => { try { return new URL(value).pathname; } catch { return String(value); } };
+      const dateTimeLayoutRect = (element) => {
+        const rect = element?.getBoundingClientRect();
+        return rect ? { left: rect.left, right: rect.right, width: rect.width } : null;
+      };
+      function selectedDateTimeLayoutInput() {
+        const fields = [...document.querySelectorAll('.staff-payment-form input[type="datetime-local"]')]
+          .filter((field) => field.getClientRects().length && !field.closest("[hidden]"));
+        if (document.activeElement?.matches?.('input[type="datetime-local"]')) return document.activeElement;
+        return fields.find((field) => field.closest("[data-outstanding-confirm], [data-outstanding-deadline]")) || fields[0] || null;
+      }
+      function dateTimeLayoutLabel(input) {
+        if (input.name === "receivedAt") return "Төлбөр орсон хугацаа";
+        if (input.closest("[data-outstanding-confirm]")) return "0₮ баталгаажуулалтын хугацаа";
+        if (input.closest("[data-outstanding-deadline]")) return "Төлбөрийн хугацаа сунгах";
+        return "Огноо, цаг";
+      }
+      function updateDateTimeLayoutDiagnostics() {
+        if (!dateTimeLayoutDiagnostics) return;
+        const diagnostics = q("#datetime-layout-diagnostics");
+        const output = diagnostics?.querySelector("[data-datetime-layout-output]");
+        if (!diagnostics || !output) return;
+        diagnostics.hidden = false;
+        for (const element of document.querySelectorAll("[data-datetime-layout-outline-target]")) delete element.dataset.datetimeLayoutOutlineTarget;
+        const input = selectedDateTimeLayoutInput();
+        if (!input) { output.textContent = "Огноо, цагийн талбар нээгдээгүй байна."; return; }
+        const label = input.closest("label");
+        const form = input.closest(".staff-payment-form");
+        const panel = input.closest(".staff-payment-item.is-open") || form;
+        const inputStyle = getComputedStyle(input);
+        const labelStyle = getComputedStyle(label);
+        const formStyle = getComputedStyle(form);
+        const panelStyle = getComputedStyle(panel);
+        const panelRect = dateTimeLayoutRect(panel);
+        const panelInner = panelRect ? {
+          left: panelRect.left + Number.parseFloat(panelStyle.borderLeftWidth) + Number.parseFloat(panelStyle.paddingLeft),
+          right: panelRect.right - Number.parseFloat(panelStyle.borderRightWidth) - Number.parseFloat(panelStyle.paddingRight),
+        } : null;
+        const visual = window.visualViewport;
+        const browser = navigator.userAgent.match(/Version\/[^ ]+.*Safari\/[^ ]+|CriOS\/[^ ]+|Chrome\/[^ ]+|Firefox\/[^ ]+/)?.[0] || navigator.userAgent;
+        output.textContent = [
+          `Client asset: ${dateTimeLayoutPath(dateTimeLayoutAsset('script[src]'))}`,
+          `Stylesheet: ${dateTimeLayoutPath(dateTimeLayoutAsset('link[rel="stylesheet"]'))}`,
+          `Browser: ${browser}`,
+          `Layout viewport: ${window.innerWidth}×${window.innerHeight}; document ${document.documentElement.clientWidth}×${document.documentElement.clientHeight}`,
+          `Visual viewport: ${visual ? `${visual.width.toFixed(1)}×${visual.height.toFixed(1)} scale ${visual.scale.toFixed(2)}` : "unavailable"}`,
+          `Field: ${dateTimeLayoutLabel(input)}`,
+          `Input rect: ${JSON.stringify(dateTimeLayoutRect(input))}`,
+          `Label rect: ${JSON.stringify(dateTimeLayoutRect(label))}`,
+          `Panel rect: ${JSON.stringify(panelRect)}; inner ${JSON.stringify(panelInner)}`,
+          `Input sizing: width ${inputStyle.width}; min ${inputStyle.minWidth}; max ${inputStyle.maxWidth}; box ${inputStyle.boxSizing}; padding ${inputStyle.paddingLeft}/${inputStyle.paddingRight}; border ${inputStyle.borderLeftWidth}/${inputStyle.borderRightWidth}`,
+          `Input type: font ${inputStyle.fontSize}; text-size-adjust ${inputStyle.webkitTextSizeAdjust || inputStyle.textSizeAdjust || "auto"}`,
+          `Parent layout: label ${labelStyle.display}, min ${labelStyle.minWidth}, width ${labelStyle.width}; form ${formStyle.display}, columns ${formStyle.gridTemplateColumns}, gap ${formStyle.gap}`,
+        ].join("\n");
+        if (dateTimeLayoutOutlines) {
+          input.dataset.datetimeLayoutOutlineTarget = "input";
+          panel.dataset.datetimeLayoutOutlineTarget = "panel";
+        }
+      }
+      function scheduleDateTimeLayoutDiagnostics() {
+        if (!dateTimeLayoutDiagnostics || dateTimeLayoutFrame) return;
+        dateTimeLayoutFrame = requestAnimationFrame(() => { dateTimeLayoutFrame = 0; updateDateTimeLayoutDiagnostics(); });
+      }
       const recordPaymentTiming = (name, startedAt, response = null) => {
         if (!paymentTimingDiagnostics) return performance.now();
         const endedAt = performance.now();
@@ -73,6 +145,27 @@ import "../../styles/global.css";
         output.hidden = false;
         console.info("payment-timing", lines.join(" | "));
       };
+      if (dateTimeLayoutDiagnostics) {
+        const diagnostics = q("#datetime-layout-diagnostics");
+        diagnostics.hidden = false;
+        diagnostics.querySelector("[data-datetime-layout-outlines]").addEventListener("change", (event) => {
+          dateTimeLayoutOutlines = event.target.checked;
+          updateDateTimeLayoutDiagnostics();
+        });
+        diagnostics.querySelector("[data-datetime-layout-copy]").addEventListener("click", async (event) => {
+          const button = event.currentTarget;
+          try {
+            await navigator.clipboard.writeText(diagnostics.querySelector("[data-datetime-layout-output]").textContent || "");
+            button.textContent = "Хуулагдлаа";
+          } catch {
+            button.textContent = "Хуулж чадсангүй";
+          }
+        });
+        document.addEventListener("focusin", scheduleDateTimeLayoutDiagnostics);
+        window.addEventListener("resize", scheduleDateTimeLayoutDiagnostics);
+        window.visualViewport?.addEventListener("resize", scheduleDateTimeLayoutDiagnostics);
+        new MutationObserver(scheduleDateTimeLayoutDiagnostics).observe(q("#payment-list"), { childList: true, subtree: true });
+      }
       const setToolbarBusy = (selector, pending, busyLabel) => {
         setStaffButtonBusy(q(selector), pending, busyLabel);
       };
@@ -684,6 +777,7 @@ import "../../styles/global.css";
           const item = (state.data?.items || []).find((entry) => entry.installmentId === form.dataset.paymentForm || entry.laterInstallmentId === form.dataset.paymentForm);
           if (item) setStaffButtonBusy(form.querySelector('button[type="submit"]'), actionPending(item.registrationDraftChildId, "payment"), "Төлбөр бүртгэж байна…");
         });
+        scheduleDateTimeLayoutDiagnostics();
       }
       function scheduleGraceRefresh() {
         if (state.refreshTimer) { clearTimeout(state.refreshTimer); state.refreshTimer = null; }
