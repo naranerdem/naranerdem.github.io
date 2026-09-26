@@ -158,6 +158,7 @@ try {
   const { getClassCapacityProjections } = await import(pathToFileURL(capacityBundle).href);
   const sent = [];
   const provider = { async send(message) { sent.push(message); return { providerMessageId: `provider-${sent.length}` }; } };
+  const hourlyOptions = { reconciliationBatchSize: 8, dueBatchSize: 8 };
 
   const catchupStartedAt = performance.now();
   for (let tick = 0; tick < 5; tick += 1) await processDuePaymentReminders(env(database), new Date(now.getTime() + tick * 60_000), provider);
@@ -172,38 +173,67 @@ try {
   assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id = ?`, [cancelledDuringTransition.id])[0].count), 0,
     "a cancellation immediately before reminder processing suppresses its reminder even with legacy catch-up still in progress");
 
-  // The scheduler runs this path every five minutes. One invocation must make
-  // bounded progress for one changed request rather than recreate milestones
-  // for the entire history.
-  const boundedDue = seedRequest(database, 101, { due: true });
+  // The hourly background slot must still drain a realistic burst. It claims
+  // eight changed requests at a time, leaves the ninth durable and pending,
+  // then continues on the following slot without replaying history.
+  const boundedRequests = Array.from({ length: 9 }, (_, index) => seedRequest(database, 101 + index));
   database.resetQueries();
   await processDuePaymentReminders(env(database), new Date(now.getTime() + 9 * 60_000), provider,
-    { reconciliationBatchSize: 1, dueBatchSize: 1 });
+    hourlyOptions);
   const boundedQueries = database.executedQueries.map((entry) => entry.statement);
-  assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?`, [boundedDue.request])[0].status, "completed",
-    "one bounded scheduler pass consumes one newly changed request");
-  assert.equal(boundedQueries.filter((statement) => statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")).length, 5,
-    "one bounded pass writes the five scoped milestone categories for only its claimed request");
+  assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM payment_milestone_reconciliation_queue
+    WHERE payment_request_id IN (${boundedRequests.map(() => "?").join(", ")}) AND status = 'completed'`, boundedRequests.map((item) => item.request))[0].count), 8,
+  "one hourly slot advances eight changed requests without scanning the full history");
+  assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?`, [boundedRequests.at(-1).request])[0].status, "pending",
+  "the next request remains durable work instead of being dropped when the batch fills");
+  assert.equal(boundedQueries.filter((statement) => statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")).length, 40,
+    "the bounded slot writes five scoped milestone categories for each of its eight claimed requests");
   await processDuePaymentReminders(env(database), new Date(now.getTime() + 10 * 60_000), provider,
-    { reconciliationBatchSize: 1, dueBatchSize: 1 });
-  assert.equal(sent.length, 2, "a due reminder is still delivered while scheduler reconciliation is bounded");
+    hourlyOptions);
+  assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?`, [boundedRequests.at(-1).request])[0].status, "completed",
+    "the next hourly slot makes fair progress on the remaining changed request");
 
+  const retryOne = seedRequest(database, 110, { due: true });
+  const retryTwo = seedRequest(database, 111, { due: true });
+  let failedFirstDelivery = false;
+  const oneFailureProvider = {
+    async send(message) {
+      if (!failedFirstDelivery) {
+        failedFirstDelivery = true;
+        throw new Error("temporary provider failure");
+      }
+      sent.push(message);
+      return { providerMessageId: `provider-${sent.length}` };
+    },
+  };
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 11 * 60_000), oneFailureProvider, hourlyOptions);
+  assert.ok(Number(database.query(`SELECT COUNT(*) AS count FROM payment_notification_milestone
+    WHERE registration_draft_id IN (?, ?) AND status = 'failed'`, [retryOne.id, retryTwo.id])[0].count) >= 1,
+  "a transient provider failure remains a durable failed item for retry");
+  assert.ok(Number(database.query(`SELECT COUNT(*) AS count FROM payment_notification_milestone
+    WHERE registration_draft_id IN (?, ?) AND status = 'sent'`, [retryOne.id, retryTwo.id])[0].count) >= 1,
+  "a failed item does not monopolize the hourly due batch");
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 12 * 60_000), provider, hourlyOptions);
+  assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM payment_notification_milestone
+    WHERE registration_draft_id IN (?, ?) AND status = 'failed'`, [retryOne.id, retryTwo.id])[0].count), 0,
+  "a later hourly slot retries the failed reminder without creating a second financial effect");
+
+  const deliveredBeforeIdle = sent.length;
   database.resetQueries();
   const idleStartedAt = performance.now();
-  await processDuePaymentReminders(env(database), new Date(now.getTime() + 11 * 60_000), provider,
-    { reconciliationBatchSize: 1, dueBatchSize: 1 });
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 13 * 60_000), provider, hourlyOptions);
   const idleMillis = performance.now() - idleStartedAt;
   const idleQueries = database.executedQueries.map((entry) => entry.statement);
   assert.ok(!idleQueries.some((statement) => statement.includes("INSERT OR IGNORE INTO child_credit_entry")),
     "idle ticks do not replay the global legacy-credit reconciliation");
   assert.ok(!idleQueries.some((statement) => statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")),
     "idle ticks do not recreate milestones across payment history");
-  assert.equal(sent.length, 2, "an idle replay does not duplicate delivery");
+  assert.equal(sent.length, deliveredBeforeIdle, "an idle replay does not duplicate delivery");
 
   database.query(`UPDATE payment_credit SET status = 'refunded', refunded_at = ?, updated_at = ? WHERE id = 'credit-root'`, [stamp, stamp]);
   assert.equal(database.query("SELECT status FROM child_credit_reconciliation_queue WHERE canonical_student_id = 'credit-student'")[0].status, "pending",
     "a changed legacy credit is queued by the database write path");
-  await processDuePaymentReminders(env(database), new Date(now.getTime() + 11 * 60_000), provider);
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 14 * 60_000), provider, hourlyOptions);
   assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM child_credit_entry WHERE origin_entry_id = 'child-credit:payment:credit-root' AND entry_kind = 'refund'`)[0].count), 1,
     "changed credit reaches the ledger before subsequent due decisions");
 
@@ -212,12 +242,12 @@ try {
   assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue
     WHERE payment_request_id = 'history-002-request'`)[0].status, "pending",
   "a corrected installment is queued instead of depending on a historical sweep");
-  await processDuePaymentReminders(env(database), new Date(now.getTime() + 12 * 60_000), provider);
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 15 * 60_000), provider, hourlyOptions);
   database.query(`UPDATE registration_draft SET status = 'cancelled', updated_at = ? WHERE id = 'history-002'`, [stamp]);
   assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue
     WHERE payment_request_id = 'history-002-request'`)[0].status, "pending",
   "a cancellation itself requeues the affected request");
-  await processDuePaymentReminders(env(database), new Date(now.getTime() + 13 * 60_000), provider);
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 16 * 60_000), provider, hourlyOptions);
   assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue
     WHERE payment_request_id = 'history-002-request'`)[0].status, "completed",
   "a cancellation queue item is consumed without needing a full-history milestone sweep");
@@ -232,7 +262,7 @@ try {
     WHERE payment_request_id = ?`, [revisedWhileClaimed.request])[0];
   assert.equal(revisedQueue.status, "pending", "a write during a claimed batch returns the request to pending work");
   assert.ok(Number(revisedQueue.revision) >= 2, "a write during a claimed batch advances its revision fence");
-  await processDuePaymentReminders(env(database), new Date(now.getTime() + 13 * 60_000), provider);
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 17 * 60_000), provider, hourlyOptions);
   assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue
     WHERE payment_request_id = ?`, [revisedWhileClaimed.request])[0].status, "completed",
   "the newer revision is reconciled without waiting for the historical sweep");
@@ -240,15 +270,15 @@ try {
   database.query(`UPDATE payment_milestone_reconciliation_queue
     SET status = 'processing', lease_expires_at = '2026-09-21T01:00:00.000Z', revision = revision + 1
     WHERE payment_request_id = ?`, [due.request]);
-  await processDuePaymentReminders(env(database), new Date(now.getTime() + 14 * 60_000), provider);
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 18 * 60_000), provider, hourlyOptions);
   assert.equal(database.query("SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?", [due.request])[0].status, "completed",
     "an interrupted claim is recovered without duplicate milestones or delivery");
 
   const overlap = seedRequest(database, 100);
   database.resetQueries();
   await Promise.all([
-    processDuePaymentReminders(env(database), new Date(now.getTime() + 15 * 60_000), provider),
-    processDuePaymentReminders(env(database), new Date(now.getTime() + 15 * 60_000), provider),
+    processDuePaymentReminders(env(database), new Date(now.getTime() + 19 * 60_000), provider, hourlyOptions),
+    processDuePaymentReminders(env(database), new Date(now.getTime() + 19 * 60_000), provider, hourlyOptions),
   ]);
   assert.equal(database.executedQueries.filter((entry) => entry.statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")).length, 5,
     "two overlapping ticks claim one request once before its five scoped milestone writes");
