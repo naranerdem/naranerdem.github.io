@@ -492,8 +492,8 @@ try {
     capabilities: ['payment.view', 'payment.manage'], sessionId: 'test', sessionExpiresAt: iso(60), sessionAbsoluteExpiresAt: iso(60) };
  const registrationStaff = { ...paymentStaff, capabilities: ['registration.manage'] };
   if (process.env.PAYMENT_RECEIPT_CORRECTION_ONLY) {
-    database.query(`UPDATE offering_course_pricing SET first_installment_amount_mnt = 650000,
-      second_installment_amount_mnt = 650000, updated_at = ? WHERE activity_offering_id = 'offering-test';
+    database.query(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1300000,
+      first_installment_amount_mnt = 650000, second_installment_amount_mnt = 650000, updated_at = ? WHERE activity_offering_id = 'offering-test';
       UPDATE payment_confirmation_grace_setting SET grace_minutes = 0, updated_at = ? WHERE singleton = 1;
       UPDATE class_session SET capacity = 100, updated_at = ? WHERE id = 'class-priced'`, [iso(120), iso(120), iso(120)]);
     const input = submission("class-priced", undefined, 1, "two_installment");
@@ -558,6 +558,34 @@ try {
       "a stale combined review leaves the original receipt finalized");
     assert.equal(count(database, "payment_receipt_correction", `original_received_payment_id = '${staleReceipt.id}'`), 0,
       "a stale combined review leaves no partial correction record");
+
+    const settledInput = submission("class-priced", undefined, 1, "single");
+    settledInput.children[0].givenName = "Бүрэн Төлөгдсөн Засвар";
+    const settledDraft = await createRegistrationDraft(env(database), settledInput, new Date(iso(129)));
+    const settledRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [settledDraft.draftId])[0];
+    const settledChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [settledDraft.draftId])[0];
+    const settledItem = (await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(129)))).items
+      .find((item) => item.registrationDraftChildId === settledChild.id);
+    const settledReceipt = await recordManualPayment(env(database), paymentStaff, {
+      paymentRequestId: settledRequest.id, allocations: [{ installmentId: settledItem.installmentId, amountMnt: 1300000 }],
+      source: "staff_manual_bank", idempotencyKey: "focused-fully-settled-original-1300000",
+    }, new Date(iso(130)));
+    const settledCorrectionReview = await previewFinalizedManualPaymentCorrection(env(database), paymentStaff, {
+      receivedPaymentId: settledReceipt.id, correctedAmountMnt: 400000, revisedInstallments: installments,
+    });
+    assert.equal(settledCorrectionReview.totalUnpaidMnt, 900000,
+      "a fully settled receipt can be reviewed with its proposed corrected allocation and future schedule");
+    const settledCorrection = await correctFinalizedManualPayment(env(database), paymentStaff, {
+      receivedPaymentId: settledReceipt.id, correctedAmountMnt: 400000, revisedInstallments: installments,
+      reason: "Бодит орсон дүн 400,000₮ байсан.", reviewFingerprint: settledCorrectionReview.reviewFingerprint,
+      operationId: "77777777-8888-4999-aaaa-bbbbbbbbbbbb",
+    }, new Date(iso(131)));
+    assert.ok(settledCorrection.correctedPaymentId,
+      "a fully settled receipt correction commits its audit-linked replacement instead of being blocked by standalone scheduling rules");
+    const correctedSettledItem = (await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-09-01T08:00:00.000Z"))).items
+      .find((item) => item.registrationDraftChildId === settledChild.id);
+    assert.equal(correctedSettledItem.totalRemainingMnt, 900000,
+      "the formerly fully paid enrollment returns to the partially paid list with the corrected 900k balance");
     console.log("ok focused finalized receipt correction and installment schedule regression");
     process.exit(0);
   }

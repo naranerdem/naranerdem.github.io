@@ -428,7 +428,7 @@ function mongoliaEndOfDay(value: string): string | null {
   return local.getUTCFullYear() === year && local.getUTCMonth() === month - 1 && local.getUTCDate() === day ? local.toISOString() : null;
 }
 
-async function installmentScheduleSnapshot(env: WorkerEnv, paymentRequestId: string, childId: string) {
+async function installmentScheduleSnapshot(env: WorkerEnv, paymentRequestId: string, childId: string, allowSettledSchedule = false) {
   const request = await requestForId(env, paymentRequestId);
   const child = await env.DB.prepare(`SELECT registration_draft_child.id, registration_draft_child.canonical_enrollment_id AS enrollmentId,
       registration_draft_child.status, registration_draft_child.updated_at AS updatedAt
@@ -453,7 +453,10 @@ async function installmentScheduleSnapshot(env: WorkerEnv, paymentRequestId: str
   })))).map((row) => [row.id, row]));
   const outstandingMnt = currentInstallments.reduce((total, row) => total + Math.max(0,
     Number(effective.get(row.id)?.effectiveAmountMnt ?? row.amountMnt) - row.allocatedAmountMnt), 0);
-  if (outstandingMnt <= 0) throw new PaymentReconciliationError('no_outstanding');
+  // A standalone schedule can only redistribute an existing payable balance.
+  // A combined receipt correction, however, may turn a settled receipt into a
+  // truthful partial payment, so its proposed allocation must be reviewed first.
+  if (!allowSettledSchedule && outstandingMnt <= 0) throw new PaymentReconciliationError('no_outstanding');
   const dependencies = await env.DB.prepare(`SELECT
       (SELECT COUNT(*) FROM payment_credit WHERE payment_request_id = ?) +
       (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ?) +
@@ -466,7 +469,7 @@ async function installmentScheduleSnapshot(env: WorkerEnv, paymentRequestId: str
 }
 
 async function reviewedInstallmentSchedule(env: WorkerEnv, paymentRequestId: string, childId: string, entries: InstallmentScheduleInput[], allocationOverrides = new Map<string, number>()) {
-  const snapshot = await installmentScheduleSnapshot(env, paymentRequestId, childId);
+  const snapshot = await installmentScheduleSnapshot(env, paymentRequestId, childId, allocationOverrides.size > 0);
   if (!Array.isArray(entries) || entries.length < 1 || entries.length > 4) throw new PaymentReconciliationError('invalid');
   const reviewed = entries.map((entry) => ({ amountMnt: Number(entry.amountMnt), dueAt: mongoliaEndOfDay(entry.dueOn), dueOn: entry.dueOn }));
   if (reviewed.some((entry) => !Number.isInteger(entry.amountMnt) || entry.amountMnt <= 0 || !entry.dueAt)

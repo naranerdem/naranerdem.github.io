@@ -84,6 +84,8 @@ assert.match(page, /const remaining = Number\(item\.totalRemainingMnt/, "the pay
 assert.match(page, /Төлөх үлдэгдэлгүй\./, "a fully settled enrollment has a compact no-future-payment schedule state");
 assert.match(page, /Төлөгдсөн төлөлт/, "settled installments remain visible as read-only schedule context");
 assert.match(page, /receiptCorrectionAvailable/, "the correction editor is gated by the stricter finalized-receipt eligibility state");
+assert.match(page, /const receiptCorrectionAvailable = Boolean\(item\.finalizedManualReceipt && item\.canonicalEnrollmentId\)/,
+  "receipt correction eligibility stays independent of the current outstanding balance so an overstated fully paid receipt can be corrected");
 assert.match(page, /Энэ бүртгэлд засах боломжтой эцэслэсэн гар төлбөрийн бичлэг алга/, "an ineligible correction action explains why its editor is unavailable");
 assert.match(page, /<div class="staff-panel-region">\$\{special\}\$\{laterPaymentForm\}\$\{paymentTools\}/, "ordinary payment content remains above secondary correction and schedule tools");
 assert.match(styles, /\.staff-payment-secondary-tools\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/, "secondary payment tools reserve a full-width editor region instead of a second panel column");
