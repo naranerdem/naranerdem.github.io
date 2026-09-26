@@ -293,12 +293,99 @@ import "../../styles/global.css";
           || (item.installments || []).some((installment) => installment.id === installmentId));
       }
       function correctionScheduleEntries(form) {
-        return [...(form?.querySelectorAll("[data-correction-schedule-index]") || [])].reduce((entries, input) => {
-          const index = Number(input.dataset.correctionScheduleIndex);
-          entries[index] ||= {};
+        return scheduleDraftEntries(form, "correction");
+      }
+      function scheduleDraftEntries(form, kind) {
+        const selector = kind === "correction" ? "[data-correction-schedule-index]" : "[data-schedule-index]";
+        return [...(form?.querySelectorAll(selector) || [])].reduce((entries, input) => {
+          const index = Number(kind === "correction" ? input.dataset.correctionScheduleIndex : input.dataset.scheduleIndex);
+          const fieldset = input.closest("[data-schedule-entry]");
+          entries[index] ||= { isNew: fieldset?.dataset.scheduleNew === "true", touched: fieldset?.dataset.scheduleTouched === "true" };
           entries[index][input.name] = input.value;
           return entries;
         }, []);
+      }
+      function scheduleDraftAssessment(entries, requiredTotalMnt) {
+        const required = Number(requiredTotalMnt || 0);
+        const usable = [];
+        const errors = [];
+        for (let index = 0; index < entries.length; index += 1) {
+          const entry = entries[index] || {};
+          const amountText = String(entry.amountMnt ?? "").trim();
+          const dueOn = String(entry.dueOn ?? "").trim();
+          const untouchedNew = entry.isNew && !entry.touched && !amountText && !dueOn;
+          if (untouchedNew) continue;
+          const amountMnt = Number(amountText);
+          if (!amountText || !dueOn) {
+            errors.push(`${index + 1}-р төлбөрийн дүн, хугацааг хоёуланг нь оруулна уу.`);
+            continue;
+          }
+          if (!Number.isInteger(amountMnt) || amountMnt <= 0) {
+            errors.push(`${index + 1}-р төлбөрийн дүн эерэг бүхэл тоо байна.`);
+            continue;
+          }
+          usable.push({ amountMnt, dueOn });
+        }
+        const assignedTotalMnt = usable.reduce((total, entry) => total + entry.amountMnt, 0);
+        const differenceMnt = required - assignedTotalMnt;
+        if (!errors.length && differenceMnt !== 0) {
+          errors.push(differenceMnt > 0
+            ? `Хуваарийн нийт дүн ${mnt(differenceMnt)} дутуу байна.`
+            : `Хуваарийн нийт дүн ${mnt(Math.abs(differenceMnt))} илүү байна.`);
+        }
+        return { entries: usable, requiredTotalMnt: required, assignedTotalMnt, differenceMnt, errors };
+      }
+      function scheduleDraftSummaryMarkup(entries, requiredTotalMnt, kind) {
+        const assessment = scheduleDraftAssessment(entries, requiredTotalMnt);
+        const blankAmounts = entries.filter((entry) => !String(entry?.amountMnt ?? "").trim()).length;
+        const canFillRemainder = blankAmounts === 1 && assessment.differenceMnt > 0 && !assessment.errors.some((error) => error.includes("дүн эерэг"));
+        const difference = assessment.differenceMnt === 0
+          ? "Зөрүүгүй"
+          : assessment.differenceMnt > 0 ? `${mnt(assessment.differenceMnt)} дутуу` : `${mnt(Math.abs(assessment.differenceMnt))} илүү`;
+        return `<div class="staff-schedule-draft-summary" data-schedule-summary="${escape(kind)}" data-schedule-required-total="${escape(requiredTotalMnt)}" role="status"><p>Хуваарийн шаардлагатай нийт: <strong data-schedule-required>${escape(mnt(requiredTotalMnt))}</strong></p><p>Оруулсан нийт: <strong data-schedule-assigned>${escape(mnt(assessment.assignedTotalMnt))}</strong></p><p>Хуваарийн зөрүү: <strong data-schedule-difference>${escape(difference)}</strong></p><p class="staff-muted">Төлөх үлдэгдэл нь энэ зөрүү биш; доорх төлбөрийн үлдэгдэл тусдаа тооцогдоно.</p><button class="text-button" type="button" data-schedule-fill-remainder="${escape(kind)}" ${canFillRemainder ? "" : "hidden"}>Үлдэгдлээр бөглөх</button><p class="staff-error" data-schedule-draft-error ${assessment.errors.length ? "" : "hidden"}>${escape(assessment.errors[0] || "")}</p></div>`;
+      }
+      function scheduleDraftFields(entries, item, kind) {
+        const indexName = kind === "correction" ? "data-correction-schedule-index" : "data-schedule-index";
+        return entries.map((entry, index) => {
+          const paid = Number(item.installments?.[index]?.allocatedAmountMnt || 0) > 0;
+          const removable = entries.length > 1 && !paid;
+          return `<fieldset class="staff-inline-fields" data-schedule-entry data-schedule-new="${entry.isNew ? "true" : "false"}" data-schedule-touched="${entry.touched ? "true" : "false"}"><legend>${index + 1}-р төлбөр</legend><label>Дүн<input name="amountMnt" ${indexName}="${index}" type="number" min="1" step="1" value="${escape(entry.amountMnt ?? "")}" required /></label><label>Хугацаа<input name="dueOn" ${indexName}="${index}" type="date" value="${escape(entry.dueOn ?? "")}" required /></label>${removable ? `<button class="text-button staff-schedule-row-remove" type="button" data-schedule-remove="${escape(kind)}" data-schedule-remove-index="${index}">Хасах</button>` : ""}</fieldset>`;
+        }).join("");
+      }
+      function updateScheduleDraftSummary(form) {
+        const kind = form?.dataset.scheduleDraftKind;
+        if (!kind) return;
+        const requiredTotalMnt = Number(form.dataset.scheduleRequiredTotal || 0);
+        const entries = scheduleDraftEntries(form, kind);
+        const summary = form.querySelector(`[data-schedule-summary="${kind}"]`);
+        if (!summary) return;
+        const assessment = scheduleDraftAssessment(entries, requiredTotalMnt);
+        const blankAmounts = entries.filter((entry) => !String(entry?.amountMnt ?? "").trim()).length;
+        const difference = assessment.differenceMnt === 0 ? "Зөрүүгүй"
+          : assessment.differenceMnt > 0 ? `${mnt(assessment.differenceMnt)} дутуу` : `${mnt(Math.abs(assessment.differenceMnt))} илүү`;
+        summary.querySelector("[data-schedule-assigned]").textContent = mnt(assessment.assignedTotalMnt);
+        summary.querySelector("[data-schedule-difference]").textContent = difference;
+        const existingFill = summary.querySelector("[data-schedule-fill-remainder]");
+        const canFill = blankAmounts === 1 && assessment.differenceMnt > 0 && !assessment.errors.some((error) => error.includes("дүн эерэг"));
+        if (existingFill) existingFill.hidden = !canFill;
+        const existingError = summary.querySelector("[data-schedule-draft-error]");
+        if (existingError) { existingError.textContent = assessment.errors[0] || ""; existingError.hidden = !assessment.errors.length; }
+      }
+      function scheduleDraftForReview(form, childId, kind) {
+        const assessment = scheduleDraftAssessment(scheduleDraftEntries(form, kind), Number(form.dataset.scheduleRequiredTotal || 0));
+        if (assessment.errors.length) {
+          delete state.actionFeedback[childId];
+          render();
+          return null;
+        }
+        return assessment.entries;
+      }
+      function scheduleRequiredTotalMnt(item) {
+        return (item.installments || []).reduce((total, entry) => total + Number(entry.rawAmountMnt ?? entry.amountMnt ?? 0), 0);
+      }
+      function scheduleDraftEditorMarkup(item, entries, kind) {
+        const requiredTotalMnt = scheduleRequiredTotalMnt(item);
+        return `${scheduleDraftSummaryMarkup(entries, requiredTotalMnt, kind)}${scheduleDraftFields(entries, item, kind)}`;
       }
       function activatePanel(childId, panel) { const request = panelState.open(childId, panel); state.activePanels[childId] = panel; state.panelEpochs[childId] = request.epoch; return request; }
       function closePanel(childId, panel) { panelState.close(childId, panel); if (panel === "credit") delete state.creditSubpanels[childId]; const active = panelState.active(childId); if (active) state.activePanels[childId] = active; else delete state.activePanels[childId]; state.panelEpochs[childId] = (state.panelEpochs[childId] || 0) + 1; }
@@ -619,16 +706,16 @@ import "../../styles/global.css";
         const finalizedPaymentCorrection = receiptCorrectionAvailable
           ? receiptCorrection.review
             ? `<form class="staff-payment-form staff-payment-tool-review" data-finalized-payment-correction-confirm="${escape(item.registrationDraftChildId)}"><h3>Төлбөрийн бүртгэлийг хянах</h3><p>Бүртгэсэн: <strong>${escape(mnt(receiptCorrection.review.originalReceivedAmountMnt))}</strong> → Бодит: <strong>${escape(mnt(receiptCorrection.review.correctedReceivedAmountMnt))}</strong></p>${receiptCorrection.review.revisedInstallments ? `<p><strong>Шинэ хуваарь</strong></p>${receiptCorrection.review.revisedInstallments.map((entry, index) => `<p>${index + 1}-р төлбөр: ${escape(mnt(entry.amountMnt))} · ${escape(localLabel(entry.dueAt))}</p>`).join("")}` : ""}<p>Шинэ үлдэгдэл: <strong>${escape(mnt(receiptCorrection.review.totalUnpaidMnt))}</strong></p><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${correctionPending ? "disabled" : ""}>${escape(receiptCorrection.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="button primary" type="submit" ${correctionPending ? "disabled aria-busy=true" : ""}>${correctionPending ? "Хадгалж байна…" : "Баталгаажуулах"}</button><button class="text-button" type="button" data-finalized-payment-correction-edit="${escape(item.registrationDraftChildId)}">Засах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["finalized-payment-correction"])}</form>`
-            : `<form class="staff-payment-form" data-finalized-payment-correction-preview="${escape(item.registrationDraftChildId)}"><h3>Төлбөрийн бүртгэл засах</h3><p class="staff-muted">Эх бичлэг хадгалагдаж, холбогдсон засварын бичлэг үүснэ.</p><label>Бодит орсон дүн<input name="amountMnt" data-finalized-payment-correction-amount="true" type="number" min="1" max="${escape(item.finalizedManualReceipt.amountMnt - 1)}" step="1" value="${escape(receiptCorrection.amountMnt || "")}" required ${correctionPending ? "disabled" : ""}/></label>${receiptCorrection.entries ? `<p class="staff-muted">Төлбөрийн хуваарийг энэ засвартай хамт шинэчилнэ.</p>${receiptCorrection.entries.map((entry, index) => `<fieldset class="staff-inline-fields"><legend>${index + 1}-р төлбөр</legend><label>Дүн<input name="amountMnt" data-correction-schedule-index="${index}" type="number" min="1" step="1" value="${escape(entry.amountMnt)}" required /></label><label>Хугацаа<input name="dueOn" data-correction-schedule-index="${index}" type="date" value="${escape(entry.dueOn)}" required /></label></fieldset>`).join("")}` : ""}<label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${correctionPending ? "disabled" : ""}>${escape(receiptCorrection.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="text-button" type="button" data-finalized-payment-correction-schedule="${escape(item.registrationDraftChildId)}">${receiptCorrection.entries ? "Хуваарьгүй засах" : "Хуваарь хамт өөрчлөх"}</button>${receiptCorrection.entries ? `<button class="text-button" type="button" data-finalized-payment-correction-schedule-add="${escape(item.registrationDraftChildId)}" ${receiptCorrection.entries.length >= 4 ? "disabled" : ""}>Төлбөр нэмэх</button>` : ""}<button class="button secondary" type="submit" ${correctionPending ? "disabled" : ""}>Хянах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["finalized-payment-correction"])}</form>`
+            : `<form class="staff-payment-form" data-finalized-payment-correction-preview="${escape(item.registrationDraftChildId)}" ${receiptCorrection.entries ? `data-schedule-draft-kind="correction" data-schedule-required-total="${escape(scheduleRequiredTotalMnt(item))}" novalidate` : ""}><h3>Төлбөрийн бүртгэл засах</h3><p class="staff-muted">Эх бичлэг хадгалагдаж, холбогдсон засварын бичлэг үүснэ.</p><label>Бодит орсон дүн<input name="amountMnt" data-finalized-payment-correction-amount="true" type="number" min="1" max="${escape(item.finalizedManualReceipt.amountMnt - 1)}" step="1" value="${escape(receiptCorrection.amountMnt || "")}" required ${correctionPending ? "disabled" : ""}/></label>${receiptCorrection.entries ? `<p class="staff-muted">Төлбөрийн хуваарийг энэ засвартай хамт шинэчилнэ.</p>${scheduleDraftEditorMarkup(item, receiptCorrection.entries, "correction")}` : ""}<label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${correctionPending ? "disabled" : ""}>${escape(receiptCorrection.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="text-button" type="button" data-finalized-payment-correction-schedule="${escape(item.registrationDraftChildId)}">${receiptCorrection.entries ? "Хуваарьгүй засах" : "Хуваарь хамт өөрчлөх"}</button>${receiptCorrection.entries ? `<button class="text-button" type="button" data-finalized-payment-correction-schedule-add="${escape(item.registrationDraftChildId)}" ${receiptCorrection.entries.length >= 4 ? "disabled" : ""}>Төлбөр нэмэх</button>` : ""}<button class="button secondary" type="submit" ${correctionPending ? "disabled" : ""}>Хянах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["finalized-payment-correction"])}</form>`
           : item.canonicalEnrollmentId
             ? `<section class="staff-payment-tool-unavailable" role="status"><h3>Төлбөрийн бүртгэл засах</h3><p>Энэ бүртгэлд засах боломжтой эцэслэсэн гар төлбөрийн бичлэг алга. Дараагийн төлбөр, кредит, буцаалт эсвэл өмнөх засвар орсон бол санхүүгийн түүхийг тусад нь шалгана уу.</p></section>`
             : "";
-        const schedulePanel = state.installmentSchedules[item.registrationDraftChildId] || { entries: (item.installments || []).map((entry) => ({ amountMnt: entry.rawAmountMnt, dueOn: String(entry.dueAt || "").slice(0, 10) })) };
+        const schedulePanel = state.installmentSchedules[item.registrationDraftChildId] || { entries: (item.installments || []).map((entry) => ({ amountMnt: entry.rawAmountMnt, dueOn: String(entry.dueAt || "").slice(0, 10), isNew: false, touched: false })) };
         const schedulePending = actionPending(item.registrationDraftChildId, "installment-schedule");
         const installmentSchedule = item.canonicalEnrollmentId
           ? schedulePanel.review
             ? `<form class="staff-payment-form staff-payment-tool-review" data-installment-schedule-confirm="${escape(item.registrationDraftChildId)}"><h3>Төлбөрийн хуваарийг хянах</h3>${schedulePanel.review.revised.map((entry, index) => `<p>${index + 1}-р төлбөр: <strong>${escape(mnt(entry.amountMnt))}</strong> · ${escape(localLabel(entry.dueAt))}</p>`).join("")}<p>Нийт: <strong>${escape(mnt(schedulePanel.review.totalFeeMnt))}</strong> · Үлдэгдэл: <strong>${escape(mnt(schedulePanel.review.totalRemainingMnt))}</strong></p><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${schedulePending ? "disabled" : ""}>${escape(schedulePanel.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="button primary" type="submit" ${schedulePending ? "disabled aria-busy=true" : ""}>${schedulePending ? "Хадгалж байна…" : "Баталгаажуулах"}</button><button class="text-button" type="button" data-installment-schedule-edit="${escape(item.registrationDraftChildId)}">Засах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["installment-schedule"])}</form>`
-            : `<form class="staff-payment-form" data-installment-schedule-preview="${escape(item.registrationDraftChildId)}"><h3>Төлбөрийн хуваарь өөрчлөх</h3>${schedulePanel.entries.map((entry, index) => `<fieldset class="staff-inline-fields"><legend>${index + 1}-р төлбөр</legend><label>Дүн<input name="amountMnt" data-schedule-index="${index}" type="number" min="1" step="1" value="${escape(entry.amountMnt)}" required /></label><label>Хугацаа<input name="dueOn" data-schedule-index="${index}" type="date" value="${escape(entry.dueOn)}" required /></label></fieldset>`).join("")}<div class="staff-inline-actions"><button class="text-button" type="button" data-installment-schedule-add="${escape(item.registrationDraftChildId)}" ${schedulePanel.entries.length >= 4 ? "disabled" : ""}>Төлбөр нэмэх</button><button class="button secondary" type="submit">Хянах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["installment-schedule"])}</form>` : "";
+            : `<form class="staff-payment-form" data-installment-schedule-preview="${escape(item.registrationDraftChildId)}" data-schedule-draft-kind="schedule" data-schedule-required-total="${escape(scheduleRequiredTotalMnt(item))}" novalidate><h3>Төлбөрийн хуваарь өөрчлөх</h3>${scheduleDraftEditorMarkup(item, schedulePanel.entries, "schedule")}<div class="staff-inline-actions"><button class="text-button" type="button" data-installment-schedule-add="${escape(item.registrationDraftChildId)}" ${schedulePanel.entries.length >= 4 ? "disabled" : ""}>Төлбөр нэмэх</button><button class="button secondary" type="submit">Хянах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["installment-schedule"])}</form>` : "";
         const paymentTool = state.paymentTools[item.registrationDraftChildId] || "";
         const paymentTools = activePanel(item.registrationDraftChildId) === "payment" && (finalizedPaymentCorrection || installmentSchedule)
           ? `<section class="staff-payment-secondary-tools"><div class="staff-inline-actions"><button class="${paymentTool === "receipt-correction" ? "button secondary" : "text-button"}" type="button" data-payment-tool="receipt-correction" data-payment-tool-child="${escape(item.registrationDraftChildId)}" ${correctionPending ? "disabled" : ""}>Төлбөрийн бүртгэл засах</button><button class="${paymentTool === "schedule" ? "button secondary" : "text-button"}" type="button" data-payment-tool="schedule" data-payment-tool-child="${escape(item.registrationDraftChildId)}" ${schedulePending ? "disabled" : ""}>Төлбөрийн хуваарь өөрчлөх</button></div>${paymentTool === "receipt-correction" ? finalizedPaymentCorrection : paymentTool === "schedule" ? installmentSchedule : ""}</section>` : "";
@@ -1053,11 +1140,32 @@ import "../../styles/global.css";
         }
         if (target.dataset.finalizedPaymentCorrectionEdit) { const childId = target.dataset.finalizedPaymentCorrectionEdit; delete state.finalizedPaymentCorrections[childId]?.review; render(); q(`[data-finalized-payment-correction-preview="${childId}"] input`)?.focus(); return; }
         if (target.dataset.installmentScheduleEdit) { const childId = target.dataset.installmentScheduleEdit; delete state.installmentSchedules[childId]?.review; render(); q(`[data-installment-schedule-preview="${childId}"] input`)?.focus(); return; }
-        if (target.dataset.installmentScheduleAdd) { const childId = target.dataset.installmentScheduleAdd; const draft = state.installmentSchedules[childId] ||= { entries: [] }; const form = target.closest("form"); if (form) draft.entries = [...form.querySelectorAll("[data-schedule-index]")].reduce((entries, input) => { const index = Number(input.dataset.scheduleIndex); entries[index] ||= {}; entries[index][input.name] = input.value; return entries; }, []); if ((draft.entries || []).length < 4) draft.entries.push({ amountMnt: "", dueOn: "" }); render(); return; }
+        if (target.dataset.installmentScheduleAdd) { const childId = target.dataset.installmentScheduleAdd; const draft = state.installmentSchedules[childId] ||= { entries: [] }; const form = target.closest("form"); if (form) draft.entries = scheduleDraftEntries(form, "schedule"); if ((draft.entries || []).length < 4) draft.entries.push({ amountMnt: "", dueOn: "", isNew: true, touched: false }); delete draft.review; delete state.actionFeedback[childId]; render(); return; }
         if (target.dataset.paymentTool) { const childId = target.dataset.paymentToolChild; if (!childId || panelMutationBusy(childId)) return; state.paymentTools[childId] = target.dataset.paymentTool; delete state.actionFeedback[childId]; render(); q(`[data-${target.dataset.paymentTool === "schedule" ? "installment-schedule" : "finalized-payment-correction"}-preview="${childId}"] input`)?.focus(); return; }
         if (target.dataset.paymentToolCancel) { const childId = target.dataset.paymentToolCancel; if (panelMutationBusy(childId)) return; delete state.paymentTools[childId]; delete state.actionFeedback[childId]; render(); q(`[data-payment-tool="receipt-correction"][data-payment-tool-child="${childId}"]`)?.focus(); return; }
-        if (target.dataset.finalizedPaymentCorrectionSchedule) { const childId = target.dataset.finalizedPaymentCorrectionSchedule; const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId); const draft = state.finalizedPaymentCorrections[childId] ||= {}; const form = target.closest("form"); draft.amountMnt = form?.querySelector('[data-finalized-payment-correction-amount="true"]')?.value || draft.amountMnt || ""; draft.reason = form?.elements.reason?.value || draft.reason || ""; if (draft.entries) delete draft.entries; else draft.entries = (item?.installments || []).map((entry) => ({ amountMnt: entry.rawAmountMnt, dueOn: String(entry.dueAt || "").slice(0, 10) })); render(); return; }
-        if (target.dataset.finalizedPaymentCorrectionScheduleAdd) { const childId = target.dataset.finalizedPaymentCorrectionScheduleAdd; const draft = state.finalizedPaymentCorrections[childId] ||= {}; const form = target.closest("form"); draft.amountMnt = form?.querySelector('[data-finalized-payment-correction-amount="true"]')?.value || draft.amountMnt || ""; draft.reason = form?.elements.reason?.value || draft.reason || ""; draft.entries = correctionScheduleEntries(form); if ((draft.entries || []).length < 4) draft.entries.push({ amountMnt: "", dueOn: "" }); render(); return; }
+        if (target.dataset.finalizedPaymentCorrectionSchedule) { const childId = target.dataset.finalizedPaymentCorrectionSchedule; const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId); const draft = state.finalizedPaymentCorrections[childId] ||= {}; const form = target.closest("form"); draft.amountMnt = form?.querySelector('[data-finalized-payment-correction-amount="true"]')?.value || draft.amountMnt || ""; draft.reason = form?.elements.reason?.value || draft.reason || ""; if (draft.entries) delete draft.entries; else draft.entries = (item?.installments || []).map((entry) => ({ amountMnt: entry.rawAmountMnt, dueOn: String(entry.dueAt || "").slice(0, 10), isNew: false, touched: false })); delete draft.review; delete state.actionFeedback[childId]; render(); return; }
+        if (target.dataset.finalizedPaymentCorrectionScheduleAdd) { const childId = target.dataset.finalizedPaymentCorrectionScheduleAdd; const draft = state.finalizedPaymentCorrections[childId] ||= {}; const form = target.closest("form"); draft.amountMnt = form?.querySelector('[data-finalized-payment-correction-amount="true"]')?.value || draft.amountMnt || ""; draft.reason = form?.elements.reason?.value || draft.reason || ""; draft.entries = correctionScheduleEntries(form); if ((draft.entries || []).length < 4) draft.entries.push({ amountMnt: "", dueOn: "", isNew: true, touched: false }); delete draft.review; delete state.actionFeedback[childId]; render(); return; }
+        if (target.dataset.scheduleRemove) {
+          const form = target.closest("form"); const kind = target.dataset.scheduleRemove; const index = Number(target.dataset.scheduleRemoveIndex);
+          const childId = form?.dataset.finalizedPaymentCorrectionPreview || form?.dataset.installmentSchedulePreview;
+          if (!form || !childId || !Number.isInteger(index)) return;
+          const draft = kind === "correction"
+            ? (state.finalizedPaymentCorrections[childId] ||= {})
+            : (state.installmentSchedules[childId] ||= {});
+          draft.entries = scheduleDraftEntries(form, kind); draft.entries.splice(index, 1); delete draft.review; delete state.actionFeedback[childId]; render();
+          q(`${kind === "correction" ? `[data-finalized-payment-correction-preview="${childId}"]` : `[data-installment-schedule-preview="${childId}"]`} [data-schedule-entry] input`)?.focus(); return;
+        }
+        if (target.dataset.scheduleFillRemainder) {
+          const form = target.closest("form"); const kind = target.dataset.scheduleFillRemainder;
+          if (!form) return;
+          const entries = scheduleDraftEntries(form, kind); const assessment = scheduleDraftAssessment(entries, Number(form.dataset.scheduleRequiredTotal || 0));
+          const index = entries.findIndex((entry) => !String(entry?.amountMnt ?? "").trim());
+          if (index < 0 || assessment.differenceMnt <= 0) return;
+          const selector = kind === "correction" ? `[data-correction-schedule-index="${index}"][name="amountMnt"]` : `[data-schedule-index="${index}"][name="amountMnt"]`;
+          const input = form.querySelector(selector); if (!input) return;
+          const fieldset = input.closest("[data-schedule-entry]");
+          input.value = String(assessment.differenceMnt); if (fieldset) fieldset.dataset.scheduleTouched = "true"; updateScheduleDraftSummary(form); input.focus(); return;
+        }
         if (target.dataset.specialOpen) { const childId = target.dataset.specialOpen; if (!canSwitchPanel(childId, "special")) return; activatePanel(childId, "special"); render(); return; }
         if (target.dataset.specialActionCancel) {
           const childId = target.dataset.specialActionCancel;
@@ -1396,13 +1504,32 @@ import "../../styles/global.css";
         event.preventDefault();
         summary.click();
       });
+      function noteScheduleDraftEdit(event) {
+        const input = event.target.closest("[data-schedule-index], [data-correction-schedule-index]");
+        const form = input?.closest("[data-schedule-draft-kind]");
+        if (!input || !form) return;
+        const fieldset = input.closest("[data-schedule-entry]");
+        if (fieldset) fieldset.dataset.scheduleTouched = "true";
+        const childId = form.dataset.finalizedPaymentCorrectionPreview || form.dataset.installmentSchedulePreview;
+        const kind = form.dataset.scheduleDraftKind;
+        if (childId && kind) {
+          const draft = kind === "correction" ? (state.finalizedPaymentCorrections[childId] ||= {}) : (state.installmentSchedules[childId] ||= {});
+          draft.entries = scheduleDraftEntries(form, kind);
+          delete draft.review;
+          delete state.actionFeedback[childId];
+        }
+        updateScheduleDraftSummary(form);
+      }
+      q("#payment-list").addEventListener("input", noteScheduleDraftEdit);
+      q("#payment-list").addEventListener("change", noteScheduleDraftEdit);
       q("#payment-list").addEventListener("submit", async (event) => {
         const form = event.target;
         if (form.matches("[data-finalized-payment-correction-preview]")) {
           event.preventDefault(); const childId = form.dataset.finalizedPaymentCorrectionPreview;
           const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId); const amountMnt = Number(form.querySelector('[data-finalized-payment-correction-amount="true"]')?.value);
           if (!item?.finalizedManualReceipt || !Number.isInteger(amountMnt)) { setActionFeedback(childId, "finalized-payment-correction", "Дүнг зөв оруулна уу."); render(); return; }
-          const entries = correctionScheduleEntries(form);
+          const entries = form.dataset.scheduleDraftKind === "correction" ? scheduleDraftForReview(form, childId, "correction") : [];
+          if (entries === null) return;
           const draft = state.finalizedPaymentCorrections[childId] = { amountMnt, reason: form.elements.reason?.value || "", entries: entries.length ? entries : undefined };
           try { draft.review = await post({ action: "payment.finalized-receipt-correction-preview", receivedPaymentId: item.finalizedManualReceipt.receivedPaymentId, correctedAmountMnt: amountMnt, revisedInstallments: draft.entries }); }
           catch (error) { setActionFeedback(childId, "finalized-payment-correction", error.message || "Энэ бичлэгийг засах боломжгүй."); } render(); return;
@@ -1417,8 +1544,9 @@ import "../../styles/global.css";
         }
         if (form.matches("[data-installment-schedule-preview]")) {
           event.preventDefault(); const childId = form.dataset.installmentSchedulePreview; const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId);
-          const entries = [...form.querySelectorAll("[data-schedule-index]")].reduce((result, input) => { const index = Number(input.dataset.scheduleIndex); result[index] ||= {}; result[index][input.name] = input.value; return result; }, []);
-          if (!item || !entries.length) { setActionFeedback(childId, "installment-schedule", "Хуваарийг зөв оруулна уу."); render(); return; }
+          if (!item) { setActionFeedback(childId, "installment-schedule", "Хуваарийг зөв оруулна уу."); render(); return; }
+          const entries = scheduleDraftForReview(form, childId, "schedule");
+          if (entries === null || !entries.length) return;
           const draft = state.installmentSchedules[childId] = { entries, reason: state.installmentSchedules[childId]?.reason || "" };
           try { draft.review = await post({ action: "payment.installment-schedule-preview", paymentRequestId: item.paymentRequestId, registrationDraftChildId: childId, installments: entries }); }
           catch (error) { setActionFeedback(childId, "installment-schedule", error.message || "Хуваарийг хянаж чадсангүй."); } render(); return;

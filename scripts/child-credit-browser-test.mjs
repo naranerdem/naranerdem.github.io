@@ -1159,25 +1159,61 @@ try {
     const openDetail = row.getByRole("button", { name: "Нээх" });
     if (await openDetail.isVisible().catch(() => false)) await openDetail.click();
     await row.locator('[data-payment-open]').click();
+    await row.locator('[data-payment-tool="schedule"]').click();
+    const standaloneSchedule = row.locator('[data-installment-schedule-preview]');
+    await standaloneSchedule.waitFor({ state: "visible" });
+    await standaloneSchedule.getByText("Хуваарийн шаардлагатай нийт: 1,300,000 ₮").waitFor({ state: "visible" });
+    await standaloneSchedule.getByRole("button", { name: "Төлбөр нэмэх" }).click();
+    assert.equal(await standaloneSchedule.locator('[data-schedule-entry]').count(), 3,
+      "the standalone schedule draft adds a removable blank installment row");
+    await standaloneSchedule.locator('[data-schedule-remove-index="2"]').click();
+    assert.equal(await standaloneSchedule.locator('[data-schedule-entry]').count(), 2,
+      "removing a draft row renumbers the standalone schedule without writing history");
+    await standaloneSchedule.getByRole("button", { name: "Болих" }).click();
     await row.locator('[data-payment-tool="receipt-correction"]').click();
-    const correction = row.locator('[data-finalized-payment-correction-preview]');
+    let correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.waitFor({ state: "visible" });
     await correction.locator('input[name="amountMnt"]').fill("400000");
     await correction.getByRole("button", { name: "Хуваарь хамт өөрчлөх" }).click();
     assert.equal(await correction.locator('[data-finalized-payment-correction-amount="true"]').inputValue(), "400000",
       "opening the schedule editor preserves the entered corrected amount");
-    const entries = correction.locator('[data-correction-schedule-index]');
-    await entries.nth(0).fill("400000");
-    await correction.locator('input[name="dueOn"]').nth(0).fill("2026-08-15");
-    await entries.nth(2).fill("400000");
-    await correction.locator('input[name="dueOn"]').nth(1).fill("2026-12-01");
+    await correction.locator('input[data-correction-schedule-index="0"][name="amountMnt"]').fill("400000");
+    await correction.locator('input[data-correction-schedule-index="0"][name="dueOn"]').fill("2026-08-15");
+    await correction.locator('input[data-correction-schedule-index="1"][name="amountMnt"]').fill("400000");
+    await correction.locator('input[data-correction-schedule-index="1"][name="dueOn"]').fill("2026-12-01");
     await correction.getByRole("button", { name: "Төлбөр нэмэх" }).click();
     assert.equal(await correction.locator('[data-correction-schedule-index="0"][name="amountMnt"]').inputValue(), "400000",
       "adding a schedule row preserves the edited first installment");
     assert.equal(await correction.locator('[data-correction-schedule-index="1"][name="amountMnt"]').inputValue(), "400000",
       "adding a schedule row preserves the edited second installment");
-    await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("500000");
+    await correction.locator('[data-schedule-remove-index="2"]').click();
+    assert.equal(await correction.locator('[data-schedule-entry]').count(), 2,
+      "a newly added correction row can be removed without altering existing payment history");
+    await correction.getByRole("button", { name: "Төлбөр нэмэх" }).click();
+    await correction.getByText("Хуваарийн зөрүү: 500,000 ₮ дутуу").waitFor({ state: "visible" });
+    await correction.getByRole("button", { name: "Хянах" }).click();
+    await correction.getByText("Хуваарийн нийт дүн 500,000 ₮ дутуу байна.").waitFor({ state: "visible" });
+    correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.locator('input[data-correction-schedule-index="2"][name="dueOn"]').fill("2027-02-28");
+    await correction.getByRole("button", { name: "Хянах" }).click();
+    await correction.getByText("3-р төлбөрийн дүн, хугацааг хоёуланг нь оруулна уу.").waitFor({ state: "visible" });
+    correction = row.locator('[data-finalized-payment-correction-preview]');
+    await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("0");
+    await correction.getByRole("button", { name: "Хянах" }).click();
+    await correction.getByText("3-р төлбөрийн дүн эерэг бүхэл тоо байна.").waitFor({ state: "visible" });
+    correction = row.locator('[data-finalized-payment-correction-preview]');
+    await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("-1");
+    await correction.getByRole("button", { name: "Хянах" }).click();
+    await correction.getByText("3-р төлбөрийн дүн эерэг бүхэл тоо байна.").waitFor({ state: "visible" });
+    correction = row.locator('[data-finalized-payment-correction-preview]');
+    await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("600000");
+    await correction.getByRole("button", { name: "Хянах" }).click();
+    await correction.getByText("Хуваарийн нийт дүн 100,000 ₮ илүү байна.").waitFor({ state: "visible" });
+    correction = row.locator('[data-finalized-payment-correction-preview]');
+    await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("");
+    await correction.getByRole("button", { name: "Үлдэгдлээр бөглөх" }).click();
+    assert.equal(await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').inputValue(), "500000",
+      "the one blank editable amount fills only the positive schedule remainder");
     await correction.locator('textarea[name="reason"]').fill("Browser receipt correction");
     await page.setViewportSize({ width: 1180, height: 900 });
     await capturePaymentElement(row, "receipt-correction-editor-desktop.png");
