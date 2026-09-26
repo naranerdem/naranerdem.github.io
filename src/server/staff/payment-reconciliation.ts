@@ -14,7 +14,7 @@ import { familyCreditSuggestionsForChild } from "./family-discounts";
 import { sendConditionalSeatConfirmationEmail, sendPaymentConfirmedEmail } from "../email/registration-transactional";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
-type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid" | "family_credit_review_required";
+type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid" | "no_outstanding" | "schedule_locked" | "family_credit_review_required";
 
 export class PaymentReconciliationError extends Error {
   constructor(public readonly code: PaymentErrorCode) {
@@ -445,6 +445,15 @@ async function installmentScheduleSnapshot(env: WorkerEnv, paymentRequestId: str
     LEFT JOIN payment_confirmation AS confirmation ON confirmation.received_payment_id = allocation.received_payment_id
     WHERE installment.payment_request_id = ? AND installment.registration_draft_child_id = ? AND installment.status != 'released'
     GROUP BY installment.id ORDER BY installment.installment_number`).bind(paymentRequestId, childId).all<InstallmentScheduleRow>();
+  if (!rows.results.length) throw new PaymentReconciliationError('invalid');
+  const currentInstallments = rows.results.map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) }));
+  const effective = new Map((await effectiveInstallmentsForRows(env.DB, currentInstallments.map((row) => ({
+    id: row.id, registrationDraftChildId: childId, installmentNumber: row.installmentNumber,
+    amountMnt: row.amountMnt, allocatedAmountMnt: row.allocatedAmountMnt,
+  })))).map((row) => [row.id, row]));
+  const outstandingMnt = currentInstallments.reduce((total, row) => total + Math.max(0,
+    Number(effective.get(row.id)?.effectiveAmountMnt ?? row.amountMnt) - row.allocatedAmountMnt), 0);
+  if (outstandingMnt <= 0) throw new PaymentReconciliationError('no_outstanding');
   const dependencies = await env.DB.prepare(`SELECT
       (SELECT COUNT(*) FROM payment_credit WHERE payment_request_id = ?) +
       (SELECT COUNT(*) FROM child_credit_entry WHERE registration_draft_child_id = ?) +
@@ -452,8 +461,8 @@ async function installmentScheduleSnapshot(env: WorkerEnv, paymentRequestId: str
       (SELECT COUNT(*) FROM payment_fee_waiver WHERE registration_draft_child_id = ?) +
       (SELECT COUNT(*) FROM payment_notification_milestone WHERE registration_draft_child_id = ? AND status IN ('sending', 'sent')) AS count`)
     .bind(paymentRequestId, childId, childId, childId, childId).first<{ count: number }>();
-  if (!rows.results.length || Number(dependencies?.count ?? 0)) throw new PaymentReconciliationError('invalid');
-  return { request, child, installments: rows.results.map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) })) };
+  if (Number(dependencies?.count ?? 0)) throw new PaymentReconciliationError('schedule_locked');
+  return { request, child, installments: currentInstallments };
 }
 
 async function reviewedInstallmentSchedule(env: WorkerEnv, paymentRequestId: string, childId: string, entries: InstallmentScheduleInput[], allocationOverrides = new Map<string, number>()) {

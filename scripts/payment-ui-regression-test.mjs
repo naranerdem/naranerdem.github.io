@@ -78,6 +78,11 @@ assert.match(page, /function paymentItemForInstallment\(installmentId\)/,
   "the rendered payment handler accepts any selected installment in a revised schedule");
 assert.match(page, /data-payment-tool="receipt-correction"/, "finalized receipt correction is a compact control in the ordinary payment panel");
 assert.match(page, /data-payment-tool="schedule"/, "schedule revision is a compact control in the ordinary payment panel");
+assert.match(page, /function standaloneScheduleModel\(item\)/, "standalone schedule editing derives its future draft from the authoritative enrollment-wide remainder");
+assert.match(page, /scheduleCompleteEntries\(item, editableEntries\)/, "the standalone editor safely submits protected settled portions with the edited future remainder");
+assert.match(page, /const remaining = Number\(item\.totalRemainingMnt/, "the payment detail summary uses the enrollment-wide remaining balance instead of only its first installment");
+assert.match(page, /Төлөх үлдэгдэлгүй\./, "a fully settled enrollment has a compact no-future-payment schedule state");
+assert.match(page, /Төлөгдсөн төлөлт/, "settled installments remain visible as read-only schedule context");
 assert.match(page, /receiptCorrectionAvailable/, "the correction editor is gated by the stricter finalized-receipt eligibility state");
 assert.match(page, /Энэ бүртгэлд засах боломжтой эцэслэсэн гар төлбөрийн бичлэг алга/, "an ineligible correction action explains why its editor is unavailable");
 assert.match(page, /<div class="staff-panel-region">\$\{special\}\$\{laterPaymentForm\}\$\{paymentTools\}/, "ordinary payment content remains above secondary correction and schedule tools");

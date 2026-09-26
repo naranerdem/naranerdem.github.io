@@ -1147,6 +1147,7 @@ try {
     // This fixture matches the production-shaped 650,000 -> 400,000 case.
     execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 0 WHERE singleton = 1");
     const childId = publicTwoInstallmentChildId;
+    const fastReceiptCorrection = process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_FAST === "1";
     await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
     const row = page.locator(`[data-registration-child="${childId}"]`);
     await row.waitFor({ state: "visible" });
@@ -1162,16 +1163,22 @@ try {
     const openDetail = row.getByRole("button", { name: "Нээх" });
     if (await openDetail.isVisible().catch(() => false)) await openDetail.click();
     await row.locator('[data-payment-open]').click();
+    if (!fastReceiptCorrection) {
     await row.locator('[data-payment-tool="schedule"]').click();
     const standaloneSchedule = row.locator('[data-installment-schedule-preview]');
     await standaloneSchedule.waitFor({ state: "visible" });
-    await standaloneSchedule.getByText("Төлөлтийн хуваарийн шаардлагатай нийт: 1,300,000 ₮").waitFor({ state: "visible" });
+    await standaloneSchedule.getByText("Төлөлтийн хуваарийн шаардлагатай нийт: 650,000 ₮").waitFor({ state: "visible" });
+    await standaloneSchedule.getByText("1-р төлөлт: 650,000 ₮").waitFor({ state: "visible" });
+    await capturePaymentElement(row, "installment-schedule-editor-mobile.png");
+    await page.setViewportSize({ width: 1180, height: 900 });
+    await capturePaymentElement(row, "installment-schedule-editor-desktop.png");
+    await page.setViewportSize({ width: 390, height: 844 });
     await standaloneSchedule.getByRole("button", { name: "Төлөлт нэмэх" }).click();
-    assert.equal(await standaloneSchedule.locator('[data-schedule-entry]').count(), 3,
-      "the standalone schedule draft adds a removable blank installment row");
-    await standaloneSchedule.locator('[data-schedule-remove-index="2"]').click();
     assert.equal(await standaloneSchedule.locator('[data-schedule-entry]').count(), 2,
-      "removing a draft row renumbers the standalone schedule without writing history");
+      "the standalone schedule draft adds a removable future installment without exposing the settled first payment");
+    await standaloneSchedule.locator('[data-schedule-remove-index="1"]').click();
+    assert.equal(await standaloneSchedule.locator('[data-schedule-entry]').count(), 1,
+      "removing a future draft row preserves the settled history and renumbers only editable rows");
     const standalonePreviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.installment-schedule-preview"));
     await standaloneSchedule.getByRole("button", { name: "Хянаж хадгалах" }).click();
@@ -1196,6 +1203,7 @@ try {
     const reloadedDetail = row.getByRole("button", { name: "Нээх" });
     if (await reloadedDetail.isVisible().catch(() => false)) await reloadedDetail.click();
     await row.locator('[data-payment-open]').click();
+    }
     await row.locator('[data-payment-tool="receipt-correction"]').click();
     let correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.waitFor({ state: "visible" });
@@ -1207,6 +1215,11 @@ try {
     await correction.locator('input[data-correction-schedule-index="0"][name="dueOn"]').fill("2026-08-15");
     await correction.locator('input[data-correction-schedule-index="1"][name="amountMnt"]').fill("400000");
     await correction.locator('input[data-correction-schedule-index="1"][name="dueOn"]').fill("2026-12-01");
+    if (fastReceiptCorrection) {
+      await correction.getByRole("button", { name: "Төлөлт нэмэх" }).click();
+      await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("500000");
+      await correction.locator('input[data-correction-schedule-index="2"][name="dueOn"]').fill("2027-02-28");
+    } else {
     await correction.getByRole("button", { name: "Төлөлт нэмэх" }).click();
     assert.equal(await correction.locator('[data-correction-schedule-index="0"][name="amountMnt"]').inputValue(), "400000",
       "adding a schedule row preserves the edited first installment");
@@ -1240,11 +1253,14 @@ try {
     await correction.getByRole("button", { name: "Үлдэгдлээр бөглөх" }).click();
     assert.equal(await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').inputValue(), "500000",
       "the one blank editable amount fills only the positive schedule remainder");
+    }
     await correction.locator('textarea[name="reason"]').fill("Browser receipt correction");
+    if (!fastReceiptCorrection) {
     await page.setViewportSize({ width: 1180, height: 900 });
     await capturePaymentElement(row, "receipt-correction-editor-desktop.png");
     await page.setViewportSize({ width: 390, height: 844 });
     await capturePaymentElement(row, "receipt-correction-editor-mobile.png");
+    }
     const previewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.finalized-receipt-correction-preview"));
     await correction.getByRole("button", { name: "Хянаж хадгалах" }).click();
@@ -1259,10 +1275,12 @@ try {
     const toolsBox = await row.locator('.staff-payment-secondary-tools').boundingBox();
     assert.ok(reviewBox && toolsBox && Math.abs(reviewBox.x - toolsBox.x) < 2 && reviewBox.width >= toolsBox.width - 2,
       `the secondary review uses the whole payment-panel width: ${JSON.stringify({ reviewBox, toolsBox })}`);
-    await capturePaymentElement(row, "receipt-correction-review-mobile.png");
-    await page.setViewportSize({ width: 1180, height: 900 });
-    await capturePaymentElement(row, "receipt-correction-review-desktop.png");
-    await page.setViewportSize({ width: 390, height: 844 });
+    if (!fastReceiptCorrection) {
+      await capturePaymentElement(row, "receipt-correction-review-mobile.png");
+      await page.setViewportSize({ width: 1180, height: 900 });
+      await capturePaymentElement(row, "receipt-correction-review-desktop.png");
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
     const saveResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.finalized-receipt-correct"));
     await review.getByRole("button", { name: "Өөрчлөлтийг хадгалах" }).click();
@@ -1280,6 +1298,10 @@ try {
       "reload preserves the corrected receipt schedule without creating a separate debt record");
     const correctedOutstanding = persisted.reduce((total, entry) => total + Math.max(0, Number(entry.amountMnt) - (entry.status === "paid" ? Number(entry.amountMnt) : 0)), 0);
     assert.equal(correctedOutstanding, 900000, "the saved correction leaves the expected 900,000 MNT unpaid before later payments");
+    if (fastReceiptCorrection) {
+      assert.equal((await staffPaymentProjection(page, childId)).totalRemainingMnt, 900000,
+        "the reloaded payment projection keeps the corrected enrollment in the partially paid group");
+    } else {
     const reopenedDetail = row.getByRole("button", { name: "Нээх" });
     if (await reopenedDetail.isVisible().catch(() => false)) await reopenedDetail.click();
     await row.locator('[data-payment-open]').click();
@@ -1300,6 +1322,50 @@ try {
     if (await detailAfterLaterPayment.isVisible().catch(() => false)) await detailAfterLaterPayment.click();
     await row.locator('[data-payment-open]').click();
     await row.locator('.staff-later-payment-form').getByRole("heading", { name: "3-р төлөлт бүртгэх" }).waitFor({ state: "visible" });
+    const finalPayment = row.locator('.staff-later-payment-form');
+    const finalResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.record"));
+    await finalPayment.locator('input[name="amount"]').fill("500000");
+    await finalPayment.locator('button[type="submit"]').click();
+    assert.ok((await finalResponse).ok(), "the final ordinary payment settles the revised schedule without changing its receipt history");
+    await page.reload();
+    await page.getByRole("button", { name: /Төлбөр баталгаажсан/ }).click();
+    const settledDetail = row.getByRole("button", { name: "Нээх" });
+    if (await settledDetail.isVisible().catch(() => false)) await settledDetail.click();
+    await row.locator('[data-payment-open]').click();
+    await row.locator('[data-payment-tool="schedule"]').click();
+    await row.getByText("Төлөх үлдэгдэлгүй.").waitFor({ state: "visible" });
+    assert.equal(await row.locator('[data-installment-schedule-preview]').count(), 0,
+      "a fully settled enrollment shows its settled context instead of an editable future-payment schedule");
+    const settledProjection = await staffPaymentProjection(page, childId);
+    const noOutstandingPreview = await page.evaluate(async ({ paymentRequestId, registrationDraftChildId }) => {
+      const payload = {
+        action: "payment.installment-schedule-preview",
+        paymentRequestId,
+        registrationDraftChildId,
+        installments: [
+          { amountMnt: 400000, dueOn: "2026-08-15" },
+          { amountMnt: 400000, dueOn: "2026-12-01" },
+          { amountMnt: 500000, dueOn: "2027-02-28" },
+        ],
+      };
+      const response = await fetch("/api/staff/payments", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json();
+      return { status: response.status, code: body.code, message: body.error, action: payload.action };
+    }, { paymentRequestId: settledProjection.paymentRequestId, registrationDraftChildId: childId });
+    assert.deepEqual(noOutstandingPreview, {
+      status: 409,
+      code: "invalid_request",
+      message: "Төлөх үлдэгдэлгүй тул төлөлтийн хуваарь өөрчлөх шаардлагагүй.",
+      action: "payment.installment-schedule-preview",
+    }, "the protected endpoint rejects a settled schedule with an actionable no-outstanding response");
+    await capturePaymentElement(row, "installment-schedule-settled-mobile.png");
+    }
     console.log("ok browser finalized receipt correction and schedule review");
   } else if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
     const uxContext = await browser.newContext({ viewport: { width: 1200, height: 900 } });

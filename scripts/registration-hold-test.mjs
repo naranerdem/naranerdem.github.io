@@ -2399,6 +2399,14 @@ try {
     await reconcileQueuedPaymentNotificationMilestones(env(database), new Date("2026-12-02T08:00:00.000Z"));
     assert.ok(count(database, "payment_notification_milestone", `registration_draft_child_id = '${child.id}'`) >= 1,
       "the revised obligations remain in the existing reminder reconciliation lifecycle");
+    await recordManualPayment(env(database), paymentStaff, {
+      paymentRequestId: request.id, allocations: [{ installmentId: partialItem.nextScheduledInstallment.id, amountMnt: 500000 }],
+      source: "staff_manual_bank", idempotencyKey: "focused-correction-third-installment",
+    }, new Date("2027-02-28T12:00:00.000Z"));
+    await assert.rejects(previewInstallmentScheduleRevision(env(database), paymentStaff, {
+      paymentRequestId: request.id, registrationDraftChildId: child.id, installments: revisedInstallments,
+    }), (error) => error?.code === "no_outstanding",
+    "a fully settled enrollment rejects direct schedule editing with a truthful no-outstanding condition");
 
     const staleInput = submission("class-priced", undefined, 1, "two_installment");
     const staleDraft = await createRegistrationDraft(env(database), staleInput, new Date(iso(125)));
@@ -3285,6 +3293,27 @@ try {
     "the correction has one durable original-to-replacement lineage record");
   assert.equal(count(database, "audit_event", `subject_type = 'payment_receipt_correction' AND subject_id = '${corrected.correctionId}'`), 1,
     "the correction records the actor-scoped audit event and reason");
+  const partialInstallmentSchedule = await previewInstallmentScheduleRevision(env(database), paymentStaff, {
+    paymentRequestId: receiptCorrectionRequest.id,
+    registrationDraftChildId: receiptCorrectionChild.id,
+    installments: [
+      { amountMnt: 400000, dueOn: "2026-08-15" },
+      { amountMnt: 250000, dueOn: "2026-12-01" },
+      { amountMnt: 650000, dueOn: "2027-02-28" },
+    ],
+  });
+  assert.deepEqual(partialInstallmentSchedule.entries.map((entry) => entry.amountMnt), [400000, 250000, 650000],
+    "a partially paid installment keeps its settled 400k as a protected schedule entry while the unpaid 250k is rescheduled");
+  await assert.rejects(previewInstallmentScheduleRevision(env(database), paymentStaff, {
+    paymentRequestId: receiptCorrectionRequest.id,
+    registrationDraftChildId: receiptCorrectionChild.id,
+    installments: [
+      { amountMnt: 399999, dueOn: "2026-08-15" },
+      { amountMnt: 250001, dueOn: "2026-12-01" },
+      { amountMnt: 650000, dueOn: "2027-02-28" },
+    ],
+  }), (error) => error?.code === "invalid",
+  "a schedule revision cannot lower the installment below its settled receipt allocation");
   await reconcileQueuedPaymentNotificationMilestones(env(database), new Date(iso(94)));
   assert.ok(["pending", "processing", "completed"].includes(
     database.query(`SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?`, [receiptCorrectionRequest.id])[0].status,

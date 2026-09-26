@@ -347,7 +347,7 @@ import "../../styles/global.css";
       function scheduleDraftFields(entries, item, kind) {
         const indexName = kind === "correction" ? "data-correction-schedule-index" : "data-schedule-index";
         return entries.map((entry, index) => {
-          const paid = Number(item.installments?.[index]?.allocatedAmountMnt || 0) > 0;
+          const paid = kind === "correction" && Number(item.installments?.[index]?.allocatedAmountMnt || 0) > 0;
           const removable = entries.length > 1 && !paid;
           return `<fieldset class="staff-inline-fields" data-schedule-entry data-schedule-new="${entry.isNew ? "true" : "false"}" data-schedule-touched="${entry.touched ? "true" : "false"}"><legend>${index + 1}-р төлөлт</legend><label>Дүн<input name="amountMnt" ${indexName}="${index}" type="number" min="1" step="1" value="${escape(entry.amountMnt ?? "")}" required /></label><label>Хугацаа<input name="dueOn" ${indexName}="${index}" type="date" value="${escape(entry.dueOn ?? "")}" required /></label>${removable ? `<button class="text-button staff-schedule-row-remove" type="button" data-schedule-remove="${escape(kind)}" data-schedule-remove-index="${index}">Хасах</button>` : ""}</fieldset>`;
         }).join("");
@@ -391,11 +391,45 @@ import "../../styles/global.css";
           review.querySelector("[data-schedule-review-heading]")?.focus({ preventScroll: true });
         });
       }
-      function scheduleRequiredTotalMnt(item) {
-        return (item.installments || []).reduce((total, entry) => total + Number(entry.rawAmountMnt ?? entry.amountMnt ?? 0), 0);
+      function scheduleRawAmountMnt(entry) { return Number(entry.rawAmountMnt ?? entry.amountMnt ?? 0); }
+      function scheduleDueOn(entry) { return String(entry.dueAt || "").slice(0, 10); }
+      function standaloneScheduleModel(item) {
+        const installments = item.installments || [];
+        const protectedEntries = [];
+        const editableEntries = [];
+        let rawOutstandingMnt = 0;
+        for (const entry of installments) {
+          const rawAmountMnt = scheduleRawAmountMnt(entry);
+          const settledMnt = Math.min(rawAmountMnt, Math.max(0, Number(entry.allocatedAmountMnt || 0)));
+          const dueOn = scheduleDueOn(entry);
+          if (settledMnt > 0) protectedEntries.push({ amountMnt: settledMnt, dueOn, installmentNumber: entry.installmentNumber });
+          const unpaidMnt = Math.max(0, rawAmountMnt - settledMnt);
+          rawOutstandingMnt += unpaidMnt;
+          if (unpaidMnt > 0) editableEntries.push({ amountMnt: unpaidMnt, dueOn, isNew: false, touched: false });
+        }
+        const outstandingMnt = Math.max(0, Number(item.totalRemainingMnt ?? rawOutstandingMnt));
+        return {
+          protectedEntries,
+          editableEntries,
+          outstandingMnt,
+          canEdit: outstandingMnt > 0 && outstandingMnt === rawOutstandingMnt,
+          hasSettledHistory: protectedEntries.length > 0,
+        };
+      }
+      function scheduleSettledHistoryMarkup(model) {
+        if (!model.hasSettledHistory) return "";
+        return `<section class="staff-schedule-settled-history"><p class="staff-muted">Төлөгдсөн төлөлт</p>${model.protectedEntries.map((entry, index) => `<p>${escape(String(entry.installmentNumber || index + 1))}-р төлөлт: <strong>${escape(mnt(entry.amountMnt))}</strong> · ${escape(entry.dueOn)}</p>`).join("")}</section>`;
+      }
+      function scheduleCompleteEntries(item, editableEntries) {
+        const model = standaloneScheduleModel(item);
+        return [...model.protectedEntries.map((entry) => ({ amountMnt: entry.amountMnt, dueOn: entry.dueOn })), ...editableEntries];
+      }
+      function scheduleRequiredTotalMnt(item, kind = "correction") {
+        if (kind === "schedule") return standaloneScheduleModel(item).outstandingMnt;
+        return (item.installments || []).reduce((total, entry) => total + scheduleRawAmountMnt(entry), 0);
       }
       function scheduleDraftEditorMarkup(item, entries, kind) {
-        const requiredTotalMnt = scheduleRequiredTotalMnt(item);
+        const requiredTotalMnt = scheduleRequiredTotalMnt(item, kind);
         return `${scheduleDraftSummaryMarkup(entries, requiredTotalMnt, kind)}${scheduleDraftFields(entries, item, kind)}`;
       }
       function activatePanel(childId, panel) { const request = panelState.open(childId, panel); state.activePanels[childId] = panel; state.panelEpochs[childId] = request.epoch; return request; }
@@ -637,7 +671,7 @@ import "../../styles/global.css";
           guardianName: [String(item.guardianName || "").trim(), guardianFacebook ? `Facebook: ${guardianFacebook}` : ""].filter(Boolean).join(" · "),
           primaryPhone: [primaryPhone, secondaryPhone && secondaryPhone !== primaryPhone ? secondaryPhone : ""].filter(Boolean).join(", "),
         };
-        const remaining = Number(item.expectedAmountMnt) - Number(item.allocatedAmountMnt);
+        const remaining = Number(item.totalRemainingMnt ?? (Number(item.expectedAmountMnt) - Number(item.allocatedAmountMnt)));
         const reservedCredit = Number(item.reservedCreditMnt || 0);
         const cashRequired = Number(item.cashRequiredMnt ?? remaining);
         const collectionMaximum = Math.max(cashRequired,
@@ -721,12 +755,17 @@ import "../../styles/global.css";
           : item.canonicalEnrollmentId
             ? `<section class="staff-payment-tool-unavailable" role="status"><h3>Төлбөрийн бүртгэл засах</h3><p>Энэ бүртгэлд засах боломжтой эцэслэсэн гар төлбөрийн бичлэг алга. Дараагийн төлбөр, кредит, буцаалт эсвэл өмнөх засвар орсон бол санхүүгийн түүхийг тусад нь шалгана уу.</p></section>`
             : "";
-        const schedulePanel = state.installmentSchedules[item.registrationDraftChildId] || { entries: (item.installments || []).map((entry) => ({ amountMnt: entry.rawAmountMnt, dueOn: String(entry.dueAt || "").slice(0, 10), isNew: false, touched: false })) };
+        const scheduleModel = standaloneScheduleModel(item);
+        const schedulePanel = state.installmentSchedules[item.registrationDraftChildId] || { entries: scheduleModel.editableEntries };
         const schedulePending = actionPending(item.registrationDraftChildId, "installment-schedule");
         const installmentSchedule = item.canonicalEnrollmentId
           ? schedulePanel.review
             ? `<form class="staff-payment-form staff-payment-tool-review" data-installment-schedule-confirm="${escape(item.registrationDraftChildId)}"><h3 data-schedule-review-heading tabindex="-1">Төлөлтийн хуваарийг хянах</h3>${schedulePanel.review.revised.map((entry, index) => `<p>${index + 1}-р төлөлт: <strong>${escape(mnt(entry.amountMnt))}</strong> · ${escape(localLabel(entry.dueAt))}</p>`).join("")}<p>Нийт: <strong>${escape(mnt(schedulePanel.review.totalFeeMnt))}</strong> · Үлдэгдэл: <strong>${escape(mnt(schedulePanel.review.totalRemainingMnt))}</strong></p><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${schedulePending ? "disabled" : ""}>${escape(schedulePanel.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="button primary" type="submit" ${schedulePending ? "disabled aria-busy=true" : ""}>${schedulePending ? "Хадгалж байна…" : "Өөрчлөлтийг хадгалах"}</button><button class="text-button" type="button" data-installment-schedule-edit="${escape(item.registrationDraftChildId)}">Засах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["installment-schedule"])}</form>`
-            : `<form class="staff-payment-form" data-installment-schedule-preview="${escape(item.registrationDraftChildId)}" data-schedule-draft-kind="schedule" data-schedule-required-total="${escape(scheduleRequiredTotalMnt(item))}" novalidate><h3>Төлөлтийн хуваарь өөрчлөх</h3>${scheduleDraftEditorMarkup(item, schedulePanel.entries, "schedule")}<div class="staff-inline-actions"><button class="text-button" type="button" data-installment-schedule-add="${escape(item.registrationDraftChildId)}" ${schedulePanel.entries.length >= 4 ? "disabled" : ""}>Төлөлт нэмэх</button><button class="button primary" type="submit">Хянаж хадгалах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["installment-schedule"])}</form>` : "";
+            : scheduleModel.outstandingMnt <= 0
+              ? `<section class="staff-payment-tool-unavailable" role="status"><h3>Төлөлтийн хуваарь өөрчлөх</h3>${scheduleSettledHistoryMarkup(scheduleModel)}<p>Төлөх үлдэгдэлгүй.</p></section>`
+              : !scheduleModel.canEdit
+                ? `<section class="staff-payment-tool-unavailable" role="status"><h3>Төлөлтийн хуваарь өөрчлөх</h3>${scheduleSettledHistoryMarkup(scheduleModel)}<p>Энэ бүртгэлд хөнгөлөлт, кредит эсвэл өөр санхүүгийн тохируулга орсон тул төлөх үлдэгдлийг энд дахин хуваарилах боломжгүй. Санхүүгийн түүхийг тусад нь шалгана уу.</p></section>`
+                : `<form class="staff-payment-form" data-installment-schedule-preview="${escape(item.registrationDraftChildId)}" data-schedule-draft-kind="schedule" data-schedule-required-total="${escape(scheduleRequiredTotalMnt(item, "schedule"))}" novalidate><h3>Төлөлтийн хуваарь өөрчлөх</h3>${scheduleSettledHistoryMarkup(scheduleModel)}<p class="staff-muted">Зөвхөн төлөөгүй үлдэгдлийг дахин хуваарилна. Төлөгдсөн дүн, бичлэгийн түүх өөрчлөгдөхгүй.</p>${scheduleDraftEditorMarkup(item, schedulePanel.entries, "schedule")}<div class="staff-inline-actions"><button class="text-button" type="button" data-installment-schedule-add="${escape(item.registrationDraftChildId)}" ${schedulePanel.entries.length >= 4 - scheduleModel.protectedEntries.length ? "disabled" : ""}>Төлөлт нэмэх</button><button class="button primary" type="submit">Хянаж хадгалах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}">Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["installment-schedule"])}</form>` : "";
         const paymentTool = state.paymentTools[item.registrationDraftChildId] || "";
         const paymentTools = activePanel(item.registrationDraftChildId) === "payment" && (finalizedPaymentCorrection || installmentSchedule)
           ? `<section class="staff-payment-secondary-tools"><div class="staff-inline-actions"><button class="${paymentTool === "receipt-correction" ? "button secondary" : "text-button"}" type="button" data-payment-tool="receipt-correction" data-payment-tool-child="${escape(item.registrationDraftChildId)}" ${correctionPending ? "disabled" : ""}>Төлбөрийн бүртгэл засах</button><button class="${paymentTool === "schedule" ? "button secondary" : "text-button"}" type="button" data-payment-tool="schedule" data-payment-tool-child="${escape(item.registrationDraftChildId)}" ${schedulePending ? "disabled" : ""}>Төлөлтийн хуваарь өөрчлөх</button></div>${paymentTool === "receipt-correction" ? finalizedPaymentCorrection : paymentTool === "schedule" ? installmentSchedule : ""}</section>` : "";
@@ -1151,7 +1190,7 @@ import "../../styles/global.css";
         }
         if (target.dataset.finalizedPaymentCorrectionEdit) { const childId = target.dataset.finalizedPaymentCorrectionEdit; delete state.finalizedPaymentCorrections[childId]?.review; render(); q(`[data-finalized-payment-correction-preview="${childId}"] input`)?.focus(); return; }
         if (target.dataset.installmentScheduleEdit) { const childId = target.dataset.installmentScheduleEdit; delete state.installmentSchedules[childId]?.review; render(); q(`[data-installment-schedule-preview="${childId}"] input`)?.focus(); return; }
-        if (target.dataset.installmentScheduleAdd) { const childId = target.dataset.installmentScheduleAdd; const draft = state.installmentSchedules[childId] ||= { entries: [] }; const form = target.closest("form"); if (form) draft.entries = scheduleDraftEntries(form, "schedule"); if ((draft.entries || []).length < 4) draft.entries.push({ amountMnt: "", dueOn: "", isNew: true, touched: false }); delete draft.review; delete state.actionFeedback[childId]; render(); return; }
+        if (target.dataset.installmentScheduleAdd) { const childId = target.dataset.installmentScheduleAdd; const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId); const draft = state.installmentSchedules[childId] ||= { entries: standaloneScheduleModel(item || {}).editableEntries }; const form = target.closest("form"); if (form) draft.entries = scheduleDraftEntries(form, "schedule"); const protectedCount = standaloneScheduleModel(item || {}).protectedEntries.length; if ((draft.entries || []).length + protectedCount < 4) draft.entries.push({ amountMnt: "", dueOn: "", isNew: true, touched: false }); delete draft.review; delete state.actionFeedback[childId]; render(); return; }
         if (target.dataset.paymentTool) { const childId = target.dataset.paymentToolChild; if (!childId || panelMutationBusy(childId)) return; state.paymentTools[childId] = target.dataset.paymentTool; delete state.actionFeedback[childId]; render(); q(`[data-${target.dataset.paymentTool === "schedule" ? "installment-schedule" : "finalized-payment-correction"}-preview="${childId}"] input`)?.focus(); return; }
         if (target.dataset.paymentToolCancel) { const childId = target.dataset.paymentToolCancel; if (panelMutationBusy(childId)) return; const tool = state.paymentTools[childId] || "receipt-correction"; delete state.paymentTools[childId]; delete state.actionFeedback[childId]; render(); q(`[data-payment-tool="${tool}"][data-payment-tool-child="${childId}"]`)?.focus(); return; }
         if (target.dataset.finalizedPaymentCorrectionSchedule) { const childId = target.dataset.finalizedPaymentCorrectionSchedule; const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId); const draft = state.finalizedPaymentCorrections[childId] ||= {}; const form = target.closest("form"); draft.amountMnt = form?.querySelector('[data-finalized-payment-correction-amount="true"]')?.value || draft.amountMnt || ""; draft.reason = form?.elements.reason?.value || draft.reason || ""; if (draft.entries) delete draft.entries; else draft.entries = (item?.installments || []).map((entry) => ({ amountMnt: entry.rawAmountMnt, dueOn: String(entry.dueAt || "").slice(0, 10), isNew: false, touched: false })); delete draft.review; delete state.actionFeedback[childId]; render(); return; }
@@ -1558,9 +1597,10 @@ import "../../styles/global.css";
         if (form.matches("[data-installment-schedule-preview]")) {
           event.preventDefault(); const childId = form.dataset.installmentSchedulePreview; const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId);
           if (!item) { setActionFeedback(childId, "installment-schedule", "Төлөлтийн хуваарийг зөв оруулна уу."); render(); return; }
-          const entries = scheduleDraftForReview(form, childId, "schedule");
-          if (entries === null || !entries.length) return;
-          const draft = state.installmentSchedules[childId] = { entries, reason: state.installmentSchedules[childId]?.reason || "" };
+          const editableEntries = scheduleDraftForReview(form, childId, "schedule");
+          if (editableEntries === null || !editableEntries.length) return;
+          const entries = scheduleCompleteEntries(item, editableEntries);
+          const draft = state.installmentSchedules[childId] = { entries: editableEntries, completeEntries: entries, reason: state.installmentSchedules[childId]?.reason || "" };
           let reviewed = false;
           try { draft.review = await post({ action: "payment.installment-schedule-preview", paymentRequestId: item.paymentRequestId, registrationDraftChildId: childId, installments: entries }); reviewed = true; }
           catch (error) { setActionFeedback(childId, "installment-schedule", error.message || "Төлөлтийн хуваарийг хянаж чадсангүй."); }
@@ -1569,7 +1609,7 @@ import "../../styles/global.css";
         if (form.matches("[data-installment-schedule-confirm]")) {
           event.preventDefault(); const childId = form.dataset.installmentScheduleConfirm; const item = state.data?.items.find((entry) => entry.registrationDraftChildId === childId); const draft = state.installmentSchedules[childId];
           if (!item || !draft?.review || actionPending(childId, "installment-schedule")) return; draft.reason = form.elements.reason?.value || ""; setActionPending(childId, "installment-schedule", true); setActionFeedback(childId, "installment-schedule", "Хадгалж байна…"); render();
-          try { await post({ action: "payment.installment-schedule-revise", paymentRequestId: item.paymentRequestId, registrationDraftChildId: childId, installments: draft.entries, reason: draft.reason, reviewFingerprint: draft.review.reviewFingerprint, operationId: draft.operationId ||= await secureStaffUuidV4() }); delete state.installmentSchedules[childId]; delete state.paymentTools[childId]; setActionFeedback(childId, "installment-schedule", "Төлөлтийн хуваарь шинэчлэгдлээ."); await refresh("", { anchorChildId: childId }); }
+          try { await post({ action: "payment.installment-schedule-revise", paymentRequestId: item.paymentRequestId, registrationDraftChildId: childId, installments: draft.completeEntries || scheduleCompleteEntries(item, draft.entries), reason: draft.reason, reviewFingerprint: draft.review.reviewFingerprint, operationId: draft.operationId ||= await secureStaffUuidV4() }); delete state.installmentSchedules[childId]; delete state.paymentTools[childId]; setActionFeedback(childId, "installment-schedule", "Төлөлтийн хуваарь шинэчлэгдлээ."); await refresh("", { anchorChildId: childId }); }
           catch (error) { setActionFeedback(childId, "installment-schedule", error.message || "Төлөлтийн хуваарийг хадгалж чадсангүй."); }
           finally { setActionPending(childId, "installment-schedule", false); render(); } return;
         }

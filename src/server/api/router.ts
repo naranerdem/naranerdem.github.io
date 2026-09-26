@@ -378,6 +378,8 @@ function paymentReconciliationError(caught: unknown): Response {
   if (caught.code === "not_found") return error("not_found", "Төлбөрийн мэдээлэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "not_due") return error("invalid_request", "Төлбөрийн хугацаа дуусаагүй тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "already_paid") return error("invalid_request", "Төлбөр бүрэн баталгаажсан тул суудлыг чөлөөлөх боломжгүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "no_outstanding") return error("invalid_request", "Төлөх үлдэгдэлгүй тул төлөлтийн хуваарь өөрчлөх шаардлагагүй.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "schedule_locked") return error("invalid_request", "Энэ төлөлтийн хуваарьт кредит, хөнгөлөлт эсвэл өмнөх санхүүгийн шийдвэр холбогдсон байна. Санхүүгийн түүхийг тусад нь шалгана уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "family_credit_review_required") return error("invalid_request", "Гэр бүлийн өөр хүүхдийн кредитийг шилжүүлж тооцох эсвэл бэлэн мөнгөөр үргэлжлүүлэх сонголтоо батална уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
