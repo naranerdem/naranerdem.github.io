@@ -2213,6 +2213,13 @@ textarea:focus {
   padding-top: 0;
 }
 
+.staff-payment-tool-review > h3,
+.staff-payment-tool-review > p,
+.staff-payment-tool-review > label,
+.staff-payment-tool-review > .staff-inline-actions {
+  grid-column: 1 / -1;
+}
+
 .staff-payment-form label {
   display: grid;
   min-width: 0;

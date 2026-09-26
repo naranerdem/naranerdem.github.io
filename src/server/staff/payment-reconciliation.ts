@@ -350,8 +350,9 @@ export async function correctFinalizedManualPayment(env: WorkerEnv, actor: Staff
         originalAmountMnt: review.snapshot.originalAmountMnt, correctedAmountMnt: review.correctedAmountMnt,
         installmentId: review.snapshot.installmentId, reason }), env.APP_ENV, now, request.id, correctionId),
   ];
+  let scheduleRevisionId = "";
   if (scheduleReview) {
-    const revisionId = crypto.randomUUID(); const reminder = await getPaymentReminderSetting(env);
+    const revisionId = crypto.randomUUID(); scheduleRevisionId = revisionId; const reminder = await getPaymentReminderSetting(env);
     statements.push(env.DB.prepare(`INSERT INTO payment_installment_schedule_revision (id, operation_id, payment_request_id,
       registration_draft_child_id, reason, review_fingerprint, revised_by_staff_account_id, revised_at, is_test, test_run_id)
       SELECT ?, ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request WHERE id = ?
@@ -374,13 +375,42 @@ export async function correctFinalizedManualPayment(env: WorkerEnv, actor: Staff
         .bind(id, request.id, review.snapshot.childId, index + 1, 'later', entry.amountMnt, entry.dueAt, entry.dueAt, reminder.initialReminderLeadMinutes, reminderAt, status, now, now, request.id, revisionId));
     }
   }
-  const results = await env.DB.batch(statements);
-  const correctionWriteCount = 8;
-  const scheduleSnapshots = scheduleReview?.snapshot.installments.length ?? 0;
-  const scheduleEntries = scheduleReview?.entries.length ?? 0;
-  const scheduleResults = scheduleReview ? results.slice(correctionWriteCount, correctionWriteCount + 1 + scheduleSnapshots + scheduleEntries) : [];
-  if (changes(results[0]) !== 1 || changes(results[4]) !== 1 || changes(results[5]) !== 1
-    || (scheduleReview && scheduleResults.some((result) => changes(result) !== 1))) throw new PaymentReconciliationError("conflict");
+  await env.DB.batch(statements);
+  // D1 does not consistently surface `meta.changes` for every statement in a
+  // batch. Verify the durable linked state instead; each later statement is
+  // already conditioned on the guarded first transition above.
+  const persisted = await env.DB.prepare(`SELECT correction.id AS correctionId,
+      (SELECT status FROM payment_confirmation WHERE id = ?) AS originalConfirmationStatus,
+      (SELECT status FROM payment_confirmation WHERE received_payment_id = correction.corrected_received_payment_id) AS correctedConfirmationStatus,
+      (SELECT COUNT(*) FROM payment_allocation WHERE received_payment_id = correction.corrected_received_payment_id
+        AND payment_installment_id = ? AND allocated_amount_mnt = ?) AS replacementAllocationCount,
+      (SELECT COUNT(*) FROM payment_installment_schedule_revision_entry WHERE payment_installment_schedule_revision_id = ?) AS scheduleSnapshotCount
+    FROM payment_receipt_correction AS correction
+    WHERE correction.id = ? AND correction.original_received_payment_id = ? AND correction.corrected_received_payment_id = ?`)
+    .bind(review.snapshot.confirmationId, review.snapshot.installmentId, review.correctedAmountMnt, scheduleRevisionId || null,
+      correctionId, review.snapshot.originalPaymentId, correctedPaymentId)
+    .first<{ correctionId: string; originalConfirmationStatus: string; correctedConfirmationStatus: string;
+      replacementAllocationCount: number; scheduleSnapshotCount: number }>();
+  if (!persisted || persisted.originalConfirmationStatus !== "undone" || persisted.correctedConfirmationStatus !== "finalized"
+    || Number(persisted.replacementAllocationCount) !== 1
+    || (scheduleReview && Number(persisted.scheduleSnapshotCount) !== scheduleReview.snapshot.installments.length)) {
+    throw new PaymentReconciliationError("conflict");
+  }
+  if (scheduleReview) {
+    const current = await env.DB.prepare(`SELECT installment_number AS installmentNumber, amount_mnt AS amountMnt,
+        effective_due_at AS dueAt, status FROM payment_installment
+      WHERE payment_request_id = ? AND registration_draft_child_id = ? AND status != 'released'
+      ORDER BY installment_number`).bind(request.id, review.snapshot.childId)
+      .all<{ installmentNumber: number; amountMnt: number; dueAt: string; status: string }>();
+    const matches = current.results.length === scheduleReview.entries.length && current.results.every((entry, index) => {
+      const planned = scheduleReview.entries[index]; const prior = scheduleReview.snapshot.installments[index];
+      const allocated = prior?.id === review.snapshot.installmentId ? review.correctedAmountMnt : Number(prior?.allocatedAmountMnt ?? 0);
+      const status = allocated >= planned.amountMnt ? "paid" : allocated > 0 ? "partially_paid" : "pending";
+      return Number(entry.installmentNumber) === index + 1 && Number(entry.amountMnt) === planned.amountMnt
+        && entry.dueAt === planned.dueAt && entry.status === status;
+    });
+    if (!matches) throw new PaymentReconciliationError("conflict");
+  }
   await recalculateDiscountAwardBalances(env.DB, review.snapshot.childId, now);
   return { operationId: operation, idempotent: false, correctionId, correctedPaymentId,
     remainingInitialMnt: review.remainingInitialMnt };

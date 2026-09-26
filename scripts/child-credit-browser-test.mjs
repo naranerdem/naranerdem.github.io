@@ -46,6 +46,12 @@ async function capturePaymentDetail(page, row, name) {
   await page.screenshot({ path: path.join(paymentPanelScreenshotDir, name) });
 }
 
+async function capturePaymentElement(element, name) {
+  if (!paymentPanelScreenshotDir) return;
+  mkdirSync(paymentPanelScreenshotDir, { recursive: true });
+  await element.screenshot({ path: path.join(paymentPanelScreenshotDir, name) });
+}
+
 async function capturePaymentForm(form, name) {
   if (!paymentPanelScreenshotDir) return;
   mkdirSync(paymentPanelScreenshotDir, { recursive: true });
@@ -1098,23 +1104,31 @@ try {
   const browserType = usingWebKit ? webkit : chromium;
   browser = await browserType.launch({ headless: true });
   const captureScenario = process.env.PAYMENT_PANEL_CAPTURE_SCENARIO;
+  const receiptCorrectionBrowserOnly = process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_ONLY === "1";
   let publicTwoInstallmentChildId;
   let publicOnePaymentChildId;
   if (!captureScenario) {
+    if (receiptCorrectionBrowserOnly) {
+      execute(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1300000,
+        first_installment_amount_mnt = 650000, second_installment_amount_mnt = 650000,
+        updated_at = ${sql(new Date().toISOString())} WHERE activity_offering_id = 'browser-offering'`);
+    }
     publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
       childName: "PublicTwoInstallment",
       email: "browser-public-two@example.test",
       paymentPlanCode: "two_installment",
-      expectedInitialAmount: 500,
+      expectedInitialAmount: receiptCorrectionBrowserOnly ? 650000 : 500,
     });
-    publicOnePaymentChildId = await submitPublicRegistration(browser, {
-      childName: "PublicOnePayment",
-      email: "browser-public-one@example.test",
-      paymentPlanCode: "single",
-      expectedInitialAmount: 1000,
-    });
-    assert.ok(publicTwoInstallmentChildId && publicOnePaymentChildId,
-      "both public payment-plan journeys return durable registration children");
+    if (!receiptCorrectionBrowserOnly) {
+      publicOnePaymentChildId = await submitPublicRegistration(browser, {
+        childName: "PublicOnePayment",
+        email: "browser-public-one@example.test",
+        paymentPlanCode: "single",
+        expectedInitialAmount: 1000,
+      });
+    }
+    assert.ok(publicTwoInstallmentChildId && (receiptCorrectionBrowserOnly || publicOnePaymentChildId),
+      "the required public payment-plan journey returns a durable registration child");
   }
   context = await browser.newContext(paymentPanelBrowser === "webkit"
     ? { ...devices["iPhone 13"] }
@@ -1125,61 +1139,71 @@ try {
 
   if (captureScenario) {
     await captureSpecialPaymentStates(page, captureScenario);
-  } else if (process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_ONLY === "1") {
+  } else if (receiptCorrectionBrowserOnly) {
     // Exercise the actual staff page and API for the compact combined review.
-    // The disposable two-installment agreement is 500 + 500, so its browser
-    // counterpart to the production-shaped 650 -> 400 case is 500 -> 400.
+    // This fixture matches the production-shaped 650,000 -> 400,000 case.
     execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 0 WHERE singleton = 1");
     const childId = publicTwoInstallmentChildId;
     await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
     const row = page.locator(`[data-registration-child="${childId}"]`);
     await row.waitFor({ state: "visible" });
     const initialForm = row.locator("[data-payment-form]");
-    await initialForm.locator('input[name="amount"]').fill("500");
+    await initialForm.locator('input[name="amount"]').fill("650000");
     const initialResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.record"));
     await initialForm.locator('button[type="submit"]').click();
     assert.ok((await initialResponse).ok(), "the disposable initial receipt finalizes before correction review");
     await page.reload();
+    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
     await row.waitFor({ state: "visible" });
-    await row.locator('[data-payment-detail]').first().click();
+    const openDetail = row.getByRole("button", { name: "Нээх" });
+    if (await openDetail.isVisible().catch(() => false)) await openDetail.click();
     await row.locator('[data-payment-open]').click();
     await row.locator('[data-payment-tool="receipt-correction"]').click();
     const correction = row.locator('[data-finalized-payment-correction-preview]');
-    await correction.locator('input[name="amountMnt"]').fill("400");
+    await correction.locator('input[name="amountMnt"]').fill("400000");
     await correction.getByRole("button", { name: "Хуваарь хамт өөрчлөх" }).click();
+    assert.equal(await correction.locator('[data-finalized-payment-correction-amount="true"]').inputValue(), "400000",
+      "opening the schedule editor preserves the entered corrected amount");
     const entries = correction.locator('[data-correction-schedule-index]');
-    await entries.nth(0).fill("400");
+    await entries.nth(0).fill("400000");
     await correction.locator('input[name="dueOn"]').nth(0).fill("2026-08-15");
-    await entries.nth(2).fill("100");
+    await entries.nth(2).fill("400000");
     await correction.locator('input[name="dueOn"]').nth(1).fill("2026-12-01");
     await correction.getByRole("button", { name: "Төлбөр нэмэх" }).click();
-    await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("500");
+    assert.equal(await correction.locator('[data-correction-schedule-index="0"][name="amountMnt"]').inputValue(), "400000",
+      "adding a schedule row preserves the edited first installment");
+    assert.equal(await correction.locator('[data-correction-schedule-index="1"][name="amountMnt"]').inputValue(), "400000",
+      "adding a schedule row preserves the edited second installment");
+    await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("500000");
     await correction.locator('input[data-correction-schedule-index="2"][name="dueOn"]').fill("2027-02-28");
     await correction.locator('textarea[name="reason"]').fill("Browser receipt correction");
     const previewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.finalized-receipt-correction-preview"));
     await correction.getByRole("button", { name: "Хянах" }).click();
-    assert.ok((await previewResponse).ok(), "the combined review is accepted by the real local API");
+    const previewResult = await previewResponse;
+    assert.ok(previewResult.ok(), `the combined review is accepted by the real local API: ${previewResult.request().postData()} -> ${await previewResult.text()}`);
     const review = row.locator('[data-finalized-payment-correction-confirm]');
     await review.getByText("Шинэ хуваарь").waitFor({ state: "visible" });
-    assert.match(await review.textContent(), /400 ₮[\s\S]*100 ₮[\s\S]*500 ₮/, "the review identifies every revised installment");
-    await capturePaymentDetail(page, review, "receipt-correction-review-mobile.png");
+    assert.match(await review.textContent(), /400,000 ₮[\s\S]*400,000 ₮[\s\S]*500,000 ₮/, "the review identifies every revised installment");
+    await capturePaymentElement(row, "receipt-correction-review-mobile.png");
     await page.setViewportSize({ width: 1180, height: 900 });
-    await capturePaymentDetail(page, review, "receipt-correction-review-desktop.png");
+    await capturePaymentElement(row, "receipt-correction-review-desktop.png");
     await page.setViewportSize({ width: 390, height: 844 });
     const saveResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.finalized-receipt-correct"));
     await review.getByRole("button", { name: "Баталгаажуулах" }).click();
-    assert.ok((await saveResponse).ok(), "the combined correction saves through the rendered staff workflow");
+    const saveResult = await saveResponse;
+    assert.ok(saveResult.ok(), `the combined correction saves through the rendered staff workflow: ${saveResult.request().postData()} -> ${await saveResult.text()}`);
     await page.reload();
+    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
     await row.waitFor({ state: "visible" });
     const persisted = await dbJson(`SELECT payment_installment.amount_mnt AS amountMnt, payment_installment.status,
       payment_installment.effective_due_at AS dueAt
       FROM payment_installment INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
       WHERE registration_draft_child.id = ${sql(childId)} AND payment_installment.status != 'released'
       ORDER BY payment_installment.installment_number`);
-    assert.deepEqual(persisted.map((entry) => Number(entry.amountMnt)), [400, 100, 500],
+    assert.deepEqual(persisted.map((entry) => Number(entry.amountMnt)), [400000, 400000, 500000],
       "reload preserves the corrected receipt schedule without creating a separate debt record");
     console.log("ok browser finalized receipt correction and schedule review");
   } else if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
