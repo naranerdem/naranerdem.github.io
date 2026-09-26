@@ -1212,7 +1212,15 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   }
   const request = await requestForId(env, input.paymentRequestId);
   const existing = await env.DB.prepare(`SELECT id FROM received_payment WHERE idempotency_key = ?`).bind(input.idempotencyKey).first<{ id: string }>();
-  if (existing) return { id: existing.id, idempotent: true };
+  if (existing) {
+    const grace = await getPaymentConfirmationGraceSetting(env);
+    const confirmation = await env.DB.prepare(`SELECT id, status FROM payment_confirmation WHERE received_payment_id = ?`)
+      .bind(existing.id).first<{ id: string; status: string }>();
+    if (grace.graceMinutes === 0 && confirmation?.status === "tentative") {
+      await finalizeImmediateConfirmation(env, { paymentConfirmationId: confirmation.id }, nowDate);
+    }
+    return { id: existing.id, idempotent: true, finalizedImmediately: grace.graceMinutes === 0 };
+  }
   const receivedAt = iso(input.receivedAt) ?? nowDate.toISOString();
   const allocations = input.allocations.map((item) => ({ installmentId: String(item.installmentId ?? ""), amountMnt: positive(item.amountMnt) }));
   if (!allocations.length || allocations.some((item) => !item.installmentId || !item.amountMnt)) throw new PaymentReconciliationError("invalid");
@@ -1297,6 +1305,7 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   const reminder = await getPaymentReminderSetting(env);
   const finalizeAfter = new Date(nowDate.getTime() + grace.graceMinutes * 60_000).toISOString();
   const paymentId = crypto.randomUUID();
+  const confirmationId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [env.DB.prepare(`INSERT INTO received_payment (
     id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
     confirmed_at, confirmed_by_staff_account_id, idempotency_key, created_at, updated_at, is_test, test_run_id
@@ -1326,7 +1335,7 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
     id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved,
     remaining_payment_due_at, remaining_reminder_lead_minutes, remaining_reminder_at, created_at, updated_at, is_test, test_run_id
   ) VALUES (?, ?, ?, 'tentative', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(crypto.randomUUID(), paymentId, request.id, finalizeAfter, seatApprovalRequested ? 1 : 0, remainingDueAt,
+    .bind(confirmationId, paymentId, request.id, finalizeAfter, seatApprovalRequested ? 1 : 0, remainingDueAt,
       needsRemainingDeadline ? reminder.laterReminderLeadMinutes : null,
       needsRemainingDeadline ? new Date(new Date(remainingDueAt!).getTime() - reminder.laterReminderLeadMinutes * 60_000).toISOString() : null,
       now, now, request.isTest, request.testRunId));
@@ -1338,7 +1347,7 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   // confirmation, promotion, and notification outcome before this request
   // returns. Positive grace values retain the existing scheduled path.
   const finalizedImmediately = grace.graceMinutes === 0;
-  if (finalizedImmediately) await finalizeDuePaymentConfirmations(env, nowDate, { recovery: "none" });
+  if (finalizedImmediately) await finalizeImmediateConfirmation(env, { paymentConfirmationId: confirmationId }, nowDate);
   return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial, seatApprovalRequested, finalizedImmediately };
 }
 
@@ -1718,8 +1727,12 @@ export async function undoTentativePaymentConfirmation(env: WorkerEnv, actor: St
 export type PaymentFinalizationRecovery = "all" | "none" | "conditional" | "outstanding" | "stranded" | "additional_admission";
 
 export interface PaymentFinalizationOptions {
-  /** The scheduler uses one record at a time; interactive callers retain the established 100-record batch. */
+  /** The scheduler uses a bounded batch; interactive callers can select one durable confirmation. */
   dueBatchSize?: number;
+  /** Restrict an interactive zero-grace finalization to its just-written receipt. */
+  paymentConfirmationIds?: string[];
+  /** Restrict an interactive zero-grace credit finalization to its just-written application. */
+  creditApplicationConfirmationIds?: string[];
   /** Historical repair is intentionally separated from routine due-confirmation checks. */
   recovery?: PaymentFinalizationRecovery;
   recoveryBatchSize?: number;
@@ -1734,6 +1747,35 @@ function includesRecovery(mode: PaymentFinalizationRecovery, slice: Exclude<Paym
   return mode === "all" || mode === slice;
 }
 
+function confirmationFilter(column: string, ids: string[] | undefined) {
+  const selected = [...new Set((ids ?? []).filter((id) => typeof id === "string" && id.length > 0))];
+  return selected.length
+    ? { sql: ` AND ${column} IN (${selected.map(() => "?").join(", ")})`, values: selected }
+    : { sql: "", values: [] as string[] };
+}
+
+export async function finalizeImmediateConfirmation(
+  env: WorkerEnv,
+  target: { paymentConfirmationId?: string; creditApplicationConfirmationId?: string },
+  nowDate = new Date(),
+): Promise<void> {
+  const paymentConfirmationIds = target.paymentConfirmationId ? [target.paymentConfirmationId] : [];
+  const creditApplicationConfirmationIds = target.creditApplicationConfirmationId ? [target.creditApplicationConfirmationId] : [];
+  if (!paymentConfirmationIds.length && !creditApplicationConfirmationIds.length) throw new PaymentReconciliationError("invalid");
+  await finalizeDuePaymentConfirmations(env, nowDate, {
+    recovery: "none", paymentConfirmationIds, creditApplicationConfirmationIds,
+  });
+  const payment = paymentConfirmationIds.length
+    ? await env.DB.prepare(`SELECT status FROM payment_confirmation WHERE id = ?`).bind(paymentConfirmationIds[0]).first<{ status: string }>()
+    : null;
+  const credit = creditApplicationConfirmationIds.length
+    ? await env.DB.prepare(`SELECT status FROM credit_application_confirmation WHERE id = ?`).bind(creditApplicationConfirmationIds[0]).first<{ status: string }>()
+    : null;
+  if ((payment && payment.status !== "finalized") || (credit && credit.status !== "finalized")) {
+    throw new PaymentReconciliationError("conflict");
+  }
+}
+
 export async function finalizeDuePaymentConfirmations(
   env: WorkerEnv,
   nowDate = new Date(),
@@ -1744,6 +1786,8 @@ export async function finalizeDuePaymentConfirmations(
   const recoveryBatchSize = boundedSchedulerBatch(options.recoveryBatchSize, 100);
   const recovery = options.recovery ?? "all";
   const processDue = options.processDue ?? true;
+  const paymentConfirmationFilter = confirmationFilter("payment_confirmation.id", options.paymentConfirmationIds);
+  const creditApplicationConfirmationFilter = confirmationFilter("credit_application_confirmation.id", options.creditApplicationConfirmationIds);
   const systemActor = { staffAccountId: "system:payment-finalizer", roles: ["admin"], capabilities: ["payment.manage"] } as StaffPrincipal;
   // A previously finalized cash receipt can still have a retryable protected
   // conditional settlement. Recover it from the quote state before looking
@@ -1776,8 +1820,9 @@ export async function finalizeDuePaymentConfirmations(
     payment_confirmation.conditional_quote_id AS conditionalQuoteId,
     payment_request.is_test AS isTest, payment_request.test_run_id AS testRunId
     FROM payment_confirmation INNER JOIN payment_request ON payment_request.id = payment_confirmation.payment_request_id
-    WHERE payment_confirmation.status = 'tentative' AND payment_confirmation.finalize_after <= ? ORDER BY payment_confirmation.finalize_after LIMIT ?`)
-    .bind(now, dueBatchSize).all<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }>() : { results: [] as Array<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }> };
+    WHERE payment_confirmation.status = 'tentative' AND payment_confirmation.finalize_after <= ?${paymentConfirmationFilter.sql}
+    ORDER BY payment_confirmation.finalize_after LIMIT ?`)
+    .bind(now, ...paymentConfirmationFilter.values, dueBatchSize).all<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }>() : { results: [] as Array<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }> };
   let finalized = 0;
   for (const row of rows.results) {
     const changed = await env.DB.prepare(`UPDATE payment_confirmation SET status = 'finalized', finalized_at = ?, updated_at = ?
@@ -1838,7 +1883,8 @@ export async function finalizeDuePaymentConfirmations(
     INNER JOIN payment_request ON payment_request.id = credit_application_confirmation.payment_request_id
     WHERE credit_application_confirmation.status = 'tentative'
       AND credit_application_confirmation.finalize_after <= ?
-    ORDER BY credit_application_confirmation.finalize_after LIMIT ?`).bind(now, dueBatchSize)
+    ${creditApplicationConfirmationFilter.sql}
+    ORDER BY credit_application_confirmation.finalize_after LIMIT ?`).bind(now, ...creditApplicationConfirmationFilter.values, dueBatchSize)
     .all<{ id: string; paymentRequestId: string; childId: string; registrationDraftId: string; isTest: number; testRunId: string | null }>() : { results: [] as Array<{ id: string; paymentRequestId: string; childId: string; registrationDraftId: string; isTest: number; testRunId: string | null }> };
   for (const row of creditRows.results) {
     const changed = await env.DB.prepare(`UPDATE credit_application_confirmation SET status = 'finalized', updated_at = ?

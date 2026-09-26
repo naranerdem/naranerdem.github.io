@@ -24,14 +24,15 @@ try {
     assert.match(wrangler, new RegExp(cron.replaceAll("*", "\\*").replaceAll(",", ",")), `${kind} cron is deployed`);
   }
   assert.equal(scheduledWorkKind("*/1 * * * *"), null, "the legacy combined scheduler expression no longer dispatches work");
-  assert.equal(Object.keys(SCHEDULED_CRONS).length, 2,
-    "each Worker uses only the isolated finalization and shared background triggers");
+  assert.equal(Object.keys(SCHEDULED_CRONS).length, 1,
+    "each Worker uses one shared expression for staggered hourly scheduler work");
   assert.deepEqual([
     backgroundWorkKind(new Date("2026-09-20T00:01:00.000Z")),
-    backgroundWorkKind(new Date("2026-09-20T00:16:00.000Z")),
-    backgroundWorkKind(new Date("2026-09-20T00:31:00.000Z")),
-    backgroundWorkKind(new Date("2026-09-20T00:46:00.000Z")),
-  ], ["reminders", "waitlist", "internalNotices", "recovery"],
+    backgroundWorkKind(new Date("2026-09-20T00:13:00.000Z")),
+    backgroundWorkKind(new Date("2026-09-20T00:25:00.000Z")),
+    backgroundWorkKind(new Date("2026-09-20T00:37:00.000Z")),
+    backgroundWorkKind(new Date("2026-09-20T00:49:00.000Z")),
+  ], ["dueFinalization", "reminders", "waitlist", "internalNotices", "recovery"],
   "the shared hourly background trigger dispatches one expensive concern per invocation");
   assert.equal(backgroundWorkKind(new Date("2026-09-20T00:06:00.000Z")), null,
     "an unexpected background invocation does not run an arbitrary scheduler concern");

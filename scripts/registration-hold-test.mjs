@@ -1407,6 +1407,47 @@ try {
   assert.ok(immediateChild.enrollmentId, "zero grace promotes the ordinary paid child without a scheduler visit");
   assert.equal(database.query(`SELECT status FROM payment_confirmation WHERE received_payment_id = ?`, [immediatePayment.id])[0].status, 'finalized',
     "zero grace leaves a finalized, not tentative, confirmation");
+  const immediatePaymentRetry = await recordManualPayment(env(database), paymentStaff, {
+    paymentRequestId: immediateRequest.id,
+    allocations: [{ installmentId: immediateItem.installmentId, amountMnt: Number(immediateItem.expectedAmountMnt) }],
+    source: 'staff_manual_bank', idempotencyKey: 'zero-grace-immediate-confirmation',
+  }, new Date('2026-08-13T09:16:00.000Z'));
+  assert.equal(immediatePaymentRetry.idempotent, true,
+    "a lost-response retry reuses the zero-grace receipt instead of recording another payment");
+  assert.equal(count(database, "received_payment", `payment_request_id = '${immediateRequest.id}'`), 1,
+    "reloading the durable payment state finds exactly one zero-grace receipt");
+  assert.equal(database.query(`SELECT status FROM enrollment WHERE id = ?`, [immediateChild.enrollmentId])[0].status, 'confirmed',
+    "the durable reload retains the confirmed enrollment without invoking a scheduled handler");
+
+  database.query(`UPDATE class_session SET capacity = 2 WHERE id = 'class-zero-grace'`);
+  const immediateCreditInput = submission("class-zero-grace", undefined, 1, "single");
+  immediateCreditInput.children[0].givenName = "Шууд кредитээр баталгаажуулах";
+  const immediateCreditDraft = await createRegistrationDraft(env(database), immediateCreditInput, new Date(iso(-3)));
+  const immediateCreditRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [immediateCreditDraft.draftId])[0];
+  const immediateCreditChild = database.query(`SELECT id FROM registration_draft_child WHERE registration_draft_id = ?`, [immediateCreditDraft.draftId])[0];
+  const immediateCreditItem = (await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso()))).items
+    .find((item) => item.paymentRequestId === immediateCreditRequest.id);
+  await addManualChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: immediateCreditChild.id, amountMnt: Number(immediateCreditItem.expectedAmountMnt),
+    reason: "Шууд кредитийн төлөлт", operationId: randomUUID(),
+  }, new Date('2026-08-13T09:17:00.000Z'));
+  const immediateCreditOperation = randomUUID();
+  await applyChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: immediateCreditChild.id, paymentInstallmentId: immediateCreditItem.installmentId,
+    amountMnt: Number(immediateCreditItem.expectedAmountMnt), reason: "Шууд төлөлт", operationId: immediateCreditOperation,
+  }, new Date('2026-08-13T09:18:00.000Z'));
+  assert.equal(database.query(`SELECT status FROM credit_application_confirmation WHERE child_credit_operation_id = ?`, [immediateCreditOperation])[0].status, 'finalized',
+    "zero grace finalizes a qualifying credit application before its request returns");
+  assert.ok(database.query(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ?`, [immediateCreditChild.id])[0].enrollmentId,
+    "zero-grace credit confirmation promotes without a scheduled handler");
+  const immediateCreditRetry = await applyChildCredit(env(database), paymentStaff, {
+    registrationDraftChildId: immediateCreditChild.id, paymentInstallmentId: immediateCreditItem.installmentId,
+    amountMnt: Number(immediateCreditItem.expectedAmountMnt), reason: "Шууд төлөлт", operationId: immediateCreditOperation,
+  }, new Date('2026-08-13T09:19:00.000Z'));
+  assert.equal(immediateCreditRetry.idempotent, true,
+    "a lost-response retry reuses the zero-grace credit application without duplicate debit entries");
+  assert.equal(count(database, "credit_application_confirmation", `child_credit_operation_id = '${immediateCreditOperation}'`), 1,
+    "the durable reload retains one finalized credit confirmation");
   database.query(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 5`);
 
   const onePaymentPreview = await getAdditionalClassPreview(env(database), registrationStaff, {

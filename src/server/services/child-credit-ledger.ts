@@ -989,6 +989,18 @@ export async function applyChildCredit(env: WorkerEnv, actor: StaffPrincipal, in
   const amountMnt = positive(input.amountMnt); const reason = text(input.reason, 500); const id = operationId(input.operationId);
   if (!amountMnt || !reason || !id || !input.paymentInstallmentId) throw new ChildCreditError("invalid");
   const child = await creditOwnerForChild(env.DB, input.registrationDraftChildId);
+  const grace = await env.DB.prepare(`SELECT grace_minutes AS graceMinutes FROM payment_confirmation_grace_setting WHERE singleton = 1`)
+    .first<{ graceMinutes: number }>();
+  if (!grace) throw new ChildCreditError("invalid");
+  const finalizePriorZeroGraceOperation = async () => {
+    if (Number(grace.graceMinutes) !== 0) return;
+    const confirmation = await env.DB.prepare(`SELECT id, status FROM credit_application_confirmation
+      WHERE child_credit_operation_id = ?`).bind(id).first<{ id: string; status: string }>();
+    if (confirmation?.status === "tentative") {
+      const { finalizeImmediateConfirmation } = await import("../staff/payment-reconciliation");
+      await finalizeImmediateConfirmation(env, { creditApplicationConfirmationId: confirmation.id }, nowDate);
+    }
+  };
   const installment = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.payment_request_id AS paymentRequestId,
     payment_installment.registration_draft_child_id AS registrationDraftChildId, payment_installment.installment_number AS installmentNumber,
     payment_installment.amount_mnt AS amountMnt, payment_installment.status, registration_draft_child.canonical_student_id AS canonicalStudentId
@@ -997,7 +1009,10 @@ export async function applyChildCredit(env: WorkerEnv, actor: StaffPrincipal, in
   if (!installment || installment.registrationDraftChildId !== input.registrationDraftChildId || installment.status === "released") throw new ChildCreditError("not_found");
   if (!(await creditInstallmentEligibility(env.DB, input.registrationDraftChildId, installment.id)).eligible) throw new ChildCreditError("invalid");
   const key = fingerprint("apply", child.registrationDraftChildId, null, amountMnt, reason, null, installment.id, null);
-  if (await assertNewOperation(env.DB, id, key)) return { operationId: id, idempotent: true, ...(await childCreditSummaryForOwner(env.DB, child)) };
+  if (await assertNewOperation(env.DB, id, key)) {
+    await finalizePriorZeroGraceOperation();
+    return { operationId: id, idempotent: true, ...(await childCreditSummaryForOwner(env.DB, child)) };
+  }
   const rows = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.registration_draft_child_id AS registrationDraftChildId,
     payment_installment.installment_number AS installmentNumber, payment_installment.amount_mnt AS amountMnt,
     COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
@@ -1012,9 +1027,6 @@ export async function applyChildCredit(env: WorkerEnv, actor: StaffPrincipal, in
   const summary = await childCreditSummaryForOwner(env.DB, child);
   if (summary.availableAmountMnt < amountMnt) throw new ChildCreditError("insufficient");
   const now = nowIso(nowDate);
-  const grace = await env.DB.prepare(`SELECT grace_minutes AS graceMinutes FROM payment_confirmation_grace_setting WHERE singleton = 1`)
-    .first<{ graceMinutes: number }>();
-  if (!grace) throw new ChildCreditError("invalid");
   const statements: D1PreparedStatement[] = [debitAdmissionGuard(env, child, summary.roots.map((root) => root.id), amountMnt, child.isTest, child.testRunId, now),
     operationInsert(env, actor, id, "apply", child, null, amountMnt, reason, null, key, child.isTest, child.testRunId, now),
     ...debitEntries(env, actor, child, id, amountMnt, "credit_application", summary.roots, reason, child.isTest, child.testRunId, now, installment.id),
@@ -1022,21 +1034,25 @@ export async function applyChildCredit(env: WorkerEnv, actor: StaffPrincipal, in
   const initialRows = effective.filter((row) => row.installmentNumber === 1);
   const initialSatisfied = initialRows.length > 0 && initialRows.every((row) => row.id === installment.id
     ? Number(row.allocatedAmountMnt ?? 0) + amountMnt >= row.effectiveAmountMnt : Number(row.allocatedAmountMnt ?? 0) >= row.effectiveAmountMnt);
-  if (initialSatisfied) statements.push(env.DB.prepare(`INSERT INTO credit_application_confirmation (
+  const creditApplicationConfirmationId = initialSatisfied ? crypto.randomUUID() : null;
+  if (creditApplicationConfirmationId) statements.push(env.DB.prepare(`INSERT INTO credit_application_confirmation (
     id, child_credit_operation_id, payment_request_id, registration_draft_child_id, status, finalize_after,
     seat_confirmation_approved, created_at, updated_at, is_test, test_run_id
   ) VALUES (?, ?, ?, ?, 'tentative', ?, 1, ?, ?, ?, ?)`)
-    .bind(crypto.randomUUID(), id, installment.paymentRequestId, installment.registrationDraftChildId,
+    .bind(creditApplicationConfirmationId, id, installment.paymentRequestId, installment.registrationDraftChildId,
       new Date(nowDate.getTime() + Number(grace.graceMinutes) * 60_000).toISOString(), now, now, child.isTest, child.testRunId));
   const idempotent = await runOperationBatch(env, id, key, statements, true);
   // Keep the ordinary installment status projection authoritative. The
   // confirmation itself still waits for the normal grace/finalizer path.
-  const { refreshInstallmentsAndDraft } = await import("../staff/payment-reconciliation");
+  const { finalizeImmediateConfirmation, refreshInstallmentsAndDraft } = await import("../staff/payment-reconciliation");
   await refreshInstallmentsAndDraft(env, {
     id: installment.paymentRequestId, registrationDraftId: (await env.DB.prepare(`SELECT registration_draft_id AS registrationDraftId,
       payment_reference AS paymentReference, is_test AS isTest, test_run_id AS testRunId FROM payment_request WHERE id = ?`)
       .bind(installment.paymentRequestId).first<{ registrationDraftId: string; paymentReference: string; isTest: number; testRunId: string | null }>())!.registrationDraftId,
     paymentReference: "credit", isTest: child.isTest, testRunId: child.testRunId,
   }, now);
+  if (Number(grace.graceMinutes) === 0 && creditApplicationConfirmationId) {
+    await finalizeImmediateConfirmation(env, { creditApplicationConfirmationId }, nowDate);
+  }
   return { operationId: id, idempotent, ...(await childCreditSummaryForOwner(env.DB, child)) };
 }
