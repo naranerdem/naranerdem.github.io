@@ -1161,6 +1161,7 @@ try {
     await row.locator('[data-payment-open]').click();
     await row.locator('[data-payment-tool="receipt-correction"]').click();
     const correction = row.locator('[data-finalized-payment-correction-preview]');
+    await correction.waitFor({ state: "visible" });
     await correction.locator('input[name="amountMnt"]').fill("400000");
     await correction.getByRole("button", { name: "Хуваарь хамт өөрчлөх" }).click();
     assert.equal(await correction.locator('[data-finalized-payment-correction-amount="true"]').inputValue(), "400000",
@@ -1178,6 +1179,10 @@ try {
     await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("500000");
     await correction.locator('input[data-correction-schedule-index="2"][name="dueOn"]').fill("2027-02-28");
     await correction.locator('textarea[name="reason"]').fill("Browser receipt correction");
+    await page.setViewportSize({ width: 1180, height: 900 });
+    await capturePaymentElement(row, "receipt-correction-editor-desktop.png");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await capturePaymentElement(row, "receipt-correction-editor-mobile.png");
     const previewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.finalized-receipt-correction-preview"));
     await correction.getByRole("button", { name: "Хянах" }).click();
@@ -1186,6 +1191,10 @@ try {
     const review = row.locator('[data-finalized-payment-correction-confirm]');
     await review.getByText("Шинэ хуваарь").waitFor({ state: "visible" });
     assert.match(await review.textContent(), /400,000 ₮[\s\S]*400,000 ₮[\s\S]*500,000 ₮/, "the review identifies every revised installment");
+    const reviewBox = await review.boundingBox();
+    const toolsBox = await row.locator('.staff-payment-secondary-tools').boundingBox();
+    assert.ok(reviewBox && toolsBox && Math.abs(reviewBox.x - toolsBox.x) < 2 && reviewBox.width >= toolsBox.width - 2,
+      `the secondary review uses the whole payment-panel width: ${JSON.stringify({ reviewBox, toolsBox })}`);
     await capturePaymentElement(row, "receipt-correction-review-mobile.png");
     await page.setViewportSize({ width: 1180, height: 900 });
     await capturePaymentElement(row, "receipt-correction-review-desktop.png");
@@ -1205,6 +1214,28 @@ try {
       ORDER BY payment_installment.installment_number`);
     assert.deepEqual(persisted.map((entry) => Number(entry.amountMnt)), [400000, 400000, 500000],
       "reload preserves the corrected receipt schedule without creating a separate debt record");
+    const correctedOutstanding = persisted.reduce((total, entry) => total + Math.max(0, Number(entry.amountMnt) - (entry.status === "paid" ? Number(entry.amountMnt) : 0)), 0);
+    assert.equal(correctedOutstanding, 900000, "the saved correction leaves the expected 900,000 MNT unpaid before later payments");
+    const reopenedDetail = row.getByRole("button", { name: "Нээх" });
+    if (await reopenedDetail.isVisible().catch(() => false)) await reopenedDetail.click();
+    await row.locator('[data-payment-open]').click();
+    await row.locator('[data-payment-tool="receipt-correction"]').click();
+    await row.getByText("Энэ бүртгэлд засах боломжтой эцэслэсэн гар төлбөрийн бичлэг алга").waitFor({ state: "visible" });
+    assert.equal(await row.locator('[data-finalized-payment-correction-preview]').count(), 0,
+      "a previously corrected receipt reports its ineligibility instead of opening an empty or doomed correction editor");
+    const secondPayment = row.locator('.staff-later-payment-form');
+    await secondPayment.getByRole("heading", { name: "2-р төлбөр бүртгэх" }).waitFor({ state: "visible" });
+    const laterResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.record"));
+    await secondPayment.locator('input[name="amount"]').fill("400000");
+    await secondPayment.locator('button[type="submit"]').click();
+    assert.ok((await laterResponse).ok(), "the ordinary later-payment form remains functional after a corrected multi-installment schedule");
+    await page.reload();
+    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
+    const detailAfterLaterPayment = row.getByRole("button", { name: "Нээх" });
+    if (await detailAfterLaterPayment.isVisible().catch(() => false)) await detailAfterLaterPayment.click();
+    await row.locator('[data-payment-open]').click();
+    await row.locator('.staff-later-payment-form').getByRole("heading", { name: "3-р төлбөр бүртгэх" }).waitFor({ state: "visible" });
     console.log("ok browser finalized receipt correction and schedule review");
   } else if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
     const uxContext = await browser.newContext({ viewport: { width: 1200, height: 900 } });

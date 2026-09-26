@@ -1233,10 +1233,29 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       payment.id AS receivedPaymentId, payment.received_amount_mnt AS amountMnt, payment.received_at AS receivedAt
     FROM received_payment AS payment INNER JOIN payment_confirmation AS confirmation
       ON confirmation.received_payment_id = payment.id AND confirmation.status = 'finalized'
+    INNER JOIN payment_request ON payment_request.id = payment.payment_request_id
     INNER JOIN payment_allocation AS allocation ON allocation.received_payment_id = payment.id
     INNER JOIN payment_installment AS installment ON installment.id = allocation.payment_installment_id
+    INNER JOIN registration_draft_child AS child ON child.id = installment.registration_draft_child_id
+    INNER JOIN registration_draft AS draft ON draft.id = child.registration_draft_id
+    INNER JOIN enrollment ON enrollment.id = child.canonical_enrollment_id AND enrollment.status = 'confirmed'
     WHERE installment.registration_draft_child_id IN (${childIds.map(() => '?').join(', ')})
       AND payment.payment_source IN ('staff_manual_bank', 'staff_manual_cash')
+      AND installment.installment_kind = 'initial' AND installment.status = 'paid'
+      AND child.status != 'cancelled' AND draft.status != 'cancelled'
+      AND NOT EXISTS (SELECT 1 FROM received_payment AS later
+        LEFT JOIN payment_confirmation AS later_confirmation ON later_confirmation.received_payment_id = later.id
+        WHERE later.payment_request_id = payment_request.id AND later.id != payment.id
+          AND (later_confirmation.status IS NULL OR later_confirmation.status != 'undone'))
+      AND NOT EXISTS (SELECT 1 FROM payment_credit WHERE payment_request_id = payment_request.id)
+      AND NOT EXISTS (SELECT 1 FROM payment_receipt_correction WHERE corrected_received_payment_id = payment.id)
+      AND NOT EXISTS (SELECT 1 FROM child_credit_entry WHERE registration_draft_child_id = child.id)
+      AND NOT EXISTS (SELECT 1 FROM enrollment_fee_adjustment WHERE registration_draft_child_id = child.id)
+      AND NOT EXISTS (SELECT 1 FROM payment_fee_waiver WHERE registration_draft_child_id = child.id)
+      AND NOT EXISTS (SELECT 1 FROM staff_outstanding_payment_approval WHERE registration_draft_child_id = child.id)
+      AND NOT EXISTS (SELECT 1 FROM registration_draft_referral WHERE registration_draft_child_id = child.id)
+      AND NOT EXISTS (SELECT 1 FROM payment_notification_milestone
+        WHERE registration_draft_child_id = child.id AND status IN ('sending', 'sent'))
     GROUP BY payment.id HAVING COUNT(*) = 1`).bind(...childIds).all<{ childId: string; receivedPaymentId: string; amountMnt: number; receivedAt: string }>()
     : { results: [] as Array<{ childId: string; receivedPaymentId: string; amountMnt: number; receivedAt: string }> };
   const installmentRows = allInstallments.results.map((item) => ({ ...item, installmentNumber: Number(item.installmentNumber),

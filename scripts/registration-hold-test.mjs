@@ -2365,6 +2365,8 @@ try {
     const correctedItem = afterCorrection.items.find((item) => item.registrationDraftChildId === child.id);
     assert.equal(correctedItem.totalRemainingMnt, 900000, "the list reports the durable 900k balance");
     assert.equal(correctedItem.nextScheduledInstallment.installmentNumber, 2, "the next payment entry follows the revised schedule");
+    assert.equal(correctedItem.finalizedManualReceipt, null,
+      "an already-corrected receipt is not presented as another eligible correction candidate");
     await recordManualPayment(env(database), paymentStaff, {
       paymentRequestId: request.id, allocations: [{ installmentId: correctedItem.nextScheduledInstallment.id, amountMnt: 400000 }],
       source: "staff_manual_bank", idempotencyKey: "focused-correction-second-installment",

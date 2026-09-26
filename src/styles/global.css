@@ -2213,6 +2213,55 @@ textarea:focus {
   padding-top: 0;
 }
 
+.staff-payment-secondary-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.6rem;
+  border-top: 1px solid var(--line);
+  margin-top: 0.75rem;
+  padding-top: 0.7rem;
+}
+
+.staff-payment-secondary-tools > .staff-payment-form,
+.staff-payment-secondary-tools > .staff-payment-tool-unavailable {
+  min-width: 0;
+}
+
+.staff-payment-secondary-tools > .staff-payment-form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.staff-payment-secondary-tools .staff-inline-fields {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.staff-payment-secondary-tools .staff-inline-fields legend {
+  grid-column: 1 / -1;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.staff-payment-tool-unavailable {
+  display: grid;
+  gap: 0.35rem;
+  border-left: 3px solid var(--line);
+  padding-left: 0.7rem;
+}
+
+.staff-payment-tool-unavailable h3,
+.staff-payment-tool-unavailable p {
+  margin: 0;
+}
+
 .staff-payment-tool-review > h3,
 .staff-payment-tool-review > p,
 .staff-payment-tool-review > label,
@@ -2353,6 +2402,11 @@ textarea:focus {
   .staff-payment-financial-summary {
     grid-template-columns: 1fr;
     gap: 0.7rem;
+  }
+
+  .staff-payment-secondary-tools > .staff-payment-form,
+  .staff-payment-secondary-tools .staff-inline-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

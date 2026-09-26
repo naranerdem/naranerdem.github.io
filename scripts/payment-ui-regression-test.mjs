@@ -66,6 +66,7 @@ assert.match(page, /const alreadyApproved = !seat;/, "later payments remain usab
 assert.match(page, /const nextScheduledInstallment = item\.nextScheduledInstallment/, "the confirmed-record projection selects the next outstanding scheduled installment");
 assert.match(page, /staff-later-payment-form/, "a confirmed two-installment record exposes the ordinary later-payment form");
 assert.match(page, /activePanel\(item\.registrationDraftChildId\) === "payment"/, "the later-payment form opens only in the shared payment panel");
+assert.doesNotMatch(page, /activePanel\(item\.registrationDraftChildId\) === "payment" && !state\.paymentTools/, "secondary payment tools do not hide ordinary later-payment entry");
 assert.match(page, /data-payment-open=/, "the action strip has an explicit payment-panel opener");
 assert.match(page, /data-payment-close=/, "the later-payment panel has an explicit close action");
 assert.match(page, /if \(!deadline\) return;/, "the initial-payment deadline initializer skips later-payment forms without deadline controls");
@@ -77,6 +78,10 @@ assert.match(page, /function paymentItemForInstallment\(installmentId\)/,
   "the rendered payment handler accepts any selected installment in a revised schedule");
 assert.match(page, /data-payment-tool="receipt-correction"/, "finalized receipt correction is a compact control in the ordinary payment panel");
 assert.match(page, /data-payment-tool="schedule"/, "schedule revision is a compact control in the ordinary payment panel");
+assert.match(page, /receiptCorrectionAvailable/, "the correction editor is gated by the stricter finalized-receipt eligibility state");
+assert.match(page, /Энэ бүртгэлд засах боломжтой эцэслэсэн гар төлбөрийн бичлэг алга/, "an ineligible correction action explains why its editor is unavailable");
+assert.match(page, /<div class="staff-panel-region">\$\{special\}\$\{laterPaymentForm\}\$\{paymentTools\}/, "ordinary payment content remains above secondary correction and schedule tools");
+assert.match(styles, /\.staff-payment-secondary-tools\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/, "secondary payment tools reserve a full-width editor region instead of a second panel column");
 assert.match(page, /data-finalized-payment-correction-schedule/, "a correction can include a reviewed installment schedule without a second mutation");
 assert.match(page, /revisedInstallments: draft\.entries/, "the reviewed correction submits the same schedule snapshot that was displayed to staff");
 assert.match(page, /allocations: \[\{ installmentId, amountMnt \}\]/,
