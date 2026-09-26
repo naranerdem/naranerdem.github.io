@@ -551,8 +551,9 @@ async function deliverInternalEnrollmentConfirmationNotice(
   return true;
 }
 
-export async function reconcileInternalEnrollmentConfirmationNotices(env: WorkerEnv, nowDate = new Date()): Promise<number> {
+export async function reconcileInternalEnrollmentConfirmationNotices(env: WorkerEnv, nowDate = new Date(), batchSize = 20): Promise<number> {
   if (!enabled(env)) return 0;
+  const boundedBatchSize = Math.max(1, Math.min(20, Math.trunc(batchSize)));
   const candidates = await env.DB.prepare(`SELECT internal.registration_draft_id AS registrationDraftId,
       json_extract(internal.context_json, '$.registrationDraftChildId') AS registrationDraftChildId
     FROM outbound_email AS internal
@@ -560,7 +561,7 @@ export async function reconcileInternalEnrollmentConfirmationNotices(env: Worker
       AND internal.created_at <= ?
       AND EXISTS (SELECT 1 FROM outbound_email AS parent
         WHERE parent.registration_draft_id = internal.registration_draft_id AND parent.event_type = 'enrollment_confirmed')
-    ORDER BY internal.created_at ASC LIMIT 20`).bind(nowDate.toISOString())
+    ORDER BY internal.created_at ASC LIMIT ?`).bind(nowDate.toISOString(), boundedBatchSize)
     .all<{ registrationDraftId: string; registrationDraftChildId: string | null }>();
   let recovered = 0;
   for (const candidate of candidates.results) {

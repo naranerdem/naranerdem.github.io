@@ -165,14 +165,15 @@ async function ensureMilestonesForRequests(env: WorkerEnv, requestIds: string[],
   ]);
 }
 
-async function enqueueMilestoneCatchup(env: WorkerEnv, now: string) {
+async function enqueueMilestoneCatchup(env: WorkerEnv, now: string, batchSize = RECONCILIATION_BATCH_SIZE) {
+  const boundedBatchSize = Math.max(1, Math.min(RECONCILIATION_BATCH_SIZE, Math.trunc(batchSize)));
   const state = await env.DB.prepare(`SELECT cursor_id AS cursorId, completed_at AS completedAt
     FROM scheduler_reconciliation_sweep WHERE kind = 'payment_milestone'`).first<{
       cursorId: string; completedAt: string | null;
     }>();
   if (!state || state.completedAt) return 0;
   const rows = await env.DB.prepare(`SELECT id FROM payment_request WHERE id > ? ORDER BY id LIMIT ?`).bind(
-    state.cursorId, RECONCILIATION_BATCH_SIZE,
+    state.cursorId, boundedBatchSize,
   ).all<{ id: string }>();
   if (!rows.results.length) {
     await env.DB.prepare(`UPDATE scheduler_reconciliation_sweep
@@ -194,15 +195,16 @@ async function enqueueMilestoneCatchup(env: WorkerEnv, now: string) {
   return rows.results.length;
 }
 
-export async function reconcileQueuedPaymentNotificationMilestones(env: WorkerEnv, nowDate = new Date()) {
+export async function reconcileQueuedPaymentNotificationMilestones(env: WorkerEnv, nowDate = new Date(), batchSize = RECONCILIATION_BATCH_SIZE) {
+  const boundedBatchSize = Math.max(1, Math.min(RECONCILIATION_BATCH_SIZE, Math.trunc(batchSize)));
   const now = nowDate.toISOString();
   await env.DB.prepare(`UPDATE payment_milestone_reconciliation_queue
     SET status = 'pending', lease_expires_at = NULL, updated_at = ?
     WHERE status = 'processing' AND lease_expires_at <= ?`).bind(now, now).run();
-  await enqueueMilestoneCatchup(env, now);
+  await enqueueMilestoneCatchup(env, now, boundedBatchSize);
   const candidates = await env.DB.prepare(`SELECT payment_request_id AS paymentRequestId, revision
     FROM payment_milestone_reconciliation_queue WHERE status = 'pending'
-    ORDER BY priority, updated_at, payment_request_id LIMIT ?`).bind(RECONCILIATION_BATCH_SIZE)
+    ORDER BY priority, updated_at, payment_request_id LIMIT ?`).bind(boundedBatchSize)
     .all<MilestoneReconciliationQueueRow>();
   let processed = 0;
   for (const candidate of candidates.results) {
@@ -311,15 +313,22 @@ function eligible(milestone: MilestoneRow, context: ReminderContext | null): boo
     && context.enrollmentStatus === "confirmed" && ["pending", "partially_paid"].includes(context.installmentStatus);
 }
 
-export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new Date(), provider?: EmailProvider): Promise<number> {
+export async function processDuePaymentReminders(
+  env: WorkerEnv,
+  nowDate = new Date(),
+  provider?: EmailProvider,
+  options: { reconciliationBatchSize?: number; dueBatchSize?: number } = {},
+): Promise<number> {
   if (env.EMAIL_ENABLED !== "true" || !env.RESEND_API_KEY) return 0;
+  const reconciliationBatchSize = Math.max(1, Math.min(RECONCILIATION_BATCH_SIZE, Math.trunc(options.reconciliationBatchSize ?? RECONCILIATION_BATCH_SIZE)));
+  const dueBatchSize = Math.max(1, Math.min(100, Math.trunc(options.dueBatchSize ?? 100)));
   const emailProvider = provider ?? createResendProvider(env.RESEND_API_KEY);
   const now = nowDate.toISOString();
   // Reconcile changed legacy credit before a due reminder checks the current
   // credit review state. The child-level review below remains a synchronous
   // safety net for any queue item that has not yet been claimed.
-  await reconcileQueuedLegacyChildCreditEntries(env.DB, nowDate);
-  await reconcileQueuedPaymentNotificationMilestones(env, nowDate);
+  await reconcileQueuedLegacyChildCreditEntries(env.DB, nowDate, reconciliationBatchSize);
+  await reconcileQueuedPaymentNotificationMilestones(env, nowDate, reconciliationBatchSize);
   const due = await env.DB.prepare(`SELECT id, milestone_key AS milestoneKey, milestone_type AS milestoneType,
     registration_draft_id AS registrationDraftId, registration_draft_child_id AS registrationDraftChildId,
     payment_installment_id AS paymentInstallmentId, payment_confirmation_id AS paymentConfirmationId,
@@ -327,7 +336,7 @@ export async function processDuePaymentReminders(env: WorkerEnv, nowDate = new D
     FROM payment_notification_milestone
     WHERE channel = 'email' AND scheduled_at <= ? AND (
       status IN ('pending', 'failed') OR (status = 'sending' AND processing_started_at < ?)
-    ) ORDER BY scheduled_at LIMIT 100`).bind(now, new Date(nowDate.getTime() - 5 * 60_000).toISOString()).all<MilestoneRow>();
+    ) ORDER BY scheduled_at LIMIT ?`).bind(now, new Date(nowDate.getTime() - 5 * 60_000).toISOString(), dueBatchSize).all<MilestoneRow>();
   let sent = 0;
   for (const milestone of due.results) {
     const claimed = await env.DB.prepare(`UPDATE payment_notification_milestone

@@ -49,5 +49,6 @@ export interface WorkerExecutionContext {
 }
 
 export interface WorkerScheduledController {
+  cron: string;
   scheduledTime: number;
 }

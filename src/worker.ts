@@ -1,10 +1,7 @@
 import { handleApiRequest } from "./server/api/router";
 import type { WorkerEnv, WorkerExecutionContext, WorkerScheduledController } from "./server/env";
 import { handlePublicQrRedirect } from "./server/public-qr-redirects";
-import { finalizeDuePaymentConfirmations } from "./server/staff/payment-reconciliation";
-import { processDuePaymentReminders } from "./server/staff/payment-reminders";
-import { reconcileWaitlistOffers } from "./server/services/waitlist-offers";
-import { reconcileInternalEnrollmentConfirmationNotices } from "./server/email/registration-transactional";
+import { runScheduledWork } from "./server/scheduled-work";
 
 export default {
   async fetch(request: Request, env: WorkerEnv, context: WorkerExecutionContext): Promise<Response> {
@@ -14,15 +11,8 @@ export default {
   },
   async scheduled(controller: WorkerScheduledController, env: WorkerEnv, context: WorkerExecutionContext): Promise<void> {
     const now = new Date(controller.scheduledTime);
-    context.waitUntil(Promise.allSettled([
-      finalizeDuePaymentConfirmations(env, now),
-      processDuePaymentReminders(env, now),
-      reconcileWaitlistOffers(env, now),
-      reconcileInternalEnrollmentConfirmationNotices(env, now),
-    ]).then((results) => {
-      for (const result of results) {
-        if (result.status === "rejected") console.error("Scheduled task failed", result.reason);
-      }
+    context.waitUntil(runScheduledWork(controller.cron, env, now).catch((error) => {
+      console.error("Scheduled task failed", controller.cron, error);
     }));
   },
 };

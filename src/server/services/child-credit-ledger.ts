@@ -207,7 +207,13 @@ function changed(result: { meta?: { changes?: number } } | undefined): boolean {
   return Number(result?.meta?.changes ?? 0) === 1;
 }
 
-async function enqueueCreditCatchup(database: D1Database, kind: "legacy_payment_credit" | "legacy_transfer_credit", now: string) {
+async function enqueueCreditCatchup(
+  database: D1Database,
+  kind: "legacy_payment_credit" | "legacy_transfer_credit",
+  now: string,
+  batchSize = RECONCILIATION_BATCH_SIZE,
+) {
+  const boundedBatchSize = Math.max(1, Math.min(RECONCILIATION_BATCH_SIZE, Math.trunc(batchSize)));
   const state = await database.prepare(`SELECT cursor_id AS cursorId, completed_at AS completedAt
     FROM scheduler_reconciliation_sweep WHERE kind = ?`).bind(kind)
     .first<{ cursorId: string; completedAt: string | null }>();
@@ -222,14 +228,14 @@ async function enqueueCreditCatchup(database: D1Database, kind: "legacy_payment_
           WHERE payment_installment.registration_draft_child_id = child.id
             AND payment_installment.installment_kind = 'initial'
         )
-      ORDER BY child.canonical_student_id LIMIT ?`).bind(state.cursorId, RECONCILIATION_BATCH_SIZE)
+      ORDER BY child.canonical_student_id LIMIT ?`).bind(state.cursorId, boundedBatchSize)
       .all<{ canonicalStudentId: string }>()
     : await database.prepare(`SELECT DISTINCT enrollment.student_id AS canonicalStudentId
       FROM enrollment
       INNER JOIN class_transfer ON class_transfer.source_enrollment_id = enrollment.id
       INNER JOIN class_transfer_credit ON class_transfer_credit.class_transfer_id = class_transfer.id
       WHERE enrollment.student_id > ?
-      ORDER BY enrollment.student_id LIMIT ?`).bind(state.cursorId, RECONCILIATION_BATCH_SIZE)
+      ORDER BY enrollment.student_id LIMIT ?`).bind(state.cursorId, boundedBatchSize)
       .all<{ canonicalStudentId: string }>();
   if (!rows.results.length) {
     await database.prepare(`UPDATE scheduler_reconciliation_sweep
@@ -253,18 +259,19 @@ async function enqueueCreditCatchup(database: D1Database, kind: "legacy_payment_
 
 // The queue rows are coalesced by canonical learner. A revision guard means a
 // credit write arriving during a claim survives for the next pass.
-export async function reconcileQueuedLegacyChildCreditEntries(database: D1Database, nowDate = new Date()) {
+export async function reconcileQueuedLegacyChildCreditEntries(database: D1Database, nowDate = new Date(), batchSize = RECONCILIATION_BATCH_SIZE) {
+  const boundedBatchSize = Math.max(1, Math.min(RECONCILIATION_BATCH_SIZE, Math.trunc(batchSize)));
   const now = nowIso(nowDate);
   await database.batch([
     database.prepare(`UPDATE child_credit_reconciliation_queue
       SET status = 'pending', lease_expires_at = NULL, updated_at = ?
       WHERE status = 'processing' AND lease_expires_at <= ?`).bind(now, now),
   ]);
-  await enqueueCreditCatchup(database, "legacy_payment_credit", now);
-  await enqueueCreditCatchup(database, "legacy_transfer_credit", now);
+  await enqueueCreditCatchup(database, "legacy_payment_credit", now, boundedBatchSize);
+  await enqueueCreditCatchup(database, "legacy_transfer_credit", now, boundedBatchSize);
   const candidates = await database.prepare(`SELECT canonical_student_id AS canonicalStudentId, revision
     FROM child_credit_reconciliation_queue WHERE status = 'pending'
-    ORDER BY priority, updated_at, canonical_student_id LIMIT ?`).bind(RECONCILIATION_BATCH_SIZE)
+    ORDER BY priority, updated_at, canonical_student_id LIMIT ?`).bind(boundedBatchSize)
     .all<CreditReconciliationQueueRow>();
   let processed = 0;
   for (const candidate of candidates.results) {

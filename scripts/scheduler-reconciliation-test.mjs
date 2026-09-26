@@ -107,11 +107,18 @@ try {
   for (let index = 2; index < 98; index += 1) seedRequest(database, index);
   database.query(`INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
     VALUES ('credit-receipt', ?, 120000, ?, 'staff_manual_bank', 'confirmed', ?, 'credit-receipt-key', ?, ?, 1, 'scheduler-test');
+    INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
+    VALUES ('credit-allocation', 'credit-receipt', ?, 120000, ?, ?, 1, 'scheduler-test');
     INSERT INTO payment_credit (id, received_payment_id, payment_request_id, available_amount_mnt, status, created_at, updated_at, is_test, test_run_id)
     VALUES ('credit-root', 'credit-receipt', ?, 120000, 'available', ?, ?, 1, 'scheduler-test');`,
-  [credit.request, stamp, stamp, stamp, stamp, credit.request, stamp, stamp]);
+  [credit.request, stamp, stamp, stamp, stamp, `${credit.id}-installment`, stamp, stamp, credit.request, stamp, stamp]);
 
   sql(readFileSync(path.join("migrations", queueMigration), "utf8"));
+  // The queue transition began on a pre-0064 database, then continued through
+  // the later released payment schema before exercising the current reminder
+  // projection. This preserves the old-Worker write window without omitting
+  // tables used by the current implementation.
+  sql(migrations.filter((file) => file > queueMigration).map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
   assert.equal(Number(database.query("SELECT COUNT(*) AS count FROM child_credit_entry")[0].count), 0,
     "migration only creates queues and cursors; it does not reconcile financial rows");
   // These writes use only released-schema tables after 0064 exists. They model
@@ -165,16 +172,33 @@ try {
   assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id = ?`, [cancelledDuringTransition.id])[0].count), 0,
     "a cancellation immediately before reminder processing suppresses its reminder even with legacy catch-up still in progress");
 
+  // The scheduler runs this path every five minutes. One invocation must make
+  // bounded progress for one changed request rather than recreate milestones
+  // for the entire history.
+  const boundedDue = seedRequest(database, 101, { due: true });
+  database.resetQueries();
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 9 * 60_000), provider,
+    { reconciliationBatchSize: 1, dueBatchSize: 1 });
+  const boundedQueries = database.executedQueries.map((entry) => entry.statement);
+  assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?`, [boundedDue.request])[0].status, "completed",
+    "one bounded scheduler pass consumes one newly changed request");
+  assert.equal(boundedQueries.filter((statement) => statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")).length, 5,
+    "one bounded pass writes the five scoped milestone categories for only its claimed request");
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 10 * 60_000), provider,
+    { reconciliationBatchSize: 1, dueBatchSize: 1 });
+  assert.equal(sent.length, 2, "a due reminder is still delivered while scheduler reconciliation is bounded");
+
   database.resetQueries();
   const idleStartedAt = performance.now();
-  await processDuePaymentReminders(env(database), new Date(now.getTime() + 10 * 60_000), provider);
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 11 * 60_000), provider,
+    { reconciliationBatchSize: 1, dueBatchSize: 1 });
   const idleMillis = performance.now() - idleStartedAt;
   const idleQueries = database.executedQueries.map((entry) => entry.statement);
   assert.ok(!idleQueries.some((statement) => statement.includes("INSERT OR IGNORE INTO child_credit_entry")),
     "idle ticks do not replay the global legacy-credit reconciliation");
   assert.ok(!idleQueries.some((statement) => statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")),
     "idle ticks do not recreate milestones across payment history");
-  assert.equal(sent.length, 1, "an idle replay does not duplicate delivery");
+  assert.equal(sent.length, 2, "an idle replay does not duplicate delivery");
 
   database.query(`UPDATE payment_credit SET status = 'refunded', refunded_at = ?, updated_at = ? WHERE id = 'credit-root'`, [stamp, stamp]);
   assert.equal(database.query("SELECT status FROM child_credit_reconciliation_queue WHERE canonical_student_id = 'credit-student'")[0].status, "pending",
@@ -226,8 +250,8 @@ try {
     processDuePaymentReminders(env(database), new Date(now.getTime() + 15 * 60_000), provider),
     processDuePaymentReminders(env(database), new Date(now.getTime() + 15 * 60_000), provider),
   ]);
-  assert.equal(database.executedQueries.filter((entry) => entry.statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")).length, 4,
-    "two overlapping ticks claim one request once before its four scoped milestone writes");
+  assert.equal(database.executedQueries.filter((entry) => entry.statement.includes("INSERT OR IGNORE INTO payment_notification_milestone")).length, 5,
+    "two overlapping ticks claim one request once before its five scoped milestone writes");
   assert.equal(database.query(`SELECT status FROM payment_milestone_reconciliation_queue WHERE payment_request_id = ?`, [overlap.request])[0].status, "completed",
     "the overlapping claim converges on one durable completed queue item");
 

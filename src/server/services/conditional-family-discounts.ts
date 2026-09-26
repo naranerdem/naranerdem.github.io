@@ -845,13 +845,14 @@ export async function finalizeFundedSameSubmissionQuotes(env: WorkerEnv, relatio
 // elapsed. If a later conditional settlement batch fails, scan the durable
 // quote state on the next scheduler pass instead of depending on a second
 // receipt or silently stranding the provisional award/reserved root.
-export async function recoverFundedConditionalFamilyQuotes(env: WorkerEnv, nowDate = new Date()) {
+export async function recoverFundedConditionalFamilyQuotes(env: WorkerEnv, nowDate = new Date(), limit = 100) {
   const now = nowDate.toISOString();
+  const batchSize = Math.max(1, Math.min(100, Math.trunc(limit)));
   const rows = await env.DB.prepare(`SELECT DISTINCT relationship_basis AS relationshipBasis, relationship_key AS relationshipKey
     FROM conditional_family_discount_quote
     WHERE state IN ('quoted_pending', 'cash_coverage_ready', 'conditionally_confirmed')
       AND (claim_expires_at IS NULL OR claim_expires_at <= ?)
-    ORDER BY relationship_basis, relationship_key LIMIT 100`).bind(now)
+    ORDER BY relationship_basis, relationship_key LIMIT ?`).bind(now, batchSize)
     .all<{ relationshipBasis: string; relationshipKey: string }>();
   let recovered = 0;
   for (const row of rows.results) {

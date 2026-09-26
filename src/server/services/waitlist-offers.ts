@@ -386,4 +386,23 @@ export async function reissueWaitlistOfferLink(env: WorkerEnv, actor: StaffPrinc
   return { url: `${env.APP_ORIGIN.replace(/\/$/, "")}/waitlist-offer/#token=${encodeURIComponent(rawToken)}` };
 }
 
-export async function reconcileWaitlistOffers(env: WorkerEnv, nowDate = new Date()) { return allocateWaitlistOffers(env, undefined, nowDate); }
+/**
+ * Routine recovery only needs classes with an unoffered active entry. Normal
+ * capacity-changing actions already call allocateWaitlistOffers for their own
+ * class inside the write path, so scanning every operational class each tick
+ * buys nothing when the waitlist is idle.
+ */
+export async function reconcileWaitlistOffers(env: WorkerEnv, nowDate = new Date(), classBatchSize = 1) {
+  const batchSize = Math.max(1, Math.min(20, Math.trunc(classBatchSize)));
+  const classes = await env.DB.prepare(`SELECT entry.class_session_id AS classSessionId
+    FROM registration_draft_waitlist_entry AS entry
+    INNER JOIN class_session ON class_session.id = entry.class_session_id
+    WHERE entry.status = 'active' AND class_session.schedule_state = 'active'
+      AND NOT EXISTS (SELECT 1 FROM waitlist_seat_offer WHERE waitlist_entry_id = entry.id)
+    GROUP BY entry.class_session_id
+    ORDER BY MIN(entry.created_at), entry.class_session_id LIMIT ?`).bind(batchSize)
+    .all<{ classSessionId: string }>();
+  const created: Array<{ offer: OfferContext; token: string }> = [];
+  for (const row of classes.results) created.push(...await allocateWaitlistOffers(env, row.classSessionId, nowDate));
+  return created;
+}

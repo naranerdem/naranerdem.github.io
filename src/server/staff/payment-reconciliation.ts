@@ -1338,7 +1338,7 @@ export async function recordManualPayment(env: WorkerEnv, actor: StaffPrincipal,
   // confirmation, promotion, and notification outcome before this request
   // returns. Positive grace values retain the existing scheduled path.
   const finalizedImmediately = grace.graceMinutes === 0;
-  if (finalizedImmediately) await finalizeDuePaymentConfirmations(env, nowDate);
+  if (finalizedImmediately) await finalizeDuePaymentConfirmations(env, nowDate, { recovery: "none" });
   return { id: paymentId, idempotent: false, finalizeAfter, approvedPartial, seatApprovalRequested, finalizedImmediately };
 }
 
@@ -1715,13 +1715,41 @@ export async function undoTentativePaymentConfirmation(env: WorkerEnv, actor: St
   return { undone: true };
 }
 
-export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = new Date()): Promise<number> {
+export type PaymentFinalizationRecovery = "all" | "none" | "conditional" | "outstanding" | "stranded" | "additional_admission";
+
+export interface PaymentFinalizationOptions {
+  /** The scheduler uses one record at a time; interactive callers retain the established 100-record batch. */
+  dueBatchSize?: number;
+  /** Historical repair is intentionally separated from routine due-confirmation checks. */
+  recovery?: PaymentFinalizationRecovery;
+  recoveryBatchSize?: number;
+  processDue?: boolean;
+}
+
+function boundedSchedulerBatch(value: number | undefined, fallback: number) {
+  return Math.max(1, Math.min(100, Math.trunc(value ?? fallback)));
+}
+
+function includesRecovery(mode: PaymentFinalizationRecovery, slice: Exclude<PaymentFinalizationRecovery, "all" | "none">) {
+  return mode === "all" || mode === slice;
+}
+
+export async function finalizeDuePaymentConfirmations(
+  env: WorkerEnv,
+  nowDate = new Date(),
+  options: PaymentFinalizationOptions = {},
+): Promise<number> {
   const now = nowDate.toISOString();
+  const dueBatchSize = boundedSchedulerBatch(options.dueBatchSize, 100);
+  const recoveryBatchSize = boundedSchedulerBatch(options.recoveryBatchSize, 100);
+  const recovery = options.recovery ?? "all";
+  const processDue = options.processDue ?? true;
   const systemActor = { staffAccountId: "system:payment-finalizer", roles: ["admin"], capabilities: ["payment.manage"] } as StaffPrincipal;
   // A previously finalized cash receipt can still have a retryable protected
   // conditional settlement. Recover it from the quote state before looking
   // for new tentative payment confirmations.
-  const recoveredAwards = await recoverFundedConditionalFamilyQuotes(env, nowDate);
+  const recoveredAwards = includesRecovery(recovery, "conditional")
+    ? await recoverFundedConditionalFamilyQuotes(env, nowDate, recoveryBatchSize) : 0;
   if (recoveredAwards > 0) {
     const recoveredRequests = await env.DB.prepare(`SELECT DISTINCT payment_request.id, payment_request.registration_draft_id AS registrationDraftId,
         payment_request.payment_reference AS paymentReference, payment_request.is_test AS isTest, payment_request.test_run_id AS testRunId
@@ -1743,13 +1771,13 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
       }
     }
   }
-  const rows = await env.DB.prepare(`SELECT payment_confirmation.id, payment_confirmation.payment_request_id AS paymentRequestId,
+  const rows = processDue ? await env.DB.prepare(`SELECT payment_confirmation.id, payment_confirmation.payment_request_id AS paymentRequestId,
     payment_confirmation.seat_confirmation_approved AS seatConfirmationApproved, payment_request.registration_draft_id AS registrationDraftId,
     payment_confirmation.conditional_quote_id AS conditionalQuoteId,
     payment_request.is_test AS isTest, payment_request.test_run_id AS testRunId
     FROM payment_confirmation INNER JOIN payment_request ON payment_request.id = payment_confirmation.payment_request_id
-    WHERE payment_confirmation.status = 'tentative' AND payment_confirmation.finalize_after <= ? ORDER BY payment_confirmation.finalize_after LIMIT 100`)
-    .bind(now).all<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }>();
+    WHERE payment_confirmation.status = 'tentative' AND payment_confirmation.finalize_after <= ? ORDER BY payment_confirmation.finalize_after LIMIT ?`)
+    .bind(now, dueBatchSize).all<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }>() : { results: [] as Array<{ id: string; paymentRequestId: string; seatConfirmationApproved: number; registrationDraftId: string; conditionalQuoteId: string | null; isTest: number; testRunId: string | null }> };
   let finalized = 0;
   for (const row of rows.results) {
     const changed = await env.DB.prepare(`UPDATE payment_confirmation SET status = 'finalized', finalized_at = ?, updated_at = ?
@@ -1787,13 +1815,13 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
   // A staff-approved zero-payment enrollment may initially wait for identity
   // resolution.  It has no receipt/finalize-after row to wake this finalizer,
   // so retry only the bounded active approvals that still lack an enrollment.
-  const outstandingRows = await env.DB.prepare(`SELECT staff_outstanding_payment_approval.registration_draft_child_id AS childId
+  const outstandingRows = includesRecovery(recovery, "outstanding") ? await env.DB.prepare(`SELECT staff_outstanding_payment_approval.registration_draft_child_id AS childId
     FROM staff_outstanding_payment_approval
     INNER JOIN registration_draft_child ON registration_draft_child.id = staff_outstanding_payment_approval.registration_draft_child_id
     WHERE staff_outstanding_payment_approval.status = 'active'
       AND registration_draft_child.canonical_enrollment_id IS NULL
       AND registration_draft_child.status != 'cancelled'
-    ORDER BY staff_outstanding_payment_approval.updated_at LIMIT 100`).all<{ childId: string }>();
+    ORDER BY staff_outstanding_payment_approval.updated_at LIMIT ?`).bind(recoveryBatchSize).all<{ childId: string }>() : { results: [] as Array<{ childId: string }> };
   for (const row of outstandingRows.results) {
     try { await promotePaidDraftChild(env, systemActor, row.childId, null, nowDate); } catch { /* retryable identity/promotion work */ }
   }
@@ -1801,7 +1829,7 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
   // Credit applications are accounting adjustments, not received payments.
   // They nevertheless use the same guarded grace/finalization boundary before
   // a qualifying initial installment may promote an enrollment.
-  const creditRows = await env.DB.prepare(`SELECT credit_application_confirmation.id,
+  const creditRows = processDue ? await env.DB.prepare(`SELECT credit_application_confirmation.id,
     credit_application_confirmation.payment_request_id AS paymentRequestId,
     credit_application_confirmation.registration_draft_child_id AS childId,
     payment_request.registration_draft_id AS registrationDraftId,
@@ -1810,8 +1838,8 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
     INNER JOIN payment_request ON payment_request.id = credit_application_confirmation.payment_request_id
     WHERE credit_application_confirmation.status = 'tentative'
       AND credit_application_confirmation.finalize_after <= ?
-    ORDER BY credit_application_confirmation.finalize_after LIMIT 100`).bind(now)
-    .all<{ id: string; paymentRequestId: string; childId: string; registrationDraftId: string; isTest: number; testRunId: string | null }>();
+    ORDER BY credit_application_confirmation.finalize_after LIMIT ?`).bind(now, dueBatchSize)
+    .all<{ id: string; paymentRequestId: string; childId: string; registrationDraftId: string; isTest: number; testRunId: string | null }>() : { results: [] as Array<{ id: string; paymentRequestId: string; childId: string; registrationDraftId: string; isTest: number; testRunId: string | null }> };
   for (const row of creditRows.results) {
     const changed = await env.DB.prepare(`UPDATE credit_application_confirmation SET status = 'finalized', updated_at = ?
       WHERE id = ? AND status = 'tentative' AND finalize_after <= ?`).bind(now, row.id, now).run();
@@ -1832,7 +1860,7 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
   // finalized seat approval now makes promotion valid. Retry only that narrow,
   // explicitly stranded state; normal confirmed and review-required children
   // are intentionally left alone.
-  const stranded = await env.DB.prepare(`SELECT DISTINCT payment_request.registration_draft_id AS registrationDraftId,
+  const stranded = includesRecovery(recovery, "stranded") ? await env.DB.prepare(`SELECT DISTINCT payment_request.registration_draft_id AS registrationDraftId,
     payment_request.is_test AS isTest, payment_request.test_run_id AS testRunId
     FROM payment_confirmation
     INNER JOIN payment_request ON payment_request.id = payment_confirmation.payment_request_id
@@ -1847,8 +1875,9 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
         OR EXISTS (SELECT 1 FROM conditional_family_discount_quote
           WHERE conditional_family_discount_quote.registration_draft_child_id = registration_draft_child.id
             AND conditional_family_discount_quote.state = 'qualified'))
-      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'`)
-    .all<{ registrationDraftId: string; isTest: number; testRunId: string | null }>();
+      AND registration_draft.status != 'cancelled' AND registration_draft_child.status != 'cancelled'
+    ORDER BY payment_request.registration_draft_id LIMIT ?`).bind(recoveryBatchSize)
+    .all<{ registrationDraftId: string; isTest: number; testRunId: string | null }>() : { results: [] as Array<{ registrationDraftId: string; isTest: number; testRunId: string | null }> };
   for (const row of stranded.results) {
     const promotion = await promotePaidDraftChildren(env, systemActor, row.registrationDraftId, nowDate);
     if (!promotion.length) continue;
@@ -1862,13 +1891,14 @@ export async function finalizeDuePaymentConfirmations(env: WorkerEnv, nowDate = 
   // A pending admission with a durable confirmation claim is recoverable after
   // the claim lease expires. Include targets without a canonical enrollment so
   // an interruption before promotion cannot strand an admission indefinitely.
-  const pendingAdmissions = await env.DB.prepare(`SELECT additional_class_admission.target_registration_draft_child_id AS childId
+  const pendingAdmissions = includesRecovery(recovery, "additional_admission") ? await env.DB.prepare(`SELECT additional_class_admission.target_registration_draft_child_id AS childId
     FROM additional_class_admission
     INNER JOIN registration_draft_child ON registration_draft_child.id = additional_class_admission.target_registration_draft_child_id
-    WHERE additional_class_admission.status = 'pending_confirmation'
+      WHERE additional_class_admission.status = 'pending_confirmation'
       AND registration_draft_child.status != 'cancelled'
       AND EXISTS (SELECT 1 FROM registration_draft WHERE registration_draft.id = registration_draft_child.registration_draft_id
-        AND registration_draft.status != 'cancelled')`).all<{ childId: string }>();
+        AND registration_draft.status != 'cancelled')
+    ORDER BY additional_class_admission.updated_at, additional_class_admission.id LIMIT ?`).bind(recoveryBatchSize).all<{ childId: string }>() : { results: [] as Array<{ childId: string }> };
   for (const row of pendingAdmissions.results) {
     try {
       const outcome = await promotePaidDraftChild(env, systemActor, row.childId, null, nowDate);

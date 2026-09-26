@@ -24,7 +24,7 @@ function quote(value) { if (value == null) return "NULL"; if (typeof value === "
 function bind(sql, values) { let index = 0; return sql.replaceAll("?", () => quote(values[index++])); }
 function sqlite(sql, json = false) { const result = spawnSync("sqlite3", [json ? "-json" : "", dbPath].filter(Boolean), { input: `PRAGMA foreign_keys=ON;\n${sql}`, encoding: "utf8" }); if (result.status !== 0) throw new Error(`${result.stderr}\n${sql}`); return result.stdout.trim(); }
 class Statement { constructor(db, sql) { this.db = db; this.sql = sql; this.values = []; } bind(...values) { this.values = values; return this; } async all() { const out = sqlite(`${bind(this.sql, this.values)};`, true); return { success: true, results: out ? JSON.parse(out) : [] }; } async first() { return (await this.all()).results[0] ?? null; } async run() { const out = sqlite(`${bind(this.sql, this.values)}; SELECT changes() AS changes;`, true); const rows = out ? JSON.parse(out) : []; return { success: true, results: [], meta: { changes: Number(rows.at(-1)?.changes ?? 0) } }; } }
-class D1 { prepare(sql) { return new Statement(this, sql); } async batch(statements) { const sql = statements.map((statement, index) => `${bind(statement.sql, statement.values)}; INSERT INTO _changes VALUES (${index}, changes());`).join("\n"); const out = sqlite(`CREATE TEMP TABLE _changes (idx INTEGER, changes INTEGER); BEGIN IMMEDIATE; ${sql} COMMIT; SELECT * FROM _changes ORDER BY idx;`, true); return (out ? JSON.parse(out) : []).map((row) => ({ success: true, results: [], meta: { changes: Number(row.changes) } })); } }
+class D1 { constructor() { this.prepared = []; } prepare(sql) { this.prepared.push(sql); return new Statement(this, sql); } resetPrepared() { this.prepared.length = 0; } async batch(statements) { const sql = statements.map((statement, index) => `${bind(statement.sql, statement.values)}; INSERT INTO _changes VALUES (${index}, changes());`).join("\n"); const out = sqlite(`CREATE TEMP TABLE _changes (idx INTEGER, changes INTEGER); BEGIN IMMEDIATE; ${sql} COMMIT; SELECT * FROM _changes ORDER BY idx;`, true); return (out ? JSON.parse(out) : []).map((row) => ({ success: true, results: [], meta: { changes: Number(row.changes) } })); } }
 
 function now(minutes = 0) { return new Date(Date.UTC(2026, 7, 23, 8, minutes)).toISOString(); }
 function seed(database, id, createdAt) {
@@ -47,7 +47,7 @@ try {
   await database.prepare(`INSERT INTO offering_course_pricing (activity_offering_id, one_time_amount_mnt, two_installment_enabled, created_at, updated_at) VALUES ('offering', 100000, 0, ?, ?)` ).bind(now(), now()).run();
   await database.prepare(`UPDATE payment_collection_settings SET bank_name = 'Банк', account_holder_name = 'Эзэн', account_number = '1', updated_at = ? WHERE singleton = 1`).bind(now()).run();
   const first = seed(database, "first", now()); const second = seed(database, "second", now(1)); const third = seed(database, "third", now(2));
-  const { allocateWaitlistOffers, declineOrCloseWaitlistOffer, acceptWaitlistOffer, publicWaitlistOffer, reissueWaitlistOfferLink } = await import(pathToFileURL(bundle).href);
+  const { allocateWaitlistOffers, declineOrCloseWaitlistOffer, acceptWaitlistOffer, publicWaitlistOffer, reconcileWaitlistOffers, reissueWaitlistOfferLink } = await import(pathToFileURL(bundle).href);
   const { getClassCapacityProjections } = await import(pathToFileURL(path.join(dir, "capacity.mjs")).href).catch(async () => { const p = path.join(dir, "capacity.mjs"); const r = spawnSync(esbuild, ["src/server/services/class-capacity.ts", "--bundle", "--format=esm", "--platform=node", `--outfile=${p}`], { encoding: "utf8" }); if (r.status !== 0) throw new Error(r.stderr); return import(pathToFileURL(p).href); });
   assert.equal((await getClassCapacityProjections(database, "staging", new Date(now())))[0].freeSeats, 1, "plain FIFO waitlist consumes no seat");
   const offers = await allocateWaitlistOffers(env, "class", new Date(now()));
@@ -92,5 +92,9 @@ try {
   const deliveriesAfterRetry = sentMessages.length;
   await acceptWaitlistOffer(env, thirdOffer.id, "single", "parent_link", null, new Date(now(2005)));
   assert.equal(sentMessages.length, deliveriesAfterRetry, "a delivered payment email is not sent again by repeated acceptance");
+  database.resetPrepared();
+  assert.equal((await reconcileWaitlistOffers(env, new Date(now(2006)), 1)).length, 0, "idle waitlist recovery creates no offer");
+  assert.equal(database.prepared.length, 1, "idle waitlist recovery checks only unoffered active waitlist classes before any capacity projection");
+  assert.match(database.prepared[0], /NOT EXISTS \(SELECT 1 FROM waitlist_seat_offer/, "idle recovery uses the unoffered-entry predicate");
   console.log("ok waitlist offers: FIFO allocation, soft deadline, decline advance, and capacity-preserving conversion");
 } finally { globalThis.fetch = originalFetch; rmSync(dir, { recursive: true, force: true }); }
