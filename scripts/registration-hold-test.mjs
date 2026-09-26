@@ -126,8 +126,10 @@ const {
   markPaymentCreditRefunded,
   recordCheckedNotFound,
   recordManualPayment,
+  reviseInstallmentSchedule,
   previewOutstandingPaymentWaiver,
   previewFinalizedManualPaymentCorrection,
+  previewInstallmentScheduleRevision,
   previewEnrollmentFeeAdjustment,
   previewHistoricalSettlementIncidentReconciliation,
   reconcileHistoricalSettlementIncident,
@@ -2330,6 +2332,25 @@ try {
       paymentRequestId: request.id, allocations: [{ installmentId: queueItem.installmentId, amountMnt: 650000 }],
       source: "staff_manual_bank", idempotencyKey: "focused-correction-original-650000",
     }, new Date(iso(122)));
+    const standaloneEntries = database.query(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt
+      FROM payment_installment WHERE payment_request_id = ? AND status != 'released' ORDER BY installment_number`, [request.id])
+      .map((entry) => ({ amountMnt: Number(entry.amountMnt), dueOn: String(entry.dueAt).slice(0, 10) }));
+    const standaloneReview = await previewInstallmentScheduleRevision(env(database), paymentStaff, {
+      paymentRequestId: request.id, registrationDraftChildId: child.id, installments: standaloneEntries,
+    });
+    const standaloneRevision = await reviseInstallmentSchedule(env(database), paymentStaff, {
+      paymentRequestId: request.id, registrationDraftChildId: child.id, installments: standaloneEntries,
+      reason: "Төлөлтийн хуваарийг хянаж хадгалав.", reviewFingerprint: standaloneReview.reviewFingerprint,
+      operationId: "cccccccc-dddd-4eee-8fff-000000000001",
+    }, new Date(iso(122)));
+    assert.equal(standaloneRevision.idempotent, false,
+      "an immediately reviewed standalone installment schedule saves instead of reporting a false stale conflict");
+    assert.equal((await reviseInstallmentSchedule(env(database), paymentStaff, {
+      paymentRequestId: request.id, registrationDraftChildId: child.id, installments: standaloneEntries,
+      reason: "Төлөлтийн хуваарийг хянаж хадгалав.", reviewFingerprint: standaloneReview.reviewFingerprint,
+      operationId: "cccccccc-dddd-4eee-8fff-000000000001",
+    }, new Date(iso(123)))).idempotent, true,
+    "the saved standalone schedule retains its same-operation retry protection");
     const revisedInstallments = [
       { amountMnt: 400000, dueOn: "2026-08-15" },
       { amountMnt: 400000, dueOn: "2026-12-01" },

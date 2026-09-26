@@ -85,8 +85,11 @@ assert.match(styles, /\.staff-payment-secondary-tools\s*\{[\s\S]*grid-template-c
 assert.match(page, /data-finalized-payment-correction-schedule/, "a correction can include a reviewed installment schedule without a second mutation");
 assert.match(page, /revisedInstallments: draft\.entries/, "the reviewed correction submits the same schedule snapshot that was displayed to staff");
 assert.match(page, /data-schedule-remove/, "schedule drafts expose a compact removal control only for removable rows");
-assert.match(page, /Хуваарийн шаардлагатай нийт/, "schedule drafts show their authoritative required schedule total");
-assert.match(page, /Хуваарийн зөрүү/, "schedule drafts distinguish their entry total difference from payment balance");
+assert.match(page, /Төлөлтийн хуваарийн шаардлагатай нийт/, "schedule drafts show their authoritative required schedule total");
+assert.match(page, /Төлөлтийн хуваарийн зөрүү/, "schedule drafts distinguish their entry total difference from payment balance");
+assert.match(page, /Хянаж хадгалах/, "schedule editors expose the review step as a visible primary action");
+assert.match(page, /Өөрчлөлтийг хадгалах/, "schedule reviews label the durable save action explicitly");
+assert.match(page, /focusScheduleReview/, "successful schedule previews move focus to the rendered review");
 assert.match(page, /Үлдэгдлээр бөглөх/, "one blank schedule amount can be filled from the positive remainder without guessing a distribution");
 assert.match(page, /untouchedNew/, "only entirely untouched new schedule rows are omitted from review validation");
 assert.match(page, /дүн, хугацааг хоёуланг нь оруулна уу/, "partial draft rows receive visible client validation before review");

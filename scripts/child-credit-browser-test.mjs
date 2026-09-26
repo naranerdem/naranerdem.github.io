@@ -31,6 +31,9 @@ const paymentPanelScreenshotDir = process.env.PAYMENT_PANEL_SCREENSHOT_DIR || ""
 const paymentPanelBrowser = process.env.PAYMENT_PANEL_BROWSER || "chromium";
 const usingWebKit = paymentPanelBrowser === "webkit" || paymentPanelBrowser === "webkit-desktop";
 const paymentLayoutDiagnostics = process.env.PAYMENT_PANEL_UI_DIAGNOSTICS === "1";
+if (process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_ONLY === "1") {
+  console.log("starting focused receipt-correction browser workflow");
+}
 
 async function capturePaymentPanel(page, name) {
   if (!paymentPanelScreenshotDir) return;
@@ -1162,26 +1165,49 @@ try {
     await row.locator('[data-payment-tool="schedule"]').click();
     const standaloneSchedule = row.locator('[data-installment-schedule-preview]');
     await standaloneSchedule.waitFor({ state: "visible" });
-    await standaloneSchedule.getByText("Хуваарийн шаардлагатай нийт: 1,300,000 ₮").waitFor({ state: "visible" });
-    await standaloneSchedule.getByRole("button", { name: "Төлбөр нэмэх" }).click();
+    await standaloneSchedule.getByText("Төлөлтийн хуваарийн шаардлагатай нийт: 1,300,000 ₮").waitFor({ state: "visible" });
+    await standaloneSchedule.getByRole("button", { name: "Төлөлт нэмэх" }).click();
     assert.equal(await standaloneSchedule.locator('[data-schedule-entry]').count(), 3,
       "the standalone schedule draft adds a removable blank installment row");
     await standaloneSchedule.locator('[data-schedule-remove-index="2"]').click();
     assert.equal(await standaloneSchedule.locator('[data-schedule-entry]').count(), 2,
       "removing a draft row renumbers the standalone schedule without writing history");
-    await standaloneSchedule.getByRole("button", { name: "Болих" }).click();
+    const standalonePreviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.installment-schedule-preview"));
+    await standaloneSchedule.getByRole("button", { name: "Хянаж хадгалах" }).click();
+    assert.ok((await standalonePreviewResponse).ok(), "the standalone schedule opens its review through the real local API");
+    const standaloneReview = row.locator('[data-installment-schedule-confirm]');
+    await standaloneReview.getByRole("heading", { name: "Төлөлтийн хуваарийг хянах" }).waitFor({ state: "visible" });
+    assert.equal(await page.locator(":focus").getAttribute("data-schedule-review-heading"), "",
+      "opening the standalone review moves focus to its review heading");
+    await page.setViewportSize({ width: 1180, height: 900 });
+    await capturePaymentElement(row, "installment-schedule-review-desktop.png");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await capturePaymentElement(row, "installment-schedule-review-mobile.png");
+    await standaloneReview.locator('textarea[name="reason"]').fill("Browser schedule revision");
+    const standaloneSaveResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("payment.installment-schedule-revise"));
+    await standaloneReview.getByRole("button", { name: "Өөрчлөлтийг хадгалах" }).click();
+    const standaloneSaveResult = await standaloneSaveResponse;
+    assert.ok(standaloneSaveResult.ok(), `the standalone schedule review saves durably through the rendered workflow: ${standaloneSaveResult.request().postData()} -> ${await standaloneSaveResult.text()}`);
+    await page.reload();
+    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
+    await row.waitFor({ state: "visible" });
+    const reloadedDetail = row.getByRole("button", { name: "Нээх" });
+    if (await reloadedDetail.isVisible().catch(() => false)) await reloadedDetail.click();
+    await row.locator('[data-payment-open]').click();
     await row.locator('[data-payment-tool="receipt-correction"]').click();
     let correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.waitFor({ state: "visible" });
     await correction.locator('input[name="amountMnt"]').fill("400000");
-    await correction.getByRole("button", { name: "Хуваарь хамт өөрчлөх" }).click();
+    await correction.getByRole("button", { name: "Төлөлтийн хуваарь хамт өөрчлөх" }).click();
     assert.equal(await correction.locator('[data-finalized-payment-correction-amount="true"]').inputValue(), "400000",
       "opening the schedule editor preserves the entered corrected amount");
     await correction.locator('input[data-correction-schedule-index="0"][name="amountMnt"]').fill("400000");
     await correction.locator('input[data-correction-schedule-index="0"][name="dueOn"]').fill("2026-08-15");
     await correction.locator('input[data-correction-schedule-index="1"][name="amountMnt"]').fill("400000");
     await correction.locator('input[data-correction-schedule-index="1"][name="dueOn"]').fill("2026-12-01");
-    await correction.getByRole("button", { name: "Төлбөр нэмэх" }).click();
+    await correction.getByRole("button", { name: "Төлөлт нэмэх" }).click();
     assert.equal(await correction.locator('[data-correction-schedule-index="0"][name="amountMnt"]').inputValue(), "400000",
       "adding a schedule row preserves the edited first installment");
     assert.equal(await correction.locator('[data-correction-schedule-index="1"][name="amountMnt"]').inputValue(), "400000",
@@ -1189,26 +1215,26 @@ try {
     await correction.locator('[data-schedule-remove-index="2"]').click();
     assert.equal(await correction.locator('[data-schedule-entry]').count(), 2,
       "a newly added correction row can be removed without altering existing payment history");
-    await correction.getByRole("button", { name: "Төлбөр нэмэх" }).click();
-    await correction.getByText("Хуваарийн зөрүү: 500,000 ₮ дутуу").waitFor({ state: "visible" });
-    await correction.getByRole("button", { name: "Хянах" }).click();
-    await correction.getByText("Хуваарийн нийт дүн 500,000 ₮ дутуу байна.").waitFor({ state: "visible" });
+    await correction.getByRole("button", { name: "Төлөлт нэмэх" }).click();
+    await correction.getByText("Төлөлтийн хуваарийн зөрүү: 500,000 ₮ дутуу").waitFor({ state: "visible" });
+    await correction.getByRole("button", { name: "Хянаж хадгалах" }).click();
+    await correction.getByText("Төлөлтийн хуваарийн нийт дүн 500,000 ₮ дутуу байна.").waitFor({ state: "visible" });
     correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.locator('input[data-correction-schedule-index="2"][name="dueOn"]').fill("2027-02-28");
-    await correction.getByRole("button", { name: "Хянах" }).click();
-    await correction.getByText("3-р төлбөрийн дүн, хугацааг хоёуланг нь оруулна уу.").waitFor({ state: "visible" });
+    await correction.getByRole("button", { name: "Хянаж хадгалах" }).click();
+    await correction.getByText("3-р төлөлтийн дүн, хугацааг хоёуланг нь оруулна уу.").waitFor({ state: "visible" });
     correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("0");
-    await correction.getByRole("button", { name: "Хянах" }).click();
-    await correction.getByText("3-р төлбөрийн дүн эерэг бүхэл тоо байна.").waitFor({ state: "visible" });
+    await correction.getByRole("button", { name: "Хянаж хадгалах" }).click();
+    await correction.getByText("3-р төлөлтийн дүн эерэг бүхэл тоо байна.").waitFor({ state: "visible" });
     correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("-1");
-    await correction.getByRole("button", { name: "Хянах" }).click();
-    await correction.getByText("3-р төлбөрийн дүн эерэг бүхэл тоо байна.").waitFor({ state: "visible" });
+    await correction.getByRole("button", { name: "Хянаж хадгалах" }).click();
+    await correction.getByText("3-р төлөлтийн дүн эерэг бүхэл тоо байна.").waitFor({ state: "visible" });
     correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("600000");
-    await correction.getByRole("button", { name: "Хянах" }).click();
-    await correction.getByText("Хуваарийн нийт дүн 100,000 ₮ илүү байна.").waitFor({ state: "visible" });
+    await correction.getByRole("button", { name: "Хянаж хадгалах" }).click();
+    await correction.getByText("Төлөлтийн хуваарийн нийт дүн 100,000 ₮ илүү байна.").waitFor({ state: "visible" });
     correction = row.locator('[data-finalized-payment-correction-preview]');
     await correction.locator('input[data-correction-schedule-index="2"][name="amountMnt"]').fill("");
     await correction.getByRole("button", { name: "Үлдэгдлээр бөглөх" }).click();
@@ -1221,11 +1247,13 @@ try {
     await capturePaymentElement(row, "receipt-correction-editor-mobile.png");
     const previewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.finalized-receipt-correction-preview"));
-    await correction.getByRole("button", { name: "Хянах" }).click();
+    await correction.getByRole("button", { name: "Хянаж хадгалах" }).click();
     const previewResult = await previewResponse;
     assert.ok(previewResult.ok(), `the combined review is accepted by the real local API: ${previewResult.request().postData()} -> ${await previewResult.text()}`);
     const review = row.locator('[data-finalized-payment-correction-confirm]');
-    await review.getByText("Шинэ хуваарь").waitFor({ state: "visible" });
+    await review.getByText("Шинэ төлөлтийн хуваарь").waitFor({ state: "visible" });
+    assert.equal(await page.locator(":focus").getAttribute("data-schedule-review-heading"), "",
+      "opening the combined review moves focus to its review heading");
     assert.match(await review.textContent(), /400,000 ₮[\s\S]*400,000 ₮[\s\S]*500,000 ₮/, "the review identifies every revised installment");
     const reviewBox = await review.boundingBox();
     const toolsBox = await row.locator('.staff-payment-secondary-tools').boundingBox();
@@ -1237,7 +1265,7 @@ try {
     await page.setViewportSize({ width: 390, height: 844 });
     const saveResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.finalized-receipt-correct"));
-    await review.getByRole("button", { name: "Баталгаажуулах" }).click();
+    await review.getByRole("button", { name: "Өөрчлөлтийг хадгалах" }).click();
     const saveResult = await saveResponse;
     assert.ok(saveResult.ok(), `the combined correction saves through the rendered staff workflow: ${saveResult.request().postData()} -> ${await saveResult.text()}`);
     await page.reload();
@@ -1260,7 +1288,7 @@ try {
     assert.equal(await row.locator('[data-finalized-payment-correction-preview]').count(), 0,
       "a previously corrected receipt reports its ineligibility instead of opening an empty or doomed correction editor");
     const secondPayment = row.locator('.staff-later-payment-form');
-    await secondPayment.getByRole("heading", { name: "2-р төлбөр бүртгэх" }).waitFor({ state: "visible" });
+    await secondPayment.getByRole("heading", { name: "2-р төлөлт бүртгэх" }).waitFor({ state: "visible" });
     const laterResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
       && response.request().method() === "POST" && response.request().postData()?.includes("payment.record"));
     await secondPayment.locator('input[name="amount"]').fill("400000");
@@ -1271,7 +1299,7 @@ try {
     const detailAfterLaterPayment = row.getByRole("button", { name: "Нээх" });
     if (await detailAfterLaterPayment.isVisible().catch(() => false)) await detailAfterLaterPayment.click();
     await row.locator('[data-payment-open]').click();
-    await row.locator('.staff-later-payment-form').getByRole("heading", { name: "3-р төлбөр бүртгэх" }).waitFor({ state: "visible" });
+    await row.locator('.staff-later-payment-form').getByRole("heading", { name: "3-р төлөлт бүртгэх" }).waitFor({ state: "visible" });
     console.log("ok browser finalized receipt correction and schedule review");
   } else if (process.env.PARENT_REGISTRATION_UX_BROWSER_ONLY === "1") {
     const uxContext = await browser.newContext({ viewport: { width: 1200, height: 900 } });

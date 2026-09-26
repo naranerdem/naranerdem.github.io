@@ -470,6 +470,24 @@ async function reviewedInstallmentSchedule(env: WorkerEnv, paymentRequestId: str
   return { snapshot: { ...snapshot, installments: adjustedInstallments }, entries: reviewed as Array<{ amountMnt: number; dueAt: string; dueOn: string }>, reviewFingerprint };
 }
 
+async function persistedInstallmentScheduleMatches(env: WorkerEnv, revisionId: string, paymentRequestId: string, childId: string,
+  entries: Array<{ amountMnt: number; dueAt: string }>, snapshotCount: number) {
+  const [revisionEntries, current] = await Promise.all([
+    env.DB.prepare(`SELECT COUNT(*) AS count FROM payment_installment_schedule_revision_entry
+      WHERE payment_installment_schedule_revision_id = ?`).bind(revisionId).first<{ count: number }>(),
+    env.DB.prepare(`SELECT installment_number AS installmentNumber, installment_kind AS installmentKind,
+      amount_mnt AS amountMnt, effective_due_at AS dueAt
+      FROM payment_installment WHERE payment_request_id = ? AND registration_draft_child_id = ? AND status != 'released'
+      ORDER BY installment_number`).bind(paymentRequestId, childId).all<{ installmentNumber: number; installmentKind: string; amountMnt: number; dueAt: string }>(),
+  ]);
+  return Number(revisionEntries?.count ?? 0) === snapshotCount
+    && current.results.length === entries.length
+    && current.results.every((entry, index) => Number(entry.installmentNumber) === index + 1
+      && entry.installmentKind === (index === 0 ? 'initial' : 'later')
+      && Number(entry.amountMnt) === Number(entries[index]?.amountMnt)
+      && entry.dueAt === entries[index]?.dueAt);
+}
+
 export async function previewInstallmentScheduleRevision(env: WorkerEnv, actor: StaffPrincipal, input: {
   paymentRequestId: string; registrationDraftChildId: string; installments: InstallmentScheduleInput[];
 }) {
@@ -549,11 +567,8 @@ export async function reviseInstallmentSchedule(env: WorkerEnv, actor: StaffPrin
     .bind(crypto.randomUUID(), now, actor.staffAccountId, revisionId, JSON.stringify({ operationId: operation, reason, previous: review.snapshot.installments, revised: review.entries }),
       env.APP_ENV, now, review.snapshot.request.id, revisionId));
   const results = await env.DB.batch(statements);
-  const snapshotCount = review.snapshot.installments.length;
-  const scheduleResults = results.slice(1 + snapshotCount, 1 + snapshotCount + review.entries.length + Math.max(0, snapshotCount - review.entries.length));
-  const snapshotResults = results.slice(1, 1 + snapshotCount);
-  if (changes(results[0]) !== 1 || snapshotResults.some((result) => changes(result) !== 1)
-    || scheduleResults.some((result) => changes(result) !== 1)) throw new PaymentReconciliationError('conflict');
+  if (changes(results[0]) !== 1 || !(await persistedInstallmentScheduleMatches(env, revisionId, review.snapshot.request.id,
+    review.snapshot.child.id, review.entries, review.snapshot.installments.length))) throw new PaymentReconciliationError('conflict');
   await recalculateDiscountAwardBalances(env.DB, review.snapshot.child.id, now);
   return { operationId: operation, idempotent: false, revisionId, installments: review.entries };
 }
