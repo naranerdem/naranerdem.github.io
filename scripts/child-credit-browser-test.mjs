@@ -1304,6 +1304,9 @@ try {
     } else {
     const reopenedDetail = row.getByRole("button", { name: "Нээх" });
     if (await reopenedDetail.isVisible().catch(() => false)) await reopenedDetail.click();
+    assert.equal(await row.locator('form[data-payment-form]').count(), 0,
+      "a settled initial installment keeps the summary but removes the top-level initial-payment form before later payment is selected");
+    await row.getByText("Төлөх үлдэгдэл: 900,000 ₮").waitFor({ state: "visible" });
     await row.locator('[data-payment-open]').click();
     await row.locator('[data-payment-tool="receipt-correction"]').click();
     await row.getByText("Энэ бүртгэлд засах боломжтой эцэслэсэн гар төлбөрийн бичлэг алга").waitFor({ state: "visible" });

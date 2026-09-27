@@ -90,6 +90,10 @@ assert.match(page, /Энэ бүртгэлд засах боломжтой эцэ
 assert.match(page, /<div class="staff-panel-region">\$\{special\}\$\{laterPaymentForm\}\$\{paymentTools\}/, "ordinary payment content remains above secondary correction and schedule tools");
 assert.match(styles, /\.staff-payment-secondary-tools\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\)/, "secondary payment tools reserve a full-width editor region instead of a second panel column");
 assert.match(page, /data-finalized-payment-correction-schedule/, "a correction can include a reviewed installment schedule without a second mutation");
+assert.match(page, /function initialInstallmentSettled\(item\)/,
+  "initial-payment visibility uses the projected initial installment rather than the enrollment-wide balance");
+assert.match(page, /remaining > 0 && !initialSettled && !awaitingReservedSettlement/,
+  "a settled initial installment does not leave the top-level receipt form visible while later installments remain");
 assert.match(page, /revisedInstallments: draft\.entries/, "the reviewed correction submits the same schedule snapshot that was displayed to staff");
 assert.match(page, /data-schedule-remove/, "schedule drafts expose a compact removal control only for removable rows");
 assert.match(page, /Төлөлтийн хуваарийн шаардлагатай нийт/, "schedule drafts show their authoritative required schedule total");
