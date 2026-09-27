@@ -10,6 +10,7 @@ import "../../../styles/global.css";
     <main class="staff-shell staff-settings-shell" aria-live="polite">
       <section id="usage-booting" class="staff-state"><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
       <section id="usage-denied" class="staff-state" hidden><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/settings/">Тохиргоо руу буцах</a></section>
+      <section id="usage-error" class="staff-state" hidden><h1>Хэрэглээний мэдээллийг авч чадсангүй</h1><p id="usage-load-error" class="staff-error" role="status"></p><button id="usage-retry" class="button secondary" type="button">Дахин ачаалах</button></section>
       <section id="usage-app" hidden>
         <div class="staff-page-heading"><div><p class="eyebrow">Админы хяналт</p><h1>Хэрэглээ, хамгаалалт</h1></div><a class="staff-back-link" href="/staff/settings/">Тохиргоо руу буцах</a></div>
         <p id="usage-message" class="staff-error" role="status" hidden></p>
@@ -37,7 +38,8 @@ import "../../../styles/global.css";
       async function load() { const response = await fetch("/api/staff/usage-protection", { credentials: "same-origin", cache: "no-store" }); if (!response.ok) throw new Error("Хэрэглээний мэдээллийг авч чадсангүй."); data = await response.json(); render(); }
       async function boot() { const session = await fetch("/api/staff/session", { credentials: "same-origin" }).then((response) => response.ok ? response.json() : null); if (!session?.authenticated || !(session.capabilities || []).includes("admin.settings.manage")) return show("usage-denied"); await load(); show("usage-app"); }
       q("#usage-policy-form").addEventListener("submit", async (event) => { event.preventDefault(); if (!event.currentTarget.reportValidity()) return; const button = event.currentTarget.querySelector("button"); button.disabled = true; button.textContent = "Хадгалж байна…"; try { const pauses = Object.fromEntries(["reminders", "waitlist", "internalNotices", "recovery"].map((key) => [key, q(`#usage-pauses [name="${key}"]`).checked])); const response = await fetch("/api/staff/usage-protection", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ warningCpuErrorCount: Number(q("#usage-warning-count").value), pauses, expectedUpdatedAt: data.policy.updatedAt }) }); const body = await response.json().catch(() => null); if (!response.ok) throw new Error(body?.error?.message || "Бодлогыг хадгалж чадсангүй."); data = body; render(); message("Бодлогыг хадгаллаа.", true); } catch (error) { message(error.message || "Бодлогыг хадгалж чадсангүй."); } finally { button.disabled = false; button.textContent = "Бодлогыг хадгалах"; } });
-      boot().catch((error) => { show("usage-app"); message(error.message || "Хэрэглээний мэдээллийг авч чадсангүй."); });
+      q("#usage-retry").addEventListener("click", () => { show("usage-booting"); boot().catch((error) => { q("#usage-load-error").textContent = error.message || "Хэрэглээний мэдээллийг авч чадсангүй."; show("usage-error"); }); });
+      boot().catch((error) => { q("#usage-load-error").textContent = error.message || "Хэрэглээний мэдээллийг авч чадсангүй."; show("usage-error"); });
     </script>
   </body>
 </html>
