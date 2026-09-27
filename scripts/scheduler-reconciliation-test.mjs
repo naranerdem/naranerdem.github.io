@@ -230,6 +230,26 @@ try {
     "idle ticks do not recreate milestones across payment history");
   assert.equal(sent.length, deliveredBeforeIdle, "an idle replay does not duplicate delivery");
 
+  // A due reminder still consults the authoritative credit-review state. Its
+  // context lookup must not also calculate an unused whole-child credit
+  // aggregate for every candidate.
+  const profileOne = seedRequest(database, 120, { due: true });
+  const profileTwo = seedRequest(database, 121, { due: true });
+  const deliveriesBeforeProfile = sent.length;
+  database.resetQueries();
+  const dueProfileStartedAt = performance.now();
+  await processDuePaymentReminders(env(database), new Date(now.getTime() + 20 * 60_000), provider, hourlyOptions);
+  const dueProfileMillis = performance.now() - dueProfileStartedAt;
+  const dueProfileQueries = database.executedQueries.map((entry) => entry.statement);
+  const reminderContexts = dueProfileQueries.filter((statement) => statement.includes("FROM registration_draft_child")
+    && statement.includes("payment_installment.id = ? OR"));
+  assert.equal(sent.length, deliveriesBeforeProfile + 2, "two independently due reminders retain their normal delivery path");
+  assert.ok(reminderContexts.length >= 2, "the due batch resolves a scoped context for each newly due reminder");
+  assert.ok(reminderContexts.every((statement) => !statement.includes("FROM child_credit_entry AS root")),
+    "the reminder context no longer duplicates the authoritative credit aggregate for each due item");
+  assert.equal(Number(database.query(`SELECT COUNT(*) AS count FROM outbound_email WHERE registration_draft_id IN (?, ?)`, [profileOne.id, profileTwo.id])[0].count), 2,
+    "the scoped reminder optimization retains one durable Outbox message per due registration");
+
   database.query(`UPDATE payment_credit SET status = 'refunded', refunded_at = ?, updated_at = ? WHERE id = 'credit-root'`, [stamp, stamp]);
   assert.equal(database.query("SELECT status FROM child_credit_reconciliation_queue WHERE canonical_student_id = 'credit-student'")[0].status, "pending",
     "a changed legacy credit is queued by the database write path");
@@ -292,6 +312,7 @@ try {
     "background operational capacity projection omits removed classes");
   console.log(`scheduler local timing: catch-up 98 requests in ${catchupMillis.toFixed(1)}ms; idle ${idleMillis.toFixed(1)}ms`);
   console.log(`scheduler idle prepared queries: ${idleQueries.length}; catch-up requests: 98; queue plan: ${plan.replaceAll("\n", " | ")}`);
+  console.log(`scheduler due-reminder profile: 2 messages, ${dueProfileQueries.length} prepared queries in ${dueProfileMillis.toFixed(1)}ms; duplicate credit aggregates removed from ${reminderContexts.length} context lookups`);
   console.log(`scheduler sweep plans: credit ${creditSweepPlan.replaceAll("\n", " | ")}; transfer ${transferSweepPlan.replaceAll("\n", " | ")}`);
   console.log("ok bounded scheduler reconciliation, due reminder delivery, credit recovery, interrupted claims, and inactive capacity filtering");
 } finally {

@@ -30,7 +30,7 @@ interface ReminderContext {
   installmentId: string; registrationDraftChildId: string; installmentNumber: number; rawAmountMnt: number; allocatedAmountMnt: number; amountMnt: number; dueAt: string | null; installmentStatus: string; holdStatus: string | null;
   enrollmentStatus: string | null; confirmationStatus: string | null; seatConfirmationApproved: number | null;
   staffOutstandingPaymentApproved: number;
-  availableCreditMnt: number; conditionalFailureAwaitingDeadline: number;
+  conditionalFailureAwaitingDeadline: number;
   parentClaimed: number; bankName: string | null; accountHolderName: string | null; accountNumber: string | null;
   iban: string | null; transferInstruction: string | null;
 }
@@ -265,10 +265,6 @@ async function contextForMilestone(env: WorkerEnv, milestone: MilestoneRow): Pro
     payment_installment.amount_mnt - COALESCE(SUM(CASE WHEN allocated_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0)
       - COALESCE((SELECT SUM(-credit_entry.amount_mnt) FROM child_credit_entry AS credit_entry
         WHERE credit_entry.payment_installment_id = payment_installment.id AND credit_entry.entry_kind = 'credit_application'), 0) AS amountMnt,
-    COALESCE((SELECT SUM(root.amount_mnt + COALESCE((SELECT SUM(debit.amount_mnt) FROM child_credit_entry AS debit WHERE debit.origin_entry_id = root.id), 0))
-      FROM child_credit_entry AS root WHERE (root.registration_draft_child_id = registration_draft_child.id
-        OR (registration_draft_child.canonical_student_id IS NOT NULL AND root.canonical_student_id = registration_draft_child.canonical_student_id))
-        AND root.amount_mnt > 0), 0) AS availableCreditMnt,
     payment_installment.status AS installmentStatus, registration_capacity_hold.status AS holdStatus,
     enrollment.status AS enrollmentStatus, payment_confirmation.status AS confirmationStatus,
     payment_confirmation.seat_confirmation_approved AS seatConfirmationApproved,
