@@ -2341,11 +2341,12 @@ try {
   assert.ok(count(database, "guardian_account") >= 3, "routine sufficient payments and teacher-approved partials become canonical guardians only after finalization");
   assert.ok(count(database, "student") >= 3, "routine sufficient payments and teacher-approved partials create canonical students while ordinary partial or released payments do not");
 
-  // The historical closure path intentionally fills this shared fixture before
-  // its final assertions. A receipt-correction-only run expands it so the
-  // focused financial regression can reach its isolated fixture.
+  // Earlier cases intentionally fill this shared class. The following
+  // email-closure fixture and optional receipt-correction fixture each need
+  // independent capacity rather than inheriting those reservations.
+  database.query("UPDATE class_session SET capacity = 100, updated_at = ? WHERE id = 'class-second-offering'", [iso(120)]);
+
   if (process.env.PAYMENT_RECEIPT_CORRECTION_ONLY) {
-    database.query("UPDATE class_session SET capacity = 100, updated_at = ? WHERE id = 'class-second-offering'", [iso(120)]);
     database.query(`UPDATE offering_course_pricing SET first_installment_amount_mnt = 650000,
       second_installment_amount_mnt = 650000, updated_at = ? WHERE activity_offering_id = 'offering-test'`, [iso(120)]);
     database.query(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 0, updated_at = ? WHERE singleton = 1`, [iso(120)]);
@@ -2579,6 +2580,41 @@ try {
     INSERT INTO enrollment_referral_code (id, enrollment_id, student_id, code, status, activated_at, is_test, created_at, updated_at)
     VALUES ('referrer-code', 'referrer-enrollment', 'referrer-student', 'NE-REF2345', 'active', ?, 0, ?, ?);`,
   Array.from({ length: 35 }, () => iso()));
+  database.query(`INSERT INTO registration_draft (
+      id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship,
+      primary_phone, email, normalized_email, home_address, payment_plan_code,
+      parent_rules_version, student_rules_version, status, expires_at, is_test, created_at, updated_at
+    ) VALUES ('referrer-draft', '${"a".repeat(64)}', 'year-production', 'Уригч асран', 'Ээж',
+      '99110000', 'referrer@example.test', 'referrer@example.test', 'Тест хаяг', 'single',
+      'test', 'test', 'awaiting_initial_payment', ?, 0, ?, ?);
+    INSERT INTO registration_draft_child (
+      id, registration_draft_id, position, surname, given_name, gender, date_of_birth,
+      current_grade, returning_status, selected_stage_code, selected_class_session_id, status,
+      canonical_enrollment_id, is_test, created_at, updated_at
+    ) VALUES ('referrer-draft-child', 'referrer-draft', 0, 'Уригч', 'Хүүхэд', 'female', '2014-01-01',
+      '5', 'new', 'stage_1', 'class-production', 'awaiting_initial_payment', 'referrer-enrollment', 0, ?, ?);
+    INSERT INTO payment_request (id, registration_draft_id, payment_reference, is_test, created_at, updated_at)
+    VALUES ('referrer-payment-request', 'referrer-draft', 'NE-REFPAY', 0, ?, ?);
+    INSERT INTO payment_installment (
+      id, payment_request_id, registration_draft_child_id, installment_number, installment_kind,
+      amount_mnt, original_due_at, effective_due_at, status, canonical_enrollment_id, paid_at,
+      is_test, created_at, updated_at
+    ) VALUES ('referrer-installment', 'referrer-payment-request', 'referrer-draft-child', 1, 'initial',
+      800000, ?, ?, 'paid', 'referrer-enrollment', ?, 0, ?, ?);
+    INSERT INTO received_payment (
+      id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status,
+      confirmed_at, idempotency_key, is_test, created_at, updated_at
+    ) VALUES ('referrer-receipt', 'referrer-payment-request', 800000, ?, 'staff_manual_bank', 'confirmed',
+      ?, 'referrer-qualifying-payment', 0, ?, ?);
+    INSERT INTO payment_allocation (
+      id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at,
+      is_test, created_at
+    ) VALUES ('referrer-allocation', 'referrer-receipt', 'referrer-installment', 800000, ?, 0, ?);
+    INSERT INTO payment_confirmation (
+      id, received_payment_id, payment_request_id, status, finalize_after, finalized_at,
+      is_test, created_at, updated_at
+    ) VALUES ('referrer-confirmation', 'referrer-receipt', 'referrer-payment-request', 'finalized', ?, ?, 0, ?, ?);`,
+  [iso(60), ...Array.from({ length: 21 }, () => iso())]);
   const productionEnabled = env(database, {
     APP_ENV: "production", REGISTRATION_WRITE_ENABLED: "true", EMAIL_ENABLED: "false", AUTH_EMAIL_ENABLED: "false",
     TURNSTILE_SITE_KEY: "production-site-key", TURNSTILE_SECRET_KEY: "production-secret",
@@ -3305,7 +3341,7 @@ try {
     { receiptId: erroneousReceipt.id, amountMnt: 650000, status: "undone", seatApproved: 1 },
     { receiptId: corrected.correctedPaymentId, amountMnt: 400000, status: "finalized", seatApproved: 1 },
   ], "the original receipt remains auditable while only the linked 400k replacement contributes to projections");
-  assert.deepEqual(database.query(`SELECT installment_kind AS kind, amount_mnt AS amountMnt, status,
+  assert.deepEqual(database.query(`SELECT installment_kind AS kind, amount_mnt AS amountMnt, payment_installment.status AS status,
       COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS paidMnt
     FROM payment_installment LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
@@ -3330,7 +3366,7 @@ try {
       { amountMnt: 650000, dueOn: "2027-02-28" },
     ],
   });
-  assert.deepEqual(partialInstallmentSchedule.entries.map((entry) => entry.amountMnt), [400000, 250000, 650000],
+  assert.deepEqual(partialInstallmentSchedule.revised.map((entry) => entry.amountMnt), [400000, 250000, 650000],
     "a partially paid installment keeps its settled 400k as a protected schedule entry while the unpaid 250k is rescheduled");
   await assert.rejects(previewInstallmentScheduleRevision(env(database), paymentStaff, {
     paymentRequestId: receiptCorrectionRequest.id,
