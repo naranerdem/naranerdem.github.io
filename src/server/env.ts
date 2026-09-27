@@ -40,6 +40,11 @@ export interface WorkerEnv {
   TURNSTILE_SECRET_KEY?: string;
   STAFF_AUTH_TURNSTILE_SITE_KEY?: string;
   STAFF_AUTH_TURNSTILE_SECRET_KEY?: string;
+  // Optional account-scoped read-only analytics credentials. These are Worker
+  // secrets, never browser configuration or database data.
+  CLOUDFLARE_ANALYTICS_TOKEN?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_ANALYTICS_WORKER_NAME?: string;
   STAFF_LOGIN_RATE_LIMITER?: WorkerRateLimiter;
   DB: D1Database;
 }

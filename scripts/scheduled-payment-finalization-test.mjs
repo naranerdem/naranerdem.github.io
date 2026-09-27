@@ -24,8 +24,12 @@ try {
     assert.match(wrangler, new RegExp(cron.replaceAll("*", "\\*").replaceAll(",", ",")), `${kind} cron is deployed`);
   }
   assert.equal(scheduledWorkKind("*/1 * * * *"), null, "the legacy combined scheduler expression no longer dispatches work");
-  assert.equal(Object.keys(SCHEDULED_CRONS).length, 1,
-    "each Worker uses one shared expression for staggered hourly scheduler work");
+  assert.equal(Object.keys(SCHEDULED_CRONS).length, 2,
+    "each Worker keeps the isolated scheduler expression plus one bounded usage collector");
+  assert.equal(SCHEDULED_CRONS.usageProtection, "*/15 * * * *",
+    "usage collection is explicitly bounded to quarter-hourly execution");
+  assert.equal(Object.keys(SCHEDULED_CRONS).length * 2, 4,
+    "production and staging together remain within the current five-trigger Free-plan account limit");
   assert.deepEqual([
     backgroundWorkKind(new Date("2026-09-20T00:01:00.000Z")),
     backgroundWorkKind(new Date("2026-09-20T00:13:00.000Z")),

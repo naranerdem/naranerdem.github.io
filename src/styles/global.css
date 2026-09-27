@@ -5115,6 +5115,32 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
 .public-prose p { margin: 0 0 1rem; }
 .homepage-secondary-actions { margin-bottom: clamp(2rem, 5vw, 4rem); }
 
+.usage-protection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.65rem;
+  margin: 0.8rem 0;
+}
+
+.usage-protection-grid div {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem 0.7rem;
+}
+
+.usage-protection-grid dt { color: var(--muted); font-size: 0.8rem; }
+.usage-protection-grid dd { margin: 0.2rem 0 0; font-weight: 700; overflow-wrap: anywhere; }
+
+#usage-pauses {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.65rem 0.75rem;
+}
+
+#usage-pauses label { display: flex; align-items: center; gap: 0.55rem; min-height: 2.25rem; }
+
 @media (max-width: 32rem) {
   html[data-public-font="serif"] .public-page,
   html[data-public-font="serif"] .register-page,

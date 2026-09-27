@@ -127,6 +127,7 @@ import { getTeacherDashboardPreferences, TeacherDashboardPreferencesError, updat
 import { PublicQrRedirectSettingsError, updatePublicQrRedirectSettings } from "../public-qr-redirects";
 import { EmailArchiveBccError, getEmailArchiveBccSetting, updateEmailArchiveBccSetting } from "../staff/email-archive-bcc";
 import { PublicSeatCountThresholdError, updatePublicSeatCountThreshold } from "../staff/public-seat-count-threshold";
+import { UsageProtectionError, getUsageProtectionOverview, updateUsageProtectionPolicy } from "../staff/usage-protection";
 import { DiscountPolicyError, reverseDiscountAward, updateDiscountPolicySetting } from "../services/discounts";
 import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
 import { RegistrationCorrectionError, registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } from "../staff/registration-corrections";
@@ -2423,6 +2424,43 @@ export async function handleApiRequest(
     if (request.method !== "GET") return methodNotAllowed();
     const denied = await requireStaffCapability(request, env, "admin.staff.manage");
     return denied ?? json({ ok: true, capability: "admin.staff.manage" }, 200, { "Cache-Control": "no-store" });
+  }
+
+  if (path === "/api/staff/usage-protection") {
+    const denied = await requireStaffCapability(request, env, "admin.settings.manage");
+    if (denied) return denied;
+    if (request.method === "GET") {
+      try {
+        return json(await getUsageProtectionOverview(env), 200, { "Cache-Control": "no-store" });
+      } catch {
+        return error("internal_error", "Хэрэглээний мэдээллийг авч чадсангүй.", 500, { "Cache-Control": "no-store" });
+      }
+    }
+    if (request.method !== "POST") return methodNotAllowed("GET, POST");
+    try {
+      requireSameOrigin(request, env);
+    } catch (caught) {
+      return staffSecurityError(caught) ?? error("forbidden", "Хүсэлтийг зөвшөөрсөнгүй.", 403, { "Cache-Control": "no-store" });
+    }
+    try {
+      const payload = await request.json() as Record<string, unknown>;
+      const principal = await staffPrincipalForRequest(request, env);
+      if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+      const policy = await updateUsageProtectionPolicy(env, principal, {
+        warningCpuErrorCount: Number(payload.warningCpuErrorCount), pauses: payload.pauses,
+        expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+      });
+      return json({ ...(await getUsageProtectionOverview(env)), policy }, 200, { "Cache-Control": "no-store" });
+    } catch (caught) {
+      if (caught instanceof UsageProtectionError) {
+        const status = caught.code === "forbidden" ? 403 : caught.code === "conflict" ? 409 : 400;
+        const message = caught.code === "forbidden" ? "Энэ тохиргоог өөрчлөх эрх алга."
+          : caught.code === "conflict" ? "Бодлого өөр газраас шинэчлэгдсэн байна. Хуудсыг шинэчлээд шалгана уу."
+            : "Бодлогын утгыг шалгана уу.";
+        return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", message, status, { "Cache-Control": "no-store" });
+      }
+      return error("invalid_request", "Бодлогын утгыг шалгана уу.", 400, { "Cache-Control": "no-store" });
+    }
   }
 
   return authNotFound();

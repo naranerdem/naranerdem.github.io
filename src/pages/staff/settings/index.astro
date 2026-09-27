@@ -26,6 +26,7 @@ import "../../../styles/global.css";
         <section id="email-archive-bcc-setting" class="staff-operation-section" hidden></section>
         <section id="public-qr-setting" class="staff-operation-section" hidden></section>
         <section id="teacher-dashboard-setting" class="staff-operation-section" hidden></section>
+        <a id="usage-protection-link" class="staff-settings-link" href="/staff/settings/usage/" hidden>Хэрэглээ, хамгаалалт</a>
         <a id="auth-link" class="staff-settings-link" href="/staff/settings/auth/" hidden>Нэвтрэх хугацааны тохиргоо</a>
       </section>
     </main>
@@ -48,6 +49,7 @@ import "../../../styles/global.css";
       async function refresh(success = "") { state.data = await getOverview(); if (state.canManageAuth) { const response = await fetch("/api/staff/settings/email-archive-bcc", { credentials: "same-origin", cache: "no-store" }); if (response.ok) state.data.emailArchiveBccSetting = (await response.json()).setting; } render(); message(success, Boolean(success)); }
       function render() {
         q("#auth-link").hidden = !state.canManageAuth;
+        q("#usage-protection-link").hidden = !state.canManageAuth;
         const annualStart = q("#annual-start-setting"); const setting = state.data?.annualCourseStartDefault;
         annualStart.hidden = !state.canManageAuth || !setting;
         annualStart.innerHTML = annualStart.hidden ? "" : `<details><summary>Жилийн сургалтын эхлэх өдрийн анхны утга</summary><form id="annual-start-form" class="staff-compact-form staff-settings-secondary"><label>Сар <input id="annual-start-month" type="number" min="1" max="12" required value="${setting.month}" /></label><label>Өдөр <input id="annual-start-day" type="number" min="1" max="31" required value="${setting.day}" /></label><div class="staff-form-actions staff-wide"><button class="button secondary" type="submit">Хадгалах</button></div></form></details>`;

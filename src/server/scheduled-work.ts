@@ -3,12 +3,14 @@ import { reconcileInternalEnrollmentConfirmationNotices } from "./email/registra
 import { finalizeDuePaymentConfirmations, type PaymentFinalizationRecovery } from "./staff/payment-reconciliation";
 import { processDuePaymentReminders } from "./staff/payment-reminders";
 import { reconcileWaitlistOffers } from "./services/waitlist-offers";
+import { USAGE_PROTECTION_COLLECTOR_CRON, collectUsageProtection, isBackgroundWorkPaused } from "./staff/usage-protection";
 
 // One shared expression creates five staggered hourly invocations per Worker.
-// The account's production and staging Workers therefore use two of the Free
-// plan's five Cron Triggers while keeping expensive concerns isolated.
+// Together with one separate usage collector per environment, production and
+// staging use four of the Free plan's five Cron Triggers.
 export const SCHEDULED_CRONS = {
   background: "1,13,25,37,49 * * * *",
+  usageProtection: USAGE_PROTECTION_COLLECTOR_CRON,
 } as const;
 
 export type ScheduledWorkKind = keyof typeof SCHEDULED_CRONS;
@@ -39,17 +41,19 @@ export function backgroundWorkKind(now: Date): BackgroundWorkKind | null {
 
 export async function runScheduledWork(cron: string, env: WorkerEnv, now: Date): Promise<ScheduledWorkKind | null> {
   const kind = scheduledWorkKind(cron);
-  if (kind === "background") {
+  if (kind === "usageProtection") {
+    await collectUsageProtection(env, now);
+  } else if (kind === "background") {
     const background = backgroundWorkKind(now);
     if (background === "dueFinalization") {
       await finalizeDuePaymentConfirmations(env, now, { dueBatchSize: 4, recovery: "none" });
-    } else if (background === "reminders") {
+    } else if (background === "reminders" && !(await isBackgroundWorkPaused(env, "reminders"))) {
       await processDuePaymentReminders(env, now, undefined, { reconciliationBatchSize: 8, dueBatchSize: 8 });
-    } else if (background === "waitlist") {
+    } else if (background === "waitlist" && !(await isBackgroundWorkPaused(env, "waitlist"))) {
       await reconcileWaitlistOffers(env, now, 2);
-    } else if (background === "internalNotices") {
+    } else if (background === "internalNotices" && !(await isBackgroundWorkPaused(env, "internalNotices"))) {
       await reconcileInternalEnrollmentConfirmationNotices(env, now, 4);
-    } else if (background === "recovery") {
+    } else if (background === "recovery" && !(await isBackgroundWorkPaused(env, "recovery"))) {
       await finalizeDuePaymentConfirmations(env, now, {
         processDue: false, recovery: scheduledRecoverySlice(now), recoveryBatchSize: 1,
       });
