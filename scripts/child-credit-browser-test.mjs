@@ -1329,7 +1329,15 @@ try {
     await finalPayment.locator('button[type="submit"]').click();
     assert.ok((await finalResponse).ok(), "the final ordinary payment settles the revised schedule without changing its receipt history");
     await page.reload();
-    await page.getByRole("button", { name: /Төлбөр баталгаажсан/ }).click();
+    const settledGroup = page.locator('[data-group-toggle="Төлбөр баталгаажсан"]');
+    if (await settledGroup.getAttribute("aria-expanded") === "true") {
+      await settledGroup.click();
+      assert.equal(await settledGroup.getAttribute("aria-expanded"), "false", "the fully paid group can be closed through its top-level control");
+    }
+    await settledGroup.click();
+    await settledGroup.waitFor({ state: "visible" });
+    assert.equal(await settledGroup.getAttribute("aria-expanded"), "true", "the fully paid group opens through its explicit top-level control");
+    await row.waitFor({ state: "visible" });
     const settledDetail = row.getByRole("button", { name: "Нээх" });
     if (await settledDetail.isVisible().catch(() => false)) await settledDetail.click();
     await row.locator('[data-payment-open]').click();
@@ -1356,7 +1364,7 @@ try {
         body: JSON.stringify(payload),
       });
       const body = await response.json();
-      return { status: response.status, code: body.code, message: body.error, action: payload.action };
+      return { status: response.status, code: body.error?.code, message: body.error?.message, action: payload.action };
     }, { paymentRequestId: settledProjection.paymentRequestId, registrationDraftChildId: childId });
     assert.deepEqual(noOutstandingPreview, {
       status: 409,
