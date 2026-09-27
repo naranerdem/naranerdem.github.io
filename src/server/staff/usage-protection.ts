@@ -201,7 +201,9 @@ export async function collectUsageProtection(env: WorkerEnv, nowDate = new Date(
     if (!response.ok || !Array.isArray(groups)) throw new Error("analytics_unavailable");
     const versions = safeVersions(groups);
     state = {
-      collectorStatus: "available", source: "cloudflare_graphql_workers", sampled: 1,
+      // The bounded query does not return sampling metadata. Do not label a
+      // successful aggregate as sampled merely because it came from analytics.
+      collectorStatus: "available", source: "cloudflare_graphql_workers", sampled: 0,
       workerInvocations: versions.reduce((total, entry) => total + (entry.invocations ?? 0), 0),
       workerErrors: versions.reduce((total, entry) => total + (entry.errors ?? 0), 0),
       // This account query does not expose a CPU-limit counter or D1 rows.

@@ -86,7 +86,7 @@ try {
   assert.equal(observed.usage.workerErrors, 2);
   assert.equal(observed.usage.cpuLimitErrors, null, "missing provider CPU field stays unavailable rather than becoming elapsed time");
   assert.equal(observed.usage.d1RowsRead, null, "D1 usage remains explicitly unavailable when the provider response lacks it");
-  assert.equal(observed.collector.sampled, true);
+  assert.equal(observed.collector.sampled, false, "sampling remains unknown unless Cloudflare reports it");
   assert.equal(database.prepared.filter((query) => query.includes("usage_protection_cache")).length >= 2, true, "collector uses a singleton cache read/write path, not a business-history scan");
   assert.equal(usage.usageProtectionEvaluation(updated, { cpuLimitErrors: 3 }, "free").observationOnly, true, "Free policy stays in observation mode");
   assert.equal(usage.usageProtectionEvaluation(updated, { cpuLimitErrors: 3 }, "paid").cpuWarning, true, "Paid uses the same warning semantics without a billing change");
