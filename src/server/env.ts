@@ -45,6 +45,7 @@ export interface WorkerEnv {
   CLOUDFLARE_ANALYTICS_TOKEN?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_ANALYTICS_WORKER_NAME?: string;
+  CLOUDFLARE_ANALYTICS_D1_DATABASE_ID?: string;
   STAFF_LOGIN_RATE_LIMITER?: WorkerRateLimiter;
   DB: D1Database;
 }

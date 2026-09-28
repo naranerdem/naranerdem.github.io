@@ -19,20 +19,18 @@ Configure these Worker secrets only after a read-only rollout review:
 - `CLOUDFLARE_ANALYTICS_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_ANALYTICS_WORKER_NAME`
+- `CLOUDFLARE_ANALYTICS_D1_DATABASE_ID`
 
 The token must be restricted to the intended account with only **Account →
 Account Analytics → Read**. It needs no D1 write, Worker edit, route, billing,
-or account-administration permission. The current bounded query stores Worker
-invocation and general-error sums for a rolling 24-hour window. Its warning
-threshold applies only to that general-error sum; it is not a CPU-limit alert.
-Cloudflare's documented Workers query exposes CPU percentiles rather than a
-total CPU counter, so CPU-limit failures remain unavailable until a token-backed
-schema probe identifies a distinct outcome field. D1 analytics does expose
-`rowsRead` and `rowsWritten`, but its documented dataset is date-bucketed and
-also requires the bound database ID; it is intentionally not mixed into the
-rolling Worker window until the account schema validates the exact combined
-query. The panel says these values are unavailable rather than estimating them
-from elapsed time or query counts.
+or account-administration permission. The current bounded GraphQL request
+stores Worker invocation and general-error sums for a rolling 24-hour window,
+plus D1 `rowsRead`/`rowsWritten` for the most recent completed UTC day. Those
+windows are shown separately. Its warning threshold applies only to the general
+Worker-error sum; it is not a CPU-limit alert. Cloudflare's documented Workers
+query exposes CPU percentiles by outcome group, not an additive total CPU or a
+CPU-limit-failure counter. The panel therefore leaves CPU-limit failures
+unavailable rather than estimating them from elapsed time or query counts.
 
 The policy cache is held for up to 60 seconds in a warm Worker isolate. A manual
 pause therefore propagates before a later background unit begins, usually on

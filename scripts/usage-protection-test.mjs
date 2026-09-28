@@ -70,14 +70,27 @@ try {
   assert.equal(database.query("SELECT COUNT(*) AS count FROM audit_event WHERE action = 'usage_protection_policy_changed'")[0].count, 1, "policy change is audited");
 
   let fetchCalls = 0;
-  const configured = { ...baseEnv, CLOUDFLARE_ANALYTICS_TOKEN: "test-token", CLOUDFLARE_ACCOUNT_ID: "account", CLOUDFLARE_ANALYTICS_WORKER_NAME: "naran-erdem-staging" };
+  const configured = {
+    ...baseEnv,
+    CLOUDFLARE_ANALYTICS_TOKEN: "test-token",
+    CLOUDFLARE_ACCOUNT_ID: "account",
+    CLOUDFLARE_ANALYTICS_WORKER_NAME: "naran-erdem-staging",
+    CLOUDFLARE_ANALYTICS_D1_DATABASE_ID: "d1-staging",
+  };
   const status = await usage.collectUsageProtection(configured, new Date("2026-09-27T12:00:00.000Z"), async (url, init) => {
     fetchCalls += 1;
     assert.equal(url, "https://api.cloudflare.com/client/v4/graphql");
     assert.match(init.headers.Authorization, /^Bearer test-token$/);
-    return new Response(JSON.stringify({ data: { viewer: { accounts: [{ workersInvocationsAdaptive: [
-      { dimensions: { scriptName: "naran-erdem-staging" }, sum: { requests: 12, errors: 2 } },
-    ] }] } } }), { status: 200 });
+    const request = JSON.parse(init.body);
+    assert.equal(request.variables.d1Start, "2026-09-26", "D1 uses the last complete UTC day");
+    assert.equal(request.variables.d1End, "2026-09-26");
+    assert.equal(request.variables.databaseId, "d1-staging");
+    return new Response(JSON.stringify({ data: { viewer: { accounts: [{
+      workersInvocationsAdaptive: [
+        { dimensions: { scriptName: "naran-erdem-staging", status: "success" }, sum: { requests: 12, errors: 2 }, quantiles: { cpuTimeP50: 4, cpuTimeP99: 9 } },
+      ],
+      d1AnalyticsAdaptiveGroups: [{ sum: { rowsRead: 345, rowsWritten: 12 } }],
+    }] } } }), { status: 200 });
   });
   assert.equal(status, "available");
   assert.equal(fetchCalls, 1, "one collector run makes one bounded account request");
@@ -85,7 +98,10 @@ try {
   assert.equal(observed.usage.workerInvocations, 12);
   assert.equal(observed.usage.workerErrors, 2);
   assert.equal(observed.usage.cpuLimitErrors, null, "missing provider CPU field stays unavailable rather than becoming elapsed time");
-  assert.equal(observed.usage.d1RowsRead, null, "D1 usage remains explicitly unavailable when the provider response lacks it");
+  assert.equal(observed.usage.d1RowsRead, 345, "D1 rows read comes from the provider's date-bucketed aggregate");
+  assert.equal(observed.usage.d1RowsWritten, 12);
+  assert.equal(observed.usage.d1PeriodStartsAt, "2026-09-26T00:00:00.000Z");
+  assert.equal(observed.usage.workerOutcomes[0].cpuTimeP99, 9, "CPU quantiles remain per-outcome metadata, not a total");
   assert.equal(observed.collector.sampled, false, "sampling remains unknown unless Cloudflare reports it");
   assert.equal(database.prepared.filter((query) => query.includes("usage_protection_cache")).length >= 2, true, "collector uses a singleton cache read/write path, not a business-history scan");
   assert.equal(usage.usageProtectionEvaluation(updated, { workerErrors: 3 }, "free").observationOnly, true, "Free policy stays in observation mode");
@@ -94,6 +110,7 @@ try {
   const stale = await usage.getUsageProtectionOverview(configured);
   assert.equal(stale.collector.status, "failed", "failed collection is explicit");
   assert.equal(stale.usage.workerInvocations, 12, "failed collection retains the last measured sample instead of clearing it");
+  assert.equal(stale.usage.d1RowsRead, 345, "failed collection retains the last D1 aggregate");
   assert.equal(await usage.isBackgroundWorkPaused(configured, "reminders"), true, "metrics failure cannot silently clear a manual pause");
   const resumed = await usage.updateUsageProtectionPolicy(configured, admin, {
     warningWorkerErrorCount: 3,
