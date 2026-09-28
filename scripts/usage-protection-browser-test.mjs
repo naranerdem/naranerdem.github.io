@@ -57,8 +57,18 @@ try {
     INSERT INTO staff_session (id, staff_account_id, session_token_hash, created_at, expires_at, last_seen_at, is_test, test_run_id)
       VALUES ('usage-admin-session', 'usage-admin', ${sql(tokenHash(adminToken))}, ${sql(now)}, '2027-12-31T00:00:00.000Z', ${sql(now)}, 1, 'usage-protection-browser'),
              ('usage-teacher-session', 'usage-teacher', ${sql(tokenHash(teacherToken))}, ${sql(now)}, '2027-12-31T00:00:00.000Z', ${sql(now)}, 1, 'usage-protection-browser');
+    INSERT INTO usage_protection_cache (
+      environment, collector_status, source, observed_at, attempted_at, period_starts_at, period_ends_at,
+      worker_invocations, worker_errors, worker_versions_json, d1_rows_read, d1_rows_written,
+      d1_period_starts_at, d1_period_ends_at, sampled, detail_code, updated_at
+    ) VALUES (
+      'staging', 'available', 'cloudflare_graphql_workers', '2026-09-28T01:30:12.000Z', '2026-09-28T01:30:12.000Z',
+      '2026-09-27T01:30:12.000Z', '2026-09-28T01:30:12.000Z', 137, 0,
+      '{"workerOutcomes":[{"scriptName":"naran-erdem-staging","status":"success","invocations":137,"errors":0,"cpuTimeP50":4,"cpuTimeP99":9}]}',
+      18791, 12, '2026-09-27T00:00:00.000Z', '2026-09-28T00:00:00.000Z', 0, 'cpu_not_exposed', '2026-09-28T01:30:12.000Z'
+    );
   `);
-  worker = spawn(process.execPath, [wranglerCli, "dev", "--env", "staging", "--local", "--persist-to", persistDir, "--ip", "127.0.0.1", "--port", String(port), "--var", `APP_ORIGIN:${baseUrl}`], { stdio: ["ignore", "pipe", "pipe"] });
+  worker = spawn(process.execPath, [wranglerCli, "dev", "--env", "staging", "--local", "--persist-to", persistDir, "--ip", "127.0.0.1", "--port", String(port), "--var", `APP_ORIGIN:${baseUrl}`, "--var", "CLOUDFLARE_ANALYTICS_TOKEN:local-test", "--var", "CLOUDFLARE_ACCOUNT_ID:local-account", "--var", "CLOUDFLARE_ANALYTICS_WORKER_NAME:naran-erdem-staging", "--var", "CLOUDFLARE_ANALYTICS_D1_DATABASE_ID:local-d1"], { stdio: ["ignore", "pipe", "pipe"] });
   worker.stdout.on("data", (chunk) => { output += String(chunk); });
   worker.stderr.on("data", (chunk) => { output += String(chunk); });
   await waitForWorker();
@@ -72,11 +82,15 @@ try {
   adminPage.on("request", (request) => { if (request.url().includes("/api/staff/usage-protection")) usageRequests += 1; });
   await adminPage.goto(`${baseUrl}/staff/settings/usage/`);
   await adminPage.locator("#usage-app").waitFor({ state: "visible" });
-  await assert.doesNotReject(() => adminPage.getByText("Тохируулаагүй", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => adminPage.getByText("Тохируулсан", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => adminPage.getByText(/18.?791\s*\/\s*12/).waitFor({ state: "visible" }));
   assert.equal(usageRequests, 1, "a page load reads the cached diagnostics once and does not launch collection work");
   await adminPage.screenshot({ path: path.join(screenshotDir, "usage-protection-admin-desktop.png"), fullPage: true });
   await adminPage.setViewportSize({ width: 390, height: 844 });
   await adminPage.screenshot({ path: path.join(screenshotDir, "usage-protection-admin-mobile.png"), fullPage: true });
+  await adminPage.reload();
+  await adminPage.locator("#usage-app").waitFor({ state: "visible" });
+  assert.equal(usageRequests, 2, "a second page load reads the same cache once and does not create a browser polling loop");
   await adminContext.close();
 
   const teacherContext = await signedInContext(teacherToken);
