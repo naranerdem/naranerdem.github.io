@@ -88,7 +88,7 @@ try {
   const adminPage = await adminContext.newPage();
   adminPage.on("pageerror", (error) => browserErrors.push(error.message));
   let usageRequests = 0;
-  adminPage.on("request", (request) => { if (request.url().includes("/api/staff/usage-protection")) usageRequests += 1; });
+  adminPage.on("request", (request) => { if (request.method() === "GET" && request.url().includes("/api/staff/usage-protection")) usageRequests += 1; });
   await adminPage.goto(`${baseUrl}/staff/settings/usage/`);
   await waitForUsageApp(adminPage, browserErrors);
   assert.equal(await adminPage.locator("html").getAttribute("lang"), "en", "the usage page is intentionally English only");
@@ -97,6 +97,19 @@ try {
   await assert.doesNotReject(() => adminPage.getByText("Last completed UTC day:", { exact: false }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => adminPage.getByText("CPU-limit failures", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => adminPage.getByText(/18.?791\s*\/\s*12/).waitFor({ state: "visible" }));
+  await adminPage.getByLabel("Protection preset").selectOption("heightened");
+  await adminPage.getByText(/Registration submission: 2 requests per IP \/ minute/i).waitFor({ state: "visible" });
+  await adminPage.getByLabel("Pause new public registrations").check();
+  await adminPage.getByLabel("Pause anonymous message and link requests").check();
+  await adminPage.getByRole("button", { name: "Save policy", exact: true }).click();
+  await adminPage.getByText("Policy saved.", { exact: true }).waitFor({ state: "visible" });
+  await assert.doesNotReject(() => adminPage.getByLabel("Pause new public registrations").isChecked());
+  await adminPage.getByLabel("Protection preset").selectOption("normal");
+  await adminPage.getByLabel("Pause new public registrations").uncheck();
+  await adminPage.getByLabel("Pause anonymous message and link requests").uncheck();
+  await adminPage.getByRole("button", { name: "Save policy", exact: true }).click();
+  await adminPage.getByText("Policy saved.", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await adminPage.getByLabel("Pause new public registrations").isChecked(), false, "the test restores the normal, unpaused local policy");
   await adminPage.locator(".usage-technical summary").click();
   await assert.doesNotReject(() => adminPage.getByText(/not total CPU consumption/i).waitFor({ state: "visible" }));
   assert.equal(usageRequests, 1, "a page load reads the cached diagnostics once and does not launch collection work");
@@ -147,7 +160,7 @@ try {
   const unavailablePage = await unavailableContext.newPage();
   const unavailablePayload = {
     environment: "staging",
-    policy: { warningWorkerErrorCount: 25, pauses: { reminders: false, waitlist: false, internalNotices: false, recovery: false }, updatedAt: "2026-09-28T01:30:12.000Z" },
+    policy: { warningWorkerErrorCount: 25, pauses: { reminders: false, waitlist: false, internalNotices: false, recovery: false }, publicProtection: { preset: "normal", pauseNewRegistrations: false, pauseAnonymousMessages: false }, updatedAt: "2026-09-28T01:30:12.000Z" },
     collector: { intervalMinutes: 15, configured: false, status: "unavailable", source: "unavailable", observedAt: null, attemptedAt: null, periodStartsAt: null, periodEndsAt: null, sampled: false, detailCode: "token_not_configured", propagationDelaySeconds: 60 },
     usage: null,
     evaluation: { workerErrorWarning: false },

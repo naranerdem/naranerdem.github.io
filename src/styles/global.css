@@ -5142,7 +5142,8 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
 .usage-protection-grid dd { margin: 0.2rem 0 0; font-weight: 700; overflow-wrap: anywhere; }
 .usage-protection-grid dd small { display: block; margin-top: 0.3rem; color: var(--muted); font-size: 0.76rem; font-weight: 500; line-height: 1.35; }
 
-#usage-pauses {
+#usage-pauses,
+#usage-public-protection {
   display: grid;
   gap: 0.35rem;
   border: 1px solid var(--line);
@@ -5150,9 +5151,11 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
   padding: 0.65rem 0.75rem;
 }
 
-#usage-pauses label { display: flex; align-items: center; gap: 0.55rem; min-height: 2.25rem; }
+#usage-pauses label,
+#usage-public-protection label { display: flex; align-items: center; gap: 0.55rem; min-height: 2.25rem; }
 
-#usage-pauses input[type="checkbox"] {
+#usage-pauses input[type="checkbox"],
+#usage-public-protection input[type="checkbox"] {
   flex: 0 0 1.15rem;
   inline-size: 1.15rem;
   min-block-size: 1.15rem;
@@ -5164,7 +5167,16 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
   max-width: 22rem;
 }
 
-#usage-policy-form #usage-pauses { grid-column: 1 / -1; }
+#usage-policy-form #usage-pauses,
+#usage-policy-form #usage-public-protection { grid-column: 1 / -1; }
+
+#usage-public-protection > label:first-of-type {
+  align-items: start;
+  flex-direction: column;
+  max-width: 24rem;
+}
+
+#usage-public-protection select { max-width: 16rem; }
 
 .usage-warning-field small {
   color: var(--muted);

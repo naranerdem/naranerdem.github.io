@@ -41,7 +41,21 @@ const admin = { staffAccountId: "admin", capabilities: ["admin.settings.manage"]
 const teacher = { staffAccountId: "teacher", capabilities: ["calendar.manage"] };
 
 try {
-  sqlite(readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort().map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
+  const migrationFiles = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
+  sqlite(migrationFiles.filter((file) => file < "0071_").map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
+  const preUpgrade = database.query("SELECT warning_cpu_error_count AS warningWorkerErrorCount, pause_reminders AS pauseReminders, updated_at AS updatedAt FROM usage_protection_policy WHERE singleton = 1")[0];
+  sqlite(readFileSync(path.join("migrations", "0071_public_request_protection.sql"), "utf8"));
+  const upgraded = database.query("SELECT warning_cpu_error_count AS warningWorkerErrorCount, pause_reminders AS pauseReminders, public_protection_preset AS preset, pause_public_registrations AS pauseRegistrations, pause_public_messages AS pauseMessages, updated_at AS updatedAt FROM usage_protection_policy WHERE singleton = 1")[0];
+  assert.deepEqual(
+    { warningWorkerErrorCount: upgraded.warningWorkerErrorCount, pauseReminders: upgraded.pauseReminders, updatedAt: upgraded.updatedAt },
+    preUpgrade,
+    "0071 preserves existing usage-policy settings and timestamp",
+  );
+  assert.deepEqual(
+    { preset: upgraded.preset, pauseRegistrations: upgraded.pauseRegistrations, pauseMessages: upgraded.pauseMessages },
+    { preset: "normal", pauseRegistrations: 0, pauseMessages: 0 },
+    "0071 defaults public protection to normal with both manual pauses off",
+  );
   for (const [source, target] of [["src/server/staff/usage-protection.ts", bundlePath], ["src/server/scheduled-work.ts", scheduledPath]]) {
     const result = spawnSync(path.resolve("node_modules/esbuild/bin/esbuild"), [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${target}`], { encoding: "utf8" });
     if (result.status !== 0) throw new Error(result.stderr);
@@ -57,17 +71,60 @@ try {
   assert.equal(database.query("SELECT COUNT(*) AS count FROM usage_protection_cache")[0].count, 0, "unconfigured collection does not churn D1 cache rows");
 
   await assert.rejects(usage.updateUsageProtectionPolicy(baseEnv, teacher, {
-    warningWorkerErrorCount: 1, pauses: defaults.policy.pauses, expectedUpdatedAt: defaults.policy.updatedAt,
+    warningWorkerErrorCount: 1, pauses: defaults.policy.pauses, publicProtection: defaults.policy.publicProtection,
+    expectedUpdatedAt: defaults.policy.updatedAt,
   }), /Usage protection/);
   const updated = await usage.updateUsageProtectionPolicy(baseEnv, admin, {
     warningWorkerErrorCount: 3,
     pauses: { reminders: true, waitlist: false, internalNotices: false, recovery: true },
+    publicProtection: { preset: "normal", pauseNewRegistrations: false, pauseAnonymousMessages: false },
     expectedUpdatedAt: defaults.policy.updatedAt,
   });
   assert.equal(updated.pauses.reminders, true);
   assert.equal(await usage.isBackgroundWorkPaused(baseEnv, "reminders"), true, "manual pause is read before a queued unit begins");
   assert.equal(await usage.isBackgroundWorkPaused(baseEnv, "waitlist"), false);
   assert.equal(database.query("SELECT COUNT(*) AS count FROM audit_event WHERE action = 'usage_protection_policy_changed'")[0].count, 1, "policy change is audited");
+
+  const limiterKeys = [];
+  const protectedEnv = {
+    ...baseEnv,
+    PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER: { async limit({ key }) { limiterKeys.push(key); return { success: true }; } },
+    PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER: { async limit() { return { success: true }; } },
+    PUBLIC_MESSAGE_NORMAL_RATE_LIMITER: { async limit() { return { success: true }; } },
+  };
+  await usage.guardPublicRequest(protectedEnv, new Request("https://example.test/api/registration/submit", { headers: { "CF-Connecting-IP": "203.0.113.24" } }), "registration");
+  await usage.guardPublicRequest(protectedEnv, new Request("https://example.test/api/registration/submit", { headers: { "CF-Connecting-IP": "203.0.113.24" } }), "registration");
+  assert.equal(limiterKeys.length, 2, "a protected request uses one provider-native limiter call");
+  assert.equal(limiterKeys[0], limiterKeys[1], "legitimate retries share the same anonymous limiter key");
+  assert.doesNotMatch(limiterKeys[0], /203\.0\.113\.24/, "the limiter receives a one-way key rather than a raw IP address");
+  const pausedPublic = await usage.updateUsageProtectionPolicy(protectedEnv, admin, {
+    warningWorkerErrorCount: 3,
+    pauses: { reminders: true, waitlist: false, internalNotices: false, recovery: true },
+    publicProtection: { preset: "heightened", pauseNewRegistrations: true, pauseAnonymousMessages: true },
+    expectedUpdatedAt: updated.updatedAt,
+  });
+  await assert.rejects(
+    usage.guardPublicRequest(protectedEnv, new Request("https://example.test/api/registration/submit"), "registration"),
+    (error) => error.code === "paused",
+    "a public pause rejects before registration work begins",
+  );
+  await assert.rejects(
+    usage.guardPublicRequest(protectedEnv, new Request("https://example.test/api/registration/email/change"), "message"),
+    (error) => error.code === "paused",
+    "the anonymous message pause is independent from registration and background pauses",
+  );
+  const restoredPublic = await usage.updateUsageProtectionPolicy(protectedEnv, admin, {
+    warningWorkerErrorCount: 3,
+    pauses: { reminders: true, waitlist: false, internalNotices: false, recovery: true },
+    publicProtection: { preset: "normal", pauseNewRegistrations: false, pauseAnonymousMessages: false },
+    expectedUpdatedAt: pausedPublic.updatedAt,
+  });
+  const unavailableProduction = { ...baseEnv, APP_ENV: "production" };
+  await assert.rejects(
+    usage.guardPublicRequest(unavailableProduction, new Request("https://example.test/api/registration/catalog"), "dynamic"),
+    (error) => error.code === "unavailable",
+    "a production binding failure fails closed without clearing a saved policy",
+  );
 
   let fetchCalls = 0;
   const configured = {
@@ -115,6 +172,7 @@ try {
   const resumed = await usage.updateUsageProtectionPolicy(configured, admin, {
     warningWorkerErrorCount: 3,
     pauses: { reminders: false, waitlist: false, internalNotices: false, recovery: false },
+    publicProtection: restoredPublic.publicProtection,
     expectedUpdatedAt: stale.policy.updatedAt,
   });
   assert.equal(await usage.isBackgroundWorkPaused(configured, "reminders"), false, "an audited manual resume restores later background work");
@@ -122,6 +180,7 @@ try {
   const repaused = await usage.updateUsageProtectionPolicy(configured, admin, {
     warningWorkerErrorCount: 3,
     pauses: { reminders: true, waitlist: false, internalNotices: false, recovery: true },
+    publicProtection: restoredPublic.publicProtection,
     expectedUpdatedAt: resumed.updatedAt,
   });
   assert.equal(repaused.pauses.reminders, true);
@@ -133,9 +192,12 @@ try {
   assert.equal(scheduled.backgroundWorkKind(new Date("2026-09-27T12:01:00.000Z")), "dueFinalization", "due finalization remains separately scheduled");
   assert.equal(scheduled.scheduledWorkKind(usage.USAGE_PROTECTION_COLLECTOR_CRON), "usageProtection", "usage collection has its own 15-minute trigger");
   const panel = readFileSync("src/pages/staff/settings/usage.astro", "utf8");
+  const router = readFileSync("src/server/api/router.ts", "utf8");
   assert.match(panel, /\/api\/staff\/usage-protection/, "admin diagnostics use one dedicated on-demand endpoint");
   assert.doesNotMatch(panel, /setInterval|setTimeout\(.*load/, "admin diagnostics do not continuously poll");
   assert.match(panel, /Zero-minute payment confirmation/, "panel documents that immediate confirmation remains synchronous");
+  assert.match(router, /path === "\/api\/registration\/submit"[\s\S]*?guardPublicRequest\(env, request, "registration"\)[\s\S]*?readPublicJson/, "registration limiting happens before JSON parsing and draft creation");
+  assert.match(router, /path === "\/api\/registration\/email\/change"[\s\S]*?guardPublicRequest\(env, request, "message"\)[\s\S]*?readPublicJson/, "message limiting happens before Turnstile and message-side work");
   console.log("ok usage-protection policy, bounded collector, observation mode, and pre-mutation background pauses");
 } finally {
   rmSync(directory, { recursive: true, force: true });

@@ -46,6 +46,36 @@
       "name": "STAFF_LOGIN_RATE_LIMITER",
       "namespace_id": "734101",
       "simple": { "limit": 8, "period": 60 }
+    },
+    {
+      "name": "PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER",
+      "namespace_id": "734102",
+      "simple": { "limit": 6, "period": 60 }
+    },
+    {
+      "name": "PUBLIC_REGISTRATION_HEIGHTENED_RATE_LIMITER",
+      "namespace_id": "734103",
+      "simple": { "limit": 2, "period": 60 }
+    },
+    {
+      "name": "PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER",
+      "namespace_id": "734104",
+      "simple": { "limit": 60, "period": 60 }
+    },
+    {
+      "name": "PUBLIC_DYNAMIC_HEIGHTENED_RATE_LIMITER",
+      "namespace_id": "734105",
+      "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      "name": "PUBLIC_MESSAGE_NORMAL_RATE_LIMITER",
+      "namespace_id": "734106",
+      "simple": { "limit": 4, "period": 60 }
+    },
+    {
+      "name": "PUBLIC_MESSAGE_HEIGHTENED_RATE_LIMITER",
+      "namespace_id": "734107",
+      "simple": { "limit": 1, "period": 60 }
     }
   ],
   "env": {
@@ -79,6 +109,36 @@
           "name": "STAFF_LOGIN_RATE_LIMITER",
           "namespace_id": "734101",
           "simple": { "limit": 8, "period": 60 }
+        },
+        {
+          "name": "PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER",
+          "namespace_id": "734202",
+          "simple": { "limit": 6, "period": 60 }
+        },
+        {
+          "name": "PUBLIC_REGISTRATION_HEIGHTENED_RATE_LIMITER",
+          "namespace_id": "734203",
+          "simple": { "limit": 2, "period": 60 }
+        },
+        {
+          "name": "PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER",
+          "namespace_id": "734204",
+          "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "PUBLIC_DYNAMIC_HEIGHTENED_RATE_LIMITER",
+          "namespace_id": "734205",
+          "simple": { "limit": 20, "period": 60 }
+        },
+        {
+          "name": "PUBLIC_MESSAGE_NORMAL_RATE_LIMITER",
+          "namespace_id": "734206",
+          "simple": { "limit": 4, "period": 60 }
+        },
+        {
+          "name": "PUBLIC_MESSAGE_HEIGHTENED_RATE_LIMITER",
+          "namespace_id": "734207",
+          "simple": { "limit": 1, "period": 60 }
         }
       ]
     }

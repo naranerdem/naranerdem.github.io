@@ -217,7 +217,7 @@ const formCopy = registrationFormCopy;
       let studentAcknowledged = false;
       let returnFocusTo = null;
       let storedDraft = null;
-      let runtimeConfig = { environment: "production", writeEnabled: false, turnstileSiteKey: null, authEmailEnabled: false, stagingNotice: null };
+      let runtimeConfig = { environment: "production", writeEnabled: false, turnstileSiteKey: null, authEmailEnabled: false, publicRegistrationPaused: false, protectionUnavailable: false, stagingNotice: null };
       let runtimeRules = { parentRulesVersion: registrationData.rulesContent.parent.version, studentRulesVersion: registrationData.rulesContent.student.version };
       let turnstileToken = "";
       let turnstileWidgetId = null;
@@ -1098,7 +1098,7 @@ const formCopy = registrationFormCopy;
           const result = await response.json();
           if (!response.ok) {
             const message = result?.error?.message || formCopy.messages.submitFailed;
-            if (response.status >= 400 && response.status < 500) {
+            if ((response.status >= 400 && response.status < 500) || result?.error?.code === "registration_unavailable") {
               showServerValidationError(message);
               return;
             }
@@ -1180,7 +1180,11 @@ const formCopy = registrationFormCopy;
         resultPanel.hidden = true;
         draftNotice.hidden = true;
         bootingPanel.hidden = false;
-        bootingPanel.querySelector("p").textContent = formCopy.messages.registrationClosed;
+        bootingPanel.querySelector("p").textContent = runtimeConfig.protectionUnavailable
+          ? "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй. Түр хүлээгээд дахин ачаална уу."
+          : runtimeConfig.publicRegistrationPaused
+            ? "Шинэ бүртгэлийг түр зогсоосон байна. Түр хүлээгээд дахин оролдоно уу."
+            : formCopy.messages.registrationClosed;
         document.body.dataset.registrationSurface = "closed";
       }
 

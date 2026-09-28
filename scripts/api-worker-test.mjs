@@ -70,6 +70,14 @@ function createDatabase(rows, options = {}) {
           return statement;
         },
         async first() {
+          if (sql.includes("FROM usage_protection_policy")) {
+            return {
+              enforcementMode: "observation", warningWorkerErrorCount: 1,
+              pauseReminders: 0, pauseWaitlist: 0, pauseInternalNotices: 0, pauseRecovery: 0,
+              publicProtectionPreset: "normal", pausePublicRegistrations: 0, pausePublicMessages: 0,
+              updatedAt: "2026-09-28T00:00:00.000Z",
+            };
+          }
           if (sql.includes("FROM public_seat_count_threshold_setting")) {
             return { remainingSeatThreshold: options.remainingSeatThreshold ?? null, updatedAt: "2026-09-13T00:00:00.000Z" };
           }
@@ -105,6 +113,7 @@ function createDatabase(rows, options = {}) {
             return { success: true, results: filtered };
           }
           if (options.catalogError) throw new Error("SQLITE_ERROR: no such table: class_session");
+          options.onCatalogQuery?.();
           assert.doesNotMatch(sql, /academic_year\.registration_status/, "registration windows, not the legacy academic-year state, control ordinary public opening");
           assert.match(sql, /enrollment\.status = 'awaiting_initial_payment'/);
           assert.doesNotMatch(sql, /class_session\.capacity\s*-/, "catalog capacity is derived only by the shared projection");
@@ -170,6 +179,7 @@ try {
   assert.ok(existsSync("dist/images/naran-erdem-logo.jpg"), "logo static asset was built");
 
   const stagingWorker = (await bundleWorker("staging", "staging")).default;
+  const allowedLimiter = { async limit() { return { success: true }; } };
   const stagingEnv = {
     APP_ENV: "staging",
     REGISTRATION_WRITE_ENABLED: "false",
@@ -191,6 +201,9 @@ try {
         }),
       ],
     }),
+    PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER: allowedLimiter,
+    PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER: allowedLimiter,
+    PUBLIC_MESSAGE_NORMAL_RATE_LIMITER: allowedLimiter,
   };
   const stagingHealth = await jsonResponse(stagingWorker, "/api/health", stagingEnv);
   assert.equal(stagingHealth.response.status, 200);
@@ -218,6 +231,15 @@ try {
     [{ code: "single", totalAmountMnt: 850000, initialAmountMnt: 850000 }, { code: "two_installment", totalAmountMnt: 900000, initialAmountMnt: 450000, secondAmountMnt: 450000, secondDueOn: "2026-11-01" }],
     "public catalog exposes only the configured course payment terms");
   assert.doesNotMatch(JSON.stringify(stagingCatalog.body), /account_number|accountNumber|bankName/i, "public catalog never exposes bank-transfer instructions");
+  let rejectedCatalogQueries = 0;
+  const limitedCatalog = await jsonResponse(stagingWorker, "/api/registration/catalog", {
+    ...stagingEnv,
+    DB: createDatabase([], { onCatalogQuery() { rejectedCatalogQueries += 1; } }),
+    PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER: { async limit() { return { success: false }; } },
+  });
+  assert.equal(limitedCatalog.response.status, 429, "a provider-native limit rejects an expensive public catalog request");
+  assert.equal(limitedCatalog.body.error.code, "registration_unavailable");
+  assert.equal(rejectedCatalogQueries, 0, "the catalog query is not reached after a rate-limit rejection");
   const thresholdCatalog = await jsonResponse(stagingWorker, "/api/registration/catalog", {
     ...stagingEnv,
     DB: createDatabase([
@@ -263,6 +285,9 @@ try {
     ], {
       calendarRows: [calendarRow("production-test-calendar", { isTest: 1 })],
     }),
+    PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER: allowedLimiter,
+    PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER: allowedLimiter,
+    PUBLIC_MESSAGE_NORMAL_RATE_LIMITER: allowedLimiter,
   };
   const productionHealth = await jsonResponse(productionWorker, "/api/health", productionEnv);
   assert.equal(productionHealth.response.status, 200);
@@ -307,6 +332,8 @@ try {
     writeEnabled: false,
     turnstileSiteKey: null,
     authEmailEnabled: false,
+    publicRegistrationPaused: false,
+    protectionUnavailable: false,
   });
 
   const failedCatalog = await jsonResponse(

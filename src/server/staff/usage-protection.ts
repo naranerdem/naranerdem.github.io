@@ -1,4 +1,5 @@
-import type { D1PreparedStatement, WorkerEnv } from "../env";
+import type { D1PreparedStatement, WorkerEnv, WorkerRateLimiter } from "../env";
+import { sha256 } from "../auth/crypto";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 
 export const USAGE_PROTECTION_COLLECTOR_CRON = "*/15 * * * *";
@@ -6,6 +7,21 @@ const POLICY_CACHE_MS = 60_000;
 
 export const PAUSABLE_BACKGROUND_WORK = ["reminders", "waitlist", "internalNotices", "recovery"] as const;
 export type PausableBackgroundWork = typeof PAUSABLE_BACKGROUND_WORK[number];
+export type PublicProtectionPreset = "normal" | "heightened";
+export type PublicRequestKind = "registration" | "dynamic" | "message";
+
+export const PUBLIC_REQUEST_LIMITS: Record<PublicProtectionPreset, Record<PublicRequestKind, { limit: number; periodSeconds: number }>> = {
+  normal: {
+    registration: { limit: 6, periodSeconds: 60 },
+    dynamic: { limit: 60, periodSeconds: 60 },
+    message: { limit: 4, periodSeconds: 60 },
+  },
+  heightened: {
+    registration: { limit: 2, periodSeconds: 60 },
+    dynamic: { limit: 20, periodSeconds: 60 },
+    message: { limit: 1, periodSeconds: 60 },
+  },
+};
 
 export interface UsageProtectionPolicy {
   enforcementMode: "observation";
@@ -13,6 +29,11 @@ export interface UsageProtectionPolicy {
   // GraphQL signal is total Worker errors, not a CPU-only counter.
   warningWorkerErrorCount: number;
   pauses: Record<PausableBackgroundWork, boolean>;
+  publicProtection: {
+    preset: PublicProtectionPreset;
+    pauseNewRegistrations: boolean;
+    pauseAnonymousMessages: boolean;
+  };
   updatedAt: string;
 }
 
@@ -35,6 +56,9 @@ interface StoredPolicy {
   pauseWaitlist: number;
   pauseInternalNotices: number;
   pauseRecovery: number;
+  publicProtectionPreset: PublicProtectionPreset;
+  pausePublicRegistrations: number;
+  pausePublicMessages: number;
   updatedAt: string;
 }
 
@@ -78,6 +102,11 @@ function toPolicy(row: StoredPolicy): UsageProtectionPolicy {
       internalNotices: Boolean(row.pauseInternalNotices),
       recovery: Boolean(row.pauseRecovery),
     },
+    publicProtection: {
+      preset: row.publicProtectionPreset,
+      pauseNewRegistrations: Boolean(row.pausePublicRegistrations),
+      pauseAnonymousMessages: Boolean(row.pausePublicMessages),
+    },
     updatedAt: row.updatedAt,
   };
 }
@@ -93,6 +122,7 @@ function audit(env: WorkerEnv, actor: StaffPrincipal, policy: UsageProtectionPol
       enforcementMode: policy.enforcementMode,
       warningWorkerErrorCount: policy.warningWorkerErrorCount,
       pauses: policy.pauses,
+      publicProtection: policy.publicProtection,
     }), env.APP_ENV, isTest, isTest ? "staff-settings" : null, now);
 }
 
@@ -100,7 +130,9 @@ export async function getUsageProtectionPolicy(env: WorkerEnv): Promise<UsagePro
   const row = await env.DB.prepare(`SELECT enforcement_mode AS enforcementMode,
     warning_cpu_error_count AS warningWorkerErrorCount, pause_reminders AS pauseReminders,
     pause_waitlist AS pauseWaitlist, pause_internal_notices AS pauseInternalNotices,
-    pause_recovery AS pauseRecovery, updated_at AS updatedAt
+    pause_recovery AS pauseRecovery, public_protection_preset AS publicProtectionPreset,
+    pause_public_registrations AS pausePublicRegistrations,
+    pause_public_messages AS pausePublicMessages, updated_at AS updatedAt
     FROM usage_protection_policy WHERE singleton = 1`).first<StoredPolicy>();
   if (!row) throw new UsageProtectionError("invalid");
   return toPolicy(row);
@@ -113,8 +145,83 @@ async function getCachedPolicy(env: WorkerEnv): Promise<UsageProtectionPolicy> {
   return value;
 }
 
+export async function getCachedUsageProtectionPolicy(env: WorkerEnv): Promise<UsageProtectionPolicy> {
+  return getCachedPolicy(env);
+}
+
 export async function isBackgroundWorkPaused(env: WorkerEnv, kind: PausableBackgroundWork): Promise<boolean> {
   return (await getCachedPolicy(env)).pauses[kind];
+}
+
+export class PublicRequestProtectionError extends Error {
+  constructor(
+    public readonly code: "paused" | "limited" | "unavailable",
+    public readonly kind: PublicRequestKind,
+    public readonly retryAfterSeconds: number,
+  ) {
+    super("Public request protection rejected the request.");
+  }
+}
+
+function rateLimiterFor(
+  env: WorkerEnv,
+  preset: PublicProtectionPreset,
+  kind: PublicRequestKind,
+): WorkerRateLimiter | undefined {
+  if (kind === "registration") return preset === "normal"
+    ? env.PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER
+    : env.PUBLIC_REGISTRATION_HEIGHTENED_RATE_LIMITER;
+  if (kind === "dynamic") return preset === "normal"
+    ? env.PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER
+    : env.PUBLIC_DYNAMIC_HEIGHTENED_RATE_LIMITER;
+  return preset === "normal"
+    ? env.PUBLIC_MESSAGE_NORMAL_RATE_LIMITER
+    : env.PUBLIC_MESSAGE_HEIGHTENED_RATE_LIMITER;
+}
+
+function clientIp(request: Request): string {
+  const candidate = request.headers.get("CF-Connecting-IP")?.trim() ?? "";
+  return /^[0-9a-fA-F:.]{3,64}$/.test(candidate) ? candidate : "unknown";
+}
+
+export async function guardPublicRequest(
+  env: WorkerEnv,
+  request: Request,
+  kind: PublicRequestKind,
+): Promise<UsageProtectionPolicy> {
+  let policy: UsageProtectionPolicy;
+  try {
+    policy = await getCachedPolicy(env);
+  } catch {
+    throw new PublicRequestProtectionError("unavailable", kind, 60);
+  }
+  if (kind === "registration" && policy.publicProtection.pauseNewRegistrations) {
+    throw new PublicRequestProtectionError("paused", kind, 60);
+  }
+  if (kind === "message" && policy.publicProtection.pauseAnonymousMessages) {
+    throw new PublicRequestProtectionError("paused", kind, 60);
+  }
+  const limiter = rateLimiterFor(env, policy.publicProtection.preset, kind);
+  if (!limiter) {
+    // Wrangler's local D1/browser harness does not emulate Rate Limiting.
+    // Deployed production fails closed; staging deployment binds independent
+    // counters, while local disposable coverage supplies explicit fakes.
+    if (env.APP_ENV === "production") {
+      throw new PublicRequestProtectionError("unavailable", kind, 60);
+    }
+    return policy;
+  }
+  const limits = PUBLIC_REQUEST_LIMITS[policy.publicProtection.preset][kind];
+  try {
+    const key = await sha256(`public-request/${kind}/ip/${clientIp(request)}`);
+    if (!(await limiter.limit({ key })).success) {
+      throw new PublicRequestProtectionError("limited", kind, limits.periodSeconds);
+    }
+  } catch (caught) {
+    if (caught instanceof PublicRequestProtectionError) throw caught;
+    throw new PublicRequestProtectionError("unavailable", kind, 60);
+  }
+  return policy;
 }
 
 function pausesFrom(value: unknown): Record<PausableBackgroundWork, boolean> | null {
@@ -128,26 +235,46 @@ function pausesFrom(value: unknown): Record<PausableBackgroundWork, boolean> | n
   return result;
 }
 
+function publicProtectionFrom(value: unknown): UsageProtectionPolicy["publicProtection"] | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  if ((source.preset !== "normal" && source.preset !== "heightened")
+    || typeof source.pauseNewRegistrations !== "boolean"
+    || typeof source.pauseAnonymousMessages !== "boolean") return null;
+  return {
+    preset: source.preset,
+    pauseNewRegistrations: source.pauseNewRegistrations,
+    pauseAnonymousMessages: source.pauseAnonymousMessages,
+  };
+}
+
 export async function updateUsageProtectionPolicy(
   env: WorkerEnv,
   actor: StaffPrincipal,
-  input: { warningWorkerErrorCount: number; pauses: unknown; expectedUpdatedAt: string },
+  input: { warningWorkerErrorCount: number; pauses: unknown; publicProtection: unknown; expectedUpdatedAt: string },
 ): Promise<UsageProtectionPolicy> {
   if (!hasStaffCapability(actor, "admin.settings.manage")) throw new UsageProtectionError("forbidden");
   const pauses = pausesFrom(input.pauses);
-  if (!Number.isInteger(input.warningWorkerErrorCount) || input.warningWorkerErrorCount < 0 || input.warningWorkerErrorCount > 100000 || !pauses || !input.expectedUpdatedAt) {
+  const publicProtection = publicProtectionFrom(input.publicProtection);
+  if (!Number.isInteger(input.warningWorkerErrorCount) || input.warningWorkerErrorCount < 0 || input.warningWorkerErrorCount > 100000 || !pauses || !publicProtection || !input.expectedUpdatedAt) {
     throw new UsageProtectionError("invalid");
   }
   const now = new Date().toISOString();
   const result = await env.DB.prepare(`UPDATE usage_protection_policy
     SET warning_cpu_error_count = ?, pause_reminders = ?, pause_waitlist = ?,
-      pause_internal_notices = ?, pause_recovery = ?, updated_at = ?
+      pause_internal_notices = ?, pause_recovery = ?, public_protection_preset = ?,
+      pause_public_registrations = ?, pause_public_messages = ?, updated_at = ?
     WHERE singleton = 1 AND updated_at = ?`).bind(
     input.warningWorkerErrorCount, Number(pauses.reminders), Number(pauses.waitlist),
-    Number(pauses.internalNotices), Number(pauses.recovery), now, input.expectedUpdatedAt,
+    Number(pauses.internalNotices), Number(pauses.recovery), publicProtection.preset,
+    Number(publicProtection.pauseNewRegistrations), Number(publicProtection.pauseAnonymousMessages),
+    now, input.expectedUpdatedAt,
   ).run();
   if ((result.meta?.changes ?? 0) !== 1) throw new UsageProtectionError("conflict");
-  const policy: UsageProtectionPolicy = { enforcementMode: "observation", warningWorkerErrorCount: input.warningWorkerErrorCount, pauses, updatedAt: now };
+  const policy: UsageProtectionPolicy = {
+    enforcementMode: "observation", warningWorkerErrorCount: input.warningWorkerErrorCount,
+    pauses, publicProtection, updatedAt: now,
+  };
   await audit(env, actor, policy, now).run();
   policyCache = { value: policy, expiresAt: Date.now() + POLICY_CACHE_MS };
   return policy;

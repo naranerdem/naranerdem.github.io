@@ -82,6 +82,11 @@ import {
   resolvePromotionIdentity,
 } from "../services/canonical-enrollment-promotion";
 import { TurnstileError, verifyStaffLoginTurnstile, verifyTurnstile } from "../security/turnstile";
+import {
+  getCachedUsageProtectionPolicy,
+  guardPublicRequest,
+  PublicRequestProtectionError,
+} from "../staff/usage-protection";
 import { registrationWriteEnabled } from "../security/operational-gates";
 import { hasStaffCapability, resolveStaffPrincipal, type StaffCapability } from "../staff/authorization";
 import {
@@ -258,6 +263,56 @@ function authEmailAvailable(env: WorkerEnv): boolean {
 
 function authNotFound(): Response {
   return error("not_found", "Хүссэн API зам олдсонгүй.", 404);
+}
+
+class PublicBodyLimitError extends Error {}
+
+async function readPublicJson<T>(request: Request, maxBytes: number): Promise<T> {
+  const declaredLength = Number(request.headers.get("Content-Length") ?? "");
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) throw new PublicBodyLimitError();
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("Missing JSON body.");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    bytes += next.value.byteLength;
+    if (bytes > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new PublicBodyLimitError();
+    }
+    chunks.push(next.value);
+  }
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(body)) as T;
+}
+
+function publicBodyLimitResponse(): Response {
+  return error("invalid_request", "Хүсэлтийн хэмжээ хэт том байна. Мэдээллээ багасгаад дахин оролдоно уу.", 413, { "Cache-Control": "no-store" });
+}
+
+function publicProtectionResponse(caught: unknown): Response | null {
+  if (!(caught instanceof PublicRequestProtectionError)) return null;
+  const retry = { "Cache-Control": "no-store", "Retry-After": String(caught.retryAfterSeconds) };
+  if (caught.code === "limited") {
+    return error("registration_unavailable", "Хэт олон хүсэлт ирсэн тул түр хүлээгээд дахин оролдоно уу.", 429, retry);
+  }
+  if (caught.code === "paused") {
+    const message = caught.kind === "registration"
+      ? "Шинэ бүртгэлийг түр зогсоосон байна. Түр хүлээгээд дахин оролдоно уу."
+      : "Шинэ баталгаажуулах холбоос, мэдэгдлийн хүсэлтийг түр зогсоосон байна. Түр хүлээгээд дахин оролдоно уу.";
+    return error("registration_unavailable", message, 503, retry);
+  }
+  const message = caught.kind === "dynamic"
+    ? "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй. Түр хүлээгээд дахин ачаална уу."
+    : "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй. Түр хүлээгээд дахин оролдоно уу.";
+  return error("registration_unavailable", message, 503, retry);
 }
 
 function staffLoginAccepted(attemptCookie?: string): Response {
@@ -585,8 +640,11 @@ export async function handleApiRequest(
     if (request.method !== "GET") return methodNotAllowed();
 
     try {
+      await guardPublicRequest(env, request, "dynamic");
       return json(await getRegistrationCatalog(env.DB, env.APP_ENV), 200, { "Cache-Control": "no-store" });
-    } catch {
+    } catch (caught) {
+      const protection = publicProtectionResponse(caught);
+      if (protection) return protection;
       return error("internal_error", "Бүртгэлийн мэдээллийг одоогоор авч чадсангүй.", 500);
     }
   }
@@ -608,23 +666,42 @@ export async function handleApiRequest(
 
   if (path === "/api/registration/config") {
     if (request.method !== "GET") return methodNotAllowed();
-    return json({
-      environment: env.APP_ENV,
-      writeEnabled: registrationWriteEnabled(env),
-      turnstileSiteKey: registrationWriteEnabled(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
-      authEmailEnabled: authEmailAvailable(env),
-    }, 200, { "Cache-Control": "no-store" });
+    try {
+      const policy = await getCachedUsageProtectionPolicy(env);
+      const paused = policy.publicProtection.pauseNewRegistrations;
+      return json({
+        environment: env.APP_ENV,
+        writeEnabled: registrationWriteEnabled(env) && !paused,
+        turnstileSiteKey: registrationWriteEnabled(env) && !paused ? env.TURNSTILE_SITE_KEY ?? null : null,
+        authEmailEnabled: authEmailAvailable(env),
+        publicRegistrationPaused: paused,
+        protectionUnavailable: false,
+      }, 200, { "Cache-Control": "no-store" });
+    } catch {
+      return json({
+        environment: env.APP_ENV,
+        writeEnabled: false,
+        turnstileSiteKey: null,
+        authEmailEnabled: authEmailAvailable(env),
+        publicRegistrationPaused: false,
+        protectionUnavailable: true,
+      }, 200, { "Cache-Control": "no-store" });
+    }
   }
 
   if (path === "/api/registration/bootstrap") {
     if (request.method !== "GET") return methodNotAllowed();
     try {
+      const policy = await guardPublicRequest(env, request, "dynamic");
+      const paused = policy.publicProtection.pauseNewRegistrations;
       return json({
         config: {
           environment: env.APP_ENV,
-          writeEnabled: registrationWriteEnabled(env),
-          turnstileSiteKey: registrationWriteEnabled(env) ? env.TURNSTILE_SITE_KEY ?? null : null,
+          writeEnabled: registrationWriteEnabled(env) && !paused,
+          turnstileSiteKey: registrationWriteEnabled(env) && !paused ? env.TURNSTILE_SITE_KEY ?? null : null,
           authEmailEnabled: authEmailAvailable(env),
+          publicRegistrationPaused: paused,
+          protectionUnavailable: false,
           stagingNotice: env.APP_ENV === "staging"
             ? "Туршилтын орчин — энд зөвхөн тест бүртгэл үүснэ. Бодит элсэлт, төлбөр үүсэхгүй."
             : null,
@@ -632,7 +709,9 @@ export async function handleApiRequest(
         catalog: await getRegistrationCatalog(env.DB, env.APP_ENV),
         courseRules: await getCourseRules(env),
       }, 200, { "Cache-Control": "no-store" });
-    } catch {
+    } catch (caught) {
+      const protection = publicProtectionResponse(caught);
+      if (protection) return protection;
       return error("internal_error", "Бүртгэлийн мэдээллийг одоогоор авч чадсангүй.", 500);
     }
   }
@@ -640,10 +719,16 @@ export async function handleApiRequest(
   if (path === "/api/registration/submit") {
     if (!registrationWriteEnabled(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
+    try {
+      await guardPublicRequest(env, request, "registration");
+    } catch (caught) {
+      return publicProtectionResponse(caught) ?? error("internal_error", "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй.", 503, { "Cache-Control": "no-store" });
+    }
     let payload: RegistrationSubmissionInput;
     try {
-      payload = await request.json() as RegistrationSubmissionInput;
-    } catch {
+      payload = await readPublicJson<RegistrationSubmissionInput>(request, 64 * 1024);
+    } catch (caught) {
+      if (caught instanceof PublicBodyLimitError) return publicBodyLimitResponse();
       return error("invalid_request", "Бүртгэлийн мэдээллээ шалгана уу.", 400);
     }
 
@@ -687,6 +772,8 @@ export async function handleApiRequest(
         registrationStatus,
       }, 202, { "Cache-Control": "no-store", "Set-Cookie": draft.accessCookie! });
     } catch (caught) {
+      const protection = publicProtectionResponse(caught);
+      if (protection) return protection;
       return registrationError(caught);
     }
   }
@@ -696,6 +783,7 @@ export async function handleApiRequest(
     if (!authEmailAvailable(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
     try {
+      await guardPublicRequest(env, request, "message");
       const draft = await draftForAccessToken(env.DB, readCookie(request, REGISTRATION_DRAFT_COOKIE));
       await claimRegistrationEmailSend(env.DB, draft);
       try {
@@ -707,6 +795,8 @@ export async function handleApiRequest(
       await markRegistrationEmailSent(env.DB, draft.id);
       return json({ ok: true, email: draft.email }, 202, { "Cache-Control": "no-store" });
     } catch (caught) {
+      const protection = publicProtectionResponse(caught);
+      if (protection) return protection;
       return registrationError(caught);
     }
   }
@@ -715,14 +805,20 @@ export async function handleApiRequest(
     if (!registrationWriteEnabled(env)) return authNotFound();
     if (!authEmailAvailable(env)) return authNotFound();
     if (request.method !== "POST") return methodNotAllowed("POST");
+    try {
+      await guardPublicRequest(env, request, "message");
+    } catch (caught) {
+      return publicProtectionResponse(caught) ?? error("internal_error", "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй.", 503, { "Cache-Control": "no-store" });
+    }
     let email = "";
     let turnstileToken = "";
     try {
-      const payload = await request.json() as { email?: unknown; turnstileToken?: unknown };
+      const payload = await readPublicJson<{ email?: unknown; turnstileToken?: unknown }>(request, 8 * 1024);
       if (typeof payload.email !== "string" || typeof payload.turnstileToken !== "string") throw new Error("invalid");
       email = payload.email;
       turnstileToken = payload.turnstileToken;
-    } catch {
+    } catch (caught) {
+      if (caught instanceof PublicBodyLimitError) return publicBodyLimitResponse();
       return error("invalid_request", "И-мэйл хаягаа зөв оруулна уу.", 400);
     }
     try {
@@ -738,6 +834,8 @@ export async function handleApiRequest(
       await markRegistrationEmailSent(env.DB, updated.id);
       return json({ ok: true, email: updated.email }, 202, { "Cache-Control": "no-store" });
     } catch (caught) {
+      const protection = publicProtectionResponse(caught);
+      if (protection) return protection;
       return registrationError(caught);
     }
   }
@@ -2448,6 +2546,7 @@ export async function handleApiRequest(
       if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
       const policy = await updateUsageProtectionPolicy(env, principal, {
         warningWorkerErrorCount: Number(payload.warningWorkerErrorCount), pauses: payload.pauses,
+        publicProtection: payload.publicProtection,
         expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
       });
       return json({ ...(await getUsageProtectionOverview(env)), policy }, 200, { "Cache-Control": "no-store" });
