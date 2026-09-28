@@ -53,6 +53,28 @@ async function waitForUsageApp(page, errors) {
   }
 }
 
+async function assertUsageMetricsRemainBelowStickyHeader(page, viewport, screenshotPath) {
+  await page.setViewportSize(viewport);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const initial = await page.evaluate(() => {
+    const header = document.querySelector(".site-header")?.getBoundingClientRect();
+    const main = document.querySelector(".staff-shell")?.getBoundingClientRect();
+    return { headerBottom: header?.bottom ?? null, mainTop: main?.top ?? null };
+  });
+  assert.ok(initial.headerBottom !== null && initial.mainTop !== null && initial.mainTop >= initial.headerBottom,
+    "the in-flow page content begins below the sticky header");
+  await page.locator(".usage-protection-grid > div").first().evaluate((node) => node.scrollIntoView({ block: "center" }));
+  const scrolled = await page.evaluate(() => {
+    const header = document.querySelector(".site-header")?.getBoundingClientRect();
+    const metric = document.querySelector(".usage-protection-grid > div")?.getBoundingClientRect();
+    return { headerBottom: header?.bottom ?? null, metricTop: metric?.top ?? null, metricBottom: metric?.bottom ?? null };
+  });
+  assert.ok(scrolled.headerBottom !== null && scrolled.metricTop !== null && scrolled.metricBottom !== null
+    && scrolled.metricTop >= scrolled.headerBottom && scrolled.metricBottom > scrolled.headerBottom,
+  "an ordinary in-page scroll keeps the selected metrics card visible below the header");
+  await page.screenshot({ path: screenshotPath });
+}
+
 try {
   runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "usage-protection local migrations");
   const adminToken = randomUUID();
@@ -113,8 +135,10 @@ try {
   await adminPage.locator(".usage-technical summary").click();
   await assert.doesNotReject(() => adminPage.getByText(/not total CPU consumption/i).waitFor({ state: "visible" }));
   assert.equal(usageRequests, 1, "a page load reads the cached diagnostics once and does not launch collection work");
+  await assertUsageMetricsRemainBelowStickyHeader(adminPage, { width: 1280, height: 900 }, path.join(screenshotDir, "usage-protection-admin-desktop-viewport.png"));
   await adminPage.screenshot({ path: path.join(screenshotDir, "usage-protection-admin-desktop.png"), fullPage: true });
   await adminPage.setViewportSize({ width: 390, height: 844 });
+  await assertUsageMetricsRemainBelowStickyHeader(adminPage, { width: 390, height: 844 }, path.join(screenshotDir, "usage-protection-admin-mobile-viewport.png"));
   await adminPage.screenshot({ path: path.join(screenshotDir, "usage-protection-admin-mobile.png"), fullPage: true });
   await adminPage.reload();
   await waitForUsageApp(adminPage, browserErrors);

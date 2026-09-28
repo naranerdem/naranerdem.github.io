@@ -71,13 +71,14 @@ function createDatabase(rows, options = {}) {
         },
         async first() {
           if (sql.includes("FROM usage_protection_policy")) {
-            return {
+            return options.policy ?? {
               enforcementMode: "observation", warningWorkerErrorCount: 1,
               pauseReminders: 0, pauseWaitlist: 0, pauseInternalNotices: 0, pauseRecovery: 0,
               publicProtectionPreset: "normal", pausePublicRegistrations: 0, pausePublicMessages: 0,
               updatedAt: "2026-09-28T00:00:00.000Z",
             };
           }
+          if (sql.includes("submission_idempotency_key")) return options.idempotentDraft ?? null;
           if (sql.includes("FROM public_seat_count_threshold_setting")) {
             return { remainingSeatThreshold: options.remainingSeatThreshold ?? null, updatedAt: "2026-09-13T00:00:00.000Z" };
           }
@@ -240,6 +241,62 @@ try {
   assert.equal(limitedCatalog.response.status, 429, "a provider-native limit rejects an expensive public catalog request");
   assert.equal(limitedCatalog.body.error.code, "registration_unavailable");
   assert.equal(rejectedCatalogQueries, 0, "the catalog query is not reached after a rate-limit rejection");
+  let rejectedReplayPayloadReads = 0;
+  const rejectedReplayPayload = new ReadableStream({
+    pull(controller) {
+      rejectedReplayPayloadReads += 1;
+      controller.enqueue(new TextEncoder().encode("not-json"));
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const protectedReplay = await jsonResponse(stagingWorker, "/api/registration/submit", {
+    ...stagingEnv,
+    REGISTRATION_WRITE_ENABLED: "true",
+    TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+    TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
+    DB: createDatabase([], {
+      idempotentDraft: {
+        draftId: "existing-draft", email: "parent@example.test", draftChildId: "existing-child",
+        paymentDeadlineAt: "2026-10-01T00:00:00.000Z",
+      },
+    }),
+    PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER: { async limit() { return { success: false }; } },
+  }, {
+    method: "POST",
+    headers: { "Idempotency-Key": "replay-safe-registration-key-0001" },
+    body: rejectedReplayPayload,
+    duplex: "half",
+  });
+  assert.equal(protectedReplay.response.status, 202, "a limited retry recovers a previously committed registration");
+  assert.equal(protectedReplay.body.replayed, true);
+  assert.equal(protectedReplay.body.emailSent, false, "recovery does not queue another registration receipt");
+  assert.equal(rejectedReplayPayloadReads, 0, "recovery does not read a new payload after the guard rejects it");
+  const actualNow = Date.now;
+  Date.now = () => actualNow() + 61_000;
+  try {
+    const pausedReplay = await jsonResponse(stagingWorker, "/api/registration/submit", {
+      ...stagingEnv,
+      REGISTRATION_WRITE_ENABLED: "true",
+      TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
+      TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
+      DB: createDatabase([], {
+        policy: {
+          enforcementMode: "observation", warningWorkerErrorCount: 1,
+          pauseReminders: 0, pauseWaitlist: 0, pauseInternalNotices: 0, pauseRecovery: 0,
+          publicProtectionPreset: "normal", pausePublicRegistrations: 1, pausePublicMessages: 0,
+          updatedAt: "2026-09-28T00:00:00.000Z",
+        },
+        idempotentDraft: {
+          draftId: "existing-draft", email: "parent@example.test", draftChildId: "existing-child",
+          paymentDeadlineAt: "2026-10-01T00:00:00.000Z",
+        },
+      }),
+    }, { method: "POST", headers: { "Idempotency-Key": "replay-safe-registration-key-0001" }, body: "not-json" });
+    assert.equal(pausedReplay.response.status, 202, "a paused retry also recovers only the committed registration");
+    assert.equal(pausedReplay.body.replayed, true);
+  } finally {
+    Date.now = actualNow;
+  }
   const thresholdCatalog = await jsonResponse(stagingWorker, "/api/registration/catalog", {
     ...stagingEnv,
     DB: createDatabase([

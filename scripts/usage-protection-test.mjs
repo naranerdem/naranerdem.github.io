@@ -42,6 +42,23 @@ const teacher = { staffAccountId: "teacher", capabilities: ["calendar.manage"] }
 
 try {
   const migrationFiles = readdirSync("migrations").filter((file) => /^\d{4}_.+\.sql$/.test(file)).sort();
+  const wranglerConfig = JSON.parse(readFileSync("wrangler.jsonc", "utf8"));
+  const publicRateLimitBindings = [
+    "PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER", "PUBLIC_REGISTRATION_HEIGHTENED_RATE_LIMITER",
+    "PUBLIC_DYNAMIC_NORMAL_RATE_LIMITER", "PUBLIC_DYNAMIC_HEIGHTENED_RATE_LIMITER",
+    "PUBLIC_MESSAGE_NORMAL_RATE_LIMITER", "PUBLIC_MESSAGE_HEIGHTENED_RATE_LIMITER",
+  ];
+  for (const environment of [wranglerConfig, wranglerConfig.env.staging]) {
+    const bindings = new Map(environment.ratelimits.map((binding) => [binding.name, binding]));
+    for (const name of publicRateLimitBindings) {
+      const binding = bindings.get(name);
+      assert.equal(binding?.simple?.period, 60, `${name} uses a bounded one-minute window`);
+      assert.ok(Number.isInteger(binding?.simple?.limit) && binding.simple.limit > 0, `${name} has a positive provider-native limit`);
+    }
+  }
+  const productionNamespaces = new Set(wranglerConfig.ratelimits.filter((binding) => publicRateLimitBindings.includes(binding.name)).map((binding) => binding.namespace_id));
+  const stagingNamespaces = new Set(wranglerConfig.env.staging.ratelimits.filter((binding) => publicRateLimitBindings.includes(binding.name)).map((binding) => binding.namespace_id));
+  assert.equal([...productionNamespaces].some((namespace) => stagingNamespaces.has(namespace)), false, "production and staging use independent public rate-limit namespaces");
   sqlite(migrationFiles.filter((file) => file < "0071_").map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
   const preUpgrade = database.query("SELECT warning_cpu_error_count AS warningWorkerErrorCount, pause_reminders AS pauseReminders, updated_at AS updatedAt FROM usage_protection_policy WHERE singleton = 1")[0];
   sqlite(readFileSync(path.join("migrations", "0071_public_request_protection.sql"), "utf8"));

@@ -21,6 +21,7 @@ import {
   draftForAccessToken,
   markRegistrationEmailFailed,
   markRegistrationEmailSent,
+  replayRegistrationDraftByIdempotencyKey,
   joinOriginalClassWaitlist,
   pendingRegistrationForAccess,
   readCookie,
@@ -313,6 +314,32 @@ function publicProtectionResponse(caught: unknown): Response | null {
     ? "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй. Түр хүлээгээд дахин ачаална уу."
     : "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй. Түр хүлээгээд дахин оролдоно уу.";
   return error("registration_unavailable", message, 503, retry);
+}
+
+async function replayRegistrationAfterProtectionRejection(
+  env: WorkerEnv,
+  request: Request,
+  caught: unknown,
+): Promise<Response | null> {
+  if (!(caught instanceof PublicRequestProtectionError) || !["paused", "limited"].includes(caught.code)) return null;
+  const replay = await replayRegistrationDraftByIdempotencyKey(env.DB, request.headers.get("Idempotency-Key"));
+  if (!replay) return null;
+  let registrationStatus = null;
+  try {
+    registrationStatus = await registrationStatusForDraftId(env.DB, replay.draftId);
+  } catch {
+    // The committed registration remains recoverable even if its optional
+    // display projection is temporarily unavailable.
+  }
+  return json({
+    ok: true,
+    emailSent: false,
+    email: replay.email,
+    hasPaymentHold: replay.hasPaymentHold,
+    paymentDeadlineAt: replay.paymentDeadlineAt,
+    registrationStatus,
+    replayed: true,
+  }, 202, { "Cache-Control": "no-store" });
 }
 
 function staffLoginAccepted(attemptCookie?: string): Response {
@@ -722,6 +749,12 @@ export async function handleApiRequest(
     try {
       await guardPublicRequest(env, request, "registration");
     } catch (caught) {
+      try {
+        const replay = await replayRegistrationAfterProtectionRejection(env, request, caught);
+        if (replay) return replay;
+      } catch {
+        // A failed recovery lookup never weakens the pause or rate-limit gate.
+      }
       return publicProtectionResponse(caught) ?? error("internal_error", "Бүртгэлийн хамгаалалтыг одоогоор шалгаж чадсангүй.", 503, { "Cache-Control": "no-store" });
     }
     let payload: RegistrationSubmissionInput;

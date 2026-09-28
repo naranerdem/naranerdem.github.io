@@ -178,6 +178,48 @@ function normalizedIdempotencyKey(value: string | null | undefined): string | nu
   return /^[A-Za-z0-9._:-]{16,120}$/.test(key) ? key : null;
 }
 
+interface IdempotentRegistrationDraft {
+  draftId: string;
+  email: string;
+  draftChildId: string | null;
+  paymentDeadlineAt: string | null;
+}
+
+// A durable idempotency-key lookup is deliberately separate from submission
+// validation. The public router uses it only after a pause or provider limit
+// rejects a retry, so a response lost after commit can be recovered without
+// parsing a new payload, consuming Turnstile, or queuing another receipt.
+export async function replayRegistrationDraftByIdempotencyKey(
+  db: D1Database,
+  rawIdempotencyKey: string | null | undefined,
+) {
+  const idempotencyKey = normalizedIdempotencyKey(rawIdempotencyKey);
+  if (!idempotencyKey) return null;
+  const existing = await db.prepare(`SELECT registration_draft.id AS draftId,
+    registration_draft.email AS email,
+    MIN(registration_draft_child.id) AS draftChildId,
+    MAX(CASE WHEN registration_capacity_hold.status = 'active'
+      AND registration_capacity_hold.hold_type = 'initial_payment'
+      THEN registration_capacity_hold.deadline_at ELSE NULL END) AS paymentDeadlineAt
+    FROM registration_draft
+    LEFT JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
+    LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
+    WHERE registration_draft.submission_idempotency_key = ?
+    GROUP BY registration_draft.id`).bind(idempotencyKey).first<IdempotentRegistrationDraft>();
+  if (!existing) return null;
+  return {
+    draftId: existing.draftId,
+    registrationDraftChildId: existing.draftChildId,
+    email: existing.email,
+    normalizedEmail: normalizeEmail(existing.email),
+    hasPaymentHold: Boolean(existing.paymentDeadlineAt),
+    paymentDeadlineAt: existing.paymentDeadlineAt,
+    paymentReference: null,
+    accessCookie: null,
+    created: false,
+  };
+}
+
 function validDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
 }
@@ -543,40 +585,8 @@ export async function createRegistrationDraft(
   const reference = await unusedPaymentReference(env.DB);
   const description = await transferDescription(env.DB, input.children[0]?.givenName || "Хүүхэд", input.guardian.primaryPhone);
 
-  async function existingIdempotentDraft() {
-    if (!idempotencyKey) return null;
-    return env.DB.prepare(`SELECT registration_draft.id AS draftId,
-      registration_draft.email AS email,
-      MIN(registration_draft_child.id) AS draftChildId,
-      MAX(CASE WHEN registration_capacity_hold.status = 'active'
-        AND registration_capacity_hold.hold_type = 'initial_payment'
-        THEN registration_capacity_hold.deadline_at ELSE NULL END) AS paymentDeadlineAt
-      FROM registration_draft
-      LEFT JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id
-      LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
-      WHERE registration_draft.submission_idempotency_key = ?
-      GROUP BY registration_draft.id`).bind(idempotencyKey).first<{
-      draftId: string;
-      draftChildId: string | null;
-      email: string;
-      paymentDeadlineAt: string | null;
-    }>();
-  }
-
-  const existing = await existingIdempotentDraft();
-  if (existing) {
-    return {
-      draftId: existing.draftId,
-      registrationDraftChildId: existing.draftChildId,
-      email: existing.email,
-      normalizedEmail: normalizeEmail(existing.email),
-      hasPaymentHold: Boolean(existing.paymentDeadlineAt),
-      paymentDeadlineAt: existing.paymentDeadlineAt,
-      paymentReference: null,
-      accessCookie: null,
-      created: false,
-    };
-  }
+  const existing = await replayRegistrationDraftByIdempotencyKey(env.DB, idempotencyKey);
+  if (existing) return existing;
 
   const statements = [env.DB.prepare(`
     INSERT INTO registration_draft (
@@ -802,20 +812,8 @@ export async function createRegistrationDraft(
   try {
     results = await env.DB.batch(statements);
   } catch (error) {
-    const duplicate = await existingIdempotentDraft();
-    if (duplicate) {
-      return {
-        draftId: duplicate.draftId,
-        registrationDraftChildId: duplicate.draftChildId,
-        email: duplicate.email,
-        normalizedEmail: normalizeEmail(duplicate.email),
-        hasPaymentHold: Boolean(duplicate.paymentDeadlineAt),
-        paymentDeadlineAt: duplicate.paymentDeadlineAt,
-        paymentReference: null,
-        accessCookie: null,
-        created: false,
-      };
-    }
+    const duplicate = await replayRegistrationDraftByIdempotencyKey(env.DB, idempotencyKey);
+    if (duplicate) return duplicate;
     throw error;
   }
   const holdResult = results[seatHoldStatementIndex];

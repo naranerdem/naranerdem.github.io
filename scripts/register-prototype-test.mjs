@@ -64,6 +64,7 @@ assert.match(page, /showRegistrationForm\(\)/);
 assert.match(page, /document\.body\.dataset\.registrationSurface = "verified"/);
 assert.match(page, /await showVerifiedStatus\(status === "already-verified"\);\n          return;/);
 assert.match(page, /fetch\("\/api\/registration\/submit"/);
+assert.match(page, /result\?\.error\?\.code === "registration_unavailable"[\s\S]*?showServerValidationError\(message\);[\s\S]*?return;/, "a public pause or rate limit keeps the completed form in place with its actionable error");
 assert.match(page, /function showAcceptedRecovery\(submission = \{\}\)/, "a committed submit has a cookie-independent success-safe fallback");
 assert.match(page, /await showVerifiedStatus\(false, result\.registrationStatus, result\)/, "the immediate submit renders the server-provided committed registration projection");
 assert.match(page, /if \(acceptedSubmission\)[\s\S]*?showAcceptedRecovery\(acceptedSubmission\)/, "a local post-commit display error cannot invite a parent to resubmit");
@@ -73,6 +74,7 @@ assert.match(router, /Анги, цагаа дахин сонгоно уу\. Со
 assert.match(router, /И-мэйл хаягаа зөв бичсэн эсэхээ шалгана уу\./, "email validation is not reduced to a generic submission failure");
 assert.match(router, /registrationStatusForDraftId/, "accepted submit and idempotent replay return an authoritative status projection");
 assert.match(router, /registrationStatus,\n\s*replayed: true/, "an idempotent replay reconstructs the original successful outcome");
+assert.match(router, /replayRegistrationAfterProtectionRejection[\s\S]*?replayRegistrationDraftByIdempotencyKey[\s\S]*?emailSent: false/, "a pause or rate-limit rejection can return a committed idempotent registration without queuing another receipt");
 assert.match(page, /fetch\("\/api\/registration\/status"/);
 assert.match(page, /id="registration-submit-warning"[\s\S]*?Бүртгэл хараахан илгээгдээгүй байна\.[\s\S]*?Мэдээллээ шалгаад доорх “Бүртгэл илгээх” товчийг заавал дарна уу\.[\s\S]*?id="turnstile-widget"/, "the final review explicitly says that submission still requires the final action");
 assert.match(page, /Суудал баталгаажаагүй байна\.<br>Төлбөр төлснөөр суудал баталгаажна\./, "an ordinary submitted registration uses the reviewed seat-confirmation wording");
