@@ -1004,6 +1004,8 @@ import "../../styles/global.css";
           state.openId = paymentDetailSelection.onRefresh(state.data.items);
           reconcileActionFeedback();
           render();
+          // Prepare the shared TSV outside the eventual clipboard gesture.
+          void prepareRegistrationReport();
           if (options.initialTiming) {
             await new Promise((resolve) => requestAnimationFrame(resolve));
             recordPaymentTiming("payments.ui", requestStartedAt);

@@ -1571,6 +1571,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     registration_draft.guardian_relationship AS relationship,
     registration_draft.primary_phone AS phone,
     registration_draft.secondary_phone AS secondaryPhone,
+    COALESCE(guardian_account.facebook_name, registration_draft.facebook_name) AS guardianFacebookName,
     registration_draft.email,
     registration_draft.verified_at AS verifiedAt,
     registration_draft.home_address AS address,
@@ -1611,6 +1612,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
       AND status = 'captured' ORDER BY created_at DESC LIMIT 1) AS usedReferral
     FROM registration_draft_child
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    LEFT JOIN guardian_account ON guardian_account.id = registration_draft.canonical_guardian_account_id
     INNER JOIN academic_year ON academic_year.id = registration_draft.academic_year_id
     LEFT JOIN class_session ON class_session.id = COALESCE(registration_draft_child.selected_class_session_id, registration_draft_child.preferred_waitlist_class_session_id)
     LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
@@ -1643,12 +1645,23 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
             : row.canonicalEnrollmentId ? (remaining > 0 ? "Хэсэгчлэн төлсөн" : "Төлбөр баталгаажсан")
               : due ? "Хугацаа хэтэрсэн"
                 : "Төлбөр хүлээж байна";
-      const className = [row.className, row.weekday && row.startTime ? `${row.weekday} ${row.startTime}–${row.endTime}` : ""].filter(Boolean).join(" · ");
+      const classLabel = String(row.className ?? "").trim();
+      const offering = String(row.offering ?? "").trim();
+      const weekday = String(row.weekday ?? "").trim();
+      const startTime = String(row.startTime ?? "").trim();
+      const endTime = String(row.endTime ?? "").trim();
+      const schedule = weekday && startTime ? `${weekday} ${startTime}${endTime ? `–${endTime}` : ""}` : "";
+      const labelHasSchedule = Boolean(weekday && startTime && classLabel.includes(weekday) && classLabel.includes(startTime));
+      const labelIsScheduleOnly = Boolean(schedule && [weekday, `${weekday} ${startTime}`, schedule].includes(classLabel));
+      const className = [
+        labelIsScheduleOnly ? offering : classLabel,
+        schedule && !labelHasSchedule ? schedule : "",
+      ].filter((value, index, parts) => Boolean(value) && parts.indexOf(value) === index).join(" · ");
       return {
         status, child: row.child, birthDate: row.birthDate, grade: row.grade, school: row.school,
         guardian: row.guardian, relationship: row.relationship, phone: row.phone, secondaryPhone: row.secondaryPhone, email: row.email,
-        emailStatus: row.verifiedAt ? "Баталгаажсан" : "Баталгаажаагүй", address: row.address,
-        academicYear: row.academicYear, offering: row.offering, className,
+        guardianFacebookName: row.guardianFacebookName, emailStatus: row.verifiedAt ? "Баталгаажсан" : "Баталгаажаагүй", address: row.address,
+        academicYear: row.academicYear, className,
         paymentPlan: planLabel(row.paymentPlan),
         price, discount, paid, creditApplied, remaining, dueAt,
         ownReferral: row.ownReferral, usedReferral: row.usedReferral, registeredAt: row.registeredAt,
