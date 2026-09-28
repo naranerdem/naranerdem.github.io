@@ -135,7 +135,7 @@ try {
   const panel = readFileSync("src/pages/staff/settings/usage.astro", "utf8");
   assert.match(panel, /\/api\/staff\/usage-protection/, "admin diagnostics use one dedicated on-demand endpoint");
   assert.doesNotMatch(panel, /setInterval|setTimeout\(.*load/, "admin diagnostics do not continuously poll");
-  assert.match(panel, /Төлбөрийн 0 минутын баталгаажуулалт/, "panel documents that immediate confirmation remains synchronous");
+  assert.match(panel, /Zero-minute payment confirmation/, "panel documents that immediate confirmation remains synchronous");
   console.log("ok usage-protection policy, bounded collector, observation mode, and pre-mutation background pauses");
 } finally {
   rmSync(directory, { recursive: true, force: true });

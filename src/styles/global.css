@@ -1734,6 +1734,16 @@ textarea:focus {
   font-weight: 800;
 }
 
+.staff-settings-navigation {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.staff-settings-navigation .staff-settings-link {
+  display: block;
+}
+
 .staff-tool-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

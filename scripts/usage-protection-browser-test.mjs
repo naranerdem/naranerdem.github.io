@@ -43,6 +43,15 @@ async function signedInContext(staffToken) {
   await context.addCookies([{ name: "naran_staff_session", value: staffToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   return context;
 }
+async function waitForUsageApp(page, errors) {
+  try {
+    await page.locator("#usage-app").waitFor({ state: "visible" });
+  } catch (error) {
+    const surface = await page.locator("body").getAttribute("data-usage-protection-surface");
+    const loadError = await page.locator("#usage-load-error").textContent();
+    throw new Error(`Usage panel did not load (surface=${surface}; error=${loadError || "none"}; browserErrors=${errors.join(" | ") || "none"}). ${error.message}`);
+  }
+}
 
 try {
   runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "usage-protection local migrations");
@@ -81,16 +90,41 @@ try {
   let usageRequests = 0;
   adminPage.on("request", (request) => { if (request.url().includes("/api/staff/usage-protection")) usageRequests += 1; });
   await adminPage.goto(`${baseUrl}/staff/settings/usage/`);
-  await adminPage.locator("#usage-app").waitFor({ state: "visible" });
-  await assert.doesNotReject(() => adminPage.getByText("Тохируулсан", { exact: true }).waitFor({ state: "visible" }));
+  await waitForUsageApp(adminPage, browserErrors);
+  assert.equal(await adminPage.locator("html").getAttribute("lang"), "en", "the usage page is intentionally English only");
+  await assert.doesNotReject(() => adminPage.getByText("Configured", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => adminPage.getByText("Rolling 24-hour Worker window", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => adminPage.getByText("Last completed UTC day:", { exact: false }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => adminPage.getByText("CPU-limit failures", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => adminPage.getByText(/18.?791\s*\/\s*12/).waitFor({ state: "visible" }));
+  await adminPage.locator(".usage-technical summary").click();
+  await assert.doesNotReject(() => adminPage.getByText(/not total CPU consumption/i).waitFor({ state: "visible" }));
   assert.equal(usageRequests, 1, "a page load reads the cached diagnostics once and does not launch collection work");
   await adminPage.screenshot({ path: path.join(screenshotDir, "usage-protection-admin-desktop.png"), fullPage: true });
   await adminPage.setViewportSize({ width: 390, height: 844 });
   await adminPage.screenshot({ path: path.join(screenshotDir, "usage-protection-admin-mobile.png"), fullPage: true });
   await adminPage.reload();
-  await adminPage.locator("#usage-app").waitFor({ state: "visible" });
+  await waitForUsageApp(adminPage, browserErrors);
   assert.equal(usageRequests, 2, "a second page load reads the same cache once and does not create a browser polling loop");
+
+  const settingsPage = await adminContext.newPage();
+  await settingsPage.goto(`${baseUrl}/staff/settings/`);
+  await settingsPage.locator("#tool-app").waitFor({ state: "visible" });
+  const navigation = settingsPage.locator(".staff-settings-navigation");
+  await navigation.waitFor({ state: "visible" });
+  const navigationLinks = await navigation.locator("a").evaluateAll((links) => links.map((link) => ({
+    text: link.textContent?.trim(),
+    left: link.getBoundingClientRect().left,
+    top: link.getBoundingClientRect().top,
+    bottom: link.getBoundingClientRect().bottom,
+  })));
+  assert.deepEqual(navigationLinks.map((link) => link.text), ["Хэрэглээ, хамгаалалт", "Нэвтрэх хугацааны тохиргоо"], "the Mongolian settings links retain their labels");
+  assert.equal(navigationLinks[0].left, navigationLinks[1].left, "the settings links share one scoped navigation column");
+  assert.ok(navigationLinks[1].top >= navigationLinks[0].bottom, "the settings links are stacked as separate rows");
+  await settingsPage.screenshot({ path: path.join(screenshotDir, "staff-settings-navigation-desktop.png"), fullPage: true });
+  await settingsPage.setViewportSize({ width: 390, height: 844 });
+  await settingsPage.screenshot({ path: path.join(screenshotDir, "staff-settings-navigation-mobile.png"), fullPage: true });
+  await settingsPage.close();
   await adminContext.close();
 
   const teacherContext = await signedInContext(teacherToken);
@@ -105,9 +139,27 @@ try {
   await failedPage.route("**/api/staff/usage-protection", async (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "Түр алдаа" } }) }));
   await failedPage.goto(`${baseUrl}/staff/settings/usage/`);
   await failedPage.locator("#usage-error").waitFor({ state: "visible" });
-  await failedPage.getByRole("button", { name: "Дахин ачаалах", exact: true }).waitFor({ state: "visible" });
+  await failedPage.getByRole("button", { name: "Try again", exact: true }).waitFor({ state: "visible" });
   assert.equal(await failedPage.locator("#usage-app").isVisible(), false, "a failed refresh never leaves a writable policy form without a model");
   await failedContext.close();
+
+  const unavailableContext = await signedInContext(adminToken);
+  const unavailablePage = await unavailableContext.newPage();
+  const unavailablePayload = {
+    environment: "staging",
+    policy: { warningWorkerErrorCount: 25, pauses: { reminders: false, waitlist: false, internalNotices: false, recovery: false }, updatedAt: "2026-09-28T01:30:12.000Z" },
+    collector: { intervalMinutes: 15, configured: false, status: "unavailable", source: "unavailable", observedAt: null, attemptedAt: null, periodStartsAt: null, periodEndsAt: null, sampled: false, detailCode: "token_not_configured", propagationDelaySeconds: 60 },
+    usage: null,
+    evaluation: { workerErrorWarning: false },
+  };
+  await unavailablePage.route("**/api/staff/usage-protection", async (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify(unavailablePayload) }));
+  await unavailablePage.goto(`${baseUrl}/staff/settings/usage/`);
+  await waitForUsageApp(unavailablePage, browserErrors);
+  await unavailablePage.getByText("Not configured", { exact: true }).waitFor({ state: "visible" });
+  await unavailablePage.getByText("Unavailable", { exact: true }).first().waitFor({ state: "visible" });
+  await unavailablePage.locator(".usage-technical summary").click();
+  await unavailablePage.getByText(/not configured, so no metrics are estimated/i).waitFor({ state: "visible" });
+  await unavailableContext.close();
 
   assert.deepEqual(browserErrors, [], "usage controls create no browser errors");
   console.log(`ok usage-protection browser (${screenshotDir})`);
