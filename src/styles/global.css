@@ -5130,6 +5130,7 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
 
 .usage-protection-grid dt { color: var(--muted); font-size: 0.8rem; }
 .usage-protection-grid dd { margin: 0.2rem 0 0; font-weight: 700; overflow-wrap: anywhere; }
+.usage-protection-grid dd small { display: block; margin-top: 0.3rem; color: var(--muted); font-size: 0.76rem; font-weight: 500; line-height: 1.35; }
 
 #usage-pauses {
   display: grid;
