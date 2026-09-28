@@ -57,10 +57,10 @@ try {
   assert.equal(database.query("SELECT COUNT(*) AS count FROM usage_protection_cache")[0].count, 0, "unconfigured collection does not churn D1 cache rows");
 
   await assert.rejects(usage.updateUsageProtectionPolicy(baseEnv, teacher, {
-    warningCpuErrorCount: 1, pauses: defaults.policy.pauses, expectedUpdatedAt: defaults.policy.updatedAt,
+    warningWorkerErrorCount: 1, pauses: defaults.policy.pauses, expectedUpdatedAt: defaults.policy.updatedAt,
   }), /Usage protection/);
   const updated = await usage.updateUsageProtectionPolicy(baseEnv, admin, {
-    warningCpuErrorCount: 3,
+    warningWorkerErrorCount: 3,
     pauses: { reminders: true, waitlist: false, internalNotices: false, recovery: true },
     expectedUpdatedAt: defaults.policy.updatedAt,
   });
@@ -88,22 +88,22 @@ try {
   assert.equal(observed.usage.d1RowsRead, null, "D1 usage remains explicitly unavailable when the provider response lacks it");
   assert.equal(observed.collector.sampled, false, "sampling remains unknown unless Cloudflare reports it");
   assert.equal(database.prepared.filter((query) => query.includes("usage_protection_cache")).length >= 2, true, "collector uses a singleton cache read/write path, not a business-history scan");
-  assert.equal(usage.usageProtectionEvaluation(updated, { cpuLimitErrors: 3 }, "free").observationOnly, true, "Free policy stays in observation mode");
-  assert.equal(usage.usageProtectionEvaluation(updated, { cpuLimitErrors: 3 }, "paid").cpuWarning, true, "Paid uses the same warning semantics without a billing change");
+  assert.equal(usage.usageProtectionEvaluation(updated, { workerErrors: 3 }, "free").observationOnly, true, "Free policy stays in observation mode");
+  assert.equal(usage.usageProtectionEvaluation(updated, { workerErrors: 3 }, "paid").workerErrorWarning, true, "the supported Worker-error warning uses the same semantics without a billing change");
   assert.equal(await usage.collectUsageProtection(configured, new Date("2026-09-27T12:15:00.000Z"), async () => { throw new Error("analytics unavailable"); }), "failed");
   const stale = await usage.getUsageProtectionOverview(configured);
   assert.equal(stale.collector.status, "failed", "failed collection is explicit");
   assert.equal(stale.usage.workerInvocations, 12, "failed collection retains the last measured sample instead of clearing it");
   assert.equal(await usage.isBackgroundWorkPaused(configured, "reminders"), true, "metrics failure cannot silently clear a manual pause");
   const resumed = await usage.updateUsageProtectionPolicy(configured, admin, {
-    warningCpuErrorCount: 3,
+    warningWorkerErrorCount: 3,
     pauses: { reminders: false, waitlist: false, internalNotices: false, recovery: false },
     expectedUpdatedAt: stale.policy.updatedAt,
   });
   assert.equal(await usage.isBackgroundWorkPaused(configured, "reminders"), false, "an audited manual resume restores later background work");
   assert.equal(resumed.enforcementMode, "observation", "resume does not turn on automatic enforcement");
   const repaused = await usage.updateUsageProtectionPolicy(configured, admin, {
-    warningCpuErrorCount: 3,
+    warningWorkerErrorCount: 3,
     pauses: { reminders: true, waitlist: false, internalNotices: false, recovery: true },
     expectedUpdatedAt: resumed.updatedAt,
   });

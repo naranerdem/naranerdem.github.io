@@ -9,26 +9,28 @@ export type PausableBackgroundWork = typeof PAUSABLE_BACKGROUND_WORK[number];
 
 export interface UsageProtectionPolicy {
   enforcementMode: "observation";
-  warningCpuErrorCount: number;
+  // Stored in the original 0069 column for compatibility. The available
+  // GraphQL signal is total Worker errors, not a CPU-only counter.
+  warningWorkerErrorCount: number;
   pauses: Record<PausableBackgroundWork, boolean>;
   updatedAt: string;
 }
 
 export function usageProtectionEvaluation(
   policy: UsageProtectionPolicy,
-  usage: { cpuLimitErrors: number | null } | null,
+  usage: { workerErrors: number | null } | null,
   plan: "free" | "paid" | "unknown" = "unknown",
 ) {
   return {
     plan,
     observationOnly: policy.enforcementMode === "observation",
-    cpuWarning: usage?.cpuLimitErrors != null && usage.cpuLimitErrors >= policy.warningCpuErrorCount,
+    workerErrorWarning: usage?.workerErrors != null && usage.workerErrors >= policy.warningWorkerErrorCount,
   };
 }
 
 interface StoredPolicy {
   enforcementMode: "observation";
-  warningCpuErrorCount: number;
+  warningWorkerErrorCount: number;
   pauseReminders: number;
   pauseWaitlist: number;
   pauseInternalNotices: number;
@@ -67,7 +69,7 @@ export class UsageProtectionError extends Error {
 function toPolicy(row: StoredPolicy): UsageProtectionPolicy {
   return {
     enforcementMode: "observation",
-    warningCpuErrorCount: Number(row.warningCpuErrorCount),
+    warningWorkerErrorCount: Number(row.warningWorkerErrorCount),
     pauses: {
       reminders: Boolean(row.pauseReminders),
       waitlist: Boolean(row.pauseWaitlist),
@@ -87,14 +89,14 @@ function audit(env: WorkerEnv, actor: StaffPrincipal, policy: UsageProtectionPol
     'usage_protection_policy', '1', ?, ?, ?, ?, ?)`)
     .bind(crypto.randomUUID(), now, actor.staffAccountId, JSON.stringify({
       enforcementMode: policy.enforcementMode,
-      warningCpuErrorCount: policy.warningCpuErrorCount,
+      warningWorkerErrorCount: policy.warningWorkerErrorCount,
       pauses: policy.pauses,
     }), env.APP_ENV, isTest, isTest ? "staff-settings" : null, now);
 }
 
 export async function getUsageProtectionPolicy(env: WorkerEnv): Promise<UsageProtectionPolicy> {
   const row = await env.DB.prepare(`SELECT enforcement_mode AS enforcementMode,
-    warning_cpu_error_count AS warningCpuErrorCount, pause_reminders AS pauseReminders,
+    warning_cpu_error_count AS warningWorkerErrorCount, pause_reminders AS pauseReminders,
     pause_waitlist AS pauseWaitlist, pause_internal_notices AS pauseInternalNotices,
     pause_recovery AS pauseRecovery, updated_at AS updatedAt
     FROM usage_protection_policy WHERE singleton = 1`).first<StoredPolicy>();
@@ -127,11 +129,11 @@ function pausesFrom(value: unknown): Record<PausableBackgroundWork, boolean> | n
 export async function updateUsageProtectionPolicy(
   env: WorkerEnv,
   actor: StaffPrincipal,
-  input: { warningCpuErrorCount: number; pauses: unknown; expectedUpdatedAt: string },
+  input: { warningWorkerErrorCount: number; pauses: unknown; expectedUpdatedAt: string },
 ): Promise<UsageProtectionPolicy> {
   if (!hasStaffCapability(actor, "admin.settings.manage")) throw new UsageProtectionError("forbidden");
   const pauses = pausesFrom(input.pauses);
-  if (!Number.isInteger(input.warningCpuErrorCount) || input.warningCpuErrorCount < 0 || input.warningCpuErrorCount > 100000 || !pauses || !input.expectedUpdatedAt) {
+  if (!Number.isInteger(input.warningWorkerErrorCount) || input.warningWorkerErrorCount < 0 || input.warningWorkerErrorCount > 100000 || !pauses || !input.expectedUpdatedAt) {
     throw new UsageProtectionError("invalid");
   }
   const now = new Date().toISOString();
@@ -139,11 +141,11 @@ export async function updateUsageProtectionPolicy(
     SET warning_cpu_error_count = ?, pause_reminders = ?, pause_waitlist = ?,
       pause_internal_notices = ?, pause_recovery = ?, updated_at = ?
     WHERE singleton = 1 AND updated_at = ?`).bind(
-    input.warningCpuErrorCount, Number(pauses.reminders), Number(pauses.waitlist),
+    input.warningWorkerErrorCount, Number(pauses.reminders), Number(pauses.waitlist),
     Number(pauses.internalNotices), Number(pauses.recovery), now, input.expectedUpdatedAt,
   ).run();
   if ((result.meta?.changes ?? 0) !== 1) throw new UsageProtectionError("conflict");
-  const policy: UsageProtectionPolicy = { enforcementMode: "observation", warningCpuErrorCount: input.warningCpuErrorCount, pauses, updatedAt: now };
+  const policy: UsageProtectionPolicy = { enforcementMode: "observation", warningWorkerErrorCount: input.warningWorkerErrorCount, pauses, updatedAt: now };
   await audit(env, actor, policy, now).run();
   policyCache = { value: policy, expiresAt: Date.now() + POLICY_CACHE_MS };
   return policy;
@@ -259,7 +261,7 @@ export async function getUsageProtectionOverview(env: WorkerEnv) {
   const config = usageConfig(env);
   let versions: Array<{ scriptName: string; invocations: number | null; errors: number | null }> = [];
   try { versions = cache?.workerVersionsJson ? safeVersions(JSON.parse(cache.workerVersionsJson)) : []; } catch { versions = []; }
-  const evaluation = usageProtectionEvaluation(policy, cache ? { cpuLimitErrors: cache.cpuLimitErrors } : null);
+  const evaluation = usageProtectionEvaluation(policy, cache ? { workerErrors: cache.workerErrors } : null);
   return {
     environment: env.APP_ENV,
     policy,
@@ -280,7 +282,7 @@ export async function getUsageProtectionOverview(env: WorkerEnv) {
       workerInvocations: cache.workerInvocations, workerErrors: cache.workerErrors,
       cpuLimitErrors: cache.cpuLimitErrors, workerVersions: versions,
       d1RowsRead: cache.d1RowsRead, d1RowsWritten: cache.d1RowsWritten,
-      cpuWarning: evaluation.cpuWarning,
+      workerErrorWarning: evaluation.workerErrorWarning,
     } : null,
     evaluation,
   };

@@ -6,12 +6,13 @@ ordinary request writes diagnostic data.
 
 ## Collector
 
-Each production/staging Worker has two Cron expressions: the existing staggered
-background expression and `*/15 * * * *` for usage collection. That is four
-Cron triggers across the two Workers, below the current Free-plan account limit
-of five. The collector makes at most one account analytics request per run and
-stores one cache row for its own environment. It does not query application
-history, write learner/financial data, or retry a failed provider request.
+The staged Worker has the existing staggered background expression and
+`*/15 * * * *` for usage collection. When this same collector is separately
+approved for production, the two Workers will use four Cron triggers together,
+below the current Free-plan account limit of five. The collector makes at most
+one account analytics request per run and stores one cache row for its own
+environment. It does not query application history, write learner/financial
+data, or retry a failed provider request.
 
 Configure these Worker secrets only after a read-only rollout review:
 
@@ -19,12 +20,19 @@ Configure these Worker secrets only after a read-only rollout review:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_ANALYTICS_WORKER_NAME`
 
-The token must be restricted to the intended account and read-only Workers
-Analytics access sufficient for the documented GraphQL request. It needs no D1
-write, Worker edit, route, billing, or account-administration permission. If
-Cloudflare does not expose a CPU-limit counter, Worker version, or D1 row usage
-in that response, the panel says so explicitly; it must not estimate those
-values from elapsed time.
+The token must be restricted to the intended account with only **Account →
+Account Analytics → Read**. It needs no D1 write, Worker edit, route, billing,
+or account-administration permission. The current bounded query stores Worker
+invocation and general-error sums for a rolling 24-hour window. Its warning
+threshold applies only to that general-error sum; it is not a CPU-limit alert.
+Cloudflare's documented Workers query exposes CPU percentiles rather than a
+total CPU counter, so CPU-limit failures remain unavailable until a token-backed
+schema probe identifies a distinct outcome field. D1 analytics does expose
+`rowsRead` and `rowsWritten`, but its documented dataset is date-bucketed and
+also requires the bound database ID; it is intentionally not mixed into the
+rolling Worker window until the account schema validates the exact combined
+query. The panel says these values are unavailable rather than estimating them
+from elapsed time or query counts.
 
 The policy cache is held for up to 60 seconds in a warm Worker isolate. A manual
 pause therefore propagates before a later background unit begins, usually on

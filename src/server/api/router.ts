@@ -2447,7 +2447,7 @@ export async function handleApiRequest(
       const principal = await staffPrincipalForRequest(request, env);
       if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
       const policy = await updateUsageProtectionPolicy(env, principal, {
-        warningCpuErrorCount: Number(payload.warningCpuErrorCount), pauses: payload.pauses,
+        warningWorkerErrorCount: Number(payload.warningWorkerErrorCount), pauses: payload.pauses,
         expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
       });
       return json({ ...(await getUsageProtectionOverview(env)), policy }, 200, { "Cache-Control": "no-store" });

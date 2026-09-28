@@ -5148,6 +5148,29 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
   padding: 0;
 }
 
+#usage-policy-form .usage-warning-field {
+  align-self: start;
+  max-width: 22rem;
+}
+
+#usage-policy-form #usage-pauses { grid-column: 1 / -1; }
+
+.usage-warning-field small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.usage-technical {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.88rem;
+  padding-top: 0.7rem;
+}
+
+.usage-technical summary { color: var(--blue-deep); cursor: pointer; font-weight: 700; }
+
 @media (max-width: 32rem) {
   html[data-public-font="serif"] .public-page,
   html[data-public-font="serif"] .register-page,
