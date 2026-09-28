@@ -263,7 +263,7 @@ try {
     PUBLIC_REGISTRATION_NORMAL_RATE_LIMITER: { async limit() { return { success: false }; } },
   }, {
     method: "POST",
-    headers: { "Idempotency-Key": "replay-safe-registration-key-0001" },
+    headers: { "Idempotency-Key": "11111111-2222-4333-8444-555555555555" },
     body: rejectedReplayPayload,
     duplex: "half",
   });
@@ -291,7 +291,7 @@ try {
           paymentDeadlineAt: "2026-10-01T00:00:00.000Z",
         },
       }),
-    }, { method: "POST", headers: { "Idempotency-Key": "replay-safe-registration-key-0001" }, body: "not-json" });
+    }, { method: "POST", headers: { "Idempotency-Key": "11111111-2222-4333-8444-555555555555" }, body: "not-json" });
     assert.equal(pausedReplay.response.status, 202, "a paused retry also recovers only the committed registration");
     assert.equal(pausedReplay.body.replayed, true);
   } finally {
