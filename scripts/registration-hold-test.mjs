@@ -2358,6 +2358,8 @@ try {
     "a released child with a genuine active waitlist entry is not duplicated in inactive history");
   assert.ok(returnedWaitlistQueue.waitlistItems.some((item) => item.id === "released-seat-returned-waitlist"),
     "a released child returned to an active waitlist remains in the ordinary active waitlist projection");
+  assert.equal(returnedWaitlistQueue.waitlistItems.find((item) => item.id === "released-seat-returned-waitlist")?.seatReleasedAt,
+    "2026-08-15T10:00:00.000Z", "the active waitlist detail retains the recorded seat-release history");
   assert.ok(count(database, "guardian_account") >= 3, "routine sufficient payments and teacher-approved partials become canonical guardians only after finalization");
   assert.ok(count(database, "student") >= 3, "routine sufficient payments and teacher-approved partials create canonical students while ordinary partial or released payments do not");
 

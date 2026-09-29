@@ -407,6 +407,8 @@ assert.match(paymentService, /FROM audit_event AS release_event[\s\S]*release_ev
   "released-seat history starts from its indexed durable audit lineage rather than scanning all released installments");
 assert.match(paymentService, /waitlist\.status IN \('active', 'offered'\)/,
   "a child with a genuine active waitlist record is excluded from inactive released-seat history");
+assert.match(page, /Өмнөх суудал чөлөөлсөн:/,
+  "an active waitlist disclosure retains a recorded earlier seat release without duplicating the row");
 assert.match(page, /data-parent-resend[\s\S]*?Илгээж байна…/, "resend disables itself with a visible pending label");
 assert.match(page, /const canContactPendingPayment = !canContactConfirmedEnrollment && !overdue && remaining > 0/, "only active, non-overdue payment-pending rows gain manual message preparation");
 assert.match(page, /canContactPendingPayment[\s\S]*?data-parent-message=/, "payment-pending rows expose the same message action inside opened contact detail");

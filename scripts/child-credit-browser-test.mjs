@@ -1141,6 +1141,20 @@ async function exerciseReleasedSeatHistory(page) {
   assert.deepEqual(durable[0] && { childStatus: durable[0].childStatus, installmentStatus: durable[0].installmentStatus, auditCount: Number(durable[0].auditCount) },
     { childStatus: "seat_unavailable", installmentStatus: "released", auditCount: 1 },
     "release history survives reload with one durable transition and no cancellation");
+
+  execute(`INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)
+    VALUES ('browser-released-seat-waitlist', ${sql(childId)}, 'browser-class-source', 'active', 1, ${sql(testRunId)}, '2026-09-29T17:00:00.000Z', '2026-09-29T17:00:00.000Z');`);
+  await page.reload();
+  await page.getByRole("button", { name: /Идэвхгүй бүртгэл \(0\)/ }).waitFor({ state: "visible" });
+  const waitlistToggle = page.getByRole("button", { name: /Хүлээлгийн жагсаалт/ });
+  if (await waitlistToggle.getAttribute("aria-expanded") !== "true") await waitlistToggle.click();
+  const waitingToggle = page.locator('[data-waitlist-section-toggle="waiting"]');
+  if (await waitingToggle.getAttribute("aria-expanded") !== "true") await waitingToggle.click();
+  const returnedWaitlistCard = page.locator(".staff-payment-item").filter({ hasText: "ReleasedSeatHistory" });
+  await returnedWaitlistCard.waitFor({ state: "visible" });
+  await returnedWaitlistCard.getByRole("button", { name: "Нээх" }).click();
+  await returnedWaitlistCard.getByText("Өмнөх суудал чөлөөлсөн:").waitFor({ state: "visible" });
+  await capturePaymentDetail(page, returnedWaitlistCard, "released-seat-waitlist-history-mobile.png");
 }
 
 try {

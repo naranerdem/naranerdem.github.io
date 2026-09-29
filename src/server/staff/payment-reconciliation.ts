@@ -1545,12 +1545,22 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone, registration_draft.email, registration_draft.facebook_name AS guardianFacebookName,
     registration_draft_child.facebook_name AS childFacebookName, class_session.display_label AS classLabel,
     class_session.weekday AS weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
+    release_event.occurred_at AS seatReleasedAt, release_actor.display_name AS seatReleasedBy,
     (SELECT COUNT(*) FROM registration_draft_waitlist_entry AS earlier WHERE earlier.class_session_id = registration_draft_waitlist_entry.class_session_id
       AND earlier.status = 'active' AND (earlier.created_at < registration_draft_waitlist_entry.created_at OR (earlier.created_at = registration_draft_waitlist_entry.created_at AND earlier.id <= registration_draft_waitlist_entry.id))) AS fifoPosition
     FROM registration_draft_waitlist_entry
     INNER JOIN registration_draft_child ON registration_draft_child.id = registration_draft_waitlist_entry.registration_draft_child_id
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     INNER JOIN class_session ON class_session.id = registration_draft_waitlist_entry.class_session_id
+    LEFT JOIN audit_event AS release_event ON release_event.id = (
+      SELECT audit.id FROM payment_installment AS released_installment
+      INNER JOIN payment_request AS released_request ON released_request.id = released_installment.payment_request_id
+      INNER JOIN audit_event AS audit ON audit.subject_type = 'payment_request' AND audit.subject_id = released_request.id
+        AND audit.action = 'initial_payment_seat_released'
+      WHERE released_installment.registration_draft_child_id = registration_draft_child.id
+      ORDER BY audit.occurred_at DESC, audit.id DESC LIMIT 1
+    )
+    LEFT JOIN staff_account AS release_actor ON release_actor.id = release_event.actor_ref
     WHERE registration_draft_waitlist_entry.status = 'active'
     ORDER BY registration_draft_waitlist_entry.created_at ASC LIMIT 100`).all<Record<string, unknown>>()).results,
   waitlistOffers: (await env.DB.prepare(`SELECT waitlist_seat_offer.id, waitlist_seat_offer.status,
