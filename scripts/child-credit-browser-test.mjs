@@ -1104,10 +1104,14 @@ async function exerciseReleasedSeatHistory(page) {
   const release = row.locator("details.staff-payment-release").filter({ hasText: "Суудал чөлөөлөх" });
   await release.waitFor({ state: "visible" });
   await release.locator("summary").click();
+  assert.match(await release.textContent(), /Анхны төлөлт бүрэн төлөгдөөгүй, хугацаа хэтэрсэн бөгөөд сурагч баталгаажаагүй үед суудлыг л суллана\./,
+    "the visible release guidance explains its limited non-cancellation effect before the teacher acts");
   const releaseResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
     && response.request().method() === "POST" && response.request().postData()?.includes("payment.release-seat"));
   page.once("dialog", async (dialog) => {
     assert.match(dialog.message(), /Бүртгэл цуцлагдахгүй/, "seat-release confirmation distinguishes it from cancellation");
+    assert.match(dialog.message(), /энэ хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй/,
+      "seat-release confirmation does not imply that the released child joins the waitlist");
     await dialog.accept();
   });
   await release.getByRole("button", { name: "Суудлыг чөлөөлөх" }).click();

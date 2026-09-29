@@ -208,8 +208,8 @@ assert.match(page, /id="registration-cancel-dialog"/, "the final cancellation ac
 assert.match(page, /data-registration-cancel-dismiss[^>]*>Болих/, "the cancellation dialog starts with a safe explicit dismissal action");
 assert.match(page, /data-registration-cancel-confirm[^>]*>Бүртгэлийг цуцлах/, "only the dialog's explicit confirmation can cancel the record");
 assert.match(page, /openCancellationConfirmation\(\{ childId, reason, note, retainedRegistrationDraftChildId, childName: item\.childName/, "the dialog binds the stable child identity, selected duplicate reference, reason, and current record details before any mutation");
-assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлөөгүй үүрэг зогсож, төлбөрийн түүх хадгалагдана\./, "the dialog accurately describes a consuming record without promising a release for every record");
-assert.match(page, /Энэ бүртгэл цуцлагдаж, төлөөгүй үүрэг зогсоно\. Төлбөрийн түүх хадгалагдана\./, "a non-consuming record has a separate truthful cancellation consequence");
+assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлөөгүй үүрэг зогсож, хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\./, "the dialog accurately describes a consuming record without promising a release for every record");
+assert.match(page, /Энэ бүртгэл цуцлагдаж, төлөөгүй үүрэг зогсоно\. Хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\./, "a non-consuming record has a separate truthful cancellation consequence");
 assert.doesNotMatch(page, /Энэ яг бүртгэлийг цуцалж/, "the redundant cancellation wording is removed");
 assert.match(page, /Энэ бүртгэлийг цуцлах/, "the final cancellation action names the selected registration");
 assert.match(page, /actionPending\(item\.registrationDraftChildId, "cancel"\)/, "cancellation has its own per-record duplicate-prevention state");
@@ -396,8 +396,12 @@ assert.match(page, /includes\(item\.weekday\).*includes\(item\.startTime\)/, "a 
 assert.match(page, /Идэвхгүй бүртгэл/, "released-seat and cancellation history have one compact, collapsed home");
 assert.match(page, /Суудал чөлөөлсөн/, "seat releases remain distinguishable from registration cancellations");
 assert.match(page, /Цуцалсан бүртгэл/, "cancelled registrations remain visible inside inactive history");
-assert.match(page, /Бүртгэл цуцлагдахгүй\. Сул суудал хүлээлгийн жагсаалтад санал болж болно\./,
+assert.match(page, /Бүртгэл цуцлагдахгүй; энэ хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\. Сул суудал бусад хүлээлгийн бүртгэлд санал болж болно\./,
   "the release confirmation explains that it frees capacity without cancelling the registration");
+assert.match(page, /Анхны төлөлт бүрэн төлөгдөөгүй, хугацаа хэтэрсэн бөгөөд сурагч баталгаажаагүй үед суудлыг л суллана\. Бүртгэл цуцлагдахгүй; хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\./,
+  "the pre-click release guidance states its narrow eligibility and non-cancellation outcome");
+assert.match(page, /Бүртгэлийг бүрэн дуусгах бол сонгоно\. Идэвхтэй суудал болон төлөөгүй үүрэг зогсоно; хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\./,
+  "the pre-click cancellation guidance states the separate terminal outcome");
 assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлөөгүй үүрэг зогсож/,
   "the cancellation confirmation describes its distinct financial consequence");
 assert.match(page, /data-released-seat-detail/, "released-seat history rows can expand without a new background request");
