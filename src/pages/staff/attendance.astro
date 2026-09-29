@@ -123,10 +123,10 @@ import "../../styles/global.css";
 
       function noticeControls(entry) {
         if (entry.attendanceKind === "makeup") return "";
-        if (!state.canManageAttendance) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
-        if (!isFuture()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Мэдэгдсэн</span>` : "";
+        if (!state.canManageAttendance) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Ирэхгүй (мэдэгдсэн)</span>` : "";
+        if (!isFuture()) return entry.hasAbsenceNotice ? `<span class="staff-attendance-notice">Ирэхгүй (мэдэгдсэн)</span>` : "";
         const pending = optimistic.isPending(entry.enrollmentId);
-        return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Урьдчилж мэдэгдсэн</label>`;
+        return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Ирэхгүй (мэдэгдсэн)</label>`;
       }
 
       function rosterRow(entry) {
@@ -294,7 +294,7 @@ import "../../styles/global.css";
       async function toggleNotice(enrollmentId, checked) {
         const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === enrollmentId);
         if (!entry || entry.hasAbsenceNotice === checked) return;
-        await mutateRow(enrollmentId, { hasAbsenceNotice: checked }, checked ? "absence-notice.save" : "absence-notice.cancel", checked ? { note: entry.absenceNoticeNote || "" } : {}, checked ? "Урьдчилсан мэдэгдлийг тэмдэглэлээ." : "Урьдчилсан мэдэгдлийг арилгалаа.");
+        await mutateRow(enrollmentId, { hasAbsenceNotice: checked }, checked ? "absence-notice.save" : "absence-notice.cancel", checked ? { note: entry.absenceNoticeNote || "" } : {}, checked ? "Ирэхгүйг мэдэгдсэнээр тэмдэглэлээ." : "Ирэхгүйг мэдэгдсэн тэмдэглэлийг арилгалаа.");
       }
 
       async function bulkPresent() {

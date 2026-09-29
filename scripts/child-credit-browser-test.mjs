@@ -1158,7 +1158,8 @@ try {
     await initialForm.locator('button[type="submit"]').click();
     assert.ok((await initialResponse).ok(), "the disposable initial receipt finalizes before correction review");
     await page.reload();
-    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
+    const partialPaymentGroup = page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ });
+    if (await partialPaymentGroup.getAttribute("aria-expanded") !== "true") await partialPaymentGroup.click();
     await row.waitFor({ state: "visible" });
     const openDetail = row.getByRole("button", { name: "Нээх" });
     if (await openDetail.isVisible().catch(() => false)) await openDetail.click();
@@ -1198,7 +1199,7 @@ try {
     const standaloneSaveResult = await standaloneSaveResponse;
     assert.ok(standaloneSaveResult.ok(), `the standalone schedule review saves durably through the rendered workflow: ${standaloneSaveResult.request().postData()} -> ${await standaloneSaveResult.text()}`);
     await page.reload();
-    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
+    if (await partialPaymentGroup.getAttribute("aria-expanded") !== "true") await partialPaymentGroup.click();
     await row.waitFor({ state: "visible" });
     const reloadedDetail = row.getByRole("button", { name: "Нээх" });
     if (await reloadedDetail.isVisible().catch(() => false)) await reloadedDetail.click();
@@ -1287,7 +1288,7 @@ try {
     const saveResult = await saveResponse;
     assert.ok(saveResult.ok(), `the combined correction saves through the rendered staff workflow: ${saveResult.request().postData()} -> ${await saveResult.text()}`);
     await page.reload();
-    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
+    if (await partialPaymentGroup.getAttribute("aria-expanded") !== "true") await partialPaymentGroup.click();
     await row.waitFor({ state: "visible" });
     const persisted = await dbJson(`SELECT payment_installment.amount_mnt AS amountMnt, payment_installment.status,
       payment_installment.effective_due_at AS dueAt
@@ -1320,7 +1321,7 @@ try {
     await secondPayment.locator('button[type="submit"]').click();
     assert.ok((await laterResponse).ok(), "the ordinary later-payment form remains functional after a corrected multi-installment schedule");
     await page.reload();
-    await page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ }).click();
+    if (await partialPaymentGroup.getAttribute("aria-expanded") !== "true") await partialPaymentGroup.click();
     const detailAfterLaterPayment = row.getByRole("button", { name: "Нээх" });
     if (await detailAfterLaterPayment.isVisible().catch(() => false)) await detailAfterLaterPayment.click();
     await row.locator('[data-payment-open]').click();
@@ -1332,7 +1333,7 @@ try {
     await finalPayment.locator('button[type="submit"]').click();
     assert.ok((await finalResponse).ok(), "the final ordinary payment settles the revised schedule without changing its receipt history");
     await page.reload();
-    const settledGroup = page.locator('[data-group-toggle="Төлбөр баталгаажсан"]');
+    const settledGroup = page.locator('[data-group-toggle="Бүрэн төлсөн"]');
     if (await settledGroup.getAttribute("aria-expanded") === "true") {
       await settledGroup.click();
       assert.equal(await settledGroup.getAttribute("aria-expanded"), "false", "the fully paid group can be closed through its top-level control");
@@ -2490,7 +2491,7 @@ try {
   assert.equal(Number(finalizedProjection?.totalCreditAppliedMnt), 1000,
     `the staff projection retains the credit application after canonical promotion: ${JSON.stringify({ finalizedLedger, finalizedProjection })}`);
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
-  await page.getByRole("button", { name: /Төлбөр баталгаажсан/ }).waitFor({ state: "visible", timeout: 5_000 });
+  await page.getByRole("button", { name: /Бүрэн төлсөн/ }).waitFor({ state: "visible", timeout: 5_000 });
   const finalizedRow = page.locator(`[data-registration-child="${childId}"]`);
   const closedDetail = finalizedRow.locator('button[data-payment-detail][aria-expanded="false"]');
   if (await closedDetail.count()) await closedDetail.click();
@@ -2842,7 +2843,7 @@ try {
   await finalizeCreditOnlyRegistration(page, stageShiftChildId);
   await completeTransfer(page, stageShiftChildId, "browser-class-high", 400);
   await page.goto(`${baseUrl}/staff/payments/`);
-  await page.locator('[data-group-toggle="Төлбөр баталгаажсан"]').click();
+  await page.locator('[data-group-toggle="Бүрэн төлсөн"]').click();
   const stageShiftRow = page.locator(`[data-registration-child="${stageShiftChildId}"]`);
   await stageShiftRow.locator('[data-payment-detail][role="button"]:visible').click();
   await stageShiftRow.locator('[data-registration-view]').waitFor({ state: "visible" });

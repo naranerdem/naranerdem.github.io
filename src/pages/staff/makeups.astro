@@ -83,7 +83,7 @@ import "../../styles/global.css";
 
       function sourceRows(group) {
         const selected = state.selected.get(groupKey(group)) || new Set();
-        return group.entries.map((entry) => `<label class="staff-makeup-case"><input type="checkbox" data-case-select="${escape(groupKey(group))}" value="${escape(sourceKey(entry))}" ${selected.has(sourceKey(entry)) ? "checked" : ""} /><span><strong>${escape(entry.studentName)}</strong><small>${escape(sourceSummary(entry))}${entry.hasAbsenceNotice ? " · Мэдэгдсэн" : ""}</small></span></label>`).join("");
+        return group.entries.map((entry) => `<label class="staff-makeup-case"><input type="checkbox" data-case-select="${escape(groupKey(group))}" value="${escape(sourceKey(entry))}" ${selected.has(sourceKey(entry)) ? "checked" : ""} /><span><strong>${escape(entry.studentName)}</strong><small>${escape(sourceSummary(entry))}${entry.hasAbsenceNotice ? " · Ирэхгүй (мэдэгдсэн)" : ""}</small></span></label>`).join("");
       }
 
       function normalAvailability(group) {

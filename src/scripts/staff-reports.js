@@ -94,8 +94,11 @@ export function buildAnnualTimetableReport(data) {
   );
 }
 
-function tsvCell(value) {
+function tsvCell(value, column) {
   const clean = String(value ?? "").replace(/[\t\r\n]+/g, " ").trim();
+  // TSV has no type marker. Keep ordinary phone values legible while still
+  // neutralizing formula-like content entered into a phone field.
+  if (column?.phone && /^(?:\+?\d)[\d\s().-]*$/.test(clean)) return clean;
   return /^[=+\-@]/.test(clean) ? `'${clean}` : clean;
 }
 
@@ -106,7 +109,7 @@ export function reportToTsv(value) {
     [],
     value.columns.map((column) => column.label),
     ...value.rows.map((row) => value.columns.map((column) => row[column.key])),
-  ].map((row) => row.map(tsvCell).join("\t")).join("\n");
+  ].map((row, rowIndex) => row.map((cell, columnIndex) => tsvCell(cell, rowIndex >= 3 ? value.columns[columnIndex] : null)).join("\t")).join("\n");
 }
 
 export function reportTableHtml(value) {
@@ -147,19 +150,31 @@ export function downloadReportTsv(value, filename) {
 
 export function buildRegistrationPaymentReport(data) {
   const items = data?.rows || [];
+  const formatTimestamp = (value) => {
+    const input = String(value || "").trim();
+    if (!input || /^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
+    const date = new Date(input);
+    if (Number.isNaN(date.getTime())) return input;
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Ulaanbaatar", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(date).map((part) => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+  };
   return report(
     "Бүртгэл, төлбөрийн жагсаалт",
-    [data?.generatedAt || ""],
+    [data?.generatedAt ? `Үүсгэсэн: ${formatTimestamp(data.generatedAt)} · Цагийн бүс: Asia/Ulaanbaatar` : "Цагийн бүс: Asia/Ulaanbaatar"],
     [
       { key: "status", label: "Төлөв" },
+      { key: "registeredAt", label: "Бүртгүүлсэн" },
       { key: "child", label: "Хүүхэд" },
       { key: "birthDate", label: "Төрсөн огноо" },
       { key: "grade", label: "Анги" },
       { key: "school", label: "Сургууль" },
       { key: "guardian", label: "Асран хамгаалагч" },
       { key: "relationship", label: "Харилцаа" },
-      { key: "phone", label: "Утас" },
-      { key: "secondaryPhone", label: "Нэмэлт утас" },
+      { key: "phone", label: "Утас", phone: true },
+      { key: "secondaryPhone", label: "Нэмэлт утас", phone: true },
       { key: "guardianFacebookName", label: "Асран хамгаалагчийн Facebook" },
       { key: "email", label: "И-мэйл" },
       { key: "emailStatus", label: "И-мэйл" },
@@ -175,13 +190,13 @@ export function buildRegistrationPaymentReport(data) {
       { key: "dueAt", label: "Дараагийн хугацаа" },
       { key: "ownReferral", label: "Найзаа урих код" },
       { key: "usedReferral", label: "Ашигласан урилгын код" },
-      { key: "registeredAt", label: "Бүртгүүлсэн" },
     ],
     items.map((item) => ({
       ...item,
-      // Excel otherwise removes a leading zero. The apostrophe is an Excel text marker.
-      phone: item.phone ? `'${item.phone}` : "",
-      secondaryPhone: item.secondaryPhone ? `'${item.secondaryPhone}` : "",
+      phone: item.phone || "",
+      secondaryPhone: item.secondaryPhone || "",
+      dueAt: formatTimestamp(item.dueAt),
+      registeredAt: formatTimestamp(item.registeredAt),
     })),
   );
 }

@@ -880,6 +880,8 @@ try {
   assert.equal(confirmedTwoItem.allocatedAmountMnt, 450000, "the initial allocation remains the actual received amount");
   assert.equal(confirmedTwoItem.totalPaidMnt, 450000, "the confirmed-row paid projection includes authoritative allocations, not the required amount by label alone");
   assert.equal(confirmedTwoItem.totalRemainingMnt, 450000, "the confirmed-row remaining projection includes the independently pending later installment");
+  assert.equal(confirmedTwoItem.installments.find((installment) => installment.installmentKind === "initial")?.status, "paid", "the initial installment stays visibly settled while later debt remains");
+  assert.equal(confirmedTwoItem.nextScheduledInstallment?.dueAt, "2026-11-01", "the projection exposes the independently pending later-payment deadline without replacing the settled initial receipt");
   const additionalPreviewCounts = Object.fromEntries(["registration_draft", "registration_capacity_hold", "payment_request", "discount_award", "audit_event", "outbound_email"]
     .map((table) => [table, count(database, table)]));
   const additionalPreview = await getAdditionalClassPreview(env(database), registrationStaff, {

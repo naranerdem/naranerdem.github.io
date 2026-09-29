@@ -479,9 +479,9 @@ try {
   assert.match(source, /Бүгд ирсэн/);
   assert.match(source, /Одоогоор тэмдэглээгүй/);
   assert.match(source, /data-attendance-control="\$\{value\}"/, "the roster uses compact present and late checkboxes");
-  assert.match(source, /Мэдэгдсэн/);
+  assert.match(source, /Ирэхгүй \(мэдэгдсэн\)/);
   assert.match(source, /if \(!isFuture\(\)\) return entry\.hasAbsenceNotice/, "today and past rows render notice only when one exists");
-  assert.match(source, /Урьдчилж мэдэгдсэн/, "future rows retain a compact notice action");
+  assert.match(source, /Ирэхгүй \(мэдэгдсэн\)/, "future rows retain a compact advance-absence notice action");
   assert.match(styles, /staff-attendance-student[\s\S]*grid-template-columns: minmax\(5\.5rem, 1fr\) auto/, "student name and attendance controls share a compact row");
   assert.doesNotMatch(styles, /staff-attendance-check \{[\s\S]{0,180}border:/, "attendance checkboxes are not button-like bordered cards");
   assert.match(source, /createOptimisticRosterMutator/, "individual attendance updates are optimistic");

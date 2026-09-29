@@ -1619,7 +1619,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     ORDER BY registration_draft_child.id`).all<Record<string, unknown>>();
   const now = new Date();
   const statusRank: Record<string, number> = {
-    "Төлбөр баталгаажсан": 10,
+    "Бүрэн төлсөн": 10,
     "Хэсэгчлэн төлсөн": 20,
     "Хугацаа хэтэрсэн": 30,
     "Төлбөр хүлээж байна": 40,
@@ -1642,7 +1642,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
       const status = row.childStatus === "cancelled" || row.draftStatus === "cancelled" ? "Цуцлагдсан"
         : row.childStatus === "waitlisted" ? "Хүлээлгийн жагсаалт"
           : row.childStatus === "seat_unavailable" ? "Шалгах шаардлагатай"
-            : row.canonicalEnrollmentId ? (remaining > 0 ? "Хэсэгчлэн төлсөн" : "Төлбөр баталгаажсан")
+            : row.canonicalEnrollmentId ? (remaining > 0 ? "Хэсэгчлэн төлсөн" : "Бүрэн төлсөн")
               : due ? "Хугацаа хэтэрсэн"
                 : "Төлбөр хүлээж байна";
       const classLabel = String(row.className ?? "").trim();
