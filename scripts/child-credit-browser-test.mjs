@@ -1093,6 +1093,56 @@ async function cancelAndRestoreRegistration(page, childId, { restore: shouldRest
     "restoration preserves the canonical enrollment identity instead of duplicating a seat");
 }
 
+async function exerciseReleasedSeatHistory(page) {
+  const childId = await fillIntake(page, "ReleasedSeatHistory", "single");
+  execute(`UPDATE payment_installment SET original_due_at = '2000-01-01T00:00:00.000Z', effective_due_at = '2000-01-01T00:00:00.000Z', updated_at = '2026-01-01T00:00:00.000Z'
+    WHERE registration_draft_child_id = ${sql(childId)} AND installment_kind = 'initial';`);
+
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  await row.waitFor({ state: "visible" });
+  const release = row.locator("details.staff-payment-release").filter({ hasText: "Суудал чөлөөлөх" });
+  await release.waitFor({ state: "visible" });
+  await release.locator("summary").click();
+  const releaseResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("payment.release-seat"));
+  page.once("dialog", async (dialog) => {
+    assert.match(dialog.message(), /Бүртгэл цуцлагдахгүй/, "seat-release confirmation distinguishes it from cancellation");
+    await dialog.accept();
+  });
+  await release.getByRole("button", { name: "Суудлыг чөлөөлөх" }).click();
+  assert.ok((await releaseResponse).ok(), "the rendered seat-release control reaches its guarded API route");
+
+  const inactiveToggle = page.getByRole("button", { name: /Идэвхгүй бүртгэл/ });
+  await inactiveToggle.waitFor({ state: "visible" });
+  await page.locator('[data-group-toggle="Идэвхгүй бүртгэл"][aria-expanded="true"]').waitFor({ state: "visible" });
+  const releasedCard = page.locator(".staff-payment-item").filter({ hasText: "ReleasedSeatHistory" });
+  await releasedCard.waitFor({ state: "visible" });
+  await releasedCard.getByText("Суудал чөлөөлсөн", { exact: true }).waitFor({ state: "visible" });
+  await releasedCard.getByRole("button", { name: "Нээх" }).click();
+  await releasedCard.getByText("Бүртгэл цуцлагдаагүй; өмнөх санхүүгийн болон бүртгэлийн түүх хадгалагдана.").waitFor({ state: "visible" });
+  await capturePaymentDetail(page, releasedCard, "released-seat-history-mobile.png");
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await capturePaymentDetail(page, releasedCard, "released-seat-history-desktop.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.reload();
+  const reloadedInactiveToggle = page.getByRole("button", { name: /Идэвхгүй бүртгэл/ });
+  if (await reloadedInactiveToggle.getAttribute("aria-expanded") !== "true") await reloadedInactiveToggle.click();
+  const reloadedCard = page.locator(".staff-payment-item").filter({ hasText: "ReleasedSeatHistory" });
+  await reloadedCard.waitFor({ state: "visible" });
+  await reloadedCard.getByText("Суудал чөлөөлсөн", { exact: true }).waitFor({ state: "visible" });
+  const durable = await dbJson(`SELECT
+    (SELECT status FROM registration_draft_child WHERE id = ${sql(childId)}) AS childStatus,
+    (SELECT status FROM payment_installment WHERE registration_draft_child_id = ${sql(childId)} AND installment_kind = 'initial') AS installmentStatus,
+    (SELECT COUNT(*) FROM audit_event WHERE action = 'initial_payment_seat_released'
+      AND subject_id = (SELECT id FROM payment_request WHERE registration_draft_id =
+        (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(childId)}))) AS auditCount`);
+  assert.deepEqual(durable[0] && { childStatus: durable[0].childStatus, installmentStatus: durable[0].installmentStatus, auditCount: Number(durable[0].auditCount) },
+    { childStatus: "seat_unavailable", installmentStatus: "released", auditCount: 1 },
+    "release history survives reload with one durable transition and no cancellation");
+}
+
 try {
   if (process.env.NARANERDEM_BROWSER_SKIP_MIGRATIONS !== "1") {
     runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "local migrations");
@@ -1108,6 +1158,7 @@ try {
   browser = await browserType.launch({ headless: true });
   const captureScenario = process.env.PAYMENT_PANEL_CAPTURE_SCENARIO;
   const receiptCorrectionBrowserOnly = process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_ONLY === "1";
+  const releasedSeatHistoryBrowserOnly = process.env.RELEASED_SEAT_HISTORY_BROWSER_ONLY === "1";
   let publicTwoInstallmentChildId;
   let publicOnePaymentChildId;
   if (!captureScenario) {
@@ -1116,22 +1167,24 @@ try {
         first_installment_amount_mnt = 650000, second_installment_amount_mnt = 650000,
         updated_at = ${sql(new Date().toISOString())} WHERE activity_offering_id = 'browser-offering'`);
     }
-    publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
-      childName: "PublicTwoInstallment",
-      email: "browser-public-two@example.test",
-      paymentPlanCode: "two_installment",
-      expectedInitialAmount: receiptCorrectionBrowserOnly ? 650000 : 500,
-    });
-    if (!receiptCorrectionBrowserOnly) {
-      publicOnePaymentChildId = await submitPublicRegistration(browser, {
-        childName: "PublicOnePayment",
-        email: "browser-public-one@example.test",
-        paymentPlanCode: "single",
-        expectedInitialAmount: 1000,
+    if (!releasedSeatHistoryBrowserOnly) {
+      publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
+        childName: "PublicTwoInstallment",
+        email: "browser-public-two@example.test",
+        paymentPlanCode: "two_installment",
+        expectedInitialAmount: receiptCorrectionBrowserOnly ? 650000 : 500,
       });
+      if (!receiptCorrectionBrowserOnly) {
+        publicOnePaymentChildId = await submitPublicRegistration(browser, {
+          childName: "PublicOnePayment",
+          email: "browser-public-one@example.test",
+          paymentPlanCode: "single",
+          expectedInitialAmount: 1000,
+        });
+      }
+      assert.ok(publicTwoInstallmentChildId && (receiptCorrectionBrowserOnly || publicOnePaymentChildId),
+        "the required public payment-plan journey returns a durable registration child");
     }
-    assert.ok(publicTwoInstallmentChildId && (receiptCorrectionBrowserOnly || publicOnePaymentChildId),
-      "the required public payment-plan journey returns a durable registration child");
   }
   context = await browser.newContext(paymentPanelBrowser === "webkit"
     ? { ...devices["iPhone 13"] }
@@ -1142,6 +1195,8 @@ try {
 
   if (captureScenario) {
     await captureSpecialPaymentStates(page, captureScenario);
+  } else if (releasedSeatHistoryBrowserOnly) {
+    await exerciseReleasedSeatHistory(page);
   } else if (receiptCorrectionBrowserOnly) {
     // Exercise the actual staff page and API for the compact combined review.
     // This fixture matches the production-shaped 650,000 -> 400,000 case.

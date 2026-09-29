@@ -208,8 +208,8 @@ assert.match(page, /id="registration-cancel-dialog"/, "the final cancellation ac
 assert.match(page, /data-registration-cancel-dismiss[^>]*>Болих/, "the cancellation dialog starts with a safe explicit dismissal action");
 assert.match(page, /data-registration-cancel-confirm[^>]*>Бүртгэлийг цуцлах/, "only the dialog's explicit confirmation can cancel the record");
 assert.match(page, /openCancellationConfirmation\(\{ childId, reason, note, retainedRegistrationDraftChildId, childName: item\.childName/, "the dialog binds the stable child identity, selected duplicate reference, reason, and current record details before any mutation");
-assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлбөрийн түүх хадгалагдана\./, "the dialog accurately describes a consuming record without promising a release for every record");
-assert.match(page, /Энэ бүртгэл цуцлагдана\. Төлбөрийн түүх хадгалагдана\./, "a non-consuming record has a separate truthful cancellation consequence");
+assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлөөгүй үүрэг зогсож, төлбөрийн түүх хадгалагдана\./, "the dialog accurately describes a consuming record without promising a release for every record");
+assert.match(page, /Энэ бүртгэл цуцлагдаж, төлөөгүй үүрэг зогсоно\. Төлбөрийн түүх хадгалагдана\./, "a non-consuming record has a separate truthful cancellation consequence");
 assert.doesNotMatch(page, /Энэ яг бүртгэлийг цуцалж/, "the redundant cancellation wording is removed");
 assert.match(page, /Энэ бүртгэлийг цуцлах/, "the final cancellation action names the selected registration");
 assert.match(page, /actionPending\(item\.registrationDraftChildId, "cancel"\)/, "cancellation has its own per-record duplicate-prevention state");
@@ -224,7 +224,7 @@ assert.match(page, /state\.queuedRefresh = \{ success, options \}/, "the newest 
 assert.match(page, /const queued = state\.queuedRefresh;[\s\S]*if \(queued\) await refresh\(queued\.success, queued\.options\)/, "a queued mutation refresh runs after the in-flight refresh completes");
 assert.match(page, /Эцэг эхийн хүсэлтээр/, "cancellation requires an operational reason");
 assert.match(page, /Төлбөрийн түүх устахгүй/, "cancellation copy does not imply received money is erased or refunded");
-assert.match(page, /Цуцлагдсан бүртгэл/, "cancelled records remain retrievable as staff history");
+assert.match(page, /Цуцалсан бүртгэл/, "cancelled records remain retrievable as staff history");
 assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'), router.indexOf('if (path === "/api/staff/attendance")')), /case "registration\.cancel"|payload\.action === "registration\.cancel"/, "the protected payment surface routes registration cancellation");
 assert.match(router.slice(router.indexOf('if (path === "/api/staff/payments")'), router.indexOf('if (path === "/api/staff/attendance")')), /registration\.reinstate/, "the protected payment surface routes guarded registration reinstatement");
 assert.match(router, /RegistrationCancellationError/, "cancellation failures have their own typed server handling");
@@ -368,7 +368,7 @@ assert.match(page, /const toggle = `<div class="staff-payment-actions"><button c
 assert.match(page, /item\.canReinstate \? `<p>Энэ үйлдэл нь өмнөх төлсөн мөнгө/, "reinstatement remains separately gated after read-only cancelled details are available");
 assert.match(page, /Энэ бүртгэл одоогийн нөхцөлд сэргээх боломжгүй/, "terminal cancelled records explain unavailable restoration without hiding their details");
 assert.match(page, /staff-group-toggle[\s\S]*aria-expanded/, "operational groups are accessible disclosures with counts");
-assert.match(page, /Цуцлагдсан бүртгэл.*cancelledOpen/, "historical cancellation group defaults closed");
+assert.match(page, /Идэвхгүй бүртгэл.*inactiveOpen/, "inactive registration history defaults closed");
 assert.match(page, /function waitlistMarkup[\s\S]*staff-payment-detail/, "waitlist details use the owned expanded-detail structure");
 assert.match(page, /function recentResponseMarkup[\s\S]*classSchedule\(item\)[\s\S]*staff-payment-detail[\s\S]*staff-payment-open-header/, "recent waitlist responses use the same owned disclosure and schedule composition");
 assert.match(page, /function offerMarkup[\s\S]*classSchedule\(item\)[\s\S]*staff-payment-detail[\s\S]*staff-payment-open-header/, "active, overdue, and historical offers use the owned disclosure grammar");
@@ -393,6 +393,20 @@ assert.match(page, /function scheduleGraceRefresh\(\)/, "only visible tentative 
 assert.match(page, /item\.tentativePaymentId/, "the grace-period status is visible while finalization is pending");
 assert.match(page, /const classSchedule = \(item\)/, "collapsed rows derive one natural class/schedule label");
 assert.match(page, /includes\(item\.weekday\).*includes\(item\.startTime\)/, "a saved display label that already includes the schedule is not duplicated");
+assert.match(page, /Идэвхгүй бүртгэл/, "released-seat and cancellation history have one compact, collapsed home");
+assert.match(page, /Суудал чөлөөлсөн/, "seat releases remain distinguishable from registration cancellations");
+assert.match(page, /Цуцалсан бүртгэл/, "cancelled registrations remain visible inside inactive history");
+assert.match(page, /Бүртгэл цуцлагдахгүй\. Сул суудал хүлээлгийн жагсаалтад санал болж болно\./,
+  "the release confirmation explains that it frees capacity without cancelling the registration");
+assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлөөгүй үүрэг зогсож/,
+  "the cancellation confirmation describes its distinct financial consequence");
+assert.match(page, /data-released-seat-detail/, "released-seat history rows can expand without a new background request");
+assert.match(paymentService, /releasedSeatItems: releasedSeats\.results/,
+  "the payment queue projects released-seat history separately from active payment rows");
+assert.match(paymentService, /FROM audit_event AS release_event[\s\S]*release_event\.action = 'initial_payment_seat_released'/,
+  "released-seat history starts from its indexed durable audit lineage rather than scanning all released installments");
+assert.match(paymentService, /waitlist\.status IN \('active', 'offered'\)/,
+  "a child with a genuine active waitlist record is excluded from inactive released-seat history");
 assert.match(page, /data-parent-resend[\s\S]*?Илгээж байна…/, "resend disables itself with a visible pending label");
 assert.match(page, /const canContactPendingPayment = !canContactConfirmedEnrollment && !overdue && remaining > 0/, "only active, non-overdue payment-pending rows gain manual message preparation");
 assert.match(page, /canContactPendingPayment[\s\S]*?data-parent-message=/, "payment-pending rows expose the same message action inside opened contact detail");

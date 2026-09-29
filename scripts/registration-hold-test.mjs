@@ -2340,6 +2340,24 @@ try {
   assert.equal(released.released, true, "staff can explicitly release a genuinely unpaid overdue seat");
   assert.equal(released.parentClaimed, true, "release surfaces the parent's non-authoritative payment claim");
   assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${cashDraft.draftId}') AND status = 'active'`), 0, "explicit release, not elapsed time, frees the seat");
+  const releasedQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-15T10:01:00.000Z"));
+  const releasedChild = database.query("SELECT id FROM registration_draft_child WHERE registration_draft_id = ?", [cashDraft.draftId])[0];
+  assert.ok(releasedQueue.releasedSeatItems.some((item) => item.registrationDraftChildId === releasedChild.id),
+    "a released overdue seat remains discoverable in the inactive-registration history after refresh");
+  assert.equal(releasedQueue.items.some((item) => item.registrationDraftChildId === releasedChild.id), false,
+    "a released seat is not presented as an active payment demand");
+  assert.equal(await releaseUnpaidSeat(env(database), paymentStaff, cashRequest.id, new Date("2026-08-15T10:02:00.000Z")).then((result) => result.released), false,
+    "a retry does not create another seat-release transition");
+  assert.equal(count(database, "audit_event", `action = 'initial_payment_seat_released' AND subject_id = '${cashRequest.id}'`), 1,
+    "a retry keeps exactly one durable seat-release history event");
+  database.query(`INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)
+    VALUES (?, ?, 'class-second-offering', 'active', 1, 'registration-hold-test', ?, ?)`, ["released-seat-returned-waitlist", releasedChild.id,
+    "2026-08-15T10:03:00.000Z", "2026-08-15T10:03:00.000Z"]);
+  const returnedWaitlistQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-15T10:04:00.000Z"));
+  assert.equal(returnedWaitlistQueue.releasedSeatItems.some((item) => item.registrationDraftChildId === releasedChild.id), false,
+    "a released child with a genuine active waitlist entry is not duplicated in inactive history");
+  assert.ok(returnedWaitlistQueue.waitlistItems.some((item) => item.id === "released-seat-returned-waitlist"),
+    "a released child returned to an active waitlist remains in the ordinary active waitlist projection");
   assert.ok(count(database, "guardian_account") >= 3, "routine sufficient payments and teacher-approved partials become canonical guardians only after finalization");
   assert.ok(count(database, "student") >= 3, "routine sufficient payments and teacher-approved partials create canonical students while ordinary partial or released payments do not");
 

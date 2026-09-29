@@ -1175,15 +1175,52 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, class_session.display_label AS classLabel,
     class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
-    enrollment.cancelled_at AS cancelledAt, audit_event.metadata_json AS cancellationMetadata
+    COALESCE(enrollment.cancelled_at, cancellation_event.occurred_at) AS cancelledAt,
+    cancellation_event.metadata_json AS cancellationMetadata,
+    cancellation_actor.display_name AS cancelledBy
     FROM registration_draft_child
     INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
     LEFT JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
     LEFT JOIN enrollment ON enrollment.id = registration_draft_child.canonical_enrollment_id
-    LEFT JOIN audit_event ON audit_event.subject_type = 'registration_draft_child'
-      AND audit_event.subject_id = registration_draft_child.id AND audit_event.action = 'registration_cancelled'
+    LEFT JOIN audit_event AS cancellation_event ON cancellation_event.id = (
+      SELECT audit.id FROM audit_event AS audit
+      WHERE audit.subject_type = 'registration_draft_child'
+        AND audit.subject_id = registration_draft_child.id AND audit.action = 'registration_cancelled'
+      ORDER BY audit.occurred_at DESC, audit.id DESC LIMIT 1
+    )
+    LEFT JOIN staff_account AS cancellation_actor ON cancellation_actor.id = cancellation_event.actor_ref
     WHERE registration_draft_child.status = 'cancelled'
-    ORDER BY COALESCE(enrollment.cancelled_at, audit_event.occurred_at, registration_draft_child.updated_at) DESC LIMIT 50`).all<Record<string, unknown>>();
+    ORDER BY COALESCE(enrollment.cancelled_at, cancellation_event.occurred_at, registration_draft_child.updated_at) DESC LIMIT 50`).all<Record<string, unknown>>();
+  const releasedSeatsPromise = env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
+    registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
+    registration_draft.guardian_full_name AS guardianName, class_session.display_label AS classLabel,
+    class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
+    release_event.occurred_at AS releasedAt,
+    release_actor.display_name AS releasedBy
+    FROM audit_event AS release_event
+    INNER JOIN payment_request ON payment_request.id = release_event.subject_id
+    INNER JOIN payment_installment ON payment_installment.payment_request_id = payment_request.id
+    INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+    INNER JOIN registration_draft ON registration_draft.id = registration_draft_child.registration_draft_id
+    LEFT JOIN class_session ON class_session.id = registration_draft_child.selected_class_session_id
+    LEFT JOIN staff_account AS release_actor ON release_actor.id = release_event.actor_ref
+    WHERE release_event.action = 'initial_payment_seat_released'
+      AND release_event.subject_type = 'payment_request'
+      AND payment_installment.installment_kind = 'initial' AND payment_installment.status = 'released'
+      AND registration_draft_child.status = 'seat_unavailable'
+      AND registration_draft.status = 'seat_unavailable'
+      AND NOT EXISTS (
+        SELECT 1 FROM registration_draft_waitlist_entry AS waitlist
+        WHERE waitlist.registration_draft_child_id = registration_draft_child.id
+          AND waitlist.status IN ('active', 'offered')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM enrollment AS active_enrollment
+        WHERE active_enrollment.id = registration_draft_child.canonical_enrollment_id
+          AND active_enrollment.status IN ('awaiting_initial_payment', 'confirmed')
+          AND active_enrollment.transferred_out_at IS NULL
+      )
+    ORDER BY release_event.occurred_at DESC, release_event.id DESC LIMIT 50`).all<Record<string, unknown>>();
   const waiverRowsPromise = env.DB.prepare(`SELECT payment_fee_waiver.id, payment_fee_waiver.registration_draft_child_id AS childId,
       payment_fee_waiver.reason, payment_fee_waiver.waived_at AS waivedAt,
       COALESCE(SUM(payment_fee_waiver_installment.waived_amount_mnt), 0) AS amountMnt
@@ -1208,8 +1245,8 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
       start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
-  const [result, credits, discountCredits, cancelled, waiverRows, adjustmentRows, capacityRows, capacityLabels] = await Promise.all([
-    paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, waiverRowsPromise, adjustmentRowsPromise, capacityRowsPromise, capacityLabelsPromise,
+  const [result, credits, discountCredits, cancelled, releasedSeats, waiverRows, adjustmentRows, capacityRows, capacityLabels] = await Promise.all([
+    paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, releasedSeatsPromise, waiverRowsPromise, adjustmentRowsPromise, capacityRowsPromise, capacityLabelsPromise,
   ]);
   const projectionMs = performance.now() - queueStartedAt;
   const enrichmentStartedAt = performance.now();
@@ -1502,7 +1539,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ...credits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "payment" })),
     ...discountCredits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "discount" })),
   ],
-  capacity, cancelledItems,
+  capacity, cancelledItems, releasedSeatItems: releasedSeats.results,
   waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone, registration_draft.email, registration_draft.facebook_name AS guardianFacebookName,
