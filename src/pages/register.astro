@@ -1095,9 +1095,15 @@ const formCopy = registrationFormCopy;
             credentials: "same-origin",
             body: JSON.stringify(registrationPayload()),
           });
-          const result = await response.json();
+          // Cloudflare edge rate limiting returns an HTML 429 before this
+          // Worker runs. Keep the draft and idempotency key intact for a
+          // deliberate retry after its short mitigation window.
+          const result = await response.json().catch(() => null);
           if (!response.ok) {
-            const message = result?.error?.message || formCopy.messages.submitFailed;
+            const edgeRateLimited = response.status === 429 && !result?.error;
+            const message = edgeRateLimited
+              ? "Хэт олон хүсэлт ирсэн тул 10 секунд хүлээгээд дахин оролдоно уу. Таны оруулсан мэдээлэл хэвээр хадгалагдана."
+              : result?.error?.message || formCopy.messages.submitFailed;
             if ((response.status >= 400 && response.status < 500) || result?.error?.code === "registration_unavailable") {
               showServerValidationError(message);
               return;
