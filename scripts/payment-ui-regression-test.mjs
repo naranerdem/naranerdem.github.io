@@ -396,14 +396,14 @@ assert.match(page, /includes\(item\.weekday\).*includes\(item\.startTime\)/, "a 
 assert.match(page, /Идэвхгүй бүртгэл/, "released-seat and cancellation history have one compact, collapsed home");
 assert.match(page, /Суудал чөлөөлсөн/, "seat releases remain distinguishable from registration cancellations");
 assert.match(page, /Цуцалсан бүртгэл/, "cancelled registrations remain visible inside inactive history");
-assert.match(page, /Бүртгэл цуцлагдахгүй; энэ хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\. Сул суудал бусад хүлээлгийн бүртгэлд санал болж болно\./,
-  "the release confirmation explains that it frees capacity without cancelling the registration");
-assert.match(page, /Анхны төлөлт бүрэн төлөгдөөгүй, хугацаа хэтэрсэн бөгөөд сурагч баталгаажаагүй үед суудлыг л суллана\. Бүртгэл цуцлагдахгүй; хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\./,
-  "the pre-click release guidance states its narrow eligibility and non-cancellation outcome");
 assert.match(page, /Бүртгэлийг бүрэн дуусгах бол сонгоно\. Идэвхтэй суудал болон төлөөгүй үүрэг зогсоно; хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй\./,
-  "the pre-click cancellation guidance states the separate terminal outcome");
+  "the one teacher-facing action states the terminal cancellation outcome");
 assert.match(page, /Энэ бүртгэл цуцлагдаж, идэвхтэй суудал сулрана\. Төлөөгүй үүрэг зогсож/,
   "the cancellation confirmation describes its distinct financial consequence");
+assert.match(page, /Энэ бүртгэлийг цуцлахад бүртгэл удирдах эрх шаардлагатай\./,
+  "a payment-only staff member receives a clear explanation instead of a misleading substitute action");
+assert.doesNotMatch(page, /data-payment-release|payment\.release-seat|Суудлыг чөлөөлөх/,
+  "the teacher payment panel exposes one cancellation action and no separate seat-release control");
 assert.match(page, /data-released-seat-detail/, "released-seat history rows can expand without a new background request");
 assert.match(paymentService, /releasedSeatItems: releasedSeats\.results/,
   "the payment queue projects released-seat history separately from active payment rows");

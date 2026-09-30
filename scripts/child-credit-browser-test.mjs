@@ -1093,68 +1093,102 @@ async function cancelAndRestoreRegistration(page, childId, { restore: shouldRest
     "restoration preserves the canonical enrollment identity instead of duplicating a seat");
 }
 
-async function exerciseReleasedSeatHistory(page) {
-  const childId = await fillIntake(page, "ReleasedSeatHistory", "single");
+async function seedHistoricalSeatRelease(page) {
+  const childId = await fillIntake(page, "HistoricalReleasedSeat", "single");
+  const [row] = await dbJson(`SELECT registration_draft_child.registration_draft_id AS draftId,
+    payment_request.id AS paymentRequestId FROM registration_draft_child
+    INNER JOIN payment_request ON payment_request.registration_draft_id = registration_draft_child.registration_draft_id
+    WHERE registration_draft_child.id = ${sql(childId)}`);
+  const releasedAt = "2026-09-29T17:00:00.000Z";
+  execute(`UPDATE registration_capacity_hold SET status = 'released', released_at = ${sql(releasedAt)},
+      release_reason = 'staff_unpaid_release', updated_at = ${sql(releasedAt)}
+      WHERE registration_draft_child_id = ${sql(childId)} AND status = 'active';
+    UPDATE payment_installment SET status = 'released', updated_at = ${sql(releasedAt)}
+      WHERE registration_draft_child_id = ${sql(childId)} AND installment_kind = 'initial';
+    UPDATE registration_draft_child SET status = 'seat_unavailable', updated_at = ${sql(releasedAt)} WHERE id = ${sql(childId)};
+    UPDATE registration_draft SET status = 'seat_unavailable', updated_at = ${sql(releasedAt)} WHERE id = ${sql(row.draftId)};
+    INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id,
+      metadata_json, environment, is_test, test_run_id, created_at)
+      VALUES (${sql(randomUUID())}, ${sql(releasedAt)}, 'staff', 'browser-credit-teacher',
+        'initial_payment_seat_released', 'payment_request', ${sql(row.paymentRequestId)},
+        '{"parentClaimed":false,"creditCount":0}', 'staging', 1, ${sql(testRunId)}, ${sql(releasedAt)});`);
+  return childId;
+}
+
+async function exerciseInactiveRegistrationHistory(page) {
+  const cancellationChildId = await fillIntake(page, "CancelledOverdueSeat", "single");
   execute(`UPDATE payment_installment SET original_due_at = '2000-01-01T00:00:00.000Z', effective_due_at = '2000-01-01T00:00:00.000Z', updated_at = '2026-01-01T00:00:00.000Z'
-    WHERE registration_draft_child_id = ${sql(childId)} AND installment_kind = 'initial';`);
+    WHERE registration_draft_child_id = ${sql(cancellationChildId)} AND installment_kind = 'initial';`);
 
-  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
-  const row = page.locator(`[data-registration-child="${childId}"]`);
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(cancellationChildId)}`);
+  const row = page.locator(`[data-registration-child="${cancellationChildId}"]`);
   await row.waitFor({ state: "visible" });
-  const release = row.locator("details.staff-payment-release").filter({ hasText: "Суудал чөлөөлөх" });
-  await release.waitFor({ state: "visible" });
-  await release.locator("summary").click();
-  assert.match(await release.textContent(), /Анхны төлөлт бүрэн төлөгдөөгүй, хугацаа хэтэрсэн бөгөөд сурагч баталгаажаагүй үед суудлыг л суллана\./,
-    "the visible release guidance explains its limited non-cancellation effect before the teacher acts");
-  const releaseResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
-    && response.request().method() === "POST" && response.request().postData()?.includes("payment.release-seat"));
-  page.once("dialog", async (dialog) => {
-    assert.match(dialog.message(), /Бүртгэл цуцлагдахгүй/, "seat-release confirmation distinguishes it from cancellation");
-    assert.match(dialog.message(), /энэ хүүхэд хүлээлгийн жагсаалтад автоматаар орохгүй/,
-      "seat-release confirmation does not imply that the released child joins the waitlist");
-    await dialog.accept();
-  });
-  await release.getByRole("button", { name: "Суудлыг чөлөөлөх" }).click();
-  assert.ok((await releaseResponse).ok(), "the rendered seat-release control reaches its guarded API route");
-
+  assert.equal(await row.getByText("Суудал чөлөөлөх", { exact: true }).count(), 0,
+    "the overdue payment row exposes no separate teacher-facing seat-release action");
+  const detailToggle = row.locator("button[data-payment-detail]");
+  if (await detailToggle.getAttribute("aria-expanded") !== "true") await detailToggle.click();
+  const cancellation = row.locator("[data-registration-cancel-form]");
+  const cancellationDisclosure = cancellation.locator("xpath=ancestor::details[1]");
+  if (!await cancellationDisclosure.evaluate((element) => element.open)) {
+    await cancellationDisclosure.locator("summary").click();
+  }
+  await cancellation.waitFor({ state: "visible" });
+  assert.match(await cancellationDisclosure.textContent(), /Бүртгэлийг бүрэн дуусгах бол сонгоно\./,
+    "the single visible action explains that it is a full cancellation");
+  await capturePaymentDetail(page, row, "overdue-cancellation-action-mobile.png");
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await capturePaymentDetail(page, row, "overdue-cancellation-action-desktop.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await cancellation.locator('select[name="reason"]').selectOption("payment_overdue");
+  const cancellationResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("registration.cancel"));
+  await cancellation.locator('button[type="submit"]').click();
+  const dialog = page.locator("#registration-cancel-dialog");
+  await dialog.waitFor({ state: "visible" });
+  assert.match(await dialog.textContent(), /Төлөөгүй үүрэг зогсож/,
+    "the final cancellation review describes the actual obligation cleanup");
+  await dialog.locator("[data-registration-cancel-confirm]").click();
+  assert.equal((await cancellationResponse).ok(), true, "the visible overdue action uses registration.cancel");
+  await page.getByRole("button", { name: /Идэвхгүй бүртгэл \(1\)/ }).waitFor({ state: "visible" });
   const inactiveToggle = page.getByRole("button", { name: /Идэвхгүй бүртгэл/ });
-  await inactiveToggle.waitFor({ state: "visible" });
-  await page.locator('[data-group-toggle="Идэвхгүй бүртгэл"][aria-expanded="true"]').waitFor({ state: "visible" });
-  const releasedCard = page.locator(".staff-payment-item").filter({ hasText: "ReleasedSeatHistory" });
+  if (await inactiveToggle.getAttribute("aria-expanded") !== "true") await inactiveToggle.click();
+  const cancelledCard = page.locator(`[data-registration-child="${cancellationChildId}"]`);
+  await cancelledCard.waitFor({ state: "visible" });
+  await cancelledCard.getByText(/Төлөв: Бүртгэл цуцлагдсан/).waitFor({ state: "visible" });
+
+  const durableCancellation = await dbJson(`SELECT
+    (SELECT status FROM registration_draft_child WHERE id = ${sql(cancellationChildId)}) AS childStatus,
+    (SELECT status FROM payment_installment WHERE registration_draft_child_id = ${sql(cancellationChildId)} AND installment_kind = 'initial') AS installmentStatus,
+    (SELECT COUNT(*) FROM registration_capacity_hold WHERE registration_draft_child_id = ${sql(cancellationChildId)} AND status = 'active') AS activeHoldCount,
+    (SELECT COUNT(*) FROM payment_notification_milestone WHERE registration_draft_child_id = ${sql(cancellationChildId)} AND status IN ('pending', 'failed', 'sending')) AS activeReminderCount,
+    (SELECT COUNT(*) FROM audit_event WHERE action = 'registration_cancelled' AND subject_id = ${sql(cancellationChildId)}) AS auditCount`);
+  assert.deepEqual(durableCancellation[0] && {
+    childStatus: durableCancellation[0].childStatus, installmentStatus: durableCancellation[0].installmentStatus,
+    activeHoldCount: Number(durableCancellation[0].activeHoldCount), activeReminderCount: Number(durableCancellation[0].activeReminderCount),
+    auditCount: Number(durableCancellation[0].auditCount),
+  }, { childStatus: "cancelled", installmentStatus: "released", activeHoldCount: 0, activeReminderCount: 0, auditCount: 1 },
+  "an overdue unconfirmed registration is durably cancelled with its hold and pending reminders cleared");
+
+  const releasedChildId = await seedHistoricalSeatRelease(page);
+  await page.reload();
+  const reloadedInactiveToggle = page.getByRole("button", { name: /Идэвхгүй бүртгэл \(2\)/ });
+  if (await reloadedInactiveToggle.getAttribute("aria-expanded") !== "true") await reloadedInactiveToggle.click();
+  const releasedCard = page.locator(`[data-registration-child="${releasedChildId}"]`);
   await releasedCard.waitFor({ state: "visible" });
   await releasedCard.getByText("Суудал чөлөөлсөн", { exact: true }).waitFor({ state: "visible" });
   await releasedCard.getByRole("button", { name: "Нээх" }).click();
   await releasedCard.getByText("Бүртгэл цуцлагдаагүй; өмнөх санхүүгийн болон бүртгэлийн түүх хадгалагдана.").waitFor({ state: "visible" });
   await capturePaymentDetail(page, releasedCard, "released-seat-history-mobile.png");
-  await page.setViewportSize({ width: 1180, height: 900 });
-  await capturePaymentDetail(page, releasedCard, "released-seat-history-desktop.png");
-  await page.setViewportSize({ width: 390, height: 844 });
-
-  await page.reload();
-  const reloadedInactiveToggle = page.getByRole("button", { name: /Идэвхгүй бүртгэл/ });
-  if (await reloadedInactiveToggle.getAttribute("aria-expanded") !== "true") await reloadedInactiveToggle.click();
-  const reloadedCard = page.locator(".staff-payment-item").filter({ hasText: "ReleasedSeatHistory" });
-  await reloadedCard.waitFor({ state: "visible" });
-  await reloadedCard.getByText("Суудал чөлөөлсөн", { exact: true }).waitFor({ state: "visible" });
-  const durable = await dbJson(`SELECT
-    (SELECT status FROM registration_draft_child WHERE id = ${sql(childId)}) AS childStatus,
-    (SELECT status FROM payment_installment WHERE registration_draft_child_id = ${sql(childId)} AND installment_kind = 'initial') AS installmentStatus,
-    (SELECT COUNT(*) FROM audit_event WHERE action = 'initial_payment_seat_released'
-      AND subject_id = (SELECT id FROM payment_request WHERE registration_draft_id =
-        (SELECT registration_draft_id FROM registration_draft_child WHERE id = ${sql(childId)}))) AS auditCount`);
-  assert.deepEqual(durable[0] && { childStatus: durable[0].childStatus, installmentStatus: durable[0].installmentStatus, auditCount: Number(durable[0].auditCount) },
-    { childStatus: "seat_unavailable", installmentStatus: "released", auditCount: 1 },
-    "release history survives reload with one durable transition and no cancellation");
 
   execute(`INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)
-    VALUES ('browser-released-seat-waitlist', ${sql(childId)}, 'browser-class-source', 'active', 1, ${sql(testRunId)}, '2026-09-29T17:00:00.000Z', '2026-09-29T17:00:00.000Z');`);
+    VALUES ('browser-released-seat-waitlist', ${sql(releasedChildId)}, 'browser-class-source', 'active', 1, ${sql(testRunId)}, '2026-09-29T17:00:00.000Z', '2026-09-29T17:00:00.000Z');`);
   await page.reload();
-  await page.getByRole("button", { name: /Идэвхгүй бүртгэл \(0\)/ }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: /Идэвхгүй бүртгэл \(1\)/ }).waitFor({ state: "visible" });
   const waitlistToggle = page.getByRole("button", { name: /Хүлээлгийн жагсаалт/ });
   if (await waitlistToggle.getAttribute("aria-expanded") !== "true") await waitlistToggle.click();
   const waitingToggle = page.locator('[data-waitlist-section-toggle="waiting"]');
   if (await waitingToggle.getAttribute("aria-expanded") !== "true") await waitingToggle.click();
-  const returnedWaitlistCard = page.locator(".staff-payment-item").filter({ hasText: "ReleasedSeatHistory" });
+  const returnedWaitlistCard = page.locator(".staff-payment-item").filter({ hasText: "HistoricalReleasedSeat" });
   await returnedWaitlistCard.waitFor({ state: "visible" });
   await returnedWaitlistCard.getByRole("button", { name: "Нээх" }).click();
   await returnedWaitlistCard.getByText("Өмнөх суудал чөлөөлсөн:").waitFor({ state: "visible" });
@@ -1214,7 +1248,7 @@ try {
   if (captureScenario) {
     await captureSpecialPaymentStates(page, captureScenario);
   } else if (releasedSeatHistoryBrowserOnly) {
-    await exerciseReleasedSeatHistory(page);
+    await exerciseInactiveRegistrationHistory(page);
   } else if (receiptCorrectionBrowserOnly) {
     // Exercise the actual staff page and API for the compact combined review.
     // This fixture matches the production-shaped 650,000 -> 400,000 case.

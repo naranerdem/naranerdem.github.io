@@ -2336,30 +2336,60 @@ try {
     "a full unpaid-fee discount does not turn non-cash fee relief into a referral qualification");
   await claimParentPayment(database, cashRequest.id, cashDraft.draftId, cashSession.rawToken, new Date("2026-08-15T10:00:00.000Z"));
   await assert.rejects(claimParentPayment(database, cashRequest.id, cashDraft.draftId, "not-this-family", new Date("2026-08-15T10:00:00.000Z")), "another session cannot claim a family's payment");
-  const released = await releaseUnpaidSeat(env(database), paymentStaff, cashRequest.id, new Date("2026-08-15T10:00:00.000Z"));
+  const cancelledChild = database.query("SELECT id FROM registration_draft_child WHERE registration_draft_id = ?", [cashDraft.draftId])[0];
+  const cancelled = await cancelRegistration(env(database), registrationStaff, {
+    registrationDraftChildId: cancelledChild.id, reason: "payment_overdue",
+  }, new Date("2026-08-15T10:00:00.000Z"));
+  assert.equal(cancelled.cancelled, true,
+    "registration.manage can cancel the same overdue, unconfirmed payment state that the former UI offered for seat release");
+  assert.equal((await cancelRegistration(env(database), registrationStaff, {
+    registrationDraftChildId: cancelledChild.id, reason: "payment_overdue",
+  }, new Date("2026-08-15T10:01:00.000Z"))).idempotent, true,
+  "a lost-response retry of the overdue cancellation does not repeat the lifecycle transition");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id = '${cancelledChild.id}' AND status = 'active'`), 0,
+    "cancellation releases the overdue registration's active hold");
+  assert.equal(database.query(`SELECT status FROM registration_draft_child WHERE id = ?`, [cancelledChild.id])[0].status, "cancelled",
+    "the formerly release-eligible row is terminally cancelled rather than left seat_unavailable");
+  assert.equal(database.query(`SELECT status FROM payment_installment WHERE registration_draft_child_id = ? AND installment_kind = 'initial'`, [cancelledChild.id])[0].status, "released",
+    "cancellation releases the unpaid initial obligation");
+  assert.equal(count(database, "payment_notification_milestone", `registration_draft_child_id = '${cancelledChild.id}' AND status IN ('pending', 'failed', 'sending')`), 0,
+    "cancellation clears pending payment reminder obligations");
+  assert.equal(count(database, "audit_event", `action = 'registration_cancelled' AND subject_id = '${cancelledChild.id}'`), 1,
+    "the cancellation retry retains exactly one durable audit event");
+  const cancelledQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-15T10:02:00.000Z"));
+  assert.ok(cancelledQueue.cancelledItems.some((item) => item.registrationDraftChildId === cancelledChild.id),
+    "the overdue cancellation is discoverable under inactive cancelled registrations after refresh");
+
+  const historicReleaseDraft = await createRegistrationDraft(env(database), submission("class-priced"), new Date("2026-08-15T10:03:00.000Z"));
+  const historicReleaseChallenge = addChallenge(database, historicReleaseDraft.draftId, historicReleaseDraft.normalizedEmail,
+    "2026-08-15T10:03:00.000Z", "2026-08-16T10:03:00.000Z");
+  await confirmRegistrationChallenge(env(database), historicReleaseChallenge,
+    session("2026-08-15T10:04:00.000Z", "2026-08-18T10:04:00.000Z"), new Date("2026-08-15T10:04:00.000Z"));
+  const historicReleaseRequest = database.query(`SELECT id FROM payment_request WHERE registration_draft_id = ?`, [historicReleaseDraft.draftId])[0];
+  const released = await releaseUnpaidSeat(env(database), paymentStaff, historicReleaseRequest.id, new Date("2026-08-17T10:00:00.000Z"));
   assert.equal(released.released, true, "staff can explicitly release a genuinely unpaid overdue seat");
-  assert.equal(released.parentClaimed, true, "release surfaces the parent's non-authoritative payment claim");
-  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${cashDraft.draftId}') AND status = 'active'`), 0, "explicit release, not elapsed time, frees the seat");
-  const releasedQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-15T10:01:00.000Z"));
-  const releasedChild = database.query("SELECT id FROM registration_draft_child WHERE registration_draft_id = ?", [cashDraft.draftId])[0];
+  assert.equal(released.parentClaimed, false, "historical internal release retains its own recorded provenance");
+  assert.equal(count(database, "registration_capacity_hold", `registration_draft_child_id IN (SELECT id FROM registration_draft_child WHERE registration_draft_id = '${historicReleaseDraft.draftId}') AND status = 'active'`), 0, "the retained internal release frees its hold");
+  const releasedQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-17T10:01:00.000Z"));
+  const releasedChild = database.query("SELECT id FROM registration_draft_child WHERE registration_draft_id = ?", [historicReleaseDraft.draftId])[0];
   assert.ok(releasedQueue.releasedSeatItems.some((item) => item.registrationDraftChildId === releasedChild.id),
     "a released overdue seat remains discoverable in the inactive-registration history after refresh");
   assert.equal(releasedQueue.items.some((item) => item.registrationDraftChildId === releasedChild.id), false,
     "a released seat is not presented as an active payment demand");
-  assert.equal(await releaseUnpaidSeat(env(database), paymentStaff, cashRequest.id, new Date("2026-08-15T10:02:00.000Z")).then((result) => result.released), false,
+  assert.equal(await releaseUnpaidSeat(env(database), paymentStaff, historicReleaseRequest.id, new Date("2026-08-17T10:02:00.000Z")).then((result) => result.released), false,
     "a retry does not create another seat-release transition");
-  assert.equal(count(database, "audit_event", `action = 'initial_payment_seat_released' AND subject_id = '${cashRequest.id}'`), 1,
+  assert.equal(count(database, "audit_event", `action = 'initial_payment_seat_released' AND subject_id = '${historicReleaseRequest.id}'`), 1,
     "a retry keeps exactly one durable seat-release history event");
   database.query(`INSERT INTO registration_draft_waitlist_entry (id, registration_draft_child_id, class_session_id, status, is_test, test_run_id, created_at, updated_at)
     VALUES (?, ?, 'class-second-offering', 'active', 1, 'registration-hold-test', ?, ?)`, ["released-seat-returned-waitlist", releasedChild.id,
-    "2026-08-15T10:03:00.000Z", "2026-08-15T10:03:00.000Z"]);
-  const returnedWaitlistQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-15T10:04:00.000Z"));
+    "2026-08-17T10:03:00.000Z", "2026-08-17T10:03:00.000Z"]);
+  const returnedWaitlistQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date("2026-08-17T10:04:00.000Z"));
   assert.equal(returnedWaitlistQueue.releasedSeatItems.some((item) => item.registrationDraftChildId === releasedChild.id), false,
     "a released child with a genuine active waitlist entry is not duplicated in inactive history");
   assert.ok(returnedWaitlistQueue.waitlistItems.some((item) => item.id === "released-seat-returned-waitlist"),
     "a released child returned to an active waitlist remains in the ordinary active waitlist projection");
   assert.equal(returnedWaitlistQueue.waitlistItems.find((item) => item.id === "released-seat-returned-waitlist")?.seatReleasedAt,
-    "2026-08-15T10:00:00.000Z", "the active waitlist detail retains the recorded seat-release history");
+    "2026-08-17T10:00:00.000Z", "the active waitlist detail retains the recorded seat-release history");
   assert.ok(count(database, "guardian_account") >= 3, "routine sufficient payments and teacher-approved partials become canonical guardians only after finalization");
   assert.ok(count(database, "student") >= 3, "routine sufficient payments and teacher-approved partials create canonical students while ordinary partial or released payments do not");
 
