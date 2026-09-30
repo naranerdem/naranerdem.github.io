@@ -1623,9 +1623,10 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     registration_draft.verified_at AS verifiedAt,
     registration_draft.home_address AS address,
     academic_year.public_label AS academicYear,
-    activity_offering.title AS offering,
-    class_session.display_label || class_session.weekday || '' AS className,
-    class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
+    class_session.stage_code AS stageCode,
+    class_session.display_label AS className,
+    COALESCE(class_meeting_rule.weekly_weekday, class_session.weekday) AS weekday,
+    COALESCE(class_meeting_rule.start_time, class_session.start_time) AS startTime,
     registration_draft_child.payment_plan_code AS paymentPlan,
     registration_draft.created_at AS registeredAt,
     registration_draft_child.id AS childId, registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
@@ -1662,7 +1663,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     LEFT JOIN guardian_account ON guardian_account.id = registration_draft.canonical_guardian_account_id
     INNER JOIN academic_year ON academic_year.id = registration_draft.academic_year_id
     LEFT JOIN class_session ON class_session.id = COALESCE(registration_draft_child.selected_class_session_id, registration_draft_child.preferred_waitlist_class_session_id)
-    LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+    LEFT JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id
     ORDER BY registration_draft_child.id`).all<Record<string, unknown>>();
   const now = new Date();
   const statusRank: Record<string, number> = {
@@ -1678,6 +1679,19 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
   const planLabel = (code: unknown) => code === "single" ? "Нэг удаа"
     : code === "two_installment" ? "2 хувааж"
       : "Тодруулаагүй";
+  const stageLabels: Record<string, string> = { stage_1: "1-р шат", stage_2: "2-р шат", stage_3: "3-р шат" };
+  const weekdays = ["Даваа", "Мягмар", "Лхагва", "Пүрэв", "Баасан", "Бямба", "Ням"];
+  const legacySchedule = (className: string): { stage?: string; weekday?: string; startTime?: string } => {
+    const stageMatches = [...className.matchAll(/(?:^|\s|·)([123]-р шат)(?=\s|·|$)/g)].map((match) => match[1]);
+    const weekdayMatches = weekdays.flatMap((weekday) => Array.from(
+      { length: className.split(weekday).length - 1 },
+      () => weekday,
+    ));
+    const timeMatches = [...className.matchAll(/(?:^|\s)(\d{1,2}:\d{2})(?=\s|–|$)/g)].map((match) => match[1]);
+    if (stageMatches.length !== 1 || weekdayMatches.length !== 1 || timeMatches.length !== 1) return {};
+    const [hour, minute] = timeMatches[0].split(":");
+    return { stage: stageMatches[0], weekday: weekdayMatches[0], startTime: `${hour.padStart(2, "0")}:${minute}` };
+  };
   const projected = rows.results.map((row) => {
       const price = Number(row.price ?? 0);
       const discount = Number(row.discount ?? 0);
@@ -1693,27 +1707,23 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
               : due ? "Хугацаа хэтэрсэн"
                 : "Төлбөр хүлээж байна";
       const classLabel = String(row.className ?? "").trim();
-      const offering = String(row.offering ?? "").trim();
+      const stage = stageLabels[String(row.stageCode ?? "")] || "";
       const weekday = String(row.weekday ?? "").trim();
-      const startTime = String(row.startTime ?? "").trim();
-      const endTime = String(row.endTime ?? "").trim();
-      const schedule = weekday && startTime ? `${weekday} ${startTime}${endTime ? `–${endTime}` : ""}` : "";
-      const labelHasSchedule = Boolean(weekday && startTime && classLabel.includes(weekday) && classLabel.includes(startTime));
-      const labelIsScheduleOnly = Boolean(schedule && [weekday, `${weekday} ${startTime}`, schedule].includes(classLabel));
-      const className = [
-        labelIsScheduleOnly ? offering : classLabel,
-        schedule && !labelHasSchedule ? schedule : "",
-      ].filter((value, index, parts) => Boolean(value) && parts.indexOf(value) === index).join(" · ");
+      const startTimeMatch = String(row.startTime ?? "").trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+      const startTime = startTimeMatch ? `${startTimeMatch[1].padStart(2, "0")}:${startTimeMatch[2]}` : "";
+      // Old imports can lack the structured fields. Only parse a display label
+      // when it has exactly one unambiguous stage, weekday, and start time.
+      const legacy = stage && weekday && startTime ? {} : legacySchedule(classLabel);
       return {
         status, child: row.child, birthDate: row.birthDate, grade: row.grade, school: row.school,
         guardian: row.guardian, relationship: row.relationship, phone: row.phone, secondaryPhone: row.secondaryPhone, email: row.email,
         guardianFacebookName: row.guardianFacebookName, emailStatus: row.verifiedAt ? "Баталгаажсан" : "Баталгаажаагүй", address: row.address,
-        academicYear: row.academicYear, className,
+        academicYear: row.academicYear, stage: stage || legacy.stage || "", weekday: weekday || legacy.weekday || "", startTime: startTime || legacy.startTime || "",
         paymentPlan: planLabel(row.paymentPlan),
         price, discount, paid, creditApplied, remaining, dueAt,
         ownReferral: row.ownReferral, usedReferral: row.usedReferral, registeredAt: row.registeredAt,
-        sortSchedule: `${row.weekday ?? ""}\u0000${row.startTime ?? ""}\u0000${row.endTime ?? ""}`,
-        sortClassName: className, sortChild: String(row.child ?? ""), sortId: String(row.childId ?? ""),
+        sortSchedule: `${weekday || legacy.weekday || ""}\u0000${startTime || legacy.startTime || ""}`,
+        sortClassName: classLabel, sortChild: String(row.child ?? ""), sortId: String(row.childId ?? ""),
       };
     });
   return {

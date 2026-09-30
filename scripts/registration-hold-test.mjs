@@ -2572,10 +2572,18 @@ try {
     Number(twoLaterInstallment.remainingMnt), '2026-08-13T09:31:00.000Z', paymentStaff.staffAccountId,
     '2026-08-13T09:31:00.000Z', `test:${twoInstallment.draftId}`,
   ]);
+  database.query(`INSERT INTO class_meeting_rule (
+    class_session_id, recurrence_kind, first_date, last_date, weekly_weekday,
+    start_time, end_time, created_at, updated_at
+  ) VALUES ('class-priced', 'weekly', '2026-08-01', NULL, 'Лхагва', '14:00', '15:20', ?, ?)`, [iso(), iso()]);
   const exportRows = await getRegistrationExportRows(env(database), exportStaff);
   assert.ok(exportRows.rows.some((row) => row.paymentPlan === 'Нэг удаа'), "the generated export retains one-time agreement snapshots");
   assert.ok(exportRows.rows.some((row) => row.paymentPlan === '2 хувааж' && Number(row.paid) > 0 && Number(row.remaining) === 0),
     "the generated export retains a fully paid two-installment agreement instead of inferring one-time payment");
+  assert.ok(exportRows.rows.some((row) => row.stage === '1-р шат' && row.weekday === 'Лхагва' && row.startTime === '14:00'),
+    "the generated export uses the selected class's structured meeting rule once, without parsing or repeating its display label");
+  assert.ok(exportRows.rows.every((row) => !Object.hasOwn(row, 'className')),
+    "the generated export never exposes the ambiguous combined display-label schedule field");
   assert.equal(exportRows.rows.at(-1)?.status, 'Цуцлагдсан', "the generated export places terminal cancellations after active operational rows");
   const crossBrowserChallenge = addChallenge(database, twoInstallment.draftId, twoInstallment.normalizedEmail, "2026-08-13T10:01:00.000Z", "2026-08-14T10:01:00.000Z");
   const crossBrowserVerification = await verifyEmailToken(env(database), crossBrowserChallenge.rawToken, sessionToken, verificationTime);
