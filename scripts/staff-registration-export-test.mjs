@@ -13,7 +13,8 @@ assert.match(service, /registration_draft_child\.payment_plan_code AS paymentPla
 assert.match(service, /code === "two_installment" \? "2 хувааж"/, "two-installment agreements retain their plan label independently of payment history");
 assert.match(service, /"Тодруулаагүй"/, "historically missing agreement data is not misreported as one-time payment");
 assert.match(service, /statusRank/, "export applies an explicit operational status ordering");
-assert.match(service, /creditApplied/, "export distinguishes credit applied to an obligation from received payment");
+assert.match(service, /activePaymentInstallmentsForChildren/, "export reuses the active effective agreement projection instead of independently summing historical rows");
+assert.match(service, /cashAllocatedAmountMnt/, "export distinguishes cash received from credit applied to an obligation");
 assert.match(service, /secondary_phone AS secondaryPhone/, "export projects the collected secondary phone from the authoritative draft");
 assert.match(service, /COALESCE\(guardian_account\.facebook_name, registration_draft\.facebook_name\) AS guardianFacebookName/, "export projects the existing guardian Facebook account, preferring the canonical guardian when available");
 assert.match(service, /class_session\.stage_code AS stageCode/, "export reads the authoritative structured class stage");
@@ -21,7 +22,7 @@ assert.match(service, /COALESCE\(class_meeting_rule\.weekly_weekday, class_sessi
 assert.match(service, /COALESCE\(class_meeting_rule\.start_time, class_session\.start_time\) AS startTime/, "export reads the authoritative local class start time without timezone conversion");
 assert.match(service, /LEFT JOIN class_meeting_rule ON class_meeting_rule\.class_session_id = class_session\.id/, "export keeps the one-to-one meeting rule join bounded to the selected class");
 assert.match(service, /stageMatches\.length !== 1 \|\| weekdayMatches\.length !== 1 \|\| timeMatches\.length !== 1/, "legacy display labels are only used when their schedule is unambiguous");
-assert.match(service, /price - discount - paid - creditApplied/, "export remaining balance uses the same net obligation projection as staff payment detail");
+assert.match(service, /effectiveAmountMnt - installment\.allocatedAmountMnt/, "export remaining balance uses the same effective active obligations as staff payment detail");
 assert.match(readFileSync("src/scripts/staff-reports.js", "utf8"), /Кредитээр тооцсон/, "the TSV exposes credit application without mislabeling it as paid cash");
 assert.match(service, /"Бүрэн төлсөн": 10,[\s\S]*"Хэсэгчлэн төлсөн": 20,[\s\S]*"Хугацаа хэтэрсэн": 30,[\s\S]*"Төлбөр хүлээж байна": 40,[\s\S]*"Шалгах шаардлагатай": 50,[\s\S]*"Кредит \/ буцаалт": 60,[\s\S]*"Хүлээлгийн жагсаалт": 70/, "export follows the staff operational order, retaining credit/refund before waitlist when present");
 assert.match(service, /"Цуцлагдсан": 99/, "cancelled registrations sort after every active operational status");

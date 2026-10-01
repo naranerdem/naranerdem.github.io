@@ -2320,6 +2320,10 @@ try {
   assert.equal(firstAdjustmentResult.additionalDiscountMnt, 20000, "the reviewed adjustment records the exact selected enrollment discount");
   assert.equal(count(database, "received_payment", `payment_request_id = '${adjustmentRequest.id}'`), 0, "a discount does not invent a receipt");
   assert.equal(count(database, "payment_credit", `payment_request_id = '${adjustmentRequest.id}'`), 0, "a discount does not create refundable payment credit");
+  const adjustmentInfo = await registrationCorrectionDetail(env(database), registrationStaff, adjustmentChild.id);
+  assert.equal(adjustmentInfo.currentPaymentSchedule.reduce((total, entry) => total + Number(entry.effectiveAmountMnt), 0),
+    adjustmentInfo.currentPaymentSchedule.reduce((total, entry) => total + Number(entry.amountMnt), 0) - 20000,
+  "Info projects an enrollment-scoped fee adjustment once from the active agreement without treating it as cash or child credit");
   const afterPartialAdjustment = await previewEnrollmentFeeAdjustment(env(database), paymentStaff, {
     paymentRequestId: adjustmentRequest.id, registrationDraftChildId: adjustmentChild.id,
     amountMnt: firstAdjustment.outstandingAmountMnt,
@@ -2525,6 +2529,37 @@ try {
       "transfer retains the immutable receipt-correction lineage");
     assert.equal(count(database, "payment_installment_schedule_revision", `registration_draft_child_id = '${child.id}'`), 2,
       "transfer leaves the original schedule-revision provenance untouched");
+
+    const transferredInfo = await registrationCorrectionDetail(env(database), registrationStaff, child.id);
+    assert.deepEqual(transferredInfo.currentPaymentSchedule.map((entry) => ({
+      installmentNumber: entry.installmentNumber, amountMnt: entry.amountMnt,
+      effectiveAmountMnt: entry.effectiveAmountMnt, allocatedAmountMnt: entry.allocatedAmountMnt, dueAt: entry.dueAt,
+    })), [
+      { installmentNumber: 1, amountMnt: 400000, effectiveAmountMnt: 400000, allocatedAmountMnt: 400000, dueAt: "2026-08-15T15:59:59.999Z" },
+      { installmentNumber: 2, amountMnt: 400000, effectiveAmountMnt: 400000, allocatedAmountMnt: 0, dueAt: "2026-12-01T15:59:59.999Z" },
+      { installmentNumber: 3, amountMnt: 500000, effectiveAmountMnt: 500000, allocatedAmountMnt: 0, dueAt: "2027-02-28T15:59:59.999Z" },
+    ], "Info retrieves the complete active agreement from the stable child owner after transfer, including the appended third installment");
+    assert.equal(transferredInfo.paymentPlanCode, "two_installment",
+      "the original registration choice remains historical metadata rather than the current agreement");
+    await saveRegistrationCorrection(env(database), registrationStaff, child.id, {
+      ...transferredInfo, expectedDraftUpdatedAt: transferredInfo.draftUpdatedAt,
+      expectedChildUpdatedAt: transferredInfo.childUpdatedAt,
+      reason: "Шилжүүлгийн дараах танилцуулга засвар", currentSchool: "Шилжүүлгийн дараах сургууль",
+    });
+    assert.deepEqual(database.query(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt, status
+      FROM payment_installment WHERE payment_request_id = ? AND status != 'released' ORDER BY installment_number`, [request.id]), [
+      { amountMnt: 400000, dueAt: "2026-08-15T15:59:59.999Z", status: "paid" },
+      { amountMnt: 400000, dueAt: "2026-12-01T15:59:59.999Z", status: "pending" },
+      { amountMnt: 500000, dueAt: "2027-02-28T15:59:59.999Z", status: "pending" },
+    ], "an unrelated Info edit cannot restore historical payment-plan fields over the active agreement");
+    const transferredExport = await getRegistrationExportRows(env(database), exportStaff);
+    const transferredExportRow = transferredExport.rows.find((entry) => entry.child === "Тест Төлбөр Засвар");
+    assert.deepEqual({ price: transferredExportRow?.price, discount: transferredExportRow?.discount,
+      paid: transferredExportRow?.paid, creditApplied: transferredExportRow?.creditApplied,
+      remaining: transferredExportRow?.remaining, dueAt: transferredExportRow?.dueAt }, {
+      price: 1300000, discount: 0, paid: 400000, creditApplied: 0,
+      remaining: 900000, dueAt: "2026-12-01T15:59:59.999Z",
+    }, "the export uses the same active effective agreement as Info and the payment queue after correction and transfer");
 
     // A truly higher target remains financially visible; this regression is
     // specifically against losing custom schedules, not against price checks.

@@ -1444,6 +1444,21 @@ try {
     await page.reload();
     if (await partialPaymentGroup.getAttribute("aria-expanded") !== "true") await partialPaymentGroup.click();
     await row.waitFor({ state: "visible" });
+    await row.locator("[data-registration-view]").click();
+    const info = row.locator(".staff-registration-view");
+    await info.getByText("Одоогийн төлөх нийт дүн").waitFor({ state: "visible" });
+    await info.getByText("Бүртгүүлэх үеийн төлбөрийн сонголт").waitFor({ state: "visible" });
+    assert.match(await info.textContent(), /400,000 ₮[\s\S]*12-р сарын 01, 23:59[\s\S]*500,000 ₮[\s\S]*02-р сарын 28, 23:59/,
+      "the rendered Info panel shows the complete transferred custom agreement with Ulaanbaatar deadlines");
+    assert.equal(await info.evaluate((element) => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= window.innerWidth), true,
+      "the rendered Info agreement remains contained in the narrow payment panel");
+    if (!fastReceiptCorrection) {
+      await page.setViewportSize({ width: 1180, height: 900 });
+      await capturePaymentElement(info, "transferred-schedule-info-desktop.png");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await capturePaymentElement(info, "transferred-schedule-info-mobile.png");
+    }
+    await info.locator("[data-registration-view-close]").click();
     const transferredSchedule = await dbJson(`SELECT payment_installment.amount_mnt AS amountMnt,
       payment_installment.status, payment_installment.effective_due_at AS dueAt,
       payment_installment.canonical_enrollment_id AS enrollmentId

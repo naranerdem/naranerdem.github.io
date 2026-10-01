@@ -10,6 +10,7 @@ import { childCreditSummaryForChildren } from "../services/child-credit-ledger";
 import { pendingAdditionalClassCashSettlements } from "../services/additional-class-credit-settlement";
 import { finalizeFundedSameSubmissionQuotes, materializeConditionalFamilyAwardCredit, recoverFundedConditionalFamilyQuotes } from "../services/conditional-family-discounts";
 import { cashReceiptProjectionsForChildren } from "../services/cash-receipt-projection";
+import { activePaymentInstallmentsForChildren } from "../services/payment-agreement";
 import { familyCreditSuggestionsForChild } from "./family-discounts";
 import { sendConditionalSeatConfirmationEmail, sendPaymentConfirmedEmail } from "../email/registration-transactional";
 import { cancelUnauthorisedPaymentReminderStatements } from "../email/payment-reminder-delivery";
@@ -1632,22 +1633,6 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     registration_draft_child.payment_plan_code AS paymentPlan,
     registration_draft.created_at AS registeredAt,
     registration_draft_child.id AS childId, registration_draft_child.canonical_enrollment_id AS canonicalEnrollmentId,
-    (SELECT COALESCE(SUM(amount_mnt), 0) FROM payment_installment WHERE registration_draft_child_id = registration_draft_child.id) AS price,
-    (SELECT COALESCE(SUM(award_amount_mnt), 0) FROM discount_award WHERE registration_draft_child_id = registration_draft_child.id AND status = 'active') AS discount,
-    (SELECT COALESCE(SUM(allocation.allocated_amount_mnt), 0)
-      FROM payment_allocation AS allocation
-      INNER JOIN received_payment AS payment ON payment.id = allocation.received_payment_id
-      LEFT JOIN payment_confirmation AS confirmation ON confirmation.received_payment_id = payment.id
-      INNER JOIN payment_installment AS installment ON installment.id = allocation.payment_installment_id
-      WHERE installment.registration_draft_child_id = registration_draft_child.id
-        AND COALESCE(confirmation.status, '') != 'undone') AS paid,
-    (SELECT COALESCE(SUM(-credit_entry.amount_mnt), 0)
-      FROM child_credit_entry AS credit_entry
-      INNER JOIN payment_installment AS installment ON installment.id = credit_entry.payment_installment_id
-      WHERE installment.registration_draft_child_id = registration_draft_child.id
-        AND credit_entry.entry_kind = 'credit_application') AS creditApplied,
-    (SELECT effective_due_at FROM payment_installment WHERE registration_draft_child_id = registration_draft_child.id
-      AND status IN ('pending', 'partially_paid') ORDER BY installment_number LIMIT 1) AS dueAt,
     COALESCE(
       (SELECT code FROM enrollment_referral_code WHERE enrollment_id = registration_draft_child.canonical_enrollment_id
         AND status = 'active' ORDER BY activated_at DESC, id DESC LIMIT 1),
@@ -1667,6 +1652,7 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     LEFT JOIN class_session ON class_session.id = COALESCE(registration_draft_child.selected_class_session_id, registration_draft_child.preferred_waitlist_class_session_id)
     LEFT JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id
     ORDER BY registration_draft_child.id`).all<Record<string, unknown>>();
+  const activeInstallments = await activePaymentInstallmentsForChildren(env.DB, rows.results.map((row) => String(row.childId)));
   const now = new Date();
   const statusRank: Record<string, number> = {
     "Бүрэн төлсөн": 10,
@@ -1695,12 +1681,14 @@ export async function getRegistrationExportRows(env: WorkerEnv, actor: StaffPrin
     return { stage: stageMatches[0], weekday: weekdayMatches[0], startTime: `${hour.padStart(2, "0")}:${minute}` };
   };
   const projected = rows.results.map((row) => {
-      const price = Number(row.price ?? 0);
-      const discount = Number(row.discount ?? 0);
-      const paid = Number(row.paid ?? 0);
-      const creditApplied = Number(row.creditApplied ?? 0);
-      const remaining = Math.max(price - discount - paid - creditApplied, 0);
-      const dueAt = typeof row.dueAt === "string" ? row.dueAt : null;
+      const installments = activeInstallments.get(String(row.childId)) ?? [];
+      const price = installments.reduce((total, installment) => total + installment.amountMnt, 0);
+      const effectiveFee = installments.reduce((total, installment) => total + installment.effectiveAmountMnt, 0);
+      const discount = Math.max(0, price - effectiveFee);
+      const paid = installments.reduce((total, installment) => total + installment.cashAllocatedAmountMnt, 0);
+      const creditApplied = installments.reduce((total, installment) => total + Math.max(0, installment.allocatedAmountMnt - installment.cashAllocatedAmountMnt), 0);
+      const remaining = installments.reduce((total, installment) => total + Math.max(0, installment.effectiveAmountMnt - installment.allocatedAmountMnt), 0);
+      const dueAt = installments.find((installment) => installment.status === "pending" || installment.status === "partially_paid")?.dueAt ?? null;
       const due = dueAt && new Date(dueAt).getTime() < now.getTime();
       const status = row.childStatus === "cancelled" || row.draftStatus === "cancelled" ? "Цуцлагдсан"
         : row.childStatus === "waitlisted" ? "Хүлээлгийн жагсаалт"
