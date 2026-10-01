@@ -23,10 +23,22 @@ interface QueuedEmail {
   message: EmailMessage;
 }
 
-async function messageForDelivery(env: WorkerEnv, email: QueuedEmail): Promise<EmailMessage> {
+interface DeliveryOptions {
+  requireAuthorization?: boolean;
+}
+
+export class EmailDeliveryAuthorizationError extends Error {
+  constructor() { super("Email delivery is no longer authorized."); }
+}
+
+async function messageForDelivery(env: WorkerEnv, email: QueuedEmail, options: DeliveryOptions): Promise<EmailMessage> {
   const existing = await env.DB.prepare(`SELECT event_type AS eventType, email_sensitivity AS sensitivity,
-    bcc_recipients_json AS bccRecipientsJson, outbox_subject AS outboxSubject FROM outbound_email WHERE id = ?`).bind(email.id)
-    .first<{ eventType: string; sensitivity: "archive_bcc_safe" | "sensitive_capability" | null; bccRecipientsJson: string | null; outboxSubject: string | null }>();
+    bcc_recipients_json AS bccRecipientsJson, outbox_subject AS outboxSubject, status,
+    delivery_authorized_at AS deliveryAuthorizedAt FROM outbound_email WHERE id = ?`).bind(email.id)
+    .first<{ eventType: string; sensitivity: "archive_bcc_safe" | "sensitive_capability" | null; bccRecipientsJson: string | null; outboxSubject: string | null; status: string; deliveryAuthorizedAt: string | null }>();
+  if (!existing || (options.requireAuthorization && (!existing.deliveryAuthorizedAt || !["queued", "failed"].includes(existing.status)))) {
+    throw new EmailDeliveryAuthorizationError();
+  }
   const sensitivity = existing?.sensitivity ?? emailSensitivityForTemplate(email.templateKey);
   let bcc: string[] = [];
   if (existing?.bccRecipientsJson) {
@@ -42,10 +54,10 @@ async function messageForDelivery(env: WorkerEnv, email: QueuedEmail): Promise<E
       });
     } catch { bcc = []; }
   }
-  if (!existing?.outboxSubject) {
+  if (!existing.outboxSubject || ["queued", "failed"].includes(existing.status)) {
     const snapshot = sanitizedOutboxSnapshot(email.message, sensitivity);
     await env.DB.prepare(`UPDATE outbound_email SET email_sensitivity = ?, outbox_subject = ?, outbox_text = ?,
-      bcc_recipients_json = ?, updated_at = ? WHERE id = ? AND outbox_subject IS NULL`)
+      bcc_recipients_json = ?, updated_at = ? WHERE id = ? AND status IN ('queued', 'failed')`)
       .bind(sensitivity, snapshot.subject, snapshot.text, JSON.stringify(bcc), new Date().toISOString(), email.id).run();
   }
   return bcc.length ? { ...email.message, bcc } : email.message;
@@ -55,8 +67,9 @@ export async function deliverQueuedEmail(
   env: WorkerEnv,
   provider: EmailProvider,
   email: QueuedEmail,
+  options: DeliveryOptions = {},
 ): Promise<string> {
-  const message = await messageForDelivery(env, email);
+  const message = await messageForDelivery(env, email, options);
   let attempts = 0;
   let providerMessageId = "";
   let failureCode = "provider_error";

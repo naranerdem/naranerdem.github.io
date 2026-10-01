@@ -65,6 +65,7 @@
     "test:edge-protection-browser": "npm run build && node scripts/edge-protection-browser-check.mjs",
     "test:additional-class-credit-migration": "node scripts/additional-class-credit-migration-test.mjs",
     "test:payment-email-template": "node scripts/payment-email-template-test.mjs",
+    "test:payment-reminder-safety": "node scripts/payment-reminder-safety-test.mjs",
     "test:email-outbox": "node scripts/email-outbox-test.mjs",
     "test:registration-transactional-email": "node scripts/registration-transactional-email-test.mjs",
     "test:parent-access": "node scripts/parent-access-foundation-test.mjs",

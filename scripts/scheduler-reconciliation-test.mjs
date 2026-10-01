@@ -51,7 +51,8 @@ class Database {
 function env(DB) {
   return {
     APP_ENV: "staging", EMAIL_ENABLED: "true", RESEND_API_KEY: "test-key",
-    EMAIL_FROM: "Naran Erdem <scheduler@example.test>", STAGING_EMAIL_OVERRIDE_TO: "safe@example.test", DB,
+    EMAIL_FROM: "Naran Erdem <scheduler@example.test>", STAGING_EMAIL_OVERRIDE_TO: "safe@example.test",
+    STAGING_TEST_EMAIL_RUN_ID: "scheduler-test", DB,
   };
 }
 

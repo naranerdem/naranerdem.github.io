@@ -1430,7 +1430,8 @@ try {
     "credit changed after a leave-unused decision");
   const reminderProvider = { async send() { return { providerMessageId: randomUUID() }; } };
   const reminderNow = new Date('2026-12-01T10:00:00.000Z');
-  await processDuePaymentReminders(env(database, { RESEND_API_KEY: 'test-reminder-key', STAGING_EMAIL_OVERRIDE_TO: 'safe@example.test' }), reminderNow, reminderProvider);
+  const reminderTestRunId = database.query(`SELECT test_run_id AS testRunId FROM registration_draft_child WHERE id = ?`, [approvedTwoChild.id])[0].testRunId;
+  await processDuePaymentReminders(env(database, { RESEND_API_KEY: 'test-reminder-key', STAGING_EMAIL_OVERRIDE_TO: 'safe@example.test', STAGING_TEST_EMAIL_RUN_ID: reminderTestRunId }), reminderNow, reminderProvider);
   assert.equal(database.query(`SELECT status FROM payment_notification_milestone WHERE payment_installment_id = ? AND milestone_type = 'later_reminder'`, [approvedTwoLater.id])[0].status, 'pending',
     "usable unallocated credit defers the affected cash reminder without recording delivery");
   assert.equal(count(database, "outbound_email", `id = '${approvedTwoLater.id}:later-reminder:email'`), 0,
@@ -1438,7 +1439,7 @@ try {
   await leaveChildCreditUnused(env(database), paymentStaff, {
     registrationDraftChildId: approvedTwoChild.id, paymentInstallmentId: approvedTwoLater.id, reason: "Асран хамгаалагч бэлнээр үргэлжлүүлнэ", operationId: randomUUID(),
   }, new Date('2026-12-01T10:01:00.000Z'));
-  await processDuePaymentReminders(env(database, { RESEND_API_KEY: 'test-reminder-key', STAGING_EMAIL_OVERRIDE_TO: 'safe@example.test' }), new Date('2026-12-01T10:02:00.000Z'), reminderProvider);
+  await processDuePaymentReminders(env(database, { RESEND_API_KEY: 'test-reminder-key', STAGING_EMAIL_OVERRIDE_TO: 'safe@example.test', STAGING_TEST_EMAIL_RUN_ID: reminderTestRunId }), new Date('2026-12-01T10:02:00.000Z'), reminderProvider);
   assert.equal(database.query(`SELECT status FROM payment_notification_milestone WHERE payment_installment_id = ? AND milestone_type = 'later_reminder'`, [approvedTwoLater.id])[0].status, 'sent',
     "after an explicit current-state decision, the ordinary reminder scheduler resumes exactly once");
 

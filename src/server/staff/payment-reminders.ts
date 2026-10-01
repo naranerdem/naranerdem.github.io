@@ -2,7 +2,7 @@ import type { D1PreparedStatement, D1Result, WorkerEnv } from "../env";
 import { resolveDeliveryAddress } from "../email/delivery-policy";
 import { createResendProvider } from "../email/resend";
 import type { EmailProvider } from "../email/provider";
-import { deliverQueuedEmail } from "../email/service";
+import { deliverQueuedEmail, EmailDeliveryAuthorizationError } from "../email/service";
 import { paymentReminderTemplate } from "../email/templates/payment-reminder";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 import { effectiveInstallmentsForRows } from "../services/discounts";
@@ -309,11 +309,80 @@ function eligible(milestone: MilestoneRow, context: ReminderContext | null): boo
     && context.enrollmentStatus === "confirmed" && ["pending", "partially_paid"].includes(context.installmentStatus);
 }
 
+function isAuthorizedStagingTestRun(env: WorkerEnv, milestone: MilestoneRow): boolean {
+  if (env.APP_ENV !== "staging" || !milestone.isTest) return true;
+  const authorizedRun = env.STAGING_TEST_EMAIL_RUN_ID?.trim();
+  return Boolean(authorizedRun && milestone.testRunId && authorizedRun === milestone.testRunId);
+}
+
+interface ReminderOutboxRow {
+  status: string;
+  actualDeliveryEmail: string;
+  deliveryAuthorizedAt: string | null;
+}
+
+async function authorizeReminderDelivery(
+  env: WorkerEnv,
+  milestone: MilestoneRow,
+  context: ReminderContext,
+  now: string,
+): Promise<ReminderOutboxRow | null> {
+  const emailId = milestone.outboundEmailId ?? `${milestone.id}:email`;
+  const delivery = resolveDeliveryAddress(env.APP_ENV, context.normalizedEmail, env.STAGING_EMAIL_OVERRIDE_TO);
+  await env.DB.prepare(`INSERT OR IGNORE INTO outbound_email (
+    id, event_type, template_key, intended_to_email, actual_delivery_email, delivery_mode, status,
+    attempt_count, queued_at, context_json, idempotency_key, is_test, test_run_id, created_at, updated_at, registration_draft_id
+  ) SELECT ?, ?, 'payment_reminder_v1', ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE EXISTS (
+      SELECT 1 FROM payment_notification_milestone
+      WHERE id = ? AND status = 'sending' AND (outbound_email_id IS NULL OR outbound_email_id = ?)
+    )`)
+    .bind(emailId, `payment_${milestone.milestoneType}`, context.normalizedEmail, delivery.actualEmail, delivery.deliveryMode,
+      now, JSON.stringify({ milestoneType: milestone.milestoneType, dueAt: context.dueAt }), `payment-reminder/${milestone.milestoneKey}`,
+      milestone.isTest, milestone.testRunId, now, now, milestone.registrationDraftId, milestone.id, emailId).run();
+  await env.DB.prepare(`UPDATE payment_notification_milestone
+    SET outbound_email_id = ?
+    WHERE id = ? AND status = 'sending' AND (outbound_email_id IS NULL OR outbound_email_id = ?)`)
+    .bind(emailId, milestone.id, emailId).run();
+  await env.DB.prepare(`UPDATE outbound_email
+    SET delivery_authorized_at = ?
+    WHERE id = ? AND status IN ('queued', 'failed') AND delivery_authorized_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM payment_notification_milestone
+        WHERE id = ? AND status = 'sending' AND outbound_email_id = ?
+      )`).bind(now, emailId, milestone.id, emailId).run();
+  // Cancellation can win between creating the unlinked Outbox row and its
+  // milestone link. It remains unauthorised and is terminally discarded.
+  await env.DB.prepare(`UPDATE outbound_email SET status = 'cancelled', updated_at = ?
+    WHERE id = ? AND status IN ('queued', 'failed') AND delivery_authorized_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM payment_notification_milestone
+        WHERE id = ? AND status = 'sending' AND outbound_email_id = ?
+      )`).bind(now, emailId, milestone.id, emailId).run();
+  const outbox = await env.DB.prepare(`SELECT status, actual_delivery_email AS actualDeliveryEmail,
+    delivery_authorized_at AS deliveryAuthorizedAt FROM outbound_email WHERE id = ?`).bind(emailId)
+    .first<ReminderOutboxRow>();
+  if (!outbox || outbox.status === "cancelled") return null;
+  // Pre-0072 sent messages predate the authorization marker. They remain
+  // historical delivery rather than becoming abandoned claimed milestones.
+  if (outbox.status === "sent") return outbox;
+  if (!outbox.deliveryAuthorizedAt) return null;
+  return outbox;
+}
+
+export interface PaymentReminderProcessingOptions {
+  reconciliationBatchSize?: number;
+  dueBatchSize?: number;
+  // Test-only synchronization point immediately before the durable send
+  // authorization. It is not supplied by scheduled production work.
+  beforeDeliveryAuthorization?: (milestone: Readonly<MilestoneRow>) => Promise<void> | void;
+}
+
 export async function processDuePaymentReminders(
   env: WorkerEnv,
   nowDate = new Date(),
   provider?: EmailProvider,
-  options: { reconciliationBatchSize?: number; dueBatchSize?: number } = {},
+  options: PaymentReminderProcessingOptions = {},
 ): Promise<number> {
   if (env.EMAIL_ENABLED !== "true" || !env.RESEND_API_KEY) return 0;
   const reconciliationBatchSize = Math.max(1, Math.min(RECONCILIATION_BATCH_SIZE, Math.trunc(options.reconciliationBatchSize ?? RECONCILIATION_BATCH_SIZE)));
@@ -341,6 +410,12 @@ export async function processDuePaymentReminders(
       now, now, milestone.id, new Date(nowDate.getTime() - 5 * 60_000).toISOString(),
     ).run();
     if (changes(claimed) !== 1) continue;
+    if (!isAuthorizedStagingTestRun(env, milestone)) {
+      await env.DB.prepare(`UPDATE payment_notification_milestone
+        SET status = 'cancelled', last_error_code = 'staging_test_delivery_not_authorized', processing_started_at = NULL, updated_at = ?
+        WHERE id = ? AND status = 'sending'`).bind(now, milestone.id).run();
+      continue;
+    }
     const context = await contextForMilestone(env, milestone);
     if (context) {
       const raw = await env.DB.prepare(`SELECT id, registration_draft_child_id AS registrationDraftChildId,
@@ -400,41 +475,36 @@ export async function processDuePaymentReminders(
     if (!context) continue;
     const reminderContext = context;
     try {
-      const delivery = resolveDeliveryAddress(env.APP_ENV, reminderContext.normalizedEmail, env.STAGING_EMAIL_OVERRIDE_TO);
+      await options.beforeDeliveryAuthorization?.(milestone);
+      const outbox = await authorizeReminderDelivery(env, milestone, reminderContext, now);
       const emailId = milestone.outboundEmailId ?? `${milestone.id}:email`;
-      const existing = await env.DB.prepare(`SELECT id, status, actual_delivery_email AS actualDeliveryEmail FROM outbound_email WHERE id = ?`).bind(emailId)
-        .first<{ id: string; status: string; actualDeliveryEmail: string }>();
-      if (existing?.status === "sent") {
+      if (outbox?.status === "sent") {
         await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'sent', sent_at = ?, outbound_email_id = ?, updated_at = ? WHERE id = ?`)
           .bind(now, emailId, now, milestone.id).run();
         sent += 1; continue;
       }
-      if (!existing) {
-        await env.DB.prepare(`INSERT INTO outbound_email (
-          id, event_type, template_key, intended_to_email, actual_delivery_email, delivery_mode, status,
-          attempt_count, queued_at, context_json, idempotency_key, is_test, test_run_id, created_at, updated_at, registration_draft_id
-        ) VALUES (?, ?, 'payment_reminder_v1', ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .bind(emailId, `payment_${milestone.milestoneType}`, reminderContext.normalizedEmail, delivery.actualEmail, delivery.deliveryMode,
-            now, JSON.stringify({ milestoneType: milestone.milestoneType, dueAt: reminderContext.dueAt }), `payment-reminder/${milestone.milestoneKey}`,
-            milestone.isTest, milestone.testRunId, now, now, milestone.registrationDraftId).run();
-      }
+      if (!outbox) continue;
       const template = paymentReminderTemplate({
         milestoneType: milestone.milestoneType, childName: reminderContext.childName, classLabel: reminderContext.classLabel || "Сонгосон анги",
         amountMnt: Number(reminderContext.amountMnt), dueAt: reminderContext.dueAt!, parentClaimed: Boolean(reminderContext.parentClaimed),
         bankName: reminderContext.bankName, accountHolderName: reminderContext.accountHolderName, accountNumber: reminderContext.accountNumber,
         iban: reminderContext.iban, transferInstruction: reminderContext.transferInstruction,
+        processingAt: now, isStagingTest: env.APP_ENV === "staging" && Boolean(milestone.isTest),
       });
       await deliverQueuedEmail(env, emailProvider, {
         id: emailId, idempotencyKey: `payment-reminder/${milestone.milestoneKey}`,
         templateKey: "payment_reminder_v1",
-        message: { from: env.EMAIL_FROM, to: existing?.actualDeliveryEmail ?? delivery.actualEmail, subject: template.subject, html: template.html, text: template.text },
-      });
-      await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'sent', sent_at = ?, outbound_email_id = ?, last_error_code = NULL, updated_at = ? WHERE id = ?`)
-        .bind(now, emailId, now, milestone.id).run();
+        message: { from: env.EMAIL_FROM, to: outbox.actualDeliveryEmail, subject: template.subject, html: template.html, text: template.text },
+      }, { requireAuthorization: true });
+      await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'sent', sent_at = ?, outbound_email_id = ?, last_error_code = NULL, updated_at = ?
+        WHERE id = ? AND status = 'sending' AND outbound_email_id = ?`)
+        .bind(now, emailId, now, milestone.id, emailId).run();
       sent += 1;
     } catch (error) {
+      if (error instanceof EmailDeliveryAuthorizationError) continue;
       const code = error instanceof Error ? error.name : "delivery_failed";
-      await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'failed', last_error_code = ?, updated_at = ? WHERE id = ?`)
+      await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'failed', last_error_code = ?, updated_at = ?
+        WHERE id = ? AND status = 'sending'`)
         .bind(code, now, milestone.id).run();
     }
   }

@@ -4,6 +4,7 @@ import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { getClassCapacityProjections } from "../services/class-capacity";
 import { releaseAdditionalAdmissionCreditReservations } from "../services/child-credit-ledger";
 import { invalidatePendingConditionalFamilyQuotesForChild } from "../services/conditional-family-discounts";
+import { cancelUnauthorisedPaymentReminderStatements } from "../email/payment-reminder-delivery";
 
 export type RegistrationCancellationReason = "guardian_request" | "payment_overdue" | "duplicate_registration" | "other";
 
@@ -292,8 +293,7 @@ export async function cancelRegistration(env: WorkerEnv, actor: StaffPrincipal, 
         WHERE other_allocation.received_payment_id = payment_confirmation.received_payment_id
           AND other_installment.registration_draft_child_id != ?
       )`).bind(now, now, row.childId, row.childId),
-    env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
-      WHERE registration_draft_child_id = ? AND status IN ('pending', 'failed', 'sending')`).bind(now, row.childId),
+    ...cancelUnauthorisedPaymentReminderStatements(env, row.childId, now),
     env.DB.prepare(`UPDATE additional_class_admission SET status = 'cancelled', updated_at = ?
       WHERE (target_registration_draft_child_id = ? OR source_registration_draft_child_id = ?)
         AND status = 'pending_confirmation'`).bind(now, row.childId, row.childId),

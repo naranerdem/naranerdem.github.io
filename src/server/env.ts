@@ -34,6 +34,9 @@ export interface WorkerEnv {
   EMAIL_FROM: string;
   RESEND_API_KEY?: string;
   STAGING_EMAIL_OVERRIDE_TO?: string;
+  // An exact synthetic test-run authorization. A staging recipient override
+  // alone must never allow scheduled fixture reminders to leave the Worker.
+  STAGING_TEST_EMAIL_RUN_ID?: string;
   STAGING_EMAIL_ARCHIVE_BCC_TO?: string;
   STAGING_AUTH_TEST_KEY?: string;
   TURNSTILE_SITE_KEY?: string;

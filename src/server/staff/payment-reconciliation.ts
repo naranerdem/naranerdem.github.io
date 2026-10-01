@@ -12,6 +12,7 @@ import { finalizeFundedSameSubmissionQuotes, materializeConditionalFamilyAwardCr
 import { cashReceiptProjectionsForChildren } from "../services/cash-receipt-projection";
 import { familyCreditSuggestionsForChild } from "./family-discounts";
 import { sendConditionalSeatConfirmationEmail, sendPaymentConfirmedEmail } from "../email/registration-transactional";
+import { cancelUnauthorisedPaymentReminderStatements } from "../email/payment-reminder-delivery";
 
 type PaymentSource = "staff_manual_bank" | "staff_manual_cash";
 type PaymentErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "not_due" | "already_paid" | "no_outstanding" | "schedule_locked" | "family_credit_review_required";
@@ -168,9 +169,7 @@ async function settleOutstandingApprovalIfResolved(env: WorkerEnv, childId: stri
     SET status = 'settled', settled_at = ?, updated_at = ? WHERE id = ? AND status = 'active'`)
     .bind(now, now, approval.id).run();
   if (changes(result)) {
-    await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
-      WHERE registration_draft_child_id = ? AND status IN ('pending', 'failed', 'sending')`)
-      .bind(now, childId).run();
+    await env.DB.batch(cancelUnauthorisedPaymentReminderStatements(env, childId, now));
   }
 }
 
@@ -650,9 +649,9 @@ export async function confirmOutstandingPaymentEnrollment(env: WorkerEnv, actor:
   // The pending-registration milestones belong to the old capacity-hold
   // lifecycle. A confirmed enrollment uses the approval's separate reminder
   // milestone, so an already queued hold reminder must not race it.
-  await env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
-    WHERE registration_draft_child_id = ? AND milestone_type IN ('initial_reminder', 'initial_overdue')
-      AND status IN ('pending', 'failed', 'sending')`).bind(now, childId).run();
+  await env.DB.batch(cancelUnauthorisedPaymentReminderStatements(
+    env, childId, now, ["initial_reminder", "initial_overdue"],
+  ));
   const promotion = await promotePaidDraftChild(env, actor, childId, null, nowDate);
   return { idempotent: false, approvalId, promotion };
 }
@@ -880,8 +879,7 @@ export async function waiveOutstandingPayment(env: WorkerEnv, actor: StaffPrinci
       payment_fee_waiver_id, payment_installment_id, waived_amount_mnt, expected_applied_amount_mnt
     ) VALUES (?, ?, ?, ?)`)
       .bind(waiverId, item.installmentId, item.waivedAmountMnt, item.allocatedAmountMnt)),
-    env.DB.prepare(`UPDATE payment_notification_milestone SET status = 'cancelled', updated_at = ?
-      WHERE registration_draft_child_id = ? AND status IN ('pending', 'failed', 'sending')`).bind(now, preview.registrationDraftChildId),
+    ...cancelUnauthorisedPaymentReminderStatements(env, preview.registrationDraftChildId, now),
     env.DB.prepare(`UPDATE staff_outstanding_payment_approval SET status = 'waived', waived_at = ?, updated_at = ?
       WHERE registration_draft_child_id = ? AND status = 'active'`).bind(now, now, preview.registrationDraftChildId),
     audit(env, actor, "outstanding_payment_waived", "payment_fee_waiver", waiverId,

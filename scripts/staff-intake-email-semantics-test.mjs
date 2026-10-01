@@ -31,7 +31,7 @@ class Database {
 }
 function env(DB) {
   return { APP_ENV: "staging", EMAIL_ENABLED: "true", RESEND_API_KEY: "test-key", EMAIL_FROM: "Наран Эрдэм <burtgel@example.test>",
-    STAGING_EMAIL_OVERRIDE_TO: "safe@example.test", DB };
+    STAGING_EMAIL_OVERRIDE_TO: "safe@example.test", STAGING_TEST_EMAIL_RUN_ID: "staff-intake-email-test", DB };
 }
 function seedDraft(database, id, staffAssisted) {
   database.query(`INSERT INTO registration_draft (
