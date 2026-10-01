@@ -1446,10 +1446,12 @@ try {
     await row.waitFor({ state: "visible" });
     await row.locator("[data-registration-view]").click();
     const info = row.locator(".staff-registration-view");
-    await info.getByText("Одоогийн төлөх нийт дүн").waitFor({ state: "visible" });
+    await info.getByText("Тохиролцсон нийт төлбөр").waitFor({ state: "visible" });
     await info.getByText("Бүртгүүлэх үеийн төлбөрийн сонголт").waitFor({ state: "visible" });
-    assert.match(await info.textContent(), /400,000 ₮[\s\S]*12-р сарын 01, 23:59[\s\S]*500,000 ₮[\s\S]*02-р сарын 28, 23:59/,
-      "the rendered Info panel shows the complete transferred custom agreement with Ulaanbaatar deadlines");
+    assert.match(await info.textContent(), /400,000 ₮[\s\S]*2026-12-01 23:59[\s\S]*500,000 ₮[\s\S]*2027-02-28 23:59/,
+      "the rendered Info panel shows the complete transferred custom agreement with Ulaanbaatar deadlines independent of browser timezone");
+    assert.doesNotMatch(await info.textContent(), /Улаанбаатарын цагаар/,
+      "the Info schedule uses the staff view's default time zone without repeating it beside every installment");
     assert.equal(await info.evaluate((element) => element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= window.innerWidth), true,
       "the rendered Info agreement remains contained in the narrow payment panel");
     if (!fastReceiptCorrection) {

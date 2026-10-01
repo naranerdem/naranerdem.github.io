@@ -271,7 +271,8 @@ assert.match(page, /Төлбөрт хуваарилсан дүн:.*totalCashAllo
 assert.match(page, /Илүү төлсөн дүн:/, "an attributable receipt excess is named separately before it becomes credit");
 assert.match(page, /Төлөх үлдэгдэл:.*mnt\(remaining\)/, "the main financial summary pairs the effective payable balance with the authoritative current installment remaining amount");
 assert.match(page, /Хөнгөлөлтгүй төлбөр: \$\{escape\(mnt\(rawAmount\)\)\}/, "staff see the frozen original agreement amount distinctly when it differs from the effective amount");
-assert.match(page, /Одоогийн төлөх нийт дүн/, "Info labels the active effective agreement instead of presenting the registration-time plan as current");
+assert.match(page, /Тохиролцсон нийт төлбөр/, "Info labels the active effective agreement instead of presenting the registration-time plan as current");
+assert.match(page, /agreementDueLabel/, "Info formats active-agreement deadlines with an explicit Asia\/Ulaanbaatar date-time formatter");
 assert.match(page, /effectiveAmountMnt/, "Info renders the current installment amounts after applicable adjustments");
 assert.match(page, /Гэр бүлийн хөнгөлөлт ·/, "an established family qualification identifies the configured discount once in the price calculation");
 assert.match(page, /Гэр бүлийн хөнгөлөлтийн нөхцөл хангагдсан\./, "an established family qualification uses a concise non-warning explanation");

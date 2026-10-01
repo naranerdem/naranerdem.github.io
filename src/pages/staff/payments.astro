@@ -200,6 +200,10 @@ import "../../styles/global.css";
         return Number.isNaN(result.getTime()) ? null : result.toISOString();
       };
       const localLabel = (value) => { const parts = localParts(value); return `${parts.month}-р сарын ${parts.day}, ${parts.hour}:${parts.minute}`; };
+      const agreementDueLabel = (value) => {
+        const parts = localParts(value);
+        return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+      };
       const classSchedule = (item) => {
         const label = String(item.classLabel || "");
         if (!item.weekday || !item.startTime || !item.endTime) return label;
@@ -488,11 +492,11 @@ import "../../styles/global.css";
               const rendered = agreement.map((entry) => {
                 const effectiveAmount = Number(entry.effectiveAmountMnt || 0);
                 const allocated = Number(entry.allocatedAmountMnt || 0);
-                const due = entry.dueAt ? ` · Хугацаа: ${localLabel(entry.dueAt)} (Улаанбаатарын цагаар)` : "";
+                const due = entry.dueAt ? ` · Хугацаа: ${agreementDueLabel(entry.dueAt)}` : "";
                 const settlement = allocated >= effectiveAmount ? " · Төлөгдсөн" : allocated > 0 ? ` · Төлсөн: ${mnt(allocated)} · Үлдсэн: ${mnt(effectiveAmount - allocated)}` : "";
                 return line(installmentName(Number(entry.installmentNumber)), `${mnt(effectiveAmount)}${settlement}${due}`);
               }).join("");
-              return `${line("Одоогийн төлөх нийт дүн", mnt(effectiveFee))}${rendered}${line("Бүртгүүлэх үеийн төлбөрийн сонголт", plan)}`;
+              return `${line("Тохиролцсон нийт төлбөр", mnt(effectiveFee))}${rendered}${line("Бүртгүүлэх үеийн төлбөрийн сонголт", plan)}`;
             })()
           : `${line("Бүртгүүлэх үеийн төлбөрийн сонголт", plan)}${line("Тухайн үеийн эхний төлбөр", mnt(d.initialPaymentAmountMnt))}${d.secondPaymentAmountMnt != null ? line("Тухайн үеийн дараагийн төлбөр", mnt(d.secondPaymentAmountMnt)) : ""}${d.secondPaymentDueOn ? line("Тухайн үеийн дараагийн хугацаа", d.secondPaymentDueOn) : ""}`;
         return `<section class="staff-payment-form staff-registration-view" aria-live="polite"><section><h4>Асран хамгаалагч</h4>${line("Нэр", d.guardianName)}${line("Харилцаа", d.guardianRelationship)}${line("Үндсэн утас", d.primaryPhone)}${line("Нэмэлт утас", d.secondaryPhone)}${line("И-мэйл хаяг", d.email)}${line("И-мэйл баталгаажуулалт", d.verifiedAt ? "Баталгаажсан" : "Баталгаажаагүй")}${line("Facebook", d.facebookName)}${line("Хаяг", d.homeAddress)}</section><section><h4>Хүүхэд</h4>${line("Овог, нэр", `${d.surname || ""} ${d.givenName || ""}`.trim())}${line("Төрсөн огноо", d.dateOfBirth)}${line("Хүйс", gender)}${line("Одоогийн анги", d.currentGrade)}${line("Сургууль", d.currentSchool)}${line("Хүүхдийн Facebook", d.childFacebookName)}${line("Өмнө сурсан", d.returningStatus === "returning" ? "Тийм" : d.returningStatus === "new" ? "Үгүй" : null)}${line("Өмнө дүүргэсэн шат", previousStage)}</section><section><h4>Бүртгэл, төлбөр</h4>${line("Төлөв", status)}${line("Хичээлийн жил", d.academicYearLabel)}${line("Сургалтын шат", stage)}${offering ? line("Сургалт", offering) : ""}${line("Анги, цаг", schedule)}${paymentTerms}</section><section><h4>Зөвшөөрөл, эх сурвалж</h4>${line("Бүртгэлийн эх сурвалж", source)}${line("Бүртгэл авсан хэлбэр", d.isAdditionalClass ? null : intakeChannel)}${line("Эцэг эхийн журам", acknowledgement(d.parentRulesTitle || "Эцэг эхийн журам", d.parentRulesVersion))}${line("Сурагчийн журам", acknowledgement(d.studentRulesTitle || "Сурагчийн журам", d.studentRulesVersion))}${d.staffIntakeSource === "staff_assisted" && !d.isAdditionalClass ? line("Шууд и-мэйл хүссэн", Number(d.staffReceiptRequested) === 1 ? "Тийм" : "Үгүй") : ""}</section><div class="staff-inline-actions staff-wide"><button class="button secondary" type="button" data-registration-correction="${escape(item.registrationDraftChildId)}">Мэдээлэл засах</button><button class="text-button" type="button" data-registration-view-close="${escape(item.registrationDraftChildId)}">Хаах</button></div></section>`;
