@@ -1,5 +1,6 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import { classCapacityConsumedSql, getClassCapacityProjections } from "../services/class-capacity";
+import { effectiveInstallmentsForRows } from "../services/discounts";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 
@@ -68,15 +69,34 @@ async function targetForTransfer(env: WorkerEnv, source: Source, classSessionId:
   return { ...target, eligibilityVersion: [target.classUpdatedAt, target.offeringUpdatedAt, target.pricingUpdatedAt, target.academicYearUpdatedAt].join(":") };
 }
 
-async function sourceMoney(env: WorkerEnv, enrollmentId: string) {
-  const row = await env.DB.prepare(`SELECT COALESCE(SUM(payment_installment.amount_mnt), 0) AS charge,
-      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS paid
-    FROM payment_installment LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
+async function sourceMoney(env: WorkerEnv, childId: string) {
+  // Schedule revisions can append an installment after canonical promotion.
+  // The draft child remains its stable agreement owner; canonical enrollment
+  // linkage is supporting identity, not the financial scope of a transfer.
+  const result = await env.DB.prepare(`SELECT payment_installment.id, payment_installment.installment_number AS installmentNumber,
+      payment_installment.amount_mnt AS amountMnt, payment_installment.effective_due_at AS dueAt,
+      COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0 ELSE payment_allocation.allocated_amount_mnt END), 0) AS allocatedAmountMnt
+    FROM payment_installment
+    LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
-    WHERE payment_installment.canonical_enrollment_id = ?`).bind(enrollmentId).first<{ charge: number; paid: number }>();
-  const charge = Number(row?.charge ?? 0); const paid = Number(row?.paid ?? 0);
+    WHERE payment_installment.registration_draft_child_id = ? AND payment_installment.status != 'released'
+    GROUP BY payment_installment.id ORDER BY payment_installment.installment_number`).bind(childId)
+    .all<{ id: string; installmentNumber: number; amountMnt: number; dueAt: string; allocatedAmountMnt: number }>();
+  const installments = result.results.map((row) => ({ ...row, installmentNumber: Number(row.installmentNumber), amountMnt: Number(row.amountMnt), allocatedAmountMnt: Number(row.allocatedAmountMnt) }));
+  const effective = await effectiveInstallmentsForRows(env.DB, installments.map((row) => ({
+    id: row.id, registrationDraftChildId: childId, installmentNumber: row.installmentNumber,
+    amountMnt: row.amountMnt, allocatedAmountMnt: row.allocatedAmountMnt,
+  })));
+  const effectiveById = new Map(effective.map((row) => [row.id, row]));
+  const charge = installments.reduce((total, row) => total + Number(effectiveById.get(row.id)?.effectiveAmountMnt ?? row.amountMnt), 0);
+  const paid = installments.reduce((total, row) => total + row.allocatedAmountMnt, 0);
   if (!Number.isInteger(charge) || charge <= 0 || !Number.isInteger(paid) || paid < 0) throw new ClassTransferError("invalid");
-  return { charge, paid };
+  return { charge, paid, installments: installments.map((row) => ({
+    installmentNumber: row.installmentNumber,
+    effectiveAmountMnt: Number(effectiveById.get(row.id)?.effectiveAmountMnt ?? row.amountMnt),
+    allocatedAmountMnt: row.allocatedAmountMnt,
+    dueAt: row.dueAt,
+  })) };
 }
 
 function targetMoney(pricing: Pricing, plan: string | null) {
@@ -93,7 +113,9 @@ async function transferForId(env: WorkerEnv, transferId: string): Promise<Transf
       registration_draft_child.id AS childId, payment_request.id AS paymentRequestId, class_transfer.target_payment_plan_code AS targetPaymentPlanCode,
       class_transfer.target_pricing_snapshot_json AS targetPricingSnapshotJson, class_transfer.target_effective_charge_mnt AS targetEffectiveChargeMnt
     FROM class_transfer INNER JOIN enrollment ON enrollment.id = class_transfer.source_enrollment_id
-    INNER JOIN registration_draft_child ON registration_draft_child.canonical_enrollment_id = enrollment.id OR registration_draft_child.canonical_application_child_id = enrollment.application_child_id
+    INNER JOIN registration_draft_child ON registration_draft_child.canonical_enrollment_id = enrollment.id
+      OR registration_draft_child.canonical_application_child_id = enrollment.application_child_id
+      OR registration_draft_child.canonical_application_child_id = class_transfer.target_application_child_id
     LEFT JOIN payment_request ON payment_request.registration_draft_id = registration_draft_child.registration_draft_id WHERE class_transfer.id = ?`).bind(transferId).first<Transfer>();
   if (!row) throw new ClassTransferError("not_found");
   return { ...row, version: Number(row.version), isTest: Number(row.isTest), targetEffectiveChargeMnt: Number(row.targetEffectiveChargeMnt), resultingCreditMnt: Number(row.resultingCreditMnt) };
@@ -140,7 +162,7 @@ export async function initiateClassTransfer(env: WorkerEnv, actor: StaffPrincipa
   if (!reason || !key || source.classSessionId === input.targetClassSessionId || source.version !== input.expectedSourceVersion) throw new ClassTransferError("invalid");
   const replay = await env.DB.prepare(`SELECT id, status, required_difference_mnt AS differenceMnt, resulting_credit_mnt AS creditMnt, version FROM class_transfer WHERE idempotency_key = ?`).bind(key).first<{ id: string; status: string; differenceMnt: number; creditMnt: number; version: number }>();
   if (replay) return { transferId: replay.id, state: replay.status, differenceMnt: Number(replay.differenceMnt), creditMnt: Number(replay.creditMnt), version: Number(replay.version), idempotent: true };
-  const [targetConfig, original] = await Promise.all([targetForTransfer(env, source, input.targetClassSessionId), sourceMoney(env, source.enrollmentId)]);
+  const [targetConfig, original] = await Promise.all([targetForTransfer(env, source, input.targetClassSessionId), sourceMoney(env, source.childId)]);
   if (!input.expectedTargetVersion || input.expectedTargetVersion !== targetConfig.eligibilityVersion) throw new ClassTransferError("stale");
   const target = targetMoney(targetConfig, source.paymentPlanCode); const difference = Math.max(0, target.charge - original.charge); const credit = Math.max(0, original.charge - target.charge); const status = difference ? "pending_difference" : "ready_to_complete";
   const now = iso(nowDate); const transferId = crypto.randomUUID(); const reservationId = crypto.randomUUID(); const obligationId = difference ? crypto.randomUUID() : null;
@@ -156,7 +178,7 @@ export async function initiateClassTransfer(env: WorkerEnv, actor: StaffPrincipa
           AND activity_offering.status = 'active' AND academic_year.registration_status != 'archived'
           AND class_session.updated_at = ? AND activity_offering.updated_at = ? AND offering_course_pricing.updated_at = ? AND academic_year.updated_at = ?
           AND class_session.capacity > ${capacitySql})
-      AND NOT EXISTS (SELECT 1 FROM class_transfer WHERE source_enrollment_id = ? AND status IN ('pending_difference', 'ready_to_complete'))`).bind(transferId, source.enrollmentId, source.applicationChildId, source.classSessionId, input.targetClassSessionId, status, reason, actor.staffAccountId, key, source.paymentPlanCode, target.plan, JSON.stringify({ paymentPlanCode: source.paymentPlanCode, effectiveChargeMnt: original.charge, recognizedPaidMnt: original.paid }), JSON.stringify(target.snapshot), original.charge, target.charge, original.paid, difference, credit, status === "ready_to_complete" ? now : null, source.isTest, source.testRunId, now, now, source.enrollmentId, source.version, input.targetClassSessionId, source.academicYearId, targetConfig.classUpdatedAt, targetConfig.offeringUpdatedAt, targetConfig.pricingUpdatedAt, targetConfig.academicYearUpdatedAt, now, source.enrollmentId);
+          AND NOT EXISTS (SELECT 1 FROM class_transfer WHERE source_enrollment_id = ? AND status IN ('pending_difference', 'ready_to_complete'))`).bind(transferId, source.enrollmentId, source.applicationChildId, source.classSessionId, input.targetClassSessionId, status, reason, actor.staffAccountId, key, source.paymentPlanCode, target.plan, JSON.stringify({ paymentPlanCode: source.paymentPlanCode, effectiveChargeMnt: original.charge, recognizedPaidMnt: original.paid, installments: original.installments }), JSON.stringify(target.snapshot), original.charge, target.charge, original.paid, difference, credit, status === "ready_to_complete" ? now : null, source.isTest, source.testRunId, now, now, source.enrollmentId, source.version, input.targetClassSessionId, source.academicYearId, targetConfig.classUpdatedAt, targetConfig.offeringUpdatedAt, targetConfig.pricingUpdatedAt, targetConfig.academicYearUpdatedAt, now, source.enrollmentId);
   const createdAudit = (action: string, metadata: Record<string, unknown>) => env.DB.prepare(`INSERT INTO audit_event (id, occurred_at, actor_type, actor_ref, action, subject_type, subject_id, metadata_json, environment, is_test, test_run_id, created_at)
     SELECT ?, ?, 'staff', ?, ?, 'class_transfer', ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM class_transfer WHERE id = ?)`)
     .bind(crypto.randomUUID(), now, actor.staffAccountId, action, transferId, JSON.stringify(metadata), env.APP_ENV, source.isTest, source.testRunId, now, transferId);
@@ -215,6 +237,11 @@ export async function completeClassTransfer(env: WorkerEnv, actor: StaffPrincipa
     env.DB.prepare(`INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at) SELECT ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM application_child WHERE id = ?)` ).bind(enrollmentId, appId, source.studentId, source.academicYearId, transfer.targetClassSessionId, now, source.isTest, source.testRunId, now, now, appId),
     env.DB.prepare(`UPDATE registration_draft_child SET canonical_application_child_id = ?, canonical_enrollment_id = ?, selected_class_session_id = ?, updated_at = ?
       WHERE id = ? AND canonical_enrollment_id = ? AND EXISTS (SELECT 1 FROM enrollment WHERE id = ? AND status = 'confirmed')`).bind(appId, enrollmentId, transfer.targetClassSessionId, now, source.childId, source.enrollmentId, enrollmentId),
+    // Keep every active agreement row with the replacement enrollment. This
+    // includes installments appended by a reviewed custom schedule.
+    env.DB.prepare(`UPDATE payment_installment SET canonical_application_child_id = ?, canonical_enrollment_id = ?, updated_at = ?
+      WHERE registration_draft_child_id = ? AND (canonical_enrollment_id = ? OR canonical_enrollment_id IS NULL)
+        AND ${sourceTransferred}`).bind(appId, enrollmentId, now, source.childId, source.enrollmentId, source.enrollmentId, now, transfer.id),
     env.DB.prepare(`UPDATE class_transfer_target_reservation SET status = 'completed', resolved_at = ?, updated_at = ?
       WHERE class_transfer_id = ? AND status = 'active' AND ${sourceTransferred}`).bind(now, now, transfer.id, source.enrollmentId, now, transfer.id),
     env.DB.prepare(`UPDATE class_transfer SET status = 'completed', target_application_child_id = ?, target_enrollment_id = ?, completed_at = ?, version = version + 1, updated_at = ?

@@ -1406,9 +1406,61 @@ try {
       "reload preserves the corrected receipt schedule without creating a separate debt record");
     const correctedOutstanding = persisted.reduce((total, entry) => total + Math.max(0, Number(entry.amountMnt) - (entry.status === "paid" ? Number(entry.amountMnt) : 0)), 0);
     assert.equal(correctedOutstanding, 900000, "the saved correction leaves the expected 900,000 MNT unpaid before later payments");
+    // Transfer the corrected agreement before recording either future installment.
+    // The target has the same 1,300,000 MNT plan, so the rendered flow must not
+    // manufacture a difference payment from the old default installment split.
+    const transferOpen = row.locator("[data-transfer-open]");
+    if (await transferOpen.count() === 0) {
+      const detail = row.locator("button[data-payment-detail]");
+      if (await detail.getAttribute("aria-expanded") === "false") await detail.click();
+    }
+    await row.locator("[data-transfer-open]").click();
+    const transferForm = row.locator("[data-transfer-initiate]");
+    await transferForm.waitFor({ state: "visible" });
+    await transferForm.locator('select[name="targetClassSessionId"]').selectOption("browser-class-target");
+    await transferForm.locator('textarea[name="reason"]').fill("Browser corrected schedule transfer");
+    const transferPreviewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("class-transfer.initiate"));
+    await transferForm.locator('button[type="submit"]').click();
+    const transferPreview = await transferPreviewResponse;
+    assert.ok(transferPreview.ok(), `the corrected schedule transfer opens through the rendered flow: ${await transferPreview.text()}`);
+    const transferPreviewBody = await transferPreview.json();
+    assert.equal(Number(transferPreviewBody.differenceMnt), 0,
+      "an equal-price target preserves the 1,300,000 MNT corrected agreement without an extra payment");
+    await row.getByText("Суудал шилжүүлэхэд бэлэн байна.").waitFor({ state: "visible" });
+    assert.equal(await row.locator("[data-transfer-amount]").count(), 0,
+      "the equal-price custom schedule never renders the transfer-difference receipt field");
+    if (!fastReceiptCorrection) {
+      await capturePaymentElement(row, "corrected-schedule-transfer-mobile.png");
+      await page.setViewportSize({ width: 1180, height: 900 });
+      await capturePaymentElement(row, "corrected-schedule-transfer-desktop.png");
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
+    const transferCompleteResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+      && response.request().method() === "POST" && response.request().postData()?.includes("class-transfer.complete"));
+    await row.locator("[data-transfer-complete]").click();
+    assert.ok((await transferCompleteResponse).ok(), "the corrected schedule transfer completes through the rendered flow");
+    await row.getByText("Анги шилжүүлэг дууслаа.").waitFor({ state: "visible" });
+    await page.reload();
+    if (await partialPaymentGroup.getAttribute("aria-expanded") !== "true") await partialPaymentGroup.click();
+    await row.waitFor({ state: "visible" });
+    const transferredSchedule = await dbJson(`SELECT payment_installment.amount_mnt AS amountMnt,
+      payment_installment.status, payment_installment.effective_due_at AS dueAt,
+      payment_installment.canonical_enrollment_id AS enrollmentId
+      FROM payment_installment INNER JOIN registration_draft_child ON registration_draft_child.id = payment_installment.registration_draft_child_id
+      WHERE registration_draft_child.id = ${sql(childId)} AND payment_installment.status != 'released'
+      ORDER BY payment_installment.installment_number`);
+    assert.deepEqual(transferredSchedule.map((entry) => Number(entry.amountMnt)), [400000, 400000, 500000],
+      "transfer reload preserves every corrected installment amount exactly once");
+    assert.deepEqual(transferredSchedule.map((entry) => entry.dueAt), [
+      "2026-08-15T15:59:59.999Z", "2026-12-01T15:59:59.999Z", "2027-02-28T15:59:59.999Z",
+    ], "transfer reload preserves the Ulaanbaatar deadline instants");
+    const currentEnrollment = await dbJson(`SELECT canonical_enrollment_id AS enrollmentId FROM registration_draft_child WHERE id = ${sql(childId)}`);
+    assert.ok(transferredSchedule.every((entry) => entry.enrollmentId === currentEnrollment[0]?.enrollmentId),
+      "every active schedule row is linked to the replacement enrollment after transfer");
     if (fastReceiptCorrection) {
       assert.equal((await staffPaymentProjection(page, childId)).totalRemainingMnt, 900000,
-        "the reloaded payment projection keeps the corrected enrollment in the partially paid group");
+        "the reloaded transfer projection keeps the corrected enrollment in the partially paid group");
     } else {
     const reopenedDetail = row.getByRole("button", { name: "Нээх" });
     if (await reopenedDetail.isVisible().catch(() => false)) await reopenedDetail.click();

@@ -369,9 +369,11 @@ export async function correctFinalizedManualPayment(env: WorkerEnv, actor: Staff
         WHERE id=? AND updated_at=? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id=?)`)
         .bind(index + 1, index === 0 ? 'initial' : 'later', entry.amountMnt, entry.dueAt, entry.dueAt, reminderAt, status, status, now,
           id, prior.id === review.snapshot.installmentId ? now : prior.updatedAt, revisionId));
-      else statements.push(env.DB.prepare(`INSERT INTO payment_installment (id,payment_request_id,registration_draft_child_id,installment_number,installment_kind,amount_mnt,original_due_at,effective_due_at,reminder_lead_minutes,reminder_at,status,created_at,updated_at,is_test,test_run_id)
-        SELECT ?,?,?,?,?,?,?,?,?,?,?,?, ?,is_test,test_run_id FROM payment_request WHERE id=? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id=?)`)
-        .bind(id, request.id, review.snapshot.childId, index + 1, 'later', entry.amountMnt, entry.dueAt, entry.dueAt, reminder.initialReminderLeadMinutes, reminderAt, status, now, now, request.id, revisionId));
+      else statements.push(env.DB.prepare(`INSERT INTO payment_installment (id,payment_request_id,registration_draft_child_id,installment_number,installment_kind,amount_mnt,original_due_at,effective_due_at,reminder_lead_minutes,reminder_at,status,created_at,updated_at,canonical_application_child_id,canonical_enrollment_id,is_test,test_run_id)
+        SELECT ?,?,?,?,?,?,?,?,?,?,?,?, ?, registration_draft_child.canonical_application_child_id, registration_draft_child.canonical_enrollment_id, payment_request.is_test, payment_request.test_run_id
+        FROM payment_request INNER JOIN registration_draft_child ON registration_draft_child.id = ?
+        WHERE payment_request.id=? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id=?)`)
+        .bind(id, request.id, review.snapshot.childId, index + 1, 'later', entry.amountMnt, entry.dueAt, entry.dueAt, reminder.initialReminderLeadMinutes, reminderAt, status, now, now, review.snapshot.childId, request.id, revisionId));
     }
   }
   await env.DB.batch(statements);
@@ -558,11 +560,13 @@ export async function reviseInstallmentSchedule(env: WorkerEnv, actor: StaffPrin
     } else {
       statements.push(env.DB.prepare(`INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id,
         installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at,
-        status, created_at, updated_at, is_test, test_run_id)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, is_test, test_run_id FROM payment_request
-        WHERE id = ? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id = ?)`)
+        status, created_at, updated_at, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, registration_draft_child.canonical_application_child_id,
+          registration_draft_child.canonical_enrollment_id, payment_request.is_test, payment_request.test_run_id
+        FROM payment_request INNER JOIN registration_draft_child ON registration_draft_child.id = ?
+        WHERE payment_request.id = ? AND EXISTS (SELECT 1 FROM payment_installment_schedule_revision WHERE id = ?)`)
         .bind(installmentId, review.snapshot.request.id, review.snapshot.child.id, index + 1, index === 0 ? 'initial' : 'later', entry.amountMnt,
-          entry.dueAt, entry.dueAt, reminder.initialReminderLeadMinutes, reminderAt, status, now, now, review.snapshot.request.id, revisionId));
+          entry.dueAt, entry.dueAt, reminder.initialReminderLeadMinutes, reminderAt, status, now, now, review.snapshot.child.id, review.snapshot.request.id, revisionId));
     }
   }
   for (const stale of review.snapshot.installments.slice(review.entries.length)) {

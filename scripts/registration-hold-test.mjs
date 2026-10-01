@@ -2470,6 +2470,84 @@ try {
     assert.equal(correctedItem.nextScheduledInstallment.installmentNumber, 2, "the next payment entry follows the revised schedule");
     assert.equal(correctedItem.finalizedManualReceipt, null,
       "an already-corrected receipt is not presented as another eligible correction candidate");
+
+    // A custom agreement must remain the source of truth when this confirmed
+    // child changes class. The standard two-installment target price is also
+    // 1.3m, so an old canonical-only projection must not manufacture a 100k
+    // difference from the first two schedule rows.
+    database.query("UPDATE class_session SET capacity = 100, updated_at = ? WHERE id = 'class-roomy'", [iso(124)]);
+    const staleTransferTargets = await listClassTransferTargets(env(database), registrationStaff, child.id, new Date(iso(124)));
+    const equalTarget = staleTransferTargets.targets.find((target) => target.classSessionId === "class-roomy");
+    assert.ok(equalTarget?.selectable, "the equal-price target is available for the corrected child");
+    database.query("UPDATE class_session SET updated_at = ? WHERE id = 'class-roomy'", [iso(125)]);
+    await assert.rejects(() => initiateClassTransfer(env(database), registrationStaff, {
+      registrationDraftChildId: child.id, targetClassSessionId: "class-roomy", reason: "Хуучирсан сонголт",
+      idempotencyKey: "custom-schedule-transfer-stale", expectedSourceVersion: correctedItem.canonicalEnrollmentUpdatedAt,
+      expectedTargetVersion: equalTarget.eligibilityVersion,
+    }, new Date(iso(125))), (error) => error?.code === "stale",
+    "a changed target capacity/configuration rejects the stale transfer preview before reserving a seat");
+    assert.equal(count(database, "class_transfer", `source_enrollment_id = '${correctedItem.canonicalEnrollmentId}'`), 0,
+      "a stale transfer preview creates neither a reservation nor a financial obligation");
+
+    const refreshedTargets = await listClassTransferTargets(env(database), registrationStaff, child.id, new Date(iso(126)));
+    const refreshedEqualTarget = refreshedTargets.targets.find((target) => target.classSessionId === "class-roomy");
+    assert.ok(refreshedEqualTarget?.selectable, "the target can be refreshed after its version changes");
+    const customTransfer = await initiateClassTransfer(env(database), registrationStaff, {
+      registrationDraftChildId: child.id, targetClassSessionId: "class-roomy", reason: "Хуваарь солих",
+      idempotencyKey: "custom-schedule-transfer-equal", expectedSourceVersion: correctedItem.canonicalEnrollmentUpdatedAt,
+      expectedTargetVersion: refreshedEqualTarget.eligibilityVersion,
+    }, new Date(iso(126)));
+    assert.deepEqual({ state: customTransfer.state, differenceMnt: customTransfer.differenceMnt, creditMnt: customTransfer.creditMnt },
+      { state: "ready_to_complete", differenceMnt: 0, creditMnt: 0 },
+    "an equal-price transfer preserves the 1.3m custom agreement without an invented payment difference");
+    assert.equal(count(database, "class_transfer_payment_obligation", `class_transfer_id = '${customTransfer.transferId}'`), 0,
+      "the equal-price transfer has no separate difference-payment obligation");
+    const customTransferReplay = await initiateClassTransfer(env(database), registrationStaff, {
+      registrationDraftChildId: child.id, targetClassSessionId: "class-roomy", reason: "Хуваарь солих",
+      idempotencyKey: "custom-schedule-transfer-equal", expectedSourceVersion: correctedItem.canonicalEnrollmentUpdatedAt,
+      expectedTargetVersion: refreshedEqualTarget.eligibilityVersion,
+    }, new Date(iso(126)));
+    assert.equal(customTransferReplay.idempotent, true, "a lost initiation response reuses the same custom-schedule transfer");
+    const completedCustomTransfer = await completeClassTransfer(env(database), registrationStaff, {
+      transferId: customTransfer.transferId, expectedVersion: customTransfer.version,
+    }, new Date(iso(127)));
+    assert.equal(completedCustomTransfer.completed, true, "the reviewed equal-price transfer completes atomically");
+    assert.equal((await completeClassTransfer(env(database), registrationStaff, {
+      transferId: customTransfer.transferId, expectedVersion: customTransfer.version,
+    }, new Date(iso(127)))).idempotent, true, "a lost completion response is safe after the target enrollment is current");
+    assert.deepEqual(database.query(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt, status, canonical_enrollment_id AS enrollmentId
+      FROM payment_installment WHERE payment_request_id = ? AND status != 'released' ORDER BY installment_number`, [request.id]), [
+      { amountMnt: 400000, dueAt: "2026-08-15T15:59:59.999Z", status: "paid", enrollmentId: completedCustomTransfer.targetEnrollmentId },
+      { amountMnt: 400000, dueAt: "2026-12-01T15:59:59.999Z", status: "pending", enrollmentId: completedCustomTransfer.targetEnrollmentId },
+      { amountMnt: 500000, dueAt: "2027-02-28T15:59:59.999Z", status: "pending", enrollmentId: completedCustomTransfer.targetEnrollmentId },
+    ], "transfer preserves every custom installment and attaches its payment lineage to the replacement enrollment");
+    assert.equal(count(database, "payment_receipt_correction", `original_received_payment_id = '${receipt.id}'`), 1,
+      "transfer retains the immutable receipt-correction lineage");
+    assert.equal(count(database, "payment_installment_schedule_revision", `registration_draft_child_id = '${child.id}'`), 2,
+      "transfer leaves the original schedule-revision provenance untouched");
+
+    // A truly higher target remains financially visible; this regression is
+    // specifically against losing custom schedules, not against price checks.
+    database.query(`INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('offering-transfer-higher', 'annual_course', 'Үнэ өндөр анги', 'year-test', 'stage_1', 1, 'paid', 'active', 1, 'catalog-test', ?, ?);
+      INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
+      VALUES ('class-transfer-higher', 'offering-transfer-higher', 'year-test', 'stage_1', 'Үнэ өндөр анги', 'Бямба', '20:00', '21:20', 10, 'available', 1, 1, 'catalog-test', ?, ?);
+      INSERT INTO offering_course_pricing (activity_offering_id, one_time_amount_mnt, two_installment_enabled, first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at)
+      VALUES ('offering-transfer-higher', 1400000, 1, 700000, 700000, '2027-02-28', ?, ?);`, [iso(127), iso(127), iso(127), iso(127), iso(127), iso(127)]);
+    const higherTargets = await listClassTransferTargets(env(database), registrationStaff, child.id, new Date(iso(128)));
+    const higherTarget = higherTargets.targets.find((target) => target.classSessionId === "class-transfer-higher");
+    assert.ok(higherTarget?.selectable, "a genuine higher-price target remains selectable");
+    const currentEnrollmentVersion = database.query("SELECT updated_at AS version FROM enrollment WHERE id = ?", [completedCustomTransfer.targetEnrollmentId])[0].version;
+    const higherTransfer = await initiateClassTransfer(env(database), registrationStaff, {
+      registrationDraftChildId: child.id, targetClassSessionId: "class-transfer-higher", reason: "Үнэ өндөр ангийг шалгах",
+      idempotencyKey: "custom-schedule-transfer-higher", expectedSourceVersion: currentEnrollmentVersion,
+      expectedTargetVersion: higherTarget.eligibilityVersion,
+    }, new Date(iso(128)));
+    assert.equal(higherTransfer.differenceMnt, 100000, "a genuine 1.4m target still requires its 100k price difference");
+    await closeClassTransfer(env(database), registrationStaff, {
+      transferId: higherTransfer.transferId, expectedVersion: higherTransfer.version, reason: "Туршилтын шилжүүлгийг хаав",
+    }, new Date(iso(128)));
+
     await recordManualPayment(env(database), paymentStaff, {
       paymentRequestId: request.id, allocations: [{ installmentId: correctedItem.nextScheduledInstallment.id, amountMnt: 400000 }],
       source: "staff_manual_bank", idempotencyKey: "focused-correction-second-installment",
