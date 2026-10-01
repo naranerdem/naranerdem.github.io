@@ -2561,6 +2561,77 @@ try {
       remaining: 900000, dueAt: "2026-12-01T15:59:59.999Z",
     }, "the export uses the same active effective agreement as Info and the payment queue after correction and transfer");
 
+    // A second completed equal-price transfer must carry the same active
+    // agreement forward again. This catches implementations that preserve a
+    // custom plan only for the first replacement enrollment.
+    database.query(`INSERT INTO class_session (
+      id, activity_offering_id, academic_year_id, stage_code, display_label,
+      weekday, start_time, end_time, capacity, status, is_test_only, is_test,
+      test_run_id, created_at, updated_at
+    ) VALUES ('class-transfer-equal-second', 'offering-test', 'year-test', 'stage_1',
+      'Давтан ижил үнэтэй анги', 'Лхагва', '19:00', '20:20', 10, 'available', 1, 1,
+      'registration-hold-test', ?, ?)`, [iso(127), iso(127)]);
+    const firstTransferQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(127)));
+    const firstTransferredItem = firstTransferQueue.items.find((item) => item.registrationDraftChildId === child.id);
+    const secondTargets = await listClassTransferTargets(env(database), registrationStaff, child.id, new Date(iso(127)));
+    const secondEqualTarget = secondTargets.targets.find((target) => target.classSessionId === "class-transfer-equal-second");
+    assert.ok(secondEqualTarget?.selectable, "a second equal-price target is available after the first completed transfer");
+    const secondCustomTransfer = await initiateClassTransfer(env(database), registrationStaff, {
+      registrationDraftChildId: child.id, targetClassSessionId: "class-transfer-equal-second", reason: "Дахин хуваарь солих",
+      idempotencyKey: "custom-schedule-transfer-equal-second", expectedSourceVersion: firstTransferredItem.canonicalEnrollmentUpdatedAt,
+      expectedTargetVersion: secondEqualTarget.eligibilityVersion,
+    }, new Date(iso(127)));
+    assert.deepEqual({ state: secondCustomTransfer.state, differenceMnt: secondCustomTransfer.differenceMnt, creditMnt: secondCustomTransfer.creditMnt },
+      { state: "ready_to_complete", differenceMnt: 0, creditMnt: 0 },
+    "the second equal-price transfer also uses the complete custom agreement rather than a default installment split");
+    const completedSecondCustomTransfer = await completeClassTransfer(env(database), registrationStaff, {
+      transferId: secondCustomTransfer.transferId, expectedVersion: secondCustomTransfer.version,
+    }, new Date(iso(128)));
+    assert.equal(completedSecondCustomTransfer.completed, true, "the second equal-price transfer completes atomically");
+    assert.equal((await completeClassTransfer(env(database), registrationStaff, {
+      transferId: secondCustomTransfer.transferId, expectedVersion: secondCustomTransfer.version,
+    }, new Date(iso(128)))).idempotent, true, "a retried second completion has no additional financial effect");
+    const afterSecondTransfer = database.query(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt, status,
+      canonical_enrollment_id AS enrollmentId FROM payment_installment WHERE payment_request_id = ?
+      AND status != 'released' ORDER BY installment_number`, [request.id]);
+    assert.deepEqual(afterSecondTransfer, [
+      { amountMnt: 400000, dueAt: "2026-08-15T15:59:59.999Z", status: "paid", enrollmentId: completedSecondCustomTransfer.targetEnrollmentId },
+      { amountMnt: 400000, dueAt: "2026-12-01T15:59:59.999Z", status: "pending", enrollmentId: completedSecondCustomTransfer.targetEnrollmentId },
+      { amountMnt: 500000, dueAt: "2027-02-28T15:59:59.999Z", status: "pending", enrollmentId: completedSecondCustomTransfer.targetEnrollmentId },
+    ], "both transfers retain exactly the three active installments and relink them to the current enrollment");
+    assert.equal(Number(database.query(`SELECT COALESCE(SUM(CASE WHEN payment_confirmation.status = 'undone' THEN 0
+      ELSE payment_allocation.allocated_amount_mnt END), 0) AS paidMnt FROM payment_allocation
+      LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = payment_allocation.received_payment_id
+      INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
+      WHERE payment_installment.payment_request_id = ?`, [request.id])[0].paidMnt), 400000,
+    "the corrected receipt remains the only recognized cash allocation after repeated transfers");
+    assert.equal(count(database, "class_transfer_payment_obligation", `class_transfer_id IN ('${customTransfer.transferId}', '${secondCustomTransfer.transferId}')`), 0,
+      "equal-price transfers create no duplicate transfer-payment obligation");
+    assert.equal(count(database, "class_transfer_credit", `class_transfer_id IN ('${customTransfer.transferId}', '${secondCustomTransfer.transferId}')`), 0,
+      "equal-price transfers create no transfer credit");
+    assert.equal(count(database, "payment_installment_schedule_revision", `registration_draft_child_id = '${child.id}'`), 2,
+      "repeated transfers retain rather than recreate schedule-revision provenance");
+    const secondTransferredInfo = await registrationCorrectionDetail(env(database), registrationStaff, child.id);
+    assert.deepEqual(secondTransferredInfo.currentPaymentSchedule.map((entry) => ({
+      installmentNumber: entry.installmentNumber, effectiveAmountMnt: entry.effectiveAmountMnt,
+      allocatedAmountMnt: entry.allocatedAmountMnt, dueAt: entry.dueAt,
+    })), [
+      { installmentNumber: 1, effectiveAmountMnt: 400000, allocatedAmountMnt: 400000, dueAt: "2026-08-15T15:59:59.999Z" },
+      { installmentNumber: 2, effectiveAmountMnt: 400000, allocatedAmountMnt: 0, dueAt: "2026-12-01T15:59:59.999Z" },
+      { installmentNumber: 3, effectiveAmountMnt: 500000, allocatedAmountMnt: 0, dueAt: "2027-02-28T15:59:59.999Z" },
+    ], "Info reload agrees with the repeated-transfer payment schedule");
+    const secondTransferQueue = await getInitialPaymentQueue(env(database), paymentStaff, new Date(iso(128)));
+    const secondTransferredItem = secondTransferQueue.items.find((item) => item.registrationDraftChildId === child.id);
+    assert.equal(secondTransferredItem.totalRemainingMnt, 900000, "the payment projection stays partially paid after the second transfer");
+    assert.equal(secondTransferredItem.nextScheduledInstallment.installmentNumber, 2,
+      "ordinary later payment continues to target the second agreed installment after both transfers");
+    await reconcileQueuedPaymentNotificationMilestones(env(database), new Date("2026-11-30T16:00:00.000Z"));
+    const reminderCountAfterFirstReconciliation = count(database, "payment_notification_milestone", `registration_draft_child_id = '${child.id}'`);
+    assert.ok(reminderCountAfterFirstReconciliation >= 1, "the carried-forward due installment remains eligible for reminder reconciliation");
+    await reconcileQueuedPaymentNotificationMilestones(env(database), new Date("2026-11-30T16:00:00.000Z"));
+    assert.equal(count(database, "payment_notification_milestone", `registration_draft_child_id = '${child.id}'`), reminderCountAfterFirstReconciliation,
+      "repeated reconciliation after repeated transfers does not duplicate the reminder milestone");
+
     // A truly higher target remains financially visible; this regression is
     // specifically against losing custom schedules, not against price checks.
     database.query(`INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
@@ -2572,7 +2643,7 @@ try {
     const higherTargets = await listClassTransferTargets(env(database), registrationStaff, child.id, new Date(iso(128)));
     const higherTarget = higherTargets.targets.find((target) => target.classSessionId === "class-transfer-higher");
     assert.ok(higherTarget?.selectable, "a genuine higher-price target remains selectable");
-    const currentEnrollmentVersion = database.query("SELECT updated_at AS version FROM enrollment WHERE id = ?", [completedCustomTransfer.targetEnrollmentId])[0].version;
+    const currentEnrollmentVersion = database.query("SELECT updated_at AS version FROM enrollment WHERE id = ?", [completedSecondCustomTransfer.targetEnrollmentId])[0].version;
     const higherTransfer = await initiateClassTransfer(env(database), registrationStaff, {
       registrationDraftChildId: child.id, targetClassSessionId: "class-transfer-higher", reason: "Үнэ өндөр ангийг шалгах",
       idempotencyKey: "custom-schedule-transfer-higher", expectedSourceVersion: currentEnrollmentVersion,
