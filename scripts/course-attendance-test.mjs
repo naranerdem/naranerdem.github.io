@@ -10,6 +10,7 @@ const databasePath = path.join(tempDir, "attendance.sqlite3");
 const attendanceBundle = path.join(tempDir, "course-attendance.mjs");
 const calendarBundle = path.join(tempDir, "program-calendar.mjs");
 const cancellationBundle = path.join(tempDir, "registration-cancellation.mjs");
+const agendaBundle = path.join(tempDir, "teacher-home-agenda.mjs");
 const esbuild = path.resolve("node_modules/esbuild/bin/esbuild");
 
 function quote(value) {
@@ -102,13 +103,14 @@ try {
   sqlite(migrations.filter((file) => file !== specialAttendanceMigration && file !== lifecycleMigration)
     .map((file) => readFileSync(path.join("migrations", file), "utf8")).join("\n"));
 
-  for (const [source, output] of [["src/server/staff/course-attendance.ts", attendanceBundle], ["src/server/staff/program-calendar.ts", calendarBundle], ["src/server/staff/registration-cancellation.ts", cancellationBundle]]) {
+  for (const [source, output] of [["src/server/staff/course-attendance.ts", attendanceBundle], ["src/server/staff/program-calendar.ts", calendarBundle], ["src/server/staff/registration-cancellation.ts", cancellationBundle], ["src/server/staff/teacher-home-agenda.ts", agendaBundle]]) {
     const result = spawnSync(esbuild, [source, "--bundle", "--format=esm", "--platform=node", `--outfile=${output}`], { encoding: "utf8" });
     if (result.status !== 0) throw new Error(`esbuild failed for ${source}\n${result.stderr}`);
   }
   const attendance = await import(pathToFileURL(attendanceBundle).href);
   const calendar = await import(pathToFileURL(calendarBundle).href);
   const cancellation = await import(pathToFileURL(cancellationBundle).href);
+  const agenda = await import(pathToFileURL(agendaBundle).href);
   const database = new SqliteD1();
   const runtime = env(database);
   const now = new Date().toISOString();
@@ -141,22 +143,27 @@ try {
       VALUES ('offering', 'annual_course', 'Ирцийн жилийн сургалт', 'year', 'stage_1', '${addCivilDays(today, -14)}', 'program', 1, 'paid', 'active', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_session (id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, activity_offering_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('class-a', 'year', 'stage_1', 'Тест анги', '${weekday}', '10:00', '11:20', 10, 'closed', 'offering', 1, 'attendance-test', '${now}', '${now}'),
-        ('class-b', 'year', 'stage_1', 'Өөр тест анги', 'Ням', '14:00', '15:20', 10, 'available', 'offering', 1, 'attendance-test', '${now}', '${now}');
+        ('class-b', 'year', 'stage_1', 'Өөр тест анги', 'Ням', '14:00', '15:20', 10, 'available', 'offering', 1, 'attendance-test', '${now}', '${now}'),
+        ('class-c', 'year', 'stage_1', 'Шилжсэн тест анги', 'Даваа', '14:00', '15:20', 10, 'available', 'offering', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_meeting_rule (class_session_id, recurrence_kind, first_date, weekly_weekday, start_time, end_time, created_at, updated_at)
       VALUES ('class-a', 'weekly', '${past}', '${weekday}', '10:00', '11:20', '${now}', '${now}'),
-        ('class-b', 'weekly', '${past}', 'Ням', '14:00', '15:20', '${now}', '${now}');
+        ('class-b', 'weekly', '${past}', 'Ням', '14:00', '15:20', '${now}', '${now}'),
+        ('class-c', 'weekly', '${past}', 'Даваа', '14:00', '15:20', '${now}', '${now}');
     INSERT INTO class_calendar (id, class_session_id, timezone, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('calendar-a', 'class-a', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}'),
-        ('calendar-b', 'class-b', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}');
+        ('calendar-b', 'class-b', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}'),
+        ('calendar-c', 'class-c', 'Asia/Ulaanbaatar', 'active', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_calendar_revision (id, class_calendar_id, curriculum_program_id, revision_number, status, first_candidate_date, locked_through_sequence, is_test, test_run_id, created_at, updated_at)
       VALUES ('revision-a', 'calendar-a', 'program', 1, 'draft', '${past}', 0, 1, 'attendance-test', '${now}', '${now}'),
-        ('revision-b', 'calendar-b', 'program', 1, 'draft', '${past}', 0, 1, 'attendance-test', '${now}', '${now}');
+        ('revision-b', 'calendar-b', 'program', 1, 'draft', '${past}', 0, 1, 'attendance-test', '${now}', '${now}'),
+        ('revision-c', 'calendar-c', 'program', 1, 'draft', '${past}', 0, 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('slot-past', 'revision-a', '${past}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}'),
         ('slot-today', 'revision-a', '${today}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-2', 1, 'attendance-test', '${now}', '${now}'),
         ('slot-future', 'revision-a', '${future}', '10:00', '11:20', 'generated', 'scheduled', 'lesson-3', 1, 'attendance-test', '${now}', '${now}'),
-        ('slot-makeup-target', 'revision-b', '${past}', '14:00', '15:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}');
-    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id IN ('revision-a', 'revision-b');
+        ('slot-makeup-target', 'revision-b', '${past}', '14:00', '15:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}'),
+        ('slot-transfer-target', 'revision-c', '${future}', '14:00', '15:20', 'generated', 'scheduled', 'lesson-1', 1, 'attendance-test', '${now}', '${now}');
+    UPDATE class_calendar_revision SET status = 'published', published_at = '${now}' WHERE id IN ('revision-a', 'revision-b', 'revision-c');
     INSERT INTO academic_year_break (id, academic_year_id, label, starts_on, ends_on, excludes_habitual_slots, generation_behavior, exclude_from_generation, warn_on_overlap, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('today-holiday', 'year', 'Тест амралт', '${today}', '${today}', 0, 'warn_only', 0, 1, 'active', 1, 'attendance-test', '${now}', '${now}');
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
@@ -254,7 +261,7 @@ try {
   const completed = await attendance.getCourseAttendanceDay(runtime, actor(), today, "slot-today");
   assert.equal(completed.selected.markedCount, 2);
   assert.equal(completed.selected.rosterCount, 2);
-  assert.equal(count(database, "class_calendar_revision"), 2, "attendance does not create a calendar revision");
+  assert.equal(count(database, "class_calendar_revision"), 3, "attendance does not create a calendar revision");
 
   sqlite(`
     INSERT INTO course_makeup_resolution (
@@ -424,6 +431,38 @@ try {
   sqlite(`UPDATE enrollment SET status = 'confirmed', cancelled_at = NULL, transferred_out_at = '${now}' WHERE id = 'enrollment-a';`);
   const transferredHistorical = await attendance.getCourseAttendanceDay(runtime, actor(), past, "slot-past");
   assert.ok(transferredHistorical.selected.roster.some((entry) => entry.enrollmentId === "enrollment-a"), "recorded source attendance remains visible after a later transfer");
+  sqlite(`
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('student-transfer', 'Шилжсэн', 'Сурагч', 'female', '2015-03-03', 'active', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('prereg-transfer-source', 'guardian', 'year', 'completed', 1, 'attendance-test', '${now}', '${now}'),
+        ('prereg-transfer-target', 'guardian', 'year', 'completed', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('application-transfer-source', 'prereg-transfer-source', 'student-transfer', 5, 'new', 'enrolled', 1, 'attendance-test', '${now}', '${now}'),
+        ('application-transfer-target', 'prereg-transfer-target', 'student-transfer', 5, 'new', 'enrolled', 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, transferred_out_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('enrollment-transfer-source', 'application-transfer-source', 'student-transfer', 'year', 'class-a', 'confirmed', '${confirmedAt}', '${now}', 1, 'attendance-test', '${now}', '${now}'),
+        ('enrollment-transfer-target', 'application-transfer-target', 'student-transfer', 'year', 'class-c', 'confirmed', '${now}', NULL, 1, 'attendance-test', '${now}', '${now}');
+    INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, source_class_session_id, target_class_session_id,
+      target_enrollment_id, target_application_child_id, status, reason, created_by_staff_account_id, idempotency_key,
+      source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt,
+      recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, completed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('completed-transfer', 'enrollment-transfer-source', 'application-transfer-source', 'class-a', 'class-c',
+        'enrollment-transfer-target', 'application-transfer-target', 'completed', 'test', 'teacher-staff', 'completed-transfer-key',
+        '{}', '{}', 0, 0, 0, 0, 0, '${now}', 1, 'attendance-test', '${now}', '${now}');
+  `);
+  const transferTargetBeforeSourceAttendance = await attendance.getCourseAttendanceDay(runtime, actor(), future, "slot-transfer-target");
+  assert.ok(transferTargetBeforeSourceAttendance.selected.roster.some((entry) => entry.enrollmentId === "enrollment-transfer-target"), "a transfer alone does not erase an unmarked source lesson or its make-up path");
+  await attendance.recordCourseAttendance(runtime, actor(), { slotId: "slot-past", enrollmentId: "enrollment-transfer-source", status: "present" });
+  const transferTargetDay = await attendance.getCourseAttendanceDay(runtime, actor(), future, "slot-transfer-target");
+  assert.equal(transferTargetDay.selected.completedEquivalentCount, 1, "a completed source lesson is identified through the completed transfer lineage");
+  assert.ok(!transferTargetDay.selected.roster.some((entry) => entry.enrollmentId === "enrollment-transfer-target"), "the transferred learner is not assigned the same canonical lesson again");
+  const transferAgenda = await agenda.getTeacherHomeAgenda(runtime, actor(), future, new Date(`${future}T12:00:00+08:00`));
+  const transferAgendaEntry = transferAgenda.entries.find((entry) => entry.occurrenceId === "slot-transfer-target");
+  assert.equal(transferAgendaEntry?.ordinaryCount, 0, "the teacher agenda does not count an equivalent completed lesson as an expected attendee");
+  assert.equal(transferAgendaEntry?.completedEquivalentCount, 1, "the teacher agenda explains why an otherwise empty transferred lesson remains visible");
+  assert.equal(count(database, "course_attendance", "enrollment_id = 'enrollment-transfer-source' AND attendance_status = 'present'"), 1, "the source attendance is preserved rather than moved to the destination");
+  await attendance.clearCourseAttendance(runtime, actor(), { slotId: "slot-past", enrollmentId: "enrollment-transfer-source" });
   sqlite(`
     INSERT INTO academic_year (id, public_label, registration_status, starts_on, ends_on, is_test, test_run_id, created_at, updated_at)
       VALUES ('year-next', 'Дараагийн туршилтын жил', 'draft', '2027-09-01', '2028-05-31', 1, 'attendance-test', '${now}', '${now}');

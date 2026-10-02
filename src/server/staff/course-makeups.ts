@@ -1,5 +1,6 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { completedTransferredLessonSql } from "./transfer-attendance";
 import { getClassCapacityProjections } from "../services/class-capacity";
 
 export class CourseMakeupError extends Error {
@@ -248,7 +249,10 @@ const SOURCE_SELECT = `
     AND julianday(enrollment.confirmed_at) <= julianday(slot.local_date || ' 23:59:59', '-8 hours')
     AND (enrollment.cancelled_at IS NULL
       OR julianday(enrollment.cancelled_at) >= julianday(slot.local_date || ' 00:00:00', '-8 hours'))
-    AND (attendance.attendance_status IS NULL OR attendance.attendance_status = 'absent')`;
+    AND (attendance.attendance_status IS NULL OR attendance.attendance_status = 'absent')
+    AND NOT ${completedTransferredLessonSql({
+      enrollmentAlias: "enrollment", lessonAlias: "lesson", programAlias: "program", slotAlias: "slot",
+    })}`;
 
 function sourceKey(source: SourceIdentity): string {
   return `${source.enrollmentId}|${source.classSessionId}|${source.curriculumLessonId}`;

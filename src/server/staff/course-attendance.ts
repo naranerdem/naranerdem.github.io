@@ -1,5 +1,6 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { completedTransferredLessonSql } from "./transfer-attendance";
 
 export const COURSE_ATTENDANCE_STATUSES = ["present", "late", "absent"] as const;
 export type CourseAttendanceStatus = typeof COURSE_ATTENDANCE_STATUSES[number];
@@ -17,6 +18,7 @@ interface OccurrenceRow {
   specialOccurrenceId: string | null;
   classSessionId: string | null;
   curriculumLessonId: string;
+  curriculumProgramId: string;
   localDate: string;
   startTime: string;
   endTime: string;
@@ -66,6 +68,7 @@ interface RosterRow {
 
 interface AttendanceOccurrence extends OccurrenceRow {
   roster: RosterRow[];
+  completedEquivalentCount: number;
 }
 
 function id(): string { return crypto.randomUUID(); }
@@ -177,6 +180,7 @@ const OCCURRENCE_SELECT = `
     NULL AS specialOccurrenceId,
     class_session.id AS classSessionId,
     slot.curriculum_lesson_id AS curriculumLessonId,
+    lesson.curriculum_program_id AS curriculumProgramId,
     slot.local_date AS localDate,
     slot.start_time AS startTime,
     slot.end_time AS endTime,
@@ -197,6 +201,7 @@ const OCCURRENCE_SELECT = `
   INNER JOIN class_session ON class_session.id = class_calendar.class_session_id
   INNER JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
   INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
+  INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
   LEFT JOIN class_meeting_rule ON class_meeting_rule.class_session_id = class_session.id
   LEFT JOIN academic_year_break AS school_break
     ON school_break.academic_year_id = class_session.academic_year_id
@@ -215,6 +220,7 @@ const SPECIAL_OCCURRENCE_SELECT = `
     special.id AS specialOccurrenceId,
     NULL AS classSessionId,
     special.curriculum_lesson_id AS curriculumLessonId,
+    lesson.curriculum_program_id AS curriculumProgramId,
     special.local_date AS localDate,
     special.start_time AS startTime,
     special.end_time AS endTime,
@@ -291,7 +297,7 @@ async function rosterForSpecialOccurrence(env: WorkerEnv, occurrence: Occurrence
   });
 }
 
-async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): Promise<RosterRow[]> {
+async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow, knownCompletedEnrollmentIds?: Set<string>): Promise<RosterRow[]> {
   if (occurrence.occurrenceKind === "special") return rosterForSpecialOccurrence(env, occurrence);
   if (!occurrence.classSessionId) throw new CourseAttendanceError("not_found");
   const { startsAt, endsAt } = localDateBounds(occurrence.localDate);
@@ -376,9 +382,35 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): P
     ORDER BY assignment.status = 'active' DESC, student.surname COLLATE NOCASE,
       student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
   `).bind(occurrence.classSessionId, occurrence.curriculumLessonId).all<RosterRow>();
-  const ordinaryStudentIds = new Set(ordinary.results.map((entry) => entry.studentId));
-  return [...ordinary.results, ...makeup.results.filter((entry) => !ordinaryStudentIds.has(entry.studentId))]
+  const completedEnrollmentIds = knownCompletedEnrollmentIds ?? await completedEquivalentEnrollmentIds(env, occurrence);
+  const currentOrdinary = ordinary.results.filter((entry) => !completedEnrollmentIds.has(entry.enrollmentId));
+  const ordinaryStudentIds = new Set(currentOrdinary.map((entry) => entry.studentId));
+  return [...currentOrdinary, ...makeup.results.filter((entry) => !ordinaryStudentIds.has(entry.studentId))]
     .sort((left, right) => `${left.surname}\u0000${left.givenName}\u0000${left.enrollmentId}`.localeCompare(`${right.surname}\u0000${right.givenName}\u0000${right.enrollmentId}`));
+}
+
+async function completedEquivalentEnrollmentIds(env: WorkerEnv, occurrence: OccurrenceRow): Promise<Set<string>> {
+  if (occurrence.occurrenceKind !== "normal" || !occurrence.classSessionId) return new Set();
+  const rows = await env.DB.prepare(`SELECT enrollment.id
+    FROM enrollment
+    INNER JOIN class_calendar AS calendar ON calendar.class_session_id = enrollment.class_session_id
+    INNER JOIN class_calendar_revision AS revision ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+    INNER JOIN class_calendar_slot AS slot ON slot.class_calendar_revision_id = revision.id AND slot.id = ?
+    INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
+    INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
+    WHERE enrollment.class_session_id = ?
+      AND enrollment.confirmed_at IS NOT NULL
+      AND enrollment.confirmed_at <= ?
+      AND (enrollment.cancelled_at IS NULL OR enrollment.cancelled_at >= ?)
+      AND (enrollment.transferred_out_at IS NULL OR enrollment.transferred_out_at >= ?)
+      AND enrollment.status IN ('confirmed', 'completed', 'cancelled')
+      AND ${completedTransferredLessonSql({
+        enrollmentAlias: "enrollment", lessonAlias: "lesson", programAlias: "program", slotAlias: "slot",
+      })}`).bind(
+    occurrence.slotId, occurrence.classSessionId,
+    `${occurrence.localDate}T15:59:59.999Z`, `${occurrence.localDate}T16:00:00.000Z`, `${occurrence.localDate}T16:00:00.000Z`,
+  ).all<{ id: string }>();
+  return new Set(rows.results.map((row) => row.id));
 }
 
 function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
@@ -426,12 +458,15 @@ function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
     rosterCount: roster.length,
     attendanceComplete,
     occurrenceEnded,
+    completedEquivalentCount: occurrence.completedEquivalentCount,
   };
 }
 
 async function selectedOccurrenceWithRoster(env: WorkerEnv, slotId: string): Promise<AttendanceOccurrence> {
   const occurrence = await occurrenceForSlot(env, slotId);
-  return { ...occurrence, roster: await rosterForOccurrence(env, occurrence) };
+  const completedEnrollmentIds = await completedEquivalentEnrollmentIds(env, occurrence);
+  const roster = await rosterForOccurrence(env, occurrence, completedEnrollmentIds);
+  return { ...occurrence, roster, completedEquivalentCount: completedEnrollmentIds.size };
 }
 
 async function occurrenceSummary(env: WorkerEnv, occurrence: OccurrenceRow, at: Date) {
@@ -444,6 +479,7 @@ async function occurrenceSummary(env: WorkerEnv, occurrence: OccurrenceRow, at: 
     progressCount: markedCount,
     attendanceComplete: roster.length > 0 && markedCount === roster.length,
     occurrenceEnded,
+    completedEquivalentCount: 0,
   };
 }
 
