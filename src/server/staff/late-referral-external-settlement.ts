@@ -292,9 +292,18 @@ export async function recordLateReferralExternalSettlement(env: WorkerEnv, actor
 }
 
 export interface LateReferralExternalSettlementHistory {
+  operationId: string;
+  beneficiaryRegistrationDraftChildId: string;
+  referredRegistrationDraftChildId: string;
+  referrerRegistrationDraftChildId: string;
+  referredChildName: string;
+  referrerChildName: string;
+  recordedByStaffName: string | null;
   benefitType: BenefitType;
   relationshipRole: "referred" | "referrer";
   referralCode: string;
+  entitlementBaseMnt: number;
+  entitlementBasisPoints: number;
   entitlementAmountMnt: number;
   externalRefundAmountMnt: number;
   externalRefundedAt: string;
@@ -320,14 +329,28 @@ export async function lateReferralExternalSettlementHistoryForChildren(database:
       INNER JOIN late_referral_external_settlement AS settlement ON settlement.operation_id = operation.id
         AND settlement.benefit_type = 'referrer'
       WHERE settlement.beneficiary_registration_draft_child_id IN (${placeholders})
-    ) SELECT participant.childId, participant.relationshipRole, settlement.benefit_type AS benefitType,
-      referral.referral_code AS referralCode, settlement.entitlement_amount_mnt AS entitlementAmountMnt,
+    ) SELECT participant.childId, participant.relationshipRole, operation.id AS operationId,
+      settlement.beneficiary_registration_draft_child_id AS beneficiaryRegistrationDraftChildId,
+      operation.referred_registration_draft_child_id AS referredRegistrationDraftChildId,
+      referrer_settlement.beneficiary_registration_draft_child_id AS referrerRegistrationDraftChildId,
+      trim(referred_child.surname || ' ' || referred_child.given_name) AS referredChildName,
+      trim(referrer_child.surname || ' ' || referrer_child.given_name) AS referrerChildName,
+      staff_account.display_name AS recordedByStaffName,
+      settlement.benefit_type AS benefitType, referral.referral_code AS referralCode,
+      settlement.entitlement_base_mnt AS entitlementBaseMnt, settlement.entitlement_basis_points AS entitlementBasisPoints,
+      settlement.entitlement_amount_mnt AS entitlementAmountMnt,
       settlement.external_refund_amount_mnt AS externalRefundAmountMnt, settlement.external_refunded_at AS externalRefundedAt,
       settlement.external_refund_method AS externalRefundMethod, settlement.external_paid_by_note AS externalPaidByNote,
       settlement.external_reference AS externalReference, settlement.reason, settlement.created_at AS createdAt
     FROM participant
-    INNER JOIN late_referral_external_settlement AS settlement ON settlement.operation_id = participant.operationId
+    INNER JOIN late_referral_external_settlement_operation AS operation ON operation.id = participant.operationId
+    INNER JOIN late_referral_external_settlement AS settlement ON settlement.operation_id = operation.id
+    INNER JOIN late_referral_external_settlement AS referrer_settlement ON referrer_settlement.operation_id = operation.id
+      AND referrer_settlement.benefit_type = 'referrer'
     INNER JOIN referral ON referral.id = settlement.referral_id
+    INNER JOIN registration_draft_child AS referred_child ON referred_child.id = operation.referred_registration_draft_child_id
+    INNER JOIN registration_draft_child AS referrer_child ON referrer_child.id = referrer_settlement.beneficiary_registration_draft_child_id
+    LEFT JOIN staff_account ON staff_account.id = operation.recorded_by_staff_account_id
     ORDER BY settlement.created_at, settlement.benefit_type`).bind(...unique, ...unique).all<LateReferralExternalSettlementHistory & { childId: string }>();
   for (const row of rows.results) result.set(row.childId, [...(result.get(row.childId) ?? []), row]);
   return result;

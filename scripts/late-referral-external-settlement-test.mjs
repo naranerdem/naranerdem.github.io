@@ -163,6 +163,15 @@ try {
   const history = await lateReferralExternalSettlementHistoryForChildren(database, [referred.childId, referrer.childId]);
   assert.equal(history.get(referred.childId)?.length, 2, "the referred record sees the complete settled relationship history");
   assert.equal(history.get(referrer.childId)?.length, 2, "the referrer record sees the complete settled relationship history");
+  const referredHistory = history.get(referred.childId) ?? [];
+  const referrerHistory = history.get(referrer.childId) ?? [];
+  assert.equal(referredHistory.find((entry) => entry.beneficiaryRegistrationDraftChildId === referred.childId)?.entitlementBasisPoints, 200,
+    "the referred panel receives its immutable 2% benefit snapshot by stable child identity");
+  assert.equal(referrerHistory.find((entry) => entry.beneficiaryRegistrationDraftChildId === referrer.childId)?.entitlementBasisPoints, 500,
+    "the referrer panel receives its immutable 5% benefit snapshot by stable child identity");
+  assert.equal(referredHistory[0]?.referredChildName, "Test referred", "history identifies both beneficiaries without display-name matching");
+  assert.equal(referredHistory[0]?.referrerChildName, "Test referrer", "history preserves the named referral relationship");
+  assert.equal(referredHistory[0]?.recordedByStaffName, "Test teacher", "history exposes the recorded audit actor");
 
   const staleReferred = seedConfirmed(database, "stale-referred", 1200000, "class-a");
   const stalePreview = await previewLateReferralExternalSettlement(environment(database), actor, { referredRegistrationDraftChildId: staleReferred.childId, referralCode: "NE-TEST42", refunds });

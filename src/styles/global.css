@@ -2272,6 +2272,29 @@ textarea:focus {
   margin: 0;
 }
 
+.staff-late-referral-history {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.staff-late-referral-history p {
+  margin: 0;
+}
+
+.staff-late-referral-history details {
+  color: var(--muted);
+}
+
+.staff-late-referral-history summary {
+  cursor: pointer;
+}
+
+.staff-late-referral-history details > div {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
 .staff-schedule-row-remove {
   align-self: end;
   justify-self: start;
