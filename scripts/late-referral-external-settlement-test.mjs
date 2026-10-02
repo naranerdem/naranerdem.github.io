@@ -132,6 +132,9 @@ try {
     referredChild: { amountMnt: 24000, paidOn: "2026-09-28", method: "cash", paidByNote: "Teacher", externalReference: "", reason: "Already refunded offline" },
     referrer: { amountMnt: 60000, paidOn: "2026-09-28", method: "bank_transfer", paidByNote: "Teacher", externalReference: "REF-42", reason: "Already refunded offline" },
   };
+  await assert.rejects(() => previewLateReferralExternalSettlement(environment(database), { ...actor, capabilities: ["payment.manage"] }, {
+    referredRegistrationDraftChildId: referred.childId, referralCode: "NE-TEST42", refunds,
+  }), (error) => error instanceof LateReferralExternalSettlementError && error.code === "forbidden", "payment-only staff cannot use the referral settlement route");
   const preview = await previewLateReferralExternalSettlement(environment(database), actor, { referredRegistrationDraftChildId: referred.childId, referralCode: " ne-test42 ", refunds });
   assert.deepEqual(preview.benefits.map((benefit) => [benefit.benefitType, benefit.entitlementAmountMnt, benefit.differsFromEntitlement]), [["referred_child", 24000, false], ["referrer", 60000, false]], "the preview retains the reviewed 2% and 5% entitlements on 1.2M receipts");
   const operationId = "11111111-1111-4111-8111-111111111111";
