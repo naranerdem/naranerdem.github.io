@@ -202,6 +202,7 @@ import {
   removeClassFromSchedule,
   restoreClassToSchedule,
   saveAcademicYearBreak,
+  saveClassCalendarVisibility,
   saveClassSession,
   saveClassPublicVisibility,
   insertProgramDraftLesson,
@@ -2306,6 +2307,14 @@ export async function handleApiRequest(
             classSessionId: String(payload.classSessionId ?? ""),
             expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
             publicVisibility: payload.publicVisibility,
+          });
+          break;
+        case "class.calendar-visibility.save":
+          if (typeof payload.calendarVisibility !== "boolean") throw new ProgramCalendarError("invalid");
+          await saveClassCalendarVisibility(env, principal, {
+            classSessionId: String(payload.classSessionId ?? ""),
+            expectedUpdatedAt: String(payload.expectedUpdatedAt ?? ""),
+            calendarVisibility: payload.calendarVisibility,
           });
           break;
         case "class.schedule.remove":

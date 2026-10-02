@@ -76,6 +76,13 @@ const stagingSql = `
     ON class_calendar_slot.class_calendar_revision_id = class_calendar_revision.id
   WHERE academic_year.is_current = 1
     AND class_calendar.status = 'active'
+    AND class_session.schedule_state = 'active'
+    AND (class_session.is_calendar_visible = 1 OR EXISTS (
+      SELECT 1 FROM enrollment AS current_enrollment
+      WHERE current_enrollment.class_session_id = class_session.id
+        AND current_enrollment.status = 'confirmed'
+        AND current_enrollment.transferred_out_at IS NULL
+    ))
   ORDER BY class_session.stage_code, class_session.weekday, class_session.start_time,
     class_calendar_slot.local_date, class_calendar_slot.start_time
 `;
@@ -111,6 +118,13 @@ const productionSql = `
     AND class_session.is_test = 0
     AND class_session.is_test_only = 0
     AND class_calendar.status = 'active'
+    AND class_session.schedule_state = 'active'
+    AND (class_session.is_calendar_visible = 1 OR EXISTS (
+      SELECT 1 FROM enrollment AS current_enrollment
+      WHERE current_enrollment.class_session_id = class_session.id
+        AND current_enrollment.status = 'confirmed'
+        AND current_enrollment.transferred_out_at IS NULL
+    ))
     AND class_calendar.is_test = 0
     AND class_calendar_revision.is_test = 0
     AND class_calendar_slot.is_test = 0

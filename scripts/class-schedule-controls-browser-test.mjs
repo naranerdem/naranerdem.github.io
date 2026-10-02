@@ -79,6 +79,22 @@ try {
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('slot', 'revision', '${future}', '18:00', '19:20', 'generated', 'scheduled', 'lesson', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
     UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id = 'revision';
+    INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('guardian', 'Календар асран хамгаалагч', '99112233', '99112233', 'calendar@example.test', 'calendar@example.test', 'Тест', 'active', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('student', 'Календар', 'Суралцагч', 'not_specified', '2015-01-01', 'active', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('pre', 'guardian', 'year', 'completed', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('application', 'pre', 'student', 5, 'new', 'enrolled', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('enrollment', 'application', 'student', 'year', 'class', 'confirmed', ${sql(now)}, 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, expires_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('pending-draft', '${"a".repeat(64)}', 'year', 'Хүлээгдэж буй асран хамгаалагч', 'Эцэг эх', '99112234', 'pending@example.test', 'pending@example.test', 'Тест', 'single', 'v1', 'v1', 'awaiting_initial_payment', '2027-12-31T00:00:00.000Z', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, returning_status, selected_stage_code, selected_class_session_id, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('pending-child', 'pending-draft', 0, 'Хүлээгдэж', 'Буй', 'not_specified', '2015-01-01', '5', 'new', 'stage_1', 'class', 'awaiting_initial_payment', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO registration_capacity_hold (id, registration_draft_child_id, class_session_id, hold_type, status, deadline_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('pending-hold', 'pending-child', 'class', 'initial_payment', 'active', '2027-12-31T00:00:00.000Z', 1, 'class-schedule-browser', ${sql(now)}, ${sql(now)});
   `);
   worker = spawn(process.execPath, [wranglerCli, "dev", "--env", "staging", "--local", "--persist-to", persistDir, "--ip", "127.0.0.1", "--port", String(port), "--var", `APP_ORIGIN:${baseUrl}`], { stdio: ["ignore", "pipe", "pipe"] });
   worker.stdout.on("data", (chunk) => { workerOutput += String(chunk); });
@@ -96,6 +112,24 @@ try {
   await page.locator('[data-edit-offering="offering"]').click();
   await page.locator('[data-class-edit="class"]').click();
   const form = page.locator("#class-form");
+  await page.locator('[data-class-calendar-visibility="class"]').click();
+  await page.getByText("Ангийг календараас нуусан. Баталгаатай суралцагчтай бол календард харагдсан хэвээр байна.", { exact: true }).waitFor({ state: "visible" });
+  let overview = await page.evaluate(async () => (await fetch("/api/staff/program-calendar", { credentials: "same-origin" })).json());
+  let classRow = overview.classes.find((entry) => entry.id === "class");
+  assert.deepEqual([Boolean(classRow.calendarVisibility), Boolean(classRow.calendarEffectiveVisibility)], [false, true], "a confirmed enrollment makes a manually hidden class immediately visible to the calendar");
+  let published = await page.evaluate(async () => (await fetch("/api/calendar/published", { credentials: "same-origin" })).json());
+  assert.equal(published.calendars.some((entry) => entry.classSession.id === "class"), true, "the published calendar retains a manually hidden class with a current confirmed enrollment");
+  execute(`UPDATE enrollment SET transferred_out_at = ${sql(now)} WHERE id = 'enrollment'`);
+  await page.reload();
+  await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.locator('[data-edit-offering="offering"]').click();
+  await page.locator('[data-class-edit="class"]').click();
+  published = await page.evaluate(async () => (await fetch("/api/calendar/published", { credentials: "same-origin" })).json());
+  assert.equal(published.calendars.some((entry) => entry.classSession.id === "class"), false, "transferred-out history and an active initial-payment hold do not keep a manually hidden class in the published calendar");
+  execute(`UPDATE registration_capacity_hold SET status = 'released', released_at = ${sql(now)}, release_reason = 'test_cleanup' WHERE id = 'pending-hold'`);
+  execute(`UPDATE registration_draft_child SET status = 'cancelled' WHERE id = 'pending-child'; UPDATE registration_draft SET status = 'cancelled' WHERE id = 'pending-draft'`);
+  await page.locator('[data-class-calendar-visibility="class"]').click();
+  await page.getByText("Ангийг календард харууллаа.", { exact: true }).waitFor({ state: "visible" });
   await form.getByRole("button", { name: "Хуваариас хасах", exact: true }).click();
   await form.locator("[data-class-schedule-remove-confirm]").click();
   await page.getByText("Ангийг хуваариас хаслаа. Бүртгэл хаагдаж, нийтээс нуусан.", { exact: true }).waitFor({ state: "visible" });
@@ -108,8 +142,8 @@ try {
   await form.locator("[data-class-schedule-restore-confirm]").click();
   await page.getByText("Ангийг хуваарьт орууллаа. Бүртгэл болон нийтэд харагдах төлөв хаалттай хэвээр байна.", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await form.locator("#class-open").isChecked(), false, "restoration retains closed registration");
-  const overview = await page.evaluate(async () => (await fetch("/api/staff/program-calendar", { credentials: "same-origin" })).json());
-  const classRow = overview.classes.find((entry) => entry.id === "class");
+  overview = await page.evaluate(async () => (await fetch("/api/staff/program-calendar", { credentials: "same-origin" })).json());
+  classRow = overview.classes.find((entry) => entry.id === "class");
   assert.deepEqual([classRow.scheduleState, classRow.registrationOpen, Boolean(classRow.publicVisibility)], ["active", false, false], "restoration keeps public visibility hidden");
   assert.deepEqual(browserErrors, [], "the rendered controls create no browser errors");
   console.log(`ok class schedule controls browser (${screenshotDir})`);
