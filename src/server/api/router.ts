@@ -480,7 +480,7 @@ function lateReferralExternalSettlementError(caught: LateReferralExternalSettlem
   if (caught.code === "not_found") return error("not_found", "Урилгын код эсвэл баталгаатай төлбөртэй бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Энэ урилга эсвэл урамшууллын бүртгэл аль хэдийн байна. Хуудсыг шинэчлээд шалгана уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "stale") return error("invalid_request", "Урилга, төлбөр эсвэл бодлогын мэдээлэл өөрчлөгдсөн байна. Урьдчилан харалтыг дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
-  return error("invalid_request", "Урилгын код болон гадаа хийсэн буцаалтын мэдээллийг шалгана уу.", 400, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Урилгын код болон буцаан олголтын мэдээллийг шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 function additionalClassAdmissionError(caught: unknown): Response {

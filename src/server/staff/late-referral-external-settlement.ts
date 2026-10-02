@@ -18,6 +18,7 @@ interface ReferralSnapshot {
   referredEnrollmentId: string;
   referredApplicationChildId: string;
   referredStudentId: string;
+  referredChildName: string;
   referredGuardianId: string | null;
   referredBaseMnt: number;
   referredUpdatedAt: string;
@@ -25,6 +26,7 @@ interface ReferralSnapshot {
   referrerChildId: string;
   referrerEnrollmentId: string;
   referrerStudentId: string;
+  referrerChildName: string;
   referrerGuardianId: string | null;
   referrerBaseMnt: number;
   referrerUpdatedAt: string;
@@ -97,6 +99,7 @@ async function snapshotForReferral(env: WorkerEnv, referredChildId: string, rawC
       child.canonical_enrollment_id AS referredEnrollmentId,
       child.canonical_application_child_id AS referredApplicationChildId,
       child.canonical_student_id AS referredStudentId,
+      trim(child.surname || ' ' || child.given_name) AS referredChildName,
       registration.guardian_id AS referredGuardianId,
       COALESCE(child.initial_payment_amount_mnt, 0) + COALESCE(child.second_payment_amount_mnt, 0) AS referredBaseMnt,
       child.updated_at AS referredUpdatedAt, enrollment.updated_at AS referredEnrollmentUpdatedAt,
@@ -107,7 +110,7 @@ async function snapshotForReferral(env: WorkerEnv, referredChildId: string, rawC
     INNER JOIN application_child ON application_child.id = child.canonical_application_child_id
     INNER JOIN pre_registration AS registration ON registration.id = application_child.pre_registration_id
     WHERE child.id = ? AND child.status != 'cancelled'`).bind(referredChildId).first<{
-      referredChildId: string; referredEnrollmentId: string; referredApplicationChildId: string; referredStudentId: string;
+      referredChildId: string; referredEnrollmentId: string; referredApplicationChildId: string; referredStudentId: string; referredChildName: string;
       referredGuardianId: string | null; referredBaseMnt: number; referredUpdatedAt: string; referredEnrollmentUpdatedAt: string;
       isTest: number; testRunId: string | null;
     }>();
@@ -116,6 +119,7 @@ async function snapshotForReferral(env: WorkerEnv, referredChildId: string, rawC
   const referrer = await env.DB.prepare(`SELECT code.id AS referralCodeId, code.code AS referralCode,
       code.updated_at AS referralCodeUpdatedAt, referrer.id AS referrerChildId,
       referrer.canonical_enrollment_id AS referrerEnrollmentId, referrer.canonical_student_id AS referrerStudentId,
+      trim(referrer.surname || ' ' || referrer.given_name) AS referrerChildName,
       registration.guardian_id AS referrerGuardianId,
       COALESCE(referrer.initial_payment_amount_mnt, 0) + COALESCE(referrer.second_payment_amount_mnt, 0) AS referrerBaseMnt,
       referrer.updated_at AS referrerUpdatedAt, enrollment.updated_at AS referrerEnrollmentUpdatedAt
@@ -129,7 +133,7 @@ async function snapshotForReferral(env: WorkerEnv, referredChildId: string, rawC
     WHERE code.code = ? AND code.status = 'active' AND code.is_test = ? AND enrollment.is_test = ?
     ORDER BY referrer.updated_at DESC, referrer.id DESC LIMIT 1`).bind(code, referred.isTest, referred.isTest).first<{
       referralCodeId: string; referralCode: string; referralCodeUpdatedAt: string; referrerChildId: string;
-      referrerEnrollmentId: string; referrerStudentId: string; referrerGuardianId: string | null;
+      referrerEnrollmentId: string; referrerStudentId: string; referrerChildName: string; referrerGuardianId: string | null;
       referrerBaseMnt: number; referrerUpdatedAt: string; referrerEnrollmentUpdatedAt: string;
     }>();
   if (!referrer || Number(referrer.referrerBaseMnt) <= 0) throw new LateReferralExternalSettlementError("not_found");
@@ -194,7 +198,8 @@ async function review(env: WorkerEnv, referredChildId: string, referralCode: str
   ];
   const reviewFingerprint = await fingerprint({ snapshot, benefits });
   return { referralCode: snapshot.referralCode, referrerRegistrationDraftChildId: snapshot.referrerChildId,
-    referredRegistrationDraftChildId: snapshot.referredChildId, benefits, reviewFingerprint };
+    referrerChildName: snapshot.referrerChildName, referredRegistrationDraftChildId: snapshot.referredChildId,
+    referredChildName: snapshot.referredChildName, benefits, reviewFingerprint };
 }
 
 export async function previewLateReferralExternalSettlement(env: WorkerEnv, actor: StaffPrincipal, input: {

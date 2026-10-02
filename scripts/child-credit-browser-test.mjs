@@ -1255,6 +1255,12 @@ async function exerciseLateReferralExternalSettlement(browser, page) {
   const confirmation = row.locator("[data-late-referral-confirm]");
   await confirmation.getByText("24,000 ₮").waitFor({ state: "visible" });
   await confirmation.getByText("60,000 ₮").waitFor({ state: "visible" });
+  await confirmation.getByText("Урилгаар бүртгүүлсэн хүүхэд: Browser LateReferralReferred").waitFor({ state: "visible" });
+  await confirmation.getByText("Найзаа урьсан хүүхэд: Browser LateReferralReferrer").waitFor({ state: "visible" });
+  assert.equal(await confirmation.locator("label", { hasText: "Буцаан олгосон дүн" }).first().locator("input").inputValue(), "24,000 ₮",
+    "the rendered review shows the entered referred-child external refund, never a blank default");
+  assert.equal(await confirmation.locator("label", { hasText: "Буцаан олгосон дүн" }).nth(1).locator("input").inputValue(), "60,000 ₮",
+    "the rendered review shows the entered referrer external refund");
   assert.equal(await confirmation.locator('input[readonly]').count(), 10, "the review freezes both refund records until Edit is selected");
   await capturePaymentElement(row, "late-referral-review-mobile.png");
   await page.setViewportSize({ width: 1180, height: 900 });
@@ -1262,14 +1268,14 @@ async function exerciseLateReferralExternalSettlement(browser, page) {
   await page.setViewportSize({ width: 390, height: 844 });
   const saveResponse = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/payments")
     && candidate.request().method() === "POST" && candidate.request().postData()?.includes("late-referral.external-settlement-record"));
-  await confirmation.getByRole("button", { name: "Өөрчлөлтийг хадгалах" }).click();
+  await confirmation.getByRole("button", { name: "Бүртгэлийг хадгалах" }).click();
   assert.ok((await saveResponse).ok(), "the rendered review saves through the real atomic endpoint");
   await page.reload();
   const reloaded = page.locator(`[data-registration-child="${referredChildId}"]`);
   await reloaded.waitFor({ state: "visible" });
   const reloadedOpen = reloaded.getByRole("button", { name: "Нээх" });
   if (await reloadedOpen.isVisible().catch(() => false)) await reloadedOpen.click();
-  await reloaded.getByText("Гадаа олгосон урилгын урамшуулал").waitFor({ state: "visible" });
+  await reloaded.getByText("Олгосон урамшууллын бүртгэл").waitFor({ state: "visible" });
   await capturePaymentElement(reloaded, "late-referral-history-mobile.png");
   const settlements = await dbJson(`SELECT COUNT(*) AS count FROM late_referral_external_settlement`);
   const awards = await dbJson(`SELECT COUNT(*) AS count FROM discount_award`);

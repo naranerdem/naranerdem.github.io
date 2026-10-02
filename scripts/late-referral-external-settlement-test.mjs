@@ -135,8 +135,16 @@ try {
   await assert.rejects(() => previewLateReferralExternalSettlement(environment(database), { ...actor, capabilities: ["payment.manage"] }, {
     referredRegistrationDraftChildId: referred.childId, referralCode: "NE-TEST42", refunds,
   }), (error) => error instanceof LateReferralExternalSettlementError && error.code === "forbidden", "payment-only staff cannot use the referral settlement route");
+  await assert.rejects(() => previewLateReferralExternalSettlement(environment(database), actor, {
+    referredRegistrationDraftChildId: referred.childId, referralCode: "NE-TEST42", refunds: { ...refunds, referredChild: { ...refunds.referredChild, amountMnt: 0 } },
+  }), (error) => error instanceof LateReferralExternalSettlementError && error.code === "invalid", "zero or incomplete external-refund facts cannot reach a completed review");
   const preview = await previewLateReferralExternalSettlement(environment(database), actor, { referredRegistrationDraftChildId: referred.childId, referralCode: " ne-test42 ", refunds });
   assert.deepEqual(preview.benefits.map((benefit) => [benefit.benefitType, benefit.entitlementAmountMnt, benefit.differsFromEntitlement]), [["referred_child", 24000, false], ["referrer", 60000, false]], "the preview retains the reviewed 2% and 5% entitlements on 1.2M receipts");
+  const mismatch = await previewLateReferralExternalSettlement(environment(database), actor, {
+    referredRegistrationDraftChildId: referred.childId, referralCode: "NE-TEST42", refunds: { ...refunds, referredChild: { ...refunds.referredChild, amountMnt: 23000 } },
+  });
+  assert.equal(mismatch.benefits.find((benefit) => benefit.benefitType === "referred_child")?.differsFromEntitlement, true,
+    "a factual refund discrepancy remains explicit in the reviewed result");
   const operationId = "11111111-1111-4111-8111-111111111111";
   const saved = await recordLateReferralExternalSettlement(environment(database), actor, { referredRegistrationDraftChildId: referred.childId, referralCode: "NE-TEST42", refunds, reviewFingerprint: preview.reviewFingerprint, operationId }, new Date(now));
   assert.equal(saved.idempotent, false, "the first reviewed operation persists once");

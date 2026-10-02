@@ -17,7 +17,7 @@ assert.match(page, /data-late-referral-code=/, "the referral workflow begins wit
 assert.match(page, /data-late-referral-review=/, "both external refund facts receive a separate review step");
 assert.match(page, /data-late-referral-confirm=/, "the immutable review has an explicit durable save action");
 assert.match(page, /readonly value="\$\{escape\(mnt\(value\.amountMnt \|\| 0\)\)\}"/, "reviewed external refund facts cannot be silently changed after the preview");
-assert.match(page, /Гадаа олгосон урилгын урамшуулал/, "settled referral history remains visible on each affected expanded record");
+assert.match(page, /Олгосон урамшууллын бүртгэл/, "settled referral history remains visible on each affected expanded record");
 assert.match(router, /late-referral\.external-settlement-preview/, "the staff API exposes the guarded late-referral preview route");
 assert.match(router, /late-referral\.external-settlement-record/, "the staff API exposes the guarded late-referral save route");
 assert.match(lateReferralService, /late_referral_external_settlement_operation/, "a durable operation record fences late-referral settlement retries");
