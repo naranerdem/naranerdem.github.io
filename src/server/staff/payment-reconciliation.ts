@@ -12,6 +12,7 @@ import { finalizeFundedSameSubmissionQuotes, materializeConditionalFamilyAwardCr
 import { cashReceiptProjectionsForChildren } from "../services/cash-receipt-projection";
 import { activePaymentInstallmentsForChildren } from "../services/payment-agreement";
 import { familyCreditSuggestionsForChild } from "./family-discounts";
+import { lateReferralExternalSettlementHistoryForChildren } from "./late-referral-external-settlement";
 import { sendConditionalSeatConfirmationEmail, sendPaymentConfirmedEmail } from "../email/registration-transactional";
 import { cancelUnauthorisedPaymentReminderStatements } from "../email/payment-reminder-delivery";
 
@@ -1327,11 +1328,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     : { results: [] as Array<{ childId: string; receivedPaymentId: string; amountMnt: number; receivedAt: string }> };
   const installmentRows = allInstallments.results.map((item) => ({ ...item, installmentNumber: Number(item.installmentNumber),
     amountMnt: Number(item.amountMnt), allocatedAmountMnt: Number(item.allocatedAmountMnt), cashAllocatedAmountMnt: Number(item.cashAllocatedAmountMnt) }));
-  const [cashReceiptByChild, effectiveRows, awardByChild, creditByChild] = await Promise.all([
+  const [cashReceiptByChild, effectiveRows, awardByChild, creditByChild, lateReferralHistoryByChild] = await Promise.all([
     cashReceiptProjectionsForChildren(env.DB, childIds),
     effectiveInstallmentsForRows(env.DB, installmentRows),
     discountAwardsForChildren(env.DB, childIds, true),
     childCreditSummaryForChildren(env.DB, childIds),
+    lateReferralExternalSettlementHistoryForChildren(env.DB, childIds),
   ]);
   const effectiveById = new Map(effectiveRows.map((item) => [item.id, item]));
   const correctionReceiptCandidates = new Map<string, Array<{ receivedPaymentId: string; amountMnt: number; receivedAt: string }>>();
@@ -1536,6 +1538,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
           && donor.relationshipKey === conditionalQuoteByChild.get(String(item.registrationDraftChildId))?.relationshipKey)
         : []),
       discountAmountMnt: effective?.discountAmountMnt ?? 0, discounts: awards,
+      lateReferralExternalSettlements: lateReferralHistoryByChild.get(String(item.registrationDraftChildId)) ?? [],
       canConfirmSeat: !historicalReviewReady && !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved)
         && Boolean(item.hasUnapprovedInitialConfirmation) && item.allocatedAmountMnt >= expectedAmountMnt };
   }), credits: [

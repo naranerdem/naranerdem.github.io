@@ -56,6 +56,7 @@
     "test:class-transfer": "node scripts/class-transfer-lifecycle-test.mjs",
     "test:waitlist-offers": "node scripts/waitlist-offer-test.mjs",
     "test:payment-ui": "node scripts/payment-ui-regression-test.mjs && node scripts/scheduled-payment-finalization-test.mjs",
+    "test:late-referral-external-settlement": "node scripts/late-referral-external-settlement-test.mjs && npm run build && LATE_REFERRAL_BROWSER_ONLY=1 node scripts/child-credit-browser-test.mjs",
     "test:staff-registration-export": "node scripts/staff-registration-export-test.mjs",
     "test:payment-confirmation-migration": "node scripts/payment-confirmation-migration-test.mjs",
     "test:scheduler-reconciliation": "npm run build && node scripts/scheduler-reconciliation-test.mjs",

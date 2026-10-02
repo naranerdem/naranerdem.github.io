@@ -471,6 +471,12 @@ export async function awardReferrerDiscountForReferral(env: WorkerEnv, input: {
   referralId: string; policy: DiscountPolicySetting; now?: string;
 }): Promise<boolean> {
   if (input.policy.referrerBasisPoints <= 0) return false;
+  // A staff-recorded late referral can have both benefits settled outside the
+  // system. It remains a qualified relationship, but must never materialize a
+  // second spendable award during a later promotion/retry.
+  const externallySettled = await env.DB.prepare(`SELECT 1 AS value
+    FROM late_referral_external_settlement WHERE referral_id = ? LIMIT 1`).bind(input.referralId).first<{ value: number }>();
+  if (externallySettled) return false;
   const row = await env.DB.prepare(`SELECT referring_child.id AS childId,
     referring_child.canonical_enrollment_id AS enrollmentId,
     referring_child.initial_payment_amount_mnt AS initialAmountMnt,

@@ -31,6 +31,7 @@ const paymentPanelScreenshotDir = process.env.PAYMENT_PANEL_SCREENSHOT_DIR || ""
 const paymentPanelBrowser = process.env.PAYMENT_PANEL_BROWSER || "chromium";
 const usingWebKit = paymentPanelBrowser === "webkit" || paymentPanelBrowser === "webkit-desktop";
 const paymentLayoutDiagnostics = process.env.PAYMENT_PANEL_UI_DIAGNOSTICS === "1";
+const lateReferralBrowserOnly = process.env.LATE_REFERRAL_BROWSER_ONLY === "1";
 if (process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_ONLY === "1") {
   console.log("starting focused receipt-correction browser workflow");
 }
@@ -315,7 +316,8 @@ async function submitPublicRegistration(browser, { childName, email, paymentPlan
   await card.locator('[data-child-returning][value="no"]').check();
   await card.locator("[data-child-stage]").selectOption("stage_1");
   await card.locator('[data-child-class][value="browser-class-source"]').check();
-  await card.locator(`[data-child-payment-plan][value="${paymentPlanCode}"]`).check();
+  const paymentPlan = card.locator(`[data-child-payment-plan][value="${paymentPlanCode}"]`);
+  if (await paymentPlan.getAttribute("type") !== "hidden") await paymentPlan.check();
   for (const [index, sibling] of siblings.entries()) {
     await publicPage.locator("[data-add-child]").click();
     const siblingCard = publicPage.locator("[data-child-card]").nth(index + 1);
@@ -327,7 +329,8 @@ async function submitPublicRegistration(browser, { childName, email, paymentPlan
     await siblingCard.locator('[data-child-returning][value="no"]').check();
     await siblingCard.locator("[data-child-stage]").selectOption("stage_1");
     await siblingCard.locator(`[data-child-class][value="${sibling.classSessionId}"]`).check();
-    await siblingCard.locator(`[data-child-payment-plan][value="${sibling.paymentPlanCode}"]`).check();
+    const siblingPaymentPlan = siblingCard.locator(`[data-child-payment-plan][value="${sibling.paymentPlanCode}"]`);
+    if (await siblingPaymentPlan.getAttribute("type") !== "hidden") await siblingPaymentPlan.check();
   }
 
   await publicPage.locator("#registration-form button[type=submit]").click();
@@ -1195,6 +1198,80 @@ async function exerciseInactiveRegistrationHistory(page) {
   await capturePaymentDetail(page, returnedWaitlistCard, "released-seat-waitlist-history-mobile.png");
 }
 
+async function recordBrowserPayment(page, childId, amount) {
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  await row.waitFor({ state: "visible" });
+  const form = row.locator("[data-payment-form]");
+  await form.locator('input[name="amount"]').fill(String(amount));
+  const response = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/payments")
+    && candidate.request().method() === "POST" && candidate.request().postData()?.includes("payment.record"));
+  await form.getByRole("button", { name: "Төлбөр орсон" }).click();
+  assert.ok((await response).ok(), "the disposable payment finalizes before the late-referral workflow");
+}
+
+async function exerciseLateReferralExternalSettlement(browser, page) {
+  execute(`UPDATE offering_course_pricing SET one_time_amount_mnt = 1200000, two_installment_enabled = 0,
+    first_installment_amount_mnt = NULL, second_installment_amount_mnt = NULL, second_installment_due_on = NULL, updated_at = ${sql(new Date().toISOString())}
+    WHERE activity_offering_id = 'browser-offering';
+    UPDATE payment_confirmation_grace_setting SET grace_minutes = 0 WHERE singleton = 1;`);
+  const referrerChildId = await submitPublicRegistration(browser, {
+    childName: "LateReferralReferrer", email: "late-referrer@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200000,
+  });
+  const referredChildId = await submitPublicRegistration(browser, {
+    childName: "LateReferralReferred", email: "late-referred@example.test", paymentPlanCode: "single", expectedInitialAmount: 1200000,
+  });
+  await recordBrowserPayment(page, referrerChildId, 1200000);
+  await recordBrowserPayment(page, referredChildId, 1200000);
+  const code = (await dbJson(`SELECT enrollment_referral_code.code AS code
+    FROM enrollment_referral_code INNER JOIN registration_draft_child
+      ON registration_draft_child.canonical_enrollment_id = enrollment_referral_code.enrollment_id
+    WHERE registration_draft_child.id = ${sql(referrerChildId)}`))[0]?.code;
+  assert.ok(code, "the qualifying referrer has a durable existing referral code");
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(referredChildId)}`);
+  const row = page.locator(`[data-registration-child="${referredChildId}"]`);
+  await row.waitFor({ state: "visible" });
+  const openDetail = row.getByRole("button", { name: "Нээх" });
+  if (await openDetail.isVisible().catch(() => false)) await openDetail.click();
+  await row.locator("[data-late-referral-open]").click();
+  const codeForm = row.locator("[data-late-referral-code]");
+  await codeForm.locator('input[name="referralCode"]').fill(code);
+  const previewResponse = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/payments")
+    && candidate.request().method() === "POST" && candidate.request().postData()?.includes("late-referral.external-settlement-preview"));
+  await codeForm.getByRole("button", { name: "Шалгах" }).click();
+  assert.ok((await previewResponse).ok(), "the rendered code check uses the real staff endpoint");
+  const refundForm = row.locator("[data-late-referral-review]");
+  await refundForm.locator('input[name="referred_childAmountMnt"]').fill("24000");
+  await refundForm.locator('input[name="referred_childPaidOn"]').fill("2026-09-28");
+  await refundForm.locator('textarea[name="referred_childReason"]').fill("Browser external refund");
+  await refundForm.locator('input[name="referrerAmountMnt"]').fill("60000");
+  await refundForm.locator('input[name="referrerPaidOn"]').fill("2026-09-28");
+  await refundForm.locator('select[name="referrerMethod"]').selectOption("bank_transfer");
+  await refundForm.locator('textarea[name="referrerReason"]').fill("Browser external refund");
+  const reviewResponse = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/payments")
+    && candidate.request().method() === "POST" && candidate.request().postData()?.includes("late-referral.external-settlement-preview"));
+  await refundForm.getByRole("button", { name: "Хянах" }).click();
+  assert.ok((await reviewResponse).ok(), "the rendered refund facts receive a fresh immutable review");
+  const confirmation = row.locator("[data-late-referral-confirm]");
+  await confirmation.getByText("24,000 ₮").waitFor({ state: "visible" });
+  await confirmation.getByText("60,000 ₮").waitFor({ state: "visible" });
+  assert.equal(await confirmation.locator('input[readonly]').count(), 10, "the review freezes both refund records until Edit is selected");
+  const saveResponse = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/payments")
+    && candidate.request().method() === "POST" && candidate.request().postData()?.includes("late-referral.external-settlement-record"));
+  await confirmation.getByRole("button", { name: "Өөрчлөлтийг хадгалах" }).click();
+  assert.ok((await saveResponse).ok(), "the rendered review saves through the real atomic endpoint");
+  await page.reload();
+  const reloaded = page.locator(`[data-registration-child="${referredChildId}"]`);
+  await reloaded.waitFor({ state: "visible" });
+  const reloadedOpen = reloaded.getByRole("button", { name: "Нээх" });
+  if (await reloadedOpen.isVisible().catch(() => false)) await reloadedOpen.click();
+  await reloaded.getByText("Гадаа олгосон урилгын урамшуулал").waitFor({ state: "visible" });
+  const settlements = await dbJson(`SELECT COUNT(*) AS count FROM late_referral_external_settlement`);
+  const awards = await dbJson(`SELECT COUNT(*) AS count FROM discount_award`);
+  assert.equal(Number(settlements[0].count), 2, "the browser save creates precisely two immutable external-settlement records");
+  assert.equal(Number(awards[0].count), 0, "the browser save creates no tuition discount or spendable credit");
+}
+
 try {
   if (process.env.NARANERDEM_BROWSER_SKIP_MIGRATIONS !== "1") {
     runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "local migrations");
@@ -1219,7 +1296,7 @@ try {
         first_installment_amount_mnt = 650000, second_installment_amount_mnt = 650000,
         updated_at = ${sql(new Date().toISOString())} WHERE activity_offering_id = 'browser-offering'`);
     }
-    if (!releasedSeatHistoryBrowserOnly) {
+    if (!releasedSeatHistoryBrowserOnly && !lateReferralBrowserOnly) {
       publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
         childName: "PublicTwoInstallment",
         email: "browser-public-two@example.test",
@@ -1247,6 +1324,8 @@ try {
 
   if (captureScenario) {
     await captureSpecialPaymentStates(page, captureScenario);
+  } else if (lateReferralBrowserOnly) {
+    await exerciseLateReferralExternalSettlement(browser, page);
   } else if (releasedSeatHistoryBrowserOnly) {
     await exerciseInactiveRegistrationHistory(page);
   } else if (receiptCorrectionBrowserOnly) {

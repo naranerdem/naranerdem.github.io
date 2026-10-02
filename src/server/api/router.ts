@@ -135,6 +135,7 @@ import { EmailArchiveBccError, getEmailArchiveBccSetting, updateEmailArchiveBccS
 import { PublicSeatCountThresholdError, updatePublicSeatCountThreshold } from "../staff/public-seat-count-threshold";
 import { UsageProtectionError, getUsageProtectionOverview, updateUsageProtectionPolicy } from "../staff/usage-protection";
 import { DiscountPolicyError, reverseDiscountAward, updateDiscountPolicySetting } from "../services/discounts";
+import { LateReferralExternalSettlementError, previewLateReferralExternalSettlement, recordLateReferralExternalSettlement } from "../staff/late-referral-external-settlement";
 import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
 import { RegistrationCorrectionError, registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } from "../staff/registration-corrections";
 import {
@@ -472,6 +473,14 @@ function paymentReconciliationError(caught: unknown): Response {
   if (caught.code === "family_credit_review_required") return error("invalid_request", "Гэр бүлийн өөр хүүхдийн кредитийг шилжүүлж тооцох эсвэл бэлэн мөнгөөр үргэлжлүүлэх сонголтоо батална уу.", 409, { "Cache-Control": "no-store" });
   if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
   return error("invalid_request", "Төлбөрийн мэдээллээ шалгана уу.", 400, { "Cache-Control": "no-store" });
+}
+
+function lateReferralExternalSettlementError(caught: LateReferralExternalSettlementError): Response {
+  if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
+  if (caught.code === "not_found") return error("not_found", "Урилгын код эсвэл баталгаатай төлбөртэй бүртгэл олдсонгүй.", 404, { "Cache-Control": "no-store" });
+  if (caught.code === "conflict") return error("invalid_request", "Энэ урилга эсвэл урамшууллын бүртгэл аль хэдийн байна. Хуудсыг шинэчлээд шалгана уу.", 409, { "Cache-Control": "no-store" });
+  if (caught.code === "stale") return error("invalid_request", "Урилга, төлбөр эсвэл бодлогын мэдээлэл өөрчлөгдсөн байна. Урьдчилан харалтыг дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+  return error("invalid_request", "Урилгын код болон гадаа хийсэн буцаалтын мэдээллийг шалгана уу.", 400, { "Cache-Control": "no-store" });
 }
 
 function additionalClassAdmissionError(caught: unknown): Response {
@@ -1813,6 +1822,19 @@ export async function handleApiRequest(
           return json({ ok: true, ...await reverseDiscountAward(env, principal, {
             awardId: String(payload.awardId ?? ""), reason: String(payload.reason ?? ""),
           }) }, 200, { "Cache-Control": "no-store" });
+        case "late-referral.external-settlement-preview":
+          return json({ ok: true, ...await previewLateReferralExternalSettlement(env, principal, {
+            referredRegistrationDraftChildId: String(payload.referredRegistrationDraftChildId ?? ""),
+            referralCode: String(payload.referralCode ?? ""),
+            refunds: payload.refunds && typeof payload.refunds === "object" ? payload.refunds as never : undefined,
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "late-referral.external-settlement-record":
+          return json({ ok: true, ...await recordLateReferralExternalSettlement(env, principal, {
+            referredRegistrationDraftChildId: String(payload.referredRegistrationDraftChildId ?? ""),
+            referralCode: String(payload.referralCode ?? ""),
+            refunds: payload.refunds as never,
+            reviewFingerprint: String(payload.reviewFingerprint ?? ""), operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
         case "waitlist-offer.contact":
           return json({ ok: true, ...await recordWaitlistContact(env, principal, String(payload.offerId ?? ""),
             payload.channel === "messenger" ? "messenger" : payload.channel === "other" ? "other" : "phone") }, 200, { "Cache-Control": "no-store" });
@@ -1849,6 +1871,7 @@ export async function handleApiRequest(
         : caught instanceof ConditionalFamilyDiscountError ? error(caught.code === "forbidden" ? "forbidden" : caught.code === "not_found" ? "not_found" : "invalid_request",
           caught.code === "forbidden" ? "Энэ үйлдлийг хийх эрх алга." : caught.code === "not_found" ? "Нөхцөлт хөнгөлөлтийн одоогийн төлөв олдсонгүй. Хуудсыг шинэчлээд дахин шалгана уу." : caught.code === "conflict" ? "Нөхцөлт хөнгөлөлтийн мэдээлэл өөрчлөгдсөн байна. Дахин шалгана уу." : "Нөхцөлт хөнгөлөлтийн мэдээлэл болон шалтгааныг шалгана уу.",
           caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : caught.code === "conflict" ? 409 : 400, { "Cache-Control": "no-store" })
+        : caught instanceof LateReferralExternalSettlementError ? lateReferralExternalSettlementError(caught)
         : caught instanceof RegistrationCancellationError ? registrationCancellationError(caught)
         : caught instanceof DiscountPolicyError ? discountPolicyError(caught)
         : caught instanceof CanonicalPromotionError ? canonicalPromotionError(caught)
