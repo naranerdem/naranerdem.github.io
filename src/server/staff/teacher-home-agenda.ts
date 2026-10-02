@@ -1,5 +1,6 @@
 import type { WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { completedTransferredLessonSql } from "./transfer-attendance";
 
 export class TeacherHomeAgendaError extends Error {
   constructor(public readonly code: "forbidden" | "invalid") {
@@ -22,6 +23,8 @@ interface AgendaRow {
   lessonTitle: string;
   ordinaryCount: number;
   makeupCount: number;
+  notifiedAbsenceCount: number;
+  completedEquivalentCount: number;
   cancelledLabel: string | null;
 }
 
@@ -99,7 +102,41 @@ export async function getTeacherHomeAgenda(
           AND (ordinary.cancelled_at IS NULL OR ordinary.cancelled_at >= (slot.local_date || 'T16:00:00.000Z'))
           AND (ordinary.transferred_out_at IS NULL OR ordinary.transferred_out_at >= (slot.local_date || 'T16:00:00.000Z'))
           AND ordinary.status IN ('confirmed', 'completed', 'cancelled')
+          AND NOT EXISTS (
+            SELECT 1 FROM course_absence_notice AS notice
+            WHERE notice.enrollment_id = ordinary.id AND notice.class_session_id = class_session.id
+              AND notice.curriculum_lesson_id = slot.curriculum_lesson_id AND notice.status = 'active'
+          )
+          AND NOT ${completedTransferredLessonSql({
+            enrollmentAlias: "ordinary", lessonAlias: "lesson", programAlias: "program", slotAlias: "slot",
+          })}
       ) AS ordinaryCount,
+      (
+        SELECT COUNT(*)
+        FROM enrollment AS ordinary
+        INNER JOIN course_absence_notice AS notice
+          ON notice.enrollment_id = ordinary.id AND notice.class_session_id = class_session.id
+          AND notice.curriculum_lesson_id = slot.curriculum_lesson_id AND notice.status = 'active'
+        WHERE ordinary.class_session_id = class_session.id
+          AND ordinary.confirmed_at IS NOT NULL
+          AND ordinary.confirmed_at <= (slot.local_date || 'T15:59:59.999Z')
+          AND (ordinary.cancelled_at IS NULL OR ordinary.cancelled_at >= (slot.local_date || 'T16:00:00.000Z'))
+          AND (ordinary.transferred_out_at IS NULL OR ordinary.transferred_out_at >= (slot.local_date || 'T16:00:00.000Z'))
+          AND ordinary.status IN ('confirmed', 'completed', 'cancelled')
+      ) AS notifiedAbsenceCount,
+      (
+        SELECT COUNT(*)
+        FROM enrollment AS ordinary
+        WHERE ordinary.class_session_id = class_session.id
+          AND ordinary.confirmed_at IS NOT NULL
+          AND ordinary.confirmed_at <= (slot.local_date || 'T15:59:59.999Z')
+          AND (ordinary.cancelled_at IS NULL OR ordinary.cancelled_at >= (slot.local_date || 'T16:00:00.000Z'))
+          AND (ordinary.transferred_out_at IS NULL OR ordinary.transferred_out_at >= (slot.local_date || 'T16:00:00.000Z'))
+          AND ordinary.status IN ('confirmed', 'completed', 'cancelled')
+          AND ${completedTransferredLessonSql({
+            enrollmentAlias: "ordinary", lessonAlias: "lesson", programAlias: "program", slotAlias: "slot",
+          })}
+      ) AS completedEquivalentCount,
       (
         SELECT COUNT(*)
         FROM course_makeup_assignment AS assignment
@@ -129,6 +166,7 @@ export async function getTeacherHomeAgenda(
     INNER JOIN activity_offering AS offering ON offering.id = class_session.activity_offering_id
     LEFT JOIN class_meeting_rule AS meeting ON meeting.class_session_id = class_session.id
     LEFT JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
+    LEFT JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
     WHERE revision.status = 'published'
       AND class_session.schedule_state = 'active'
       AND slot.local_date BETWEEN ? AND ?
@@ -159,6 +197,7 @@ export async function getTeacherHomeAgenda(
           AND assignment.status = 'active'
           AND resolution.status = 'active'
           AND resolution.decision = 'assigned') AS makeupCount
+      , 0 AS notifiedAbsenceCount, 0 AS completedEquivalentCount
     FROM course_makeup_special_occurrence AS special
     INNER JOIN curriculum_lesson AS lesson ON lesson.id = special.curriculum_lesson_id
     WHERE special.status = 'active' AND special.local_date BETWEEN ? AND ?
@@ -178,8 +217,14 @@ export async function getTeacherHomeAgenda(
     lessonTitle: entry.kind === "cancelled" ? entry.cancelledLabel || "Цуцалсан хичээл" : entry.lessonTitle,
     ordinaryCount: Number(entry.ordinaryCount),
     makeupCount: Number(entry.makeupCount),
+    notifiedAbsenceCount: Number(entry.notifiedAbsenceCount),
+    completedEquivalentCount: Number(entry.completedEquivalentCount),
     cancelledLabel: entry.kind === "cancelled" ? entry.cancelledLabel : null,
-  })).sort((left, right) => `${left.localDate}\u0000${left.startTime}\u0000${left.occurrenceId}`.localeCompare(`${right.localDate}\u0000${right.startTime}\u0000${right.occurrenceId}`));
+  })).filter((entry) => entry.kind !== "lesson"
+    || entry.ordinaryCount + entry.makeupCount > 0
+    || entry.notifiedAbsenceCount > 0
+    || entry.completedEquivalentCount > 0)
+    .sort((left, right) => `${left.localDate}\u0000${left.startTime}\u0000${left.occurrenceId}`.localeCompare(`${right.localDate}\u0000${right.startTime}\u0000${right.occurrenceId}`));
 
   return { today, weekStart, weekEnd, entries, canManageMakeups: hasStaffCapability(actor, "makeup.manage") };
 }
