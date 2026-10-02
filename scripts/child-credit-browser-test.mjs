@@ -1256,6 +1256,10 @@ async function exerciseLateReferralExternalSettlement(browser, page) {
   await confirmation.getByText("24,000 ₮").waitFor({ state: "visible" });
   await confirmation.getByText("60,000 ₮").waitFor({ state: "visible" });
   assert.equal(await confirmation.locator('input[readonly]').count(), 10, "the review freezes both refund records until Edit is selected");
+  await capturePaymentElement(row, "late-referral-review-mobile.png");
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await capturePaymentElement(row, "late-referral-review-desktop.png");
+  await page.setViewportSize({ width: 390, height: 844 });
   const saveResponse = page.waitForResponse((candidate) => candidate.url().endsWith("/api/staff/payments")
     && candidate.request().method() === "POST" && candidate.request().postData()?.includes("late-referral.external-settlement-record"));
   await confirmation.getByRole("button", { name: "Өөрчлөлтийг хадгалах" }).click();
@@ -1266,6 +1270,7 @@ async function exerciseLateReferralExternalSettlement(browser, page) {
   const reloadedOpen = reloaded.getByRole("button", { name: "Нээх" });
   if (await reloadedOpen.isVisible().catch(() => false)) await reloadedOpen.click();
   await reloaded.getByText("Гадаа олгосон урилгын урамшуулал").waitFor({ state: "visible" });
+  await capturePaymentElement(reloaded, "late-referral-history-mobile.png");
   const settlements = await dbJson(`SELECT COUNT(*) AS count FROM late_referral_external_settlement`);
   const awards = await dbJson(`SELECT COUNT(*) AS count FROM discount_award`);
   assert.equal(Number(settlements[0].count), 2, "the browser save creates precisely two immutable external-settlement records");
