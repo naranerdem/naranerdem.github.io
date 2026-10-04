@@ -3840,14 +3840,42 @@ textarea:focus {
 }
 
 .staff-attendance-row-pending {
-  opacity: 0.72;
+  background: rgba(7, 58, 175, 0.04);
+}
+
+.staff-attendance-row-pending .staff-attendance-check,
+.staff-attendance-row-pending .staff-text-action {
+  cursor: progress;
+}
+
+.staff-attendance-row-saving,
+.staff-attendance-row-success,
+.staff-attendance-row-error {
+  grid-column: 1 / -1;
+  margin-top: 0 !important;
+}
+
+.staff-attendance-row-saving {
+  color: var(--muted) !important;
+  font-size: 0.8rem !important;
+}
+
+.staff-attendance-row-success {
+  color: #176536 !important;
+  font-size: 0.8rem !important;
+  font-weight: 750;
 }
 
 .staff-attendance-row-error {
   color: #a11919 !important;
   font-size: 0.8rem !important;
-  grid-column: 1 / -1;
-  margin-top: 0 !important;
+}
+
+.staff-attendance-bulk-action {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
 }
 
 .staff-makeup-list,

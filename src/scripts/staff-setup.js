@@ -64,7 +64,11 @@ export async function postAttendanceAction(action, payload = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.error?.message || "Ирцийн мэдээллийг хадгалж чадсангүй.");
+    const error = new Error(body?.error?.message || "Ирцийн мэдээллийг хадгалж чадсангүй.");
+    // A received response is a definite rejection. Network failures have no
+    // response marker, so attendance can reconcile that one ambiguous outcome.
+    error.responseReceived = true;
+    throw error;
   }
   return response.json();
 }

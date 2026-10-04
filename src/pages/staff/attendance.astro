@@ -56,7 +56,7 @@ import "../../styles/global.css";
       if (homeDate) homeReturn.set("date", homeDate);
       if (homeDay) homeReturn.set("day", homeDay);
       const returnTo = homeReturn.size ? `/staff/?${homeReturn.toString()}` : "/staff/";
-      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrorEnrollmentId: "", rowErrorMessage: "", refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0, makeupPickerLoads: new Map() };
+      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrors: new Map(), rowRequestErrors: new Map(), rowSuccessMessages: new Map(), rowSuccessTimers: new Map(), refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0, makeupPickerLoads: new Map() };
       const q = (selector) => document.querySelector(selector);
       q("#attendance-back").href = returnTo;
       q("#attendance-back").addEventListener("click", (event) => {
@@ -71,8 +71,10 @@ import "../../styles/global.css";
       const optimistic = createOptimisticRosterMutator({
         onChange(entry) { patchRosterRow(entry.enrollmentId); },
         onError(entry, error) {
-          state.rowErrorEnrollmentId = entry.enrollmentId;
-          state.rowErrorMessage = error?.message || "Ирцийг хадгалж чадсангүй. Дахин оролдоно уу.";
+          state.rowRequestErrors.set(entry.enrollmentId, error);
+          state.rowErrors.set(entry.enrollmentId, error?.responseReceived
+            ? (error.message || "Ирцийг хадгалж чадсангүй. Дахин оролдоно уу.")
+            : "Хариу тодорхойгүй байна. Хадгалалтыг шалгаж байна…");
         },
       });
 
@@ -118,7 +120,7 @@ import "../../styles/global.css";
         const assignment = entry.makeupAssignmentId ? ` data-makeup-assignment="${escape(entry.makeupAssignmentId)}"` : "";
         const control = (value, label) => `<label class="staff-attendance-check ${checked[value] ? "selected" : ""}"><input type="checkbox" data-attendance-control="${value}" data-enrollment="${escape(entry.enrollmentId)}"${assignment} ${checked[value] ? "checked" : ""} ${pending ? "disabled" : ""} />${label}</label>`;
         const absent = entry.attendanceKind === "makeup" ? `<button type="button" class="staff-text-action" data-attendance-absent="${escape(entry.enrollmentId)}"${pending ? " disabled" : ""}>Ирээгүй</button>` : "";
-        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}${absent}</div>`;
+        return `<div class="staff-attendance-statuses" role="group" aria-label="${escape(entry.displayName)}-ийн ирц" aria-busy="${pending}">${control("present", "Ирсэн")}${control("late", "Хоцорсон")}${absent}</div>`;
       }
 
       function noticeControls(entry) {
@@ -131,7 +133,12 @@ import "../../styles/global.css";
 
       function rosterRow(entry) {
         const pending = optimistic.isPending(entry.enrollmentId);
-        const error = state.rowErrorEnrollmentId === entry.enrollmentId ? `<p class="staff-attendance-row-error" role="status">${escape(state.rowErrorMessage)}</p>` : "";
+        const errorMessage = state.rowErrors.get(entry.enrollmentId);
+        const error = errorMessage ? `<p class="staff-attendance-row-error" role="status">${escape(errorMessage)}</p>` : "";
+        const success = state.rowSuccessMessages.get(entry.enrollmentId);
+        const outcome = pending
+          ? `<p class="staff-attendance-row-saving" role="status">Хадгалж байна…</p>`
+          : success ? `<p class="staff-attendance-row-success" role="status">${escape(success)}</p>` : "";
         const notice = noticeControls(entry);
         const source = entry.makeupSource;
         const sourceDate = source?.localDate ? source.localDate.slice(5).replace("-", "/") : "";
@@ -140,15 +147,17 @@ import "../../styles/global.css";
           ? `<a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(source.localDate)}&occurrence=${encodeURIComponent(source.slotId)}">${escape(sourceText)}</a>`
           : escape(sourceText);
         const makeup = entry.attendanceKind === "makeup" ? `<p class="staff-attendance-makeup-source"><span class="staff-kind-label">Нөхөх</span>${sourceLink}</p>` : "";
-        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}"><div class="staff-attendance-student"><div class="staff-attendance-identity"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div>${makeup}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${error}</div></article>`;
+        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}" aria-busy="${pending}"><div class="staff-attendance-student"><div class="staff-attendance-identity"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div>${makeup}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${outcome}${error}</div></article>`;
       }
 
       function bulkMarkup(selected) {
         const unmarked = selected.rosterCount - markedRosterCount(selected.roster);
         if (isFuture() || !state.canManageAttendance || unmarked <= 0) return "";
         if (state.bulkPending) return `<span class="staff-muted">Тэмдэглэж байна…</span>`;
-        if (state.bulkConfirm) return `<div class="staff-attendance-bulk-confirm"><p>Одоогоор тэмдэглээгүй ${unmarked} сурагчийг ирсэн гэж тэмдэглэх үү?</p><div class="staff-inline-actions"><button id="attendance-bulk-cancel" class="button secondary" type="button">Болих</button><button id="attendance-bulk-confirm" class="button primary" type="button">Бүгд ирсэн</button></div></div>`;
-        return `<button id="attendance-bulk-present" class="button secondary" type="button">Бүгд ирсэн</button>`;
+        const rowPending = optimistic.hasPending();
+        const waiting = rowPending ? `<span class="staff-muted" role="status">Мөрийн хадгалалт дууссаны дараа үргэлжлүүлнэ үү.</span>` : "";
+        if (state.bulkConfirm) return `<div class="staff-attendance-bulk-confirm"><p>Одоогоор тэмдэглээгүй ${unmarked} сурагчийг ирсэн гэж тэмдэглэх үү?</p>${waiting}<div class="staff-inline-actions"><button id="attendance-bulk-cancel" class="button secondary" type="button">Болих</button><button id="attendance-bulk-confirm" class="button primary" type="button"${rowPending ? " disabled" : ""}>Бүгд ирсэн</button></div></div>`;
+        return `<div class="staff-attendance-bulk-action"><button id="attendance-bulk-present" class="button secondary" type="button"${rowPending ? " disabled" : ""}>Бүгд ирсэн</button>${waiting}</div>`;
       }
 
       function renderSummary() {
@@ -177,6 +186,49 @@ import "../../styles/global.css";
         if (entry && row) row.outerHTML = rosterRow(entry);
         renderSummary();
         renderList();
+      }
+
+      function clearRowSuccess(enrollmentId) {
+        const timer = state.rowSuccessTimers.get(enrollmentId);
+        if (timer) clearTimeout(timer);
+        state.rowSuccessTimers.delete(enrollmentId);
+        state.rowSuccessMessages.delete(enrollmentId);
+      }
+
+      function showRowSuccess(enrollmentId, value = "Хадгаллаа") {
+        clearRowSuccess(enrollmentId);
+        state.rowErrors.delete(enrollmentId);
+        state.rowSuccessMessages.set(enrollmentId, value);
+        patchRosterRow(enrollmentId);
+        const timer = setTimeout(() => {
+          if (state.rowSuccessTimers.get(enrollmentId) !== timer) return;
+          state.rowSuccessTimers.delete(enrollmentId);
+          state.rowSuccessMessages.delete(enrollmentId);
+          patchRosterRow(enrollmentId);
+        }, 2200);
+        state.rowSuccessTimers.set(enrollmentId, timer);
+      }
+
+      function rowMatchesExpected(entry, next) {
+        return entry && Object.entries(next).every(([key, value]) => entry[key] === value);
+      }
+
+      async function reconcileAmbiguousRowSave(enrollmentId, next) {
+        try {
+          await refresh();
+          const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === enrollmentId);
+          if (rowMatchesExpected(entry, next)) {
+            state.rowRequestErrors.delete(enrollmentId);
+            showRowSuccess(enrollmentId, "Хадгалалт баталгаажлаа");
+            return;
+          }
+        } catch {
+          // The row-level message below tells the teacher that the durable
+          // result remains unknown and that a manual reload is required.
+        }
+        state.rowRequestErrors.delete(enrollmentId);
+        state.rowErrors.set(enrollmentId, "Хариу тодорхойгүй байна. Жагсаалтаа дахин ачаалж шалгана уу.");
+        patchRosterRow(enrollmentId);
       }
 
       function renderDetail() {
@@ -276,10 +328,18 @@ import "../../styles/global.css";
 
       async function mutateRow(enrollmentId, next, action, payload, success) {
         const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === enrollmentId);
-        if (!entry) return;
-        state.rowErrorEnrollmentId = "";
+        if (!entry || optimistic.isPending(enrollmentId)) return;
+        clearRowSuccess(enrollmentId);
+        state.rowErrors.delete(enrollmentId);
+        state.rowRequestErrors.delete(enrollmentId);
         const saved = await optimistic.mutate(entry, next, () => postAttendanceAction(action, { slotId: state.selectedSlotId, enrollmentId, makeupAssignmentId: entry.makeupAssignmentId || undefined, ...payload }));
-        if (saved) message(success, true);
+        if (saved) {
+          showRowSuccess(enrollmentId);
+          message(success, true);
+          return;
+        }
+        const error = state.rowRequestErrors.get(enrollmentId);
+        if (error && !error.responseReceived) await reconcileAmbiguousRowSave(enrollmentId, next);
       }
 
       async function setAttendance(enrollmentId, status) {
@@ -303,6 +363,11 @@ import "../../styles/global.css";
       async function bulkPresent() {
         const selected = state.data?.selected;
         if (!selected || state.bulkPending) return;
+        if (optimistic.hasPending()) {
+          message("Мөрийн хадгалалт дууссаны дараа бүгдийг тэмдэглэнэ үү.");
+          renderSummary();
+          return;
+        }
         state.bulkPending = true;
         renderSummary();
         try {

@@ -90,19 +90,23 @@ try {
       VALUES ('guardian', 'Attendance Guardian', '99000000', '99000000', 'attendance@example.test', 'attendance@example.test', 'Test', 'active', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('ordinary-student', 'Ердийн Ирцийн', 'Сурагч', 'not_specified', '2015-01-01', 'active', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
-        ('transfer-student', 'Шилжсэн Ирцийн', 'Сурагч', 'not_specified', '2015-01-02', 'active', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+        ('transfer-student', 'Шилжсэн Ирцийн', 'Сурагч', 'not_specified', '2015-01-02', 'active', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
+        ('bulk-student', 'Бөөн Ирцийн', 'Сурагч', 'not_specified', '2015-01-03', 'active', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('ordinary-prereg', 'guardian', 'year', 'completed', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
         ('transfer-source-prereg', 'guardian', 'year', 'completed', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
-        ('transfer-target-prereg', 'guardian', 'year', 'completed', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+        ('transfer-target-prereg', 'guardian', 'year', 'completed', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
+        ('bulk-prereg', 'guardian', 'year', 'completed', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('ordinary-application', 'ordinary-prereg', 'ordinary-student', 5, 'new', 'enrolled', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
         ('transfer-source-application', 'transfer-source-prereg', 'transfer-student', 5, 'new', 'enrolled', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
-        ('transfer-target-application', 'transfer-target-prereg', 'transfer-student', 5, 'new', 'enrolled', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+        ('transfer-target-application', 'transfer-target-prereg', 'transfer-student', 5, 'new', 'enrolled', 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
+        ('bulk-application', 'bulk-prereg', 'bulk-student', 5, 'new', 'enrolled', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, transferred_out_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('ordinary-enrollment', 'ordinary-application', 'ordinary-student', 'year', 'target-class', 'confirmed', '${confirmedAt}', NULL, 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
         ('transfer-source-enrollment', 'transfer-source-application', 'transfer-student', 'year', 'source-class', 'confirmed', '${confirmedAt}', ${sql(now)}, 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
-        ('transfer-target-enrollment', 'transfer-target-application', 'transfer-student', 'year', 'target-class', 'confirmed', '${confirmedAt}', NULL, 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+        ('transfer-target-enrollment', 'transfer-target-application', 'transfer-student', 'year', 'target-class', 'confirmed', '${confirmedAt}', NULL, 1, 'attendance-browser', ${sql(now)}, ${sql(now)}),
+        ('bulk-enrollment', 'bulk-application', 'bulk-student', 'year', 'target-class', 'confirmed', '${confirmedAt}', NULL, 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, source_class_session_id, target_class_session_id, target_enrollment_id, target_application_child_id, status, reason, created_by_staff_account_id, idempotency_key, source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt, recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, completed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('completed-transfer', 'transfer-source-enrollment', 'transfer-source-application', 'source-class', 'target-class', 'transfer-target-enrollment', 'transfer-target-application', 'completed', 'browser test', 'attendance-browser-staff', 'attendance-completed-transfer', '{}', '{}', 0, 0, 0, 0, 0, ${sql(now)}, 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
   `);
@@ -118,28 +122,76 @@ try {
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const browserErrors = [];
+  const attendancePosts = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/staff/attendance") && request.method() === "POST") attendancePosts.push(request.postData() || "");
+  });
   await page.goto(`${baseUrl}/staff/attendance/?date=${date}&occurrence=attendance-slot`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
   const ordinary = page.locator("[data-attendance-row='ordinary-enrollment']");
   const transferred = page.locator("[data-attendance-row='transfer-target-enrollment']");
+  const bulk = page.locator("[data-attendance-row='bulk-enrollment']");
   await ordinary.getByText("Ердийн Ирцийн Сурагч", { exact: true }).waitFor({ state: "visible" });
   await transferred.getByText("Шилжсэн Ирцийн Сурагч", { exact: true }).waitFor({ state: "visible" });
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "ordinary-transferred-desktop.png") });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "ordinary-transferred-mobile.png") });
+  await bulk.getByText("Бөөн Ирцийн Сурагч", { exact: true }).waitFor({ state: "visible" });
   await page.setViewportSize({ width: 1280, height: 900 });
   const postFor = (enrollmentId) => page.waitForResponse((response) => response.url().endsWith("/api/staff/attendance")
     && response.request().method() === "POST" && response.request().postData()?.includes(`"${enrollmentId}"`));
+  const postForAction = (action) => page.waitForResponse((response) => response.url().endsWith("/api/staff/attendance")
+    && response.request().method() === "POST" && response.request().postData()?.includes(`"${action}"`));
+  let releaseDelayedSave;
+  let signalDelayedSave;
+  const delayedSaveStarted = new Promise((resolve) => { signalDelayedSave = resolve; });
+  const delayedSave = new Promise((resolve) => { releaseDelayedSave = resolve; });
+  let delayedSaveCount = 0;
+  await page.route("**/api/staff/attendance", async (route) => {
+    const body = route.request().postData() || "";
+    if (body.includes('"ordinary-enrollment"') && body.includes('"attendance.mark"')) {
+      delayedSaveCount += 1;
+      const response = await route.fetch();
+      signalDelayedSave();
+      await delayedSave;
+      await route.fulfill({ response });
+      return;
+    }
+    await route.continue();
+  });
   const ordinaryPresentResponse = postFor("ordinary-enrollment");
   await ordinary.locator("[data-attendance-control='present']").click();
-  const ordinaryPresent = await ordinaryPresentResponse;
-  assert.equal(ordinaryPresent.status(), 200, `ordinary attendance save failed: ${await ordinaryPresent.text()}`);
+  await delayedSaveStarted;
+  await ordinary.getByText("Хадгалж байна…", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await ordinary.getByText("Ирсэн", { exact: true }).locator("input").isDisabled(), true, "the pending row disables repeated present taps");
+  assert.equal(await ordinary.getByText("Хоцорсон", { exact: true }).locator("input").isDisabled(), true, "the pending row disables conflicting late taps");
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "pending-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "pending-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const postsBeforeRepeatedTap = attendancePosts.length;
+  await ordinary.getByText("Ирсэн", { exact: true }).click({ force: true });
+  await ordinary.getByText("Хоцорсон", { exact: true }).click({ force: true });
+  await page.locator("#attendance-bulk-present").evaluate((button) => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await page.waitForTimeout(75);
+  assert.equal(attendancePosts.length, postsBeforeRepeatedTap, "same-row label taps and bulk do not submit while a row is pending");
+  assert.equal(await page.locator("#attendance-bulk-present").isDisabled(), true, "bulk attendance is unavailable during an individual save");
   const transferredPresentResponse = postFor("transfer-target-enrollment");
   await transferred.locator("[data-attendance-control='present']").click();
   const transferredPresent = await transferredPresentResponse;
   assert.equal(transferredPresent.status(), 200, `transferred attendance save failed: ${await transferredPresent.text()}`);
+  await transferred.getByText("Хадгаллаа", { exact: true }).waitFor({ state: "visible" });
+  releaseDelayedSave();
+  const ordinaryPresent = await ordinaryPresentResponse;
+  assert.equal(ordinaryPresent.status(), 200, `ordinary attendance save failed: ${await ordinaryPresent.text()}`);
+  await ordinary.getByText("Хадгаллаа", { exact: true }).waitFor({ state: "visible" });
+  await page.unroute("**/api/staff/attendance");
+  assert.equal(delayedSaveCount, 1, "the delayed same-row interaction sends one request");
+  assert.equal(await page.locator("#attendance-bulk-present").isDisabled(), false, "bulk attendance returns after the row save is confirmed");
+  const bulkPresentResponse = postForAction("attendance.bulk-present");
+  await page.locator("#attendance-bulk-present").click();
+  await page.locator("#attendance-bulk-confirm").click();
+  const bulkPresent = await bulkPresentResponse;
+  assert.equal(bulkPresent.status(), 200, `bulk attendance save failed: ${await bulkPresent.text()}`);
+  assert.equal(await bulk.locator("[data-attendance-control='present']").isChecked(), true, "bulk attendance still marks unmarked rows after individual saves finish");
   const ordinaryLateResponse = postFor("ordinary-enrollment");
   await ordinary.locator("[data-attendance-control='late']").click();
   const ordinaryLate = await ordinaryLateResponse;
@@ -158,12 +210,32 @@ try {
   assert.equal(await ordinary.locator("[data-attendance-control='late']").isChecked(), true, "a rejected correction restores the affected row");
   assert.equal(await transferred.locator("[data-attendance-control='present']").isChecked(), true, "a rejected row cannot alter a different learner");
   await page.unroute("**/api/staff/attendance", rejectClear);
+  let lostResponseCount = 0;
+  await page.route("**/api/staff/attendance", async (route) => {
+    const body = route.request().postData() || "";
+    if (body.includes('"ordinary-enrollment"') && body.includes('"attendance.clear"')) {
+      lostResponseCount += 1;
+      await route.fetch();
+      await route.abort("connectionfailed");
+      return;
+    }
+    await route.continue();
+  });
+  const reconciliationRead = page.waitForResponse((response) => response.url().includes("/api/staff/attendance?")
+    && response.request().method() === "GET" && response.ok());
+  await ordinary.locator("[data-attendance-control='present']").click();
+  await reconciliationRead;
+  await ordinary.getByText("Хадгалалт баталгаажлаа", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(lostResponseCount, 1, "a lost response performs one attendance mutation");
+  assert.equal(await ordinary.locator("[data-attendance-control='present']").isChecked(), false, "one bounded reload reconciles a durable lost-response clear");
+  await page.unroute("**/api/staff/attendance");
   await page.reload();
   await page.locator("#tool-app").waitFor({ state: "visible" });
-  assert.equal(await page.locator("[data-attendance-row='ordinary-enrollment'] [data-attendance-control='late']").isChecked(), true, "ordinary late attendance survives reload");
+  assert.equal(await page.locator("[data-attendance-row='ordinary-enrollment'] [data-attendance-control='present']").isChecked(), false, "the reconciled clear survives reload");
   assert.equal(await page.locator("[data-attendance-row='transfer-target-enrollment'] [data-attendance-control='present']").isChecked(), true, "transferred attendance survives reload");
+  assert.equal(await page.locator("[data-attendance-row='bulk-enrollment'] [data-attendance-control='present']").isChecked(), true, "bulk attendance survives reload");
   assert.deepEqual(browserErrors, [], "attendance interaction produces no uncaught browser errors");
-  console.log(`ok ${browserEngine} attendance browser ordinary, transferred, consecutive, rollback, and reload (${screenshotDir})`);
+  console.log(`ok ${browserEngine} attendance browser pending locks, bulk guard, rollback, lost-response reconciliation, and reload (${screenshotDir})`);
 } finally {
   if (context) await context.close().catch(() => undefined);
   if (browser) await browser.close().catch(() => undefined);
