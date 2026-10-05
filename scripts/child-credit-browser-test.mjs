@@ -1338,8 +1338,8 @@ async function exercisePaymentPlanChange(page) {
       VALUES ('browser-plan-first', 'browser-plan-request', ${sql(childId)}, 1, 'initial', 1200000, '2026-09-12T15:59:59.999Z', '2026-09-12T15:59:59.999Z', 60, '2026-09-12T14:59:59.999Z', 'partially_paid', 'browser-plan-app-current', 'browser-plan-enrollment', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
     INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
       VALUES ('browser-plan-receipt', 'browser-plan-request', 650000, '2026-10-04T03:05:00.000Z', 'staff_manual_bank', 'confirmed', '2026-10-04T03:05:00.000Z', 'browser-plan-receipt', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
-    INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, finalized_at, created_at, updated_at, is_test, test_run_id)
-      VALUES ('browser-plan-confirmation', 'browser-plan-receipt', 'browser-plan-request', 'finalized', '2026-10-04T03:05:00.000Z', '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved, remaining_payment_due_at, finalized_at, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-plan-confirmation', 'browser-plan-receipt', 'browser-plan-request', 'finalized', '2026-10-04T03:05:00.000Z', 1, '2027-01-15T15:59:59.999Z', '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
     INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
       VALUES ('browser-plan-allocation', 'browser-plan-receipt', 'browser-plan-first', 650000, '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, 1, ${sql(testRunId)});
     INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, target_enrollment_id, target_application_child_id, source_class_session_id, target_class_session_id, reason, created_by_staff_account_id, idempotency_key, source_payment_plan_code, target_payment_plan_code, source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt, recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, status, version, created_at, updated_at, completed_at, is_test, test_run_id)
@@ -1355,6 +1355,9 @@ async function exercisePaymentPlanChange(page) {
   await row.locator('[data-payment-tool="plan-change"]').click();
   const editor = row.locator('[data-payment-plan-change-preview]');
   await editor.waitFor({ state: "visible" });
+  const dueInput = editor.locator('input[name="proposedRemainingDueAt"]');
+  assert.equal(await dueInput.inputValue(), "2027-01-15T23:59", "the editor pre-fills the existing approved deadline rather than the policy default");
+  await dueInput.fill("2027-01-25T23:59");
   await editor.locator('textarea[name="reason"]').fill("Stage 2 two-payment agreement");
   const previewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
     && response.request().method() === "POST" && response.request().postData()?.includes("payment.plan-change-preview"));
@@ -1363,8 +1366,8 @@ async function exercisePaymentPlanChange(page) {
   assert.ok(previewResult.ok(), `the rendered plan-change editor reaches its guarded review: ${await previewResult.text()}`);
   const review = row.locator('[data-payment-plan-change-confirm]');
   await review.waitFor({ state: "visible" });
-  assert.match(await review.textContent(), /1,200,000 ₮[\s\S]*1,300,000 ₮[\s\S]*650,000 ₮[\s\S]*2027-01-25 23:59/,
-    "the review separates the old total, revised fee, unchanged receipt, and Mongolia-local deadline");
+  assert.match(await review.textContent(), /1,200,000 ₮[\s\S]*1,300,000 ₮[\s\S]*2027-01-15 23:59[\s\S]*2027-01-25 23:59[\s\S]*650,000 ₮/,
+    "the review separates the preserved prior deadline, explicit new deadline, old total, revised fee, and unchanged receipt");
   await page.setViewportSize({ width: 1180, height: 900 });
   await capturePaymentElement(row, "payment-plan-change-review-desktop.png");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -1381,6 +1384,8 @@ async function exercisePaymentPlanChange(page) {
   assert.deepEqual(schedule.map((entry) => [Number(entry.amountMnt), entry.dueAt, entry.status]), [
     [650000, schedule[0].dueAt, "paid"], [650000, "2027-01-25T15:59:59.999Z", "pending"],
   ], "reload preserves the transfer, receipt, and reviewed two-payment agreement exactly once");
+  assert.equal((await dbJson(`SELECT remaining_payment_due_at AS dueAt FROM payment_confirmation WHERE id = 'browser-plan-confirmation'`))[0].dueAt,
+    "2027-01-25T15:59:59.999Z", "Payments retains the reviewed effective deadline after reload");
   const detail = row.getByRole("button", { name: "Нээх" });
   if (await detail.isVisible().catch(() => false)) await detail.click();
   await row.locator('[data-payment-open]').click();

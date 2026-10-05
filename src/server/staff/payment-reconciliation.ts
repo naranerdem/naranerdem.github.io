@@ -1047,9 +1047,12 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       WHERE outstanding.registration_draft_child_id = registration_draft_child.id AND outstanding.status = 'active'
       ORDER BY outstanding.updated_at DESC LIMIT 1),
     (SELECT confirmation.remaining_payment_due_at FROM payment_confirmation AS confirmation
+      INNER JOIN payment_allocation AS confirmation_allocation ON confirmation_allocation.received_payment_id = confirmation.received_payment_id
+      INNER JOIN payment_installment AS confirmation_installment ON confirmation_installment.id = confirmation_allocation.payment_installment_id
       WHERE confirmation.payment_request_id = payment_request.id
         AND confirmation.status IN ('tentative', 'finalized')
         AND confirmation.remaining_payment_due_at IS NOT NULL
+        AND confirmation_installment.registration_draft_child_id = registration_draft_child.id
       ORDER BY confirmation.created_at DESC, confirmation.id DESC LIMIT 1)) AS remainingPaymentDueAt,
     (SELECT outstanding.status FROM staff_outstanding_payment_approval AS outstanding
       WHERE outstanding.registration_draft_child_id = registration_draft_child.id

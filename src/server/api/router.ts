@@ -1689,12 +1689,14 @@ export async function handleApiRequest(
           return json({ ok: true, ...await previewEnrollmentPaymentPlanChange(env, principal, {
             paymentRequestId: String(payload.paymentRequestId ?? ""), registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
             proposedPaymentPlanCode: payload.proposedPaymentPlanCode === "two_installment" ? "two_installment" : "single",
+            proposedRemainingDueAt: String(payload.proposedRemainingDueAt ?? ""),
             reason: String(payload.reason ?? ""),
           }) }, 200, { "Cache-Control": "no-store" });
         case "payment.plan-change-save":
           return json({ ok: true, ...await reviseEnrollmentPaymentPlan(env, principal, {
             paymentRequestId: String(payload.paymentRequestId ?? ""), registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
             proposedPaymentPlanCode: payload.proposedPaymentPlanCode === "two_installment" ? "two_installment" : "single",
+            proposedRemainingDueAt: String(payload.proposedRemainingDueAt ?? ""),
             reason: String(payload.reason ?? ""), reviewFingerprint: String(payload.reviewFingerprint ?? ""),
             operationId: String(payload.operationId ?? ""),
           }) }, 200, { "Cache-Control": "no-store" });

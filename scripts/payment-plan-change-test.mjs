@@ -86,8 +86,8 @@ function seed(DB) {
     VALUES ('first', 'request', 'child', 1, 'initial', 1200000, '2026-09-12T15:59:59.999Z', '2026-09-12T15:59:59.999Z', 60, '2026-09-12T14:59:59.999Z', 'partially_paid', NULL, 'application-current', 'enrollment', 1, 'payment-plan', '${now}', '${now}');
   INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
     VALUES ('receipt', 'request', 650000, '2026-10-04T03:05:00.000Z', 'staff_manual_bank', 'confirmed', '2026-10-04T03:05:00.000Z', 'receipt-key', '${now}', '${now}', 1, 'payment-plan');
-  INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, finalized_at, created_at, updated_at, is_test, test_run_id)
-    VALUES ('confirmation', 'receipt', 'request', 'finalized', '2026-10-04T03:05:00.000Z', '2026-10-04T03:05:00.000Z', '${now}', '${now}', 1, 'payment-plan');
+  INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved, remaining_payment_due_at, finalized_at, created_at, updated_at, is_test, test_run_id)
+    VALUES ('confirmation', 'receipt', 'request', 'finalized', '2026-10-04T03:05:00.000Z', 1, '2027-01-15T15:59:59.999Z', '2026-10-04T03:05:00.000Z', '${now}', '${now}', 1, 'payment-plan');
   INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
     VALUES ('allocation', 'receipt', 'first', 650000, '2026-10-04T03:05:00.000Z', '${now}', 1, 'payment-plan');
   INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, target_enrollment_id, target_application_child_id, source_class_session_id, target_class_session_id, reason, created_by_staff_account_id, idempotency_key, source_payment_plan_code, target_payment_plan_code, source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt, recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, status, version, created_at, updated_at, completed_at, is_test, test_run_id)
@@ -109,7 +109,9 @@ try {
   assert.equal(preview.proposedTotalMnt, 1300000, "the Stage 2 two-payment policy is authoritative");
   assert.equal(preview.paidMnt, 650000, "the finalized receipt remains cash received exactly once");
   assert.equal(preview.proposedOutstandingMnt, 650000, "only the second policy installment remains unpaid");
-  assert.deepEqual(preview.proposedInstallments.map((entry) => [entry.amountMnt, entry.dueAt]), [[650000, "2026-09-12T15:59:59.999Z"], [650000, "2027-01-25T15:59:59.999Z"]], "the original paid deadline and Mongolia-local policy deadline are distinct");
+  assert.equal(preview.currentRemainingDueAt, "2027-01-15T15:59:59.999Z", "the effective approved remaining deadline, not the historical initial due date, is loaded");
+  assert.equal(preview.policyRemainingDueAt, "2027-01-25T15:59:59.999Z", "the stage policy deadline remains visible but is not silently applied");
+  assert.deepEqual(preview.proposedInstallments.map((entry) => [entry.amountMnt, entry.dueAt]), [[650000, "2026-09-12T15:59:59.999Z"], [650000, "2027-01-15T15:59:59.999Z"]], "an existing approved deadline is preserved by default when it differs from policy");
   DB.query("UPDATE offering_course_pricing SET updated_at = '2026-10-05T04:01:00.000Z' WHERE activity_offering_id = 'target-offering'");
   await assert.rejects(
     () => reviseEnrollmentPaymentPlan(env(DB), actor, {
@@ -121,24 +123,31 @@ try {
     "a policy revision after review rejects the whole agreement change before any write",
   );
   assert.equal(count(DB, "enrollment_payment_agreement_revision"), 0, "a stale review leaves no audit header or replacement installment");
-  const refreshedPreview = await previewEnrollmentPaymentPlanChange(env(DB), actor, { paymentRequestId: "request", registrationDraftChildId: "child", proposedPaymentPlanCode: "two_installment", reason: "Stage 2 agreement" });
+  const refreshedPreview = await previewEnrollmentPaymentPlanChange(env(DB), actor, { paymentRequestId: "request", registrationDraftChildId: "child", proposedPaymentPlanCode: "two_installment", proposedRemainingDueAt: "2027-01-25T15:59:59.999Z", reason: "Stage 2 agreement" });
+  assert.equal(refreshedPreview.currentRemainingDueAt, "2027-01-15T15:59:59.999Z", "review retains the previous agreed deadline for audit");
+  assert.equal(refreshedPreview.proposedRemainingDueAt, "2027-01-25T15:59:59.999Z", "a teacher-reviewed deadline change is explicit");
   const operationId = "e1010101-1010-4101-8101-101010101010";
-  const saved = await reviseEnrollmentPaymentPlan(env(DB), actor, { paymentRequestId: "request", registrationDraftChildId: "child", proposedPaymentPlanCode: "two_installment", reason: "Stage 2 agreement", reviewFingerprint: refreshedPreview.reviewFingerprint, operationId }, new Date(now));
+  const saved = await reviseEnrollmentPaymentPlan(env(DB), actor, { paymentRequestId: "request", registrationDraftChildId: "child", proposedPaymentPlanCode: "two_installment", proposedRemainingDueAt: "2027-01-25T15:59:59.999Z", reason: "Stage 2 agreement", reviewFingerprint: refreshedPreview.reviewFingerprint, operationId }, new Date(now));
   assert.equal(saved.idempotent, false, "the reviewed agreement is saved once");
   assert.deepEqual(DB.query(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt, status FROM payment_installment WHERE registration_draft_child_id = 'child' ORDER BY installment_number`).map((row) => [Number(row.amountMnt), row.dueAt, row.status]), [[650000, "2026-09-12T15:59:59.999Z", "paid"], [650000, "2027-01-25T15:59:59.999Z", "pending"]], "the active agreement replaces the single unpaid portion without rewriting the receipt");
   assert.equal(Number(DB.query(`SELECT received_amount_mnt AS amount FROM received_payment WHERE id = 'receipt'`)[0].amount), 650000, "cash receipt stays immutable");
   assert.equal(Number(DB.query(`SELECT allocated_amount_mnt AS amount FROM payment_allocation WHERE id = 'allocation'`)[0].amount), 650000, "receipt allocation stays immutable");
   assert.equal(count(DB, "enrollment_payment_agreement_revision"), 1, "an immutable agreement header is recorded");
   assert.equal(count(DB, "enrollment_payment_agreement_revision_entry"), 3, "old and proposed installments are retained for audit");
+  assert.equal(DB.query(`SELECT remaining_payment_due_at AS dueAt FROM payment_confirmation WHERE id = 'confirmation'`)[0].dueAt, "2027-01-25T15:59:59.999Z", "the effective payment deadline follows the reviewed agreement instead of retaining stale approval data");
+  const revision = DB.query(`SELECT previous_pricing_snapshot_json AS previousSnapshot, proposed_pricing_snapshot_json AS proposedSnapshot FROM enrollment_payment_agreement_revision`)[0];
+  assert.equal(JSON.parse(revision.previousSnapshot).effectiveRemainingDueAt, "2027-01-15T15:59:59.999Z", "the prior effective deadline remains in immutable history");
+  assert.equal(JSON.parse(revision.proposedSnapshot).proposedRemainingDueAt, "2027-01-25T15:59:59.999Z", "the explicit new deadline remains in immutable history");
   assert.equal(count(DB, "payment_notification_milestone", "registration_draft_child_id = 'child' AND milestone_type = 'partial_balance_reminder' AND status != 'cancelled'"), 0, "stale partial-balance reminders are cancelled before the new schedule is used");
   const queued = await getInitialPaymentQueue(env(DB), actor, new Date("2026-10-06T04:00:00.000Z"));
   const changedItem = queued.items.find((item) => item.registrationDraftChildId === "child");
   assert.equal(changedItem?.paymentPlanCode, "two_installment", "payment entry uses the effective agreement rather than the historical intake choice");
+  assert.equal(changedItem?.remainingPaymentDueAt, "2027-01-25T15:59:59.999Z", "Payments reads the revised child-scoped agreement deadline");
   assert.equal(changedItem?.nextScheduledInstallment?.amountMnt, 650000, "the ordinary later-payment control targets the new unpaid installment");
   const laterPayment = await recordManualPayment(env(DB), actor, { paymentRequestId: "request", allocations: [{ installmentId: changedItem.nextScheduledInstallment.id, amountMnt: 650000 }], source: "staff_manual_bank", idempotencyKey: "later-plan-payment" }, new Date("2027-01-25T12:00:00.000Z"));
   assert.ok(laterPayment.id, "the ordinary later-payment path settles the revised second installment");
   assert.equal((await recordManualPayment(env(DB), actor, { paymentRequestId: "request", allocations: [{ installmentId: changedItem.nextScheduledInstallment.id, amountMnt: 650000 }], source: "staff_manual_bank", idempotencyKey: "later-plan-payment" }, new Date("2027-01-25T12:01:00.000Z"))).idempotent, true, "a lost-response retry cannot duplicate the later payment");
-  const retry = await reviseEnrollmentPaymentPlan(env(DB), actor, { paymentRequestId: "request", registrationDraftChildId: "child", proposedPaymentPlanCode: "two_installment", reason: "Stage 2 agreement", reviewFingerprint: refreshedPreview.reviewFingerprint, operationId }, new Date(now));
+  const retry = await reviseEnrollmentPaymentPlan(env(DB), actor, { paymentRequestId: "request", registrationDraftChildId: "child", proposedPaymentPlanCode: "two_installment", proposedRemainingDueAt: "2027-01-25T15:59:59.999Z", reason: "Stage 2 agreement", reviewFingerprint: refreshedPreview.reviewFingerprint, operationId }, new Date(now));
   assert.deepEqual(retry, { operationId, idempotent: true }, "a lost response cannot duplicate installments or the agreement revision");
   assert.equal(count(DB, "payment_installment", "registration_draft_child_id = 'child'"), 2, "retry leaves exactly one later installment");
   const stale = await previewEnrollmentPaymentPlanChange(env(DB), actor, { paymentRequestId: "request", registrationDraftChildId: "child", proposedPaymentPlanCode: "two_installment", reason: "Stage 2 agreement" }).catch(() => null);
