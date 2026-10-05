@@ -100,6 +100,10 @@ assert.match(page, /data-payment-tool="plan-change"/, "a guarded agreement chang
 assert.match(page, /Төлбөрийн нөхцөл өөрчлөх/, "the teacher-facing payment-agreement action uses clear payment-plan language");
 assert.match(page, /data-payment-plan-change-preview/, "the agreement change has a reviewable editor rather than mutating the fee directly");
 assert.match(page, /data-payment-plan-change-confirm/, "the agreement change requires a durable reviewed save");
+assert.match(page, /remaining > 0 && Boolean\(localParts\(originalPlanAgreementDueAt\)\)/,
+  "the agreement-change action is not constructed for a settled or deadline-less enrollment");
+assert.match(page, /if \(Number\.isNaN\(date\.getTime\(\)\)\) return null/,
+  "payment date presentation leaves invalid legacy values nonfatal instead of preventing the whole queue from rendering");
 assert.match(router, /payment\.plan-change-preview/, "the staff API exposes the guarded agreement preview route");
 assert.match(router, /payment\.plan-change-save/, "the staff API exposes the guarded agreement save route");
 assert.match(paymentPlanChange, /enrollment_payment_agreement_revision/, "agreement changes retain an immutable audit header");

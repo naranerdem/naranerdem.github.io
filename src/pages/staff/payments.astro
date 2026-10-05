@@ -188,13 +188,18 @@ import "../../styles/global.css";
         if (!button.dataset.copying) button.textContent = ready ? "Хуулах" : "Бэлтгэж байна…";
       };
       const mnt = (value) => `${new Intl.NumberFormat("en-US").format(Number(value || 0))} ₮`;
-      const localParts = (value) => Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ulaanbaatar", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(value)).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
-      const localDateTime = (value) => { const parts = localParts(value); return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`; };
+      const localParts = (value) => {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return null;
+        return Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ulaanbaatar", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+      };
+      const localDateTime = (value) => { const parts = localParts(value); return parts ? `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}` : ""; };
       const ulaanbaatarDateTimeIso = (value) => {
         if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(value || ""))) return null;
         const [date, time] = value.split("T"); const [year, month, day] = date.split("-").map(Number); const [hour, minute] = time.split(":").map(Number);
         const utc = Date.UTC(year, month - 1, day, hour, minute);
         const observed = localParts(new Date(utc));
+        if (!observed) return null;
         const localAsUtc = Date.UTC(Number(observed.year), Number(observed.month) - 1, Number(observed.day), Number(observed.hour), Number(observed.minute));
         const result = new Date(utc - (localAsUtc - utc));
         return Number.isNaN(result.getTime()) ? null : result.toISOString();
@@ -203,10 +208,10 @@ import "../../styles/global.css";
         const instant = ulaanbaatarDateTimeIso(value);
         return instant ? new Date(new Date(instant).getTime() + 59_999).toISOString() : null;
       };
-      const localLabel = (value) => { const parts = localParts(value); return `${parts.month}-р сарын ${parts.day}, ${parts.hour}:${parts.minute}`; };
+      const localLabel = (value) => { const parts = localParts(value); return parts ? `${parts.month}-р сарын ${parts.day}, ${parts.hour}:${parts.minute}` : "Тодруулаагүй"; };
       const agreementDueLabel = (value) => {
         const parts = localParts(value);
-        return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+        return parts ? `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}` : "Тодруулаагүй";
       };
       const classSchedule = (item) => {
         const label = String(item.classLabel || "");
@@ -833,6 +838,7 @@ import "../../styles/global.css";
         const currentPlanAgreementDueAt = paymentPlanChangePanel.proposedRemainingDueAt || item.remainingPaymentDueAt || item.nextScheduledInstallment?.dueAt || item.dueAt || "";
         const originalPlanAgreementDueAt = paymentPlanChangePanel.currentRemainingDueAt || item.remainingPaymentDueAt || item.nextScheduledInstallment?.dueAt || item.dueAt || "";
         const paymentPlanChange = Boolean(state.data?.canManageCredits) && item.canonicalEnrollmentId && item.paymentPlanCode === "single"
+          && remaining > 0 && Boolean(localParts(originalPlanAgreementDueAt))
           ? paymentPlanChangePanel.review
             ? `<form class="staff-payment-form staff-payment-tool-review" data-payment-plan-change-confirm="${escape(item.registrationDraftChildId)}"><h3 data-schedule-review-heading tabindex="-1">Төлбөрийн нөхцөлийг хянах</h3><p><strong>Өмнөх нөхцөл:</strong> ${escape(paymentPlanLabel(paymentPlanChangePanel.review.previousPaymentPlanCode))} · Нийт ${escape(mnt(paymentPlanChangePanel.review.previousTotalMnt))} · Үлдэгдэл ${escape(mnt(paymentPlanChangePanel.review.previousOutstandingMnt))}</p><p><strong>Шинэ нөхцөл:</strong> ${escape(paymentPlanLabel(paymentPlanChangePanel.review.proposedPaymentPlanCode))} · Нийт ${escape(mnt(paymentPlanChangePanel.review.proposedTotalMnt))} · Үлдэгдэл ${escape(mnt(paymentPlanChangePanel.review.proposedOutstandingMnt))}</p><p>Ангийн одоогийн бодлого: <strong>${escape(paymentPlanChangePanel.review.pricingBasis.classLabel)}</strong> · Нэг удаа ${escape(mnt(proposedPlanPolicy?.oneTimeAmountMnt))} · 2 хувааж ${escape(mnt(proposedPlanPolicy?.firstInstallmentAmountMnt))} + ${escape(mnt(proposedPlanPolicy?.secondInstallmentAmountMnt))} · Бодлогын хугацаа ${escape(agreementDueLabel(paymentPlanChangePanel.review.policyRemainingDueAt))}</p><p><strong>Одоогийн үлдсэн төлбөрийн хугацаа:</strong> ${escape(agreementDueLabel(paymentPlanChangePanel.review.currentRemainingDueAt))}</p><p><strong>Шинэ үлдсэн төлбөрийн хугацаа:</strong> ${escape(agreementDueLabel(paymentPlanChangePanel.review.proposedRemainingDueAt))}${paymentPlanChangePanel.review.currentRemainingDueAt === paymentPlanChangePanel.review.proposedRemainingDueAt ? " · Хэвээр хадгална" : " · Өөрчлөгдөнө"}</p><p>Бодитоор төлсөн: <strong>${escape(mnt(paymentPlanChangePanel.review.paidMnt))}</strong> (өөрчлөгдөхгүй)</p><p><strong>Санал болгосон төлөлтүүд</strong></p>${paymentPlanChangePanel.review.proposedInstallments.map((entry) => `<p>${escape(`${entry.installmentNumber}-р төлөлт`)}: <strong>${escape(mnt(entry.amountMnt))}</strong> · ${escape(agreementDueLabel(entry.dueAt))}${entry.status === "paid" ? " · Төлөгдсөн" : ""}</p>`).join("")}<label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${paymentPlanChangePending ? "disabled" : ""}>${escape(paymentPlanChangePanel.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="button primary" type="submit" ${paymentPlanChangePending ? "disabled aria-busy=true" : ""}>${paymentPlanChangePending ? "Хадгалж байна…" : "Өөрчлөлтийг хадгалах"}</button><button class="text-button" type="button" data-payment-plan-change-edit="${escape(item.registrationDraftChildId)}" ${paymentPlanChangePending ? "disabled" : ""}>Засах</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}" ${paymentPlanChangePending ? "disabled" : ""}>Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["payment-plan-change"])}</form>`
             : `<form class="staff-payment-form" data-payment-plan-change-preview="${escape(item.registrationDraftChildId)}" data-current-remaining-due-at="${escape(originalPlanAgreementDueAt)}"><h3>Төлбөрийн нөхцөл өөрчлөх</h3><p class="staff-muted">Анхны сонголт, орсон төлбөр, төлбөрийн түүх өөрчлөгдөхгүй. Одоогийн тохирсон хугацааг хадгална; өөрчлөх бол доорх хугацааг хянаж баталгаажуулна.</p><label>Шинэ төлбөрийн нөхцөл<select name="proposedPaymentPlanCode" ${paymentPlanChangePending ? "disabled" : ""}><option value="two_installment">2 хувааж төлөх</option></select></label><p class="staff-muted">Одоогийн үлдсэн төлбөрийн хугацаа: ${escape(agreementDueLabel(originalPlanAgreementDueAt))}</p><label>Үлдсэн төлбөрийн шинэ хугацаа<input name="proposedRemainingDueAt" type="datetime-local" value="${escape(localDateTime(currentPlanAgreementDueAt))}" required ${paymentPlanChangePending ? "disabled" : ""} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required ${paymentPlanChangePending ? "disabled" : ""}>${escape(paymentPlanChangePanel.reason || "")}</textarea></label><div class="staff-inline-actions"><button class="button primary" type="submit" ${paymentPlanChangePending ? "disabled aria-busy=true" : ""}>${paymentPlanChangePending ? "Шалгаж байна…" : "Хянах"}</button><button class="text-button" type="button" data-payment-tool-cancel="${escape(item.registrationDraftChildId)}" ${paymentPlanChangePending ? "disabled" : ""}>Болих</button></div>${actionFeedback(item.registrationDraftChildId, ["payment-plan-change"])}</form>`

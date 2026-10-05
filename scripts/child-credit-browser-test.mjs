@@ -1308,6 +1308,7 @@ async function exerciseLateReferralExternalSettlement(browser, page) {
 async function exercisePaymentPlanChange(page) {
   const fixtureNow = new Date().toISOString();
   const childId = "browser-plan-change-child";
+  const settledChildId = "browser-plan-settled-child";
   // This is the completed-transfer shape from the service regression. Browser
   // time is spent on the teacher UI itself, not recreating unrelated intake.
   execute(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 0 WHERE singleton = 1;
@@ -1319,32 +1320,60 @@ async function exercisePaymentPlanChange(page) {
       VALUES ('browser-plan-guardian', 'Plan guardian', '99123456', '99123456', 'plan@example.test', 'plan@example.test', 'Address', 'active', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
     INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('browser-plan-student', 'Browser', 'PlanChange', 'female', '2015-05-10', 'active', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-settled-student', 'Browser', 'SettledPlan', 'female', '2015-05-11', 'active', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
     INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, submitted_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('browser-plan-pre-source', 'browser-plan-guardian', 'browser-year', 'completed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}),
         ('browser-plan-pre-target', 'browser-plan-guardian', 'browser-year', 'completed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
     INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, selected_payment_plan_code, is_test, test_run_id, created_at, updated_at)
       VALUES ('browser-plan-app-source', 'browser-plan-pre-source', 'browser-plan-student', 5, 'new', 'enrolled', 'single', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}),
         ('browser-plan-app-current', 'browser-plan-pre-target', 'browser-plan-student', 5, 'new', 'enrolled', 'single', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, submitted_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-pre-settled', 'browser-plan-guardian', 'browser-year', 'completed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, selected_payment_plan_code, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-app-settled', 'browser-plan-pre-settled', 'browser-plan-settled-student', 5, 'new', 'enrolled', 'single', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
     INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at, transferred_out_at)
       VALUES ('browser-plan-source-enrollment', 'browser-plan-app-source', 'browser-plan-student', 'browser-year', 'browser-class-source', 'confirmed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}),
         ('browser-plan-enrollment', 'browser-plan-app-current', 'browser-plan-student', 'browser-year', 'browser-class-high', 'confirmed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, NULL);
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at, transferred_out_at)
+      VALUES ('browser-plan-settled-enrollment', 'browser-plan-app-settled', 'browser-plan-settled-student', 'browser-year', 'browser-class-high', 'confirmed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, NULL);
     INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, verified_at, expires_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('browser-plan-draft', ${sql("p".repeat(64))}, 'browser-year', 'Plan guardian', 'Parent', '99123456', 'plan@example.test', 'plan@example.test', 'Address', 'single', 'browser-parent-rules', 'browser-student-rules', 'awaiting_initial_payment', ${sql(fixtureNow)}, '2027-12-31T00:00:00.000Z', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
     INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, is_test, test_run_id, created_at, updated_at, canonical_student_id, canonical_application_child_id, canonical_enrollment_id)
       VALUES (${sql(childId)}, 'browser-plan-draft', 0, 'Browser', 'PlanChange', 'female', '2015-05-10', '5', 'School', 'new', 'stage_1', 'browser-class-source', 'single', 1200000, 'awaiting_initial_payment', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, 'browser-plan-student', 'browser-plan-app-current', 'browser-plan-enrollment');
+    INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, verified_at, expires_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-settled-draft', ${sql("s".repeat(64))}, 'browser-year', 'Plan guardian', 'Parent', '99123456', 'settled-plan@example.test', 'settled-plan@example.test', 'Address', 'single', 'browser-parent-rules', 'browser-student-rules', 'awaiting_initial_payment', ${sql(fixtureNow)}, '2027-12-31T00:00:00.000Z', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, is_test, test_run_id, created_at, updated_at, canonical_student_id, canonical_application_child_id, canonical_enrollment_id)
+      VALUES (${sql(settledChildId)}, 'browser-plan-settled-draft', 0, 'Browser', 'SettledPlan', 'female', '2015-05-11', '5', 'School', 'new', 'stage_1', 'browser-class-high', 'single', 1200000, 'awaiting_initial_payment', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, 'browser-plan-settled-student', 'browser-plan-app-settled', 'browser-plan-settled-enrollment');
     INSERT INTO payment_request (id, registration_draft_id, payment_reference, created_at, updated_at, is_test, test_run_id)
       VALUES ('browser-plan-request', 'browser-plan-draft', 'NE-PLAN-BROWSER', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_request (id, registration_draft_id, payment_reference, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-plan-settled-request', 'browser-plan-settled-draft', 'NE-PLAN-SETTLED', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
     INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('browser-plan-first', 'browser-plan-request', ${sql(childId)}, 1, 'initial', 1200000, '2026-09-12T15:59:59.999Z', '2026-09-12T15:59:59.999Z', 60, '2026-09-12T14:59:59.999Z', 'partially_paid', 'browser-plan-app-current', 'browser-plan-enrollment', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-settled-installment', 'browser-plan-settled-request', ${sql(settledChildId)}, 1, 'initial', 1200000, '2026-09-12T15:59:59.999Z', '2026-09-12T15:59:59.999Z', 60, '2026-09-12T14:59:59.999Z', 'paid', 'browser-plan-app-settled', 'browser-plan-settled-enrollment', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
     INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
       VALUES ('browser-plan-receipt', 'browser-plan-request', 650000, '2026-10-04T03:05:00.000Z', 'staff_manual_bank', 'confirmed', '2026-10-04T03:05:00.000Z', 'browser-plan-receipt', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+    INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-plan-settled-receipt', 'browser-plan-settled-request', 1200000, '2026-10-04T03:05:00.000Z', 'staff_manual_bank', 'confirmed', '2026-10-04T03:05:00.000Z', 'browser-plan-settled-receipt', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
     INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved, remaining_payment_due_at, finalized_at, created_at, updated_at, is_test, test_run_id)
       VALUES ('browser-plan-confirmation', 'browser-plan-receipt', 'browser-plan-request', 'finalized', '2026-10-04T03:05:00.000Z', 1, '2027-01-15T15:59:59.999Z', '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
     INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
-      VALUES ('browser-plan-allocation', 'browser-plan-receipt', 'browser-plan-first', 650000, '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+      VALUES ('browser-plan-allocation', 'browser-plan-receipt', 'browser-plan-first', 650000, '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, 1, ${sql(testRunId)}),
+        ('browser-plan-settled-allocation', 'browser-plan-settled-receipt', 'browser-plan-settled-installment', 1200000, '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, 1, ${sql(testRunId)});
     INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, target_enrollment_id, target_application_child_id, source_class_session_id, target_class_session_id, reason, created_by_staff_account_id, idempotency_key, source_payment_plan_code, target_payment_plan_code, source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt, recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, status, version, created_at, updated_at, completed_at, is_test, test_run_id)
       VALUES ('browser-plan-transfer', 'browser-plan-source-enrollment', 'browser-plan-app-source', 'browser-plan-enrollment', 'browser-plan-app-current', 'browser-class-source', 'browser-class-high', 'Browser completed transfer', 'browser-credit-teacher', 'browser-plan-transfer', 'single', 'single', '{}', '{}', 1200000, 1200000, 650000, 0, 0, 'completed', 1, ${sql(fixtureNow)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});`);
   await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const settledGroup = page.getByRole("button", { name: /Бүрэн төлсөн/ });
+  if (await settledGroup.getAttribute("aria-expanded") !== "true") await settledGroup.click();
+  const settledRow = page.locator(`[data-registration-child="${settledChildId}"]`);
+  await settledRow.waitFor({ state: "visible" });
+  const settledOpen = settledRow.getByRole("button", { name: "Нээх" });
+  if (await settledOpen.isVisible().catch(() => false)) await settledOpen.click();
+  await settledRow.locator('[data-payment-open]').click();
+  assert.equal(await settledRow.locator('[data-payment-tool="plan-change"]').count(), 0,
+    "a fully settled single-plan enrollment without a remaining deadline does not render an inapplicable agreement-change action");
   const row = page.locator(`[data-registration-child="${childId}"]`);
   const partialGroup = page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ });
   if (await partialGroup.getAttribute("aria-expanded") !== "true") await partialGroup.click();
