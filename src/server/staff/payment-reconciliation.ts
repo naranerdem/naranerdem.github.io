@@ -10,7 +10,7 @@ import { childCreditSummaryForChildren } from "../services/child-credit-ledger";
 import { pendingAdditionalClassCashSettlements } from "../services/additional-class-credit-settlement";
 import { finalizeFundedSameSubmissionQuotes, materializeConditionalFamilyAwardCredit, recoverFundedConditionalFamilyQuotes } from "../services/conditional-family-discounts";
 import { cashReceiptProjectionsForChildren } from "../services/cash-receipt-projection";
-import { activePaymentInstallmentsForChildren } from "../services/payment-agreement";
+import { activePaymentInstallmentsForChildren, effectivePaymentPlanCodesForChildren } from "../services/payment-agreement";
 import { familyCreditSuggestionsForChild } from "./family-discounts";
 import { lateReferralExternalSettlementHistoryForChildren } from "./late-referral-external-settlement";
 import { sendConditionalSeatConfirmationEmail, sendPaymentConfirmedEmail } from "../email/registration-transactional";
@@ -1336,6 +1336,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     lateReferralExternalSettlementHistoryForChildren(env.DB, childIds),
   ]);
   const effectiveById = new Map(effectiveRows.map((item) => [item.id, item]));
+  const effectivePaymentPlans = await effectivePaymentPlanCodesForChildren(env.DB, childIds);
   const correctionReceiptCandidates = new Map<string, Array<{ receivedPaymentId: string; amountMnt: number; receivedAt: string }>>();
   for (const row of correctionReceipts.results) correctionReceiptCandidates.set(row.childId, [...(correctionReceiptCandidates.get(row.childId) ?? []),
     { receivedPaymentId: row.receivedPaymentId, amountMnt: Number(row.amountMnt), receivedAt: row.receivedAt }]);
@@ -1369,6 +1370,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   // ordinary cash-only or already-settled registrations.
   const creditReviewInputs = rawItems.flatMap((item) => {
     const childId = String(item.registrationDraftChildId);
+    const paymentPlanCode = effectivePaymentPlans.get(childId) ?? item.paymentPlanCode;
     if (!Number(creditByChild.get(childId)?.availableAmountMnt || 0)) return [];
     const initial = effectiveById.get(String(item.installmentId));
     const initialOutstanding = Math.max(0, Number(initial?.effectiveAmountMnt ?? item.expectedAmountMnt) - item.allocatedAmountMnt);
@@ -1376,7 +1378,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       .map((entry) => ({ ...entry, effectiveAmountMnt: Number(effectiveById.get(entry.id)?.effectiveAmountMnt ?? entry.amountMnt) }))
       .find((entry) => entry.effectiveAmountMnt > entry.allocatedAmountMnt);
     const laterOutstanding = nextLater ? Math.max(0, nextLater.effectiveAmountMnt - nextLater.allocatedAmountMnt) : 0;
-    const installmentId = item.paymentPlanCode !== "two_installment" && initialOutstanding > 0 ? String(item.installmentId)
+    const installmentId = paymentPlanCode !== "two_installment" && initialOutstanding > 0 ? String(item.installmentId)
       : laterOutstanding > 0 && nextLater ? nextLater.id : null;
     return installmentId ? [{ childId, paymentInstallmentId: installmentId,
       availableCreditMnt: Number(creditByChild.get(childId)?.availableAmountMnt || 0),
@@ -1467,6 +1469,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
   canManageFamilyDiscounts: hasStaffCapability(actor, "registration.manage"),
   canManageTransfers: hasStaffCapability(actor, "registration.manage"),
   canCancelRegistrations: hasStaffCapability(actor, "registration.manage"), items: rawItems.map((item) => {
+    const paymentPlanCode = effectivePaymentPlans.get(String(item.registrationDraftChildId)) ?? item.paymentPlanCode;
     const effective = effectiveById.get(String(item.installmentId));
     const activeInstallments = installmentRows.filter((entry) => entry.registrationDraftChildId === String(item.registrationDraftChildId))
       .map((entry) => ({ ...entry, effectiveAmountMnt: Number(effectiveById.get(entry.id)?.effectiveAmountMnt ?? entry.amountMnt) }));
@@ -1491,7 +1494,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     // A two-installment agreement's first installment is deliberately
     // cash-only. Credit review belongs to its final scheduled installment,
     // even while the first installment is still outstanding.
-    const creditMaySettleInitial = item.paymentPlanCode !== "two_installment";
+    const creditMaySettleInitial = paymentPlanCode !== "two_installment";
     const creditApplicationInstallmentId = creditMaySettleInitial && initialOutstandingMnt > 0 ? String(item.installmentId)
       : laterOutstandingMnt > 0 ? nextScheduledInstallment?.id ?? null : null;
     const creditApplicationOutstandingMnt = creditMaySettleInitial && initialOutstandingMnt > 0 ? initialOutstandingMnt : laterOutstandingMnt;
@@ -1499,7 +1502,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     const historicalSettlementReview = historicalReviewByChild.get(String(item.registrationDraftChildId));
     const historicalReviewReady = Boolean(historicalSettlementReview && initialOutstandingMnt === 0
       && !item.canonicalEnrollmentId && !Boolean(item.seatConfirmationApproved));
-    return { ...item, rawExpectedAmountMnt: Number(item.expectedAmountMnt), expectedAmountMnt,
+    return { ...item, paymentPlanCode, rawExpectedAmountMnt: Number(item.expectedAmountMnt), expectedAmountMnt,
       rawLaterAmountMnt: nextScheduledInstallment?.amountMnt ?? null,
       laterAmountMnt: nextScheduledInstallment?.effectiveAmountMnt ?? null,
       rawTotalAmountMnt: activeInstallments.reduce((total, entry) => total + entry.amountMnt, 0),

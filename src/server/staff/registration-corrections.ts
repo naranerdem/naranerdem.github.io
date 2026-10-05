@@ -1,6 +1,6 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import { normalizeEmail, validEmail } from "../auth/email-address";
-import { activePaymentInstallmentsForChildren } from "../services/payment-agreement";
+import { activePaymentInstallmentsForChildren, effectivePaymentPlanCodesForChildren } from "../services/payment-agreement";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 
 export class RegistrationCorrectionError extends Error {
@@ -105,11 +105,13 @@ export async function registrationCorrectionDetail(env: WorkerEnv, actor: StaffP
     FROM registration_draft LEFT JOIN registration_draft_child ON registration_draft_child.registration_draft_id = registration_draft.id WHERE ${scope}`)
     .bind(new Date().toISOString(), scopeValue, scopeValue).first<{ registrations: number; children: number; hasVerifiedEmail: number; hasAccessSession: number }>();
   const paymentAgreement = await activePaymentInstallmentsForChildren(env.DB, [row.childId]);
+  const effectivePaymentPlans = await effectivePaymentPlanCodesForChildren(env.DB, [row.childId]);
   const emailProtected = Boolean(row.verifiedAt) || Boolean(impact?.hasVerifiedEmail) || Boolean(impact?.hasAccessSession);
   return { ...row, guardianProfileEditable: true, guardianEmailEditable: !emailProtected, emailProtected,
     guardianAffectedRegistrationCount: Number(impact?.registrations || 1), guardianAffectedChildCount: Number(impact?.children || 1),
     childIdentityEditable: !row.canonicalStudentId || Number(sharedStudent?.count || 0) === 0, childProfileEditable: true,
-    currentPaymentSchedule: paymentAgreement.get(row.childId) ?? [] } as Detail;
+    currentPaymentSchedule: paymentAgreement.get(row.childId) ?? [],
+    effectivePaymentPlanCode: effectivePaymentPlans.get(row.childId) ?? row.paymentPlanCode } as Detail;
 }
 
 function validate(input: Record<string, unknown>, current: Detail) {

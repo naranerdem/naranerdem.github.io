@@ -58,6 +58,7 @@ import {
   updatePaymentConfirmationGraceSetting,
   waiveOutstandingPayment,
 } from "../staff/payment-reconciliation";
+import { PaymentPlanChangeError, previewEnrollmentPaymentPlanChange, reviseEnrollmentPaymentPlan } from "../staff/payment-plan-change";
 import { cancelRegistration, reinstateRegistration, RegistrationCancellationError } from "../staff/registration-cancellation";
 import { ClassTransferError, closeClassTransfer, completeClassTransfer, initiateClassTransfer, listClassTransferTargets, recordClassTransferDifference } from "../staff/class-transfer";
 import { AdditionalClassPreviewError, getAdditionalClassPreview } from "../staff/additional-class-preview";
@@ -454,6 +455,13 @@ function registrationWindowError(caught: unknown): Response {
 }
 
 function paymentReconciliationError(caught: unknown): Response {
+  if (caught instanceof PaymentPlanChangeError) {
+    if (caught.code === "forbidden") return error("forbidden", "Энэ төлбөрийн нөхцөлийг өөрчлөх эрх алга.", 403, { "Cache-Control": "no-store" });
+    if (caught.code === "not_found") return error("not_found", "Одоогийн төлбөрийн тохиролцоо олдсонгүй.", 404, { "Cache-Control": "no-store" });
+    if (caught.code === "conflict") return error("invalid_request", "Төлбөрийн тохиролцоо эсвэл ангийн бодлого өөрчлөгдсөн байна. Урьдчилан харалтыг дахин шалгана уу.", 409, { "Cache-Control": "no-store" });
+    if (caught.code === "unsupported") return error("invalid_request", "Энэ бүртгэлийн төлбөр, кредит, хөнгөлөлт эсвэл санхүүгийн түүх нь энэ нөхцөл өөрчлөлтөд тохирохгүй байна.", 409, { "Cache-Control": "no-store" });
+    return error("invalid_request", "Шинэ төлбөрийн нөхцөл болон шалтгаанаа шалгана уу.", 400, { "Cache-Control": "no-store" });
+  }
   if (caught instanceof ChildCreditError) {
     if (caught.code === "forbidden") return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });
     if (caught.code === "not_found") return error("not_found", "Бүртгэл эсвэл сонгосон төлбөрийн үүрэг олдсонгүй. Хуудсыг шинэчлээд дахин шалгана уу.", 404, { "Cache-Control": "no-store" });
@@ -1676,6 +1684,19 @@ export async function handleApiRequest(
             paymentRequestId: String(payload.paymentRequestId ?? ""), registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
             installments: Array.isArray(payload.installments) ? payload.installments.map((entry) => ({ amountMnt: Number((entry as Record<string, unknown>).amountMnt), dueOn: String((entry as Record<string, unknown>).dueOn ?? "") })) : [],
             reason: String(payload.reason ?? ""), reviewFingerprint: String(payload.reviewFingerprint ?? ""), operationId: String(payload.operationId ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.plan-change-preview":
+          return json({ ok: true, ...await previewEnrollmentPaymentPlanChange(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""), registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            proposedPaymentPlanCode: payload.proposedPaymentPlanCode === "two_installment" ? "two_installment" : "single",
+            reason: String(payload.reason ?? ""),
+          }) }, 200, { "Cache-Control": "no-store" });
+        case "payment.plan-change-save":
+          return json({ ok: true, ...await reviseEnrollmentPaymentPlan(env, principal, {
+            paymentRequestId: String(payload.paymentRequestId ?? ""), registrationDraftChildId: String(payload.registrationDraftChildId ?? ""),
+            proposedPaymentPlanCode: payload.proposedPaymentPlanCode === "two_installment" ? "two_installment" : "single",
+            reason: String(payload.reason ?? ""), reviewFingerprint: String(payload.reviewFingerprint ?? ""),
+            operationId: String(payload.operationId ?? ""),
           }) }, 200, { "Cache-Control": "no-store" });
         case "payment.confirm-seat":
           return json({ ok: true, ...await confirmSeatForSufficientPayment(

@@ -15,6 +15,28 @@ export type ActivePaymentInstallment = {
   status: "pending" | "partially_paid" | "paid";
 };
 
+export type EffectivePaymentPlanCode = "single" | "two_installment";
+
+/**
+ * Registration intake keeps its originally selected plan as historical
+ * evidence. A later, staff-reviewed agreement revision is the only thing
+ * allowed to supersede that plan for current financial operations.
+ */
+export async function effectivePaymentPlanCodesForChildren(database: D1Database, childIds: string[]): Promise<Map<string, EffectivePaymentPlanCode>> {
+  if (!childIds.length) return new Map();
+  const rows = await database.prepare(`SELECT revision.registration_draft_child_id AS registrationDraftChildId,
+      revision.proposed_payment_plan_code AS paymentPlanCode
+    FROM enrollment_payment_agreement_revision AS revision
+    WHERE revision.registration_draft_child_id IN (${childIds.map(() => "?").join(", ")})
+      AND NOT EXISTS (
+        SELECT 1 FROM enrollment_payment_agreement_revision AS later
+        WHERE later.registration_draft_child_id = revision.registration_draft_child_id
+          AND (later.revised_at > revision.revised_at OR (later.revised_at = revision.revised_at AND later.id > revision.id))
+      )`).bind(...childIds).all<{ registrationDraftChildId: string; paymentPlanCode: EffectivePaymentPlanCode }>();
+  return new Map(rows.results.filter((row) => row.paymentPlanCode === "single" || row.paymentPlanCode === "two_installment")
+    .map((row) => [row.registrationDraftChildId, row.paymentPlanCode]));
+}
+
 /**
  * The registration-draft child is the stable owner of its payment agreement.
  * Canonical enrollment links move with transfers, while a reviewed schedule can

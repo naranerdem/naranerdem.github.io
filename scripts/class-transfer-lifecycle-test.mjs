@@ -18,6 +18,7 @@ assert.match(capacity, /class_transfer_target_reservation[\s\S]*status = 'active
 assert.match(capacity, /enrollment\.transferred_out_at IS NULL/, "transferred-out source enrollments stop consuming capacity");
 assert.match(submission, /transfer_reservations AS MATERIALIZED/, "new registrations share transfer-aware capacity acquisition");
 assert.match(transfer, /await env\.DB\.batch\(statements\)/, "reserve and transfer creation use one D1 batch");
+assert.match(transfer, /effectivePaymentPlanCodesForChildren/, "a later transfer prices the active reviewed agreement instead of the historical intake choice");
 assert.match(transfer, /function targetForTransfer[\s\S]*academic_year\.registration_status[\s\S]*offering_course_pricing/, "one authoritative target eligibility projection checks operational class, year, offering, and pricing state");
 assert.doesNotMatch(transfer.slice(transfer.indexOf("export async function listClassTransferTargets"), transfer.indexOf("export async function initiateClassTransfer")), /registration_window/, "staff transfer preview does not require the public registration window to be open");
 assert.match(transfer, /academicYearStatus === "archived"/, "an archived source academic year remains an explicit staff-transfer refusal");

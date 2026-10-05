@@ -1,6 +1,7 @@
 import type { D1PreparedStatement, WorkerEnv } from "../env";
 import { classCapacityConsumedSql, getClassCapacityProjections } from "../services/class-capacity";
 import { effectiveInstallmentsForRows } from "../services/discounts";
+import { effectivePaymentPlanCodesForChildren } from "../services/payment-agreement";
 import { allocateWaitlistOffers } from "../services/waitlist-offers";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
 
@@ -43,7 +44,9 @@ async function sourceForChild(env: WorkerEnv, actor: StaffPrincipal, childId: st
     if (child?.canonicalEnrollmentId) throw new ClassTransferError("ineligible");
     throw new ClassTransferError("not_found");
   }
-  return { ...row, isTest: Number(row.isTest), currentGrade: Number(row.currentGrade) };
+  const effectivePlans = await effectivePaymentPlanCodesForChildren(env.DB, [row.childId]);
+  return { ...row, paymentPlanCode: effectivePlans.get(row.childId) ?? row.paymentPlanCode,
+    isTest: Number(row.isTest), currentGrade: Number(row.currentGrade) };
 }
 
 async function targetForTransfer(env: WorkerEnv, source: Source, classSessionId: string): Promise<Target> {

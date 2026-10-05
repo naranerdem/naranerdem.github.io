@@ -9,6 +9,7 @@ const deadlines = readFileSync("src/scripts/payment-deadline.js", "utf8");
 const router = readFileSync("src/server/api/router.ts", "utf8");
 const lateReferralService = readFileSync("src/server/staff/late-referral-external-settlement.ts", "utf8");
 const transfer = readFileSync("src/server/staff/class-transfer.ts", "utf8");
+const paymentPlanChange = readFileSync("src/server/staff/payment-plan-change.ts", "utf8");
 const waitlistOfferPage = readFileSync("src/pages/waitlist-offer.astro", "utf8");
 const registerPage = readFileSync("src/pages/register.astro", "utf8");
 assert.match(page, /timeZone: "Asia\/Ulaanbaatar"/);
@@ -95,6 +96,17 @@ assert.match(page, /function paymentItemForInstallment\(installmentId\)/,
   "the rendered payment handler accepts any selected installment in a revised schedule");
 assert.match(page, /data-payment-tool="receipt-correction"/, "finalized receipt correction is a compact control in the ordinary payment panel");
 assert.match(page, /data-payment-tool="schedule"/, "schedule revision is a compact control in the ordinary payment panel");
+assert.match(page, /data-payment-tool="plan-change"/, "a guarded agreement change is a compact control in the ordinary payment panel");
+assert.match(page, /Төлбөрийн нөхцөл өөрчлөх/, "the teacher-facing payment-agreement action uses clear payment-plan language");
+assert.match(page, /data-payment-plan-change-preview/, "the agreement change has a reviewable editor rather than mutating the fee directly");
+assert.match(page, /data-payment-plan-change-confirm/, "the agreement change requires a durable reviewed save");
+assert.match(router, /payment\.plan-change-preview/, "the staff API exposes the guarded agreement preview route");
+assert.match(router, /payment\.plan-change-save/, "the staff API exposes the guarded agreement save route");
+assert.match(paymentPlanChange, /enrollment_payment_agreement_revision/, "agreement changes retain an immutable audit header");
+assert.match(paymentPlanChange, /cancelUnauthorisedPaymentReminderStatements/, "an agreement change retires only unauthorised stale reminder work");
+assert.match(paymentPlanChange, /snapshot\.dependencyCount \|\| snapshot\.nonFinalizedAllocationCount \|\| snapshot\.sendingMilestoneCount \|\| snapshot\.pendingTransferCount/,
+  "the focused agreement change rejects dependent financial or in-flight workflow states");
+assert.match(paymentPlanChange, /nonFinalizedAllocationCount/, "an agreement change cannot treat a tentative receipt allocation as settled cash");
 assert.match(page, /function standaloneScheduleModel\(item\)/, "standalone schedule editing derives its future draft from the authoritative enrollment-wide remainder");
 assert.match(page, /scheduleCompleteEntries\(item, editableEntries\)/, "the standalone editor safely submits protected settled portions with the edited future remainder");
 assert.match(page, /const remaining = Number\(item\.totalRemainingMnt/, "the payment detail summary uses the enrollment-wide remaining balance instead of only its first installment");

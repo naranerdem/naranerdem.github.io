@@ -32,8 +32,12 @@ const paymentPanelBrowser = process.env.PAYMENT_PANEL_BROWSER || "chromium";
 const usingWebKit = paymentPanelBrowser === "webkit" || paymentPanelBrowser === "webkit-desktop";
 const paymentLayoutDiagnostics = process.env.PAYMENT_PANEL_UI_DIAGNOSTICS === "1";
 const lateReferralBrowserOnly = process.env.LATE_REFERRAL_BROWSER_ONLY === "1";
+const paymentPlanChangeBrowserOnly = process.env.PAYMENT_PLAN_CHANGE_BROWSER_ONLY === "1";
 if (process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_ONLY === "1") {
   console.log("starting focused receipt-correction browser workflow");
+}
+if (paymentPlanChangeBrowserOnly) {
+  console.log("starting focused payment-plan-change browser workflow");
 }
 
 async function capturePaymentPanel(page, name) {
@@ -1301,6 +1305,90 @@ async function exerciseLateReferralExternalSettlement(browser, page) {
   assert.equal(Number(awards[0].count), 0, "the browser save creates no tuition discount or spendable credit");
 }
 
+async function exercisePaymentPlanChange(page) {
+  const fixtureNow = new Date().toISOString();
+  const childId = "browser-plan-change-child";
+  // This is the completed-transfer shape from the service regression. Browser
+  // time is spent on the teacher UI itself, not recreating unrelated intake.
+  execute(`UPDATE payment_confirmation_grace_setting SET grace_minutes = 0 WHERE singleton = 1;
+    UPDATE offering_course_pricing SET one_time_amount_mnt = 1200000,
+    two_installment_enabled = 1, first_installment_amount_mnt = 650000,
+    second_installment_amount_mnt = 650000, second_installment_due_on = '2027-01-25',
+    updated_at = ${sql(new Date().toISOString())} WHERE activity_offering_id = 'browser-offering-high';
+    INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-guardian', 'Plan guardian', '99123456', '99123456', 'plan@example.test', 'plan@example.test', 'Address', 'active', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-student', 'Browser', 'PlanChange', 'female', '2015-05-10', 'active', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, submitted_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-pre-source', 'browser-plan-guardian', 'browser-year', 'completed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}),
+        ('browser-plan-pre-target', 'browser-plan-guardian', 'browser-year', 'completed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, selected_payment_plan_code, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-app-source', 'browser-plan-pre-source', 'browser-plan-student', 5, 'new', 'enrolled', 'single', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}),
+        ('browser-plan-app-current', 'browser-plan-pre-target', 'browser-plan-student', 5, 'new', 'enrolled', 'single', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at, transferred_out_at)
+      VALUES ('browser-plan-source-enrollment', 'browser-plan-app-source', 'browser-plan-student', 'browser-year', 'browser-class-source', 'confirmed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}),
+        ('browser-plan-enrollment', 'browser-plan-app-current', 'browser-plan-student', 'browser-year', 'browser-class-high', 'confirmed', ${sql(fixtureNow)}, 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, NULL);
+    INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, verified_at, expires_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-draft', ${sql("p".repeat(64))}, 'browser-year', 'Plan guardian', 'Parent', '99123456', 'plan@example.test', 'plan@example.test', 'Address', 'single', 'browser-parent-rules', 'browser-student-rules', 'awaiting_initial_payment', ${sql(fixtureNow)}, '2027-12-31T00:00:00.000Z', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, is_test, test_run_id, created_at, updated_at, canonical_student_id, canonical_application_child_id, canonical_enrollment_id)
+      VALUES (${sql(childId)}, 'browser-plan-draft', 0, 'Browser', 'PlanChange', 'female', '2015-05-10', '5', 'School', 'new', 'stage_1', 'browser-class-source', 'single', 1200000, 'awaiting_initial_payment', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, 'browser-plan-student', 'browser-plan-app-current', 'browser-plan-enrollment');
+    INSERT INTO payment_request (id, registration_draft_id, payment_reference, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-plan-request', 'browser-plan-draft', 'NE-PLAN-BROWSER', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-plan-first', 'browser-plan-request', ${sql(childId)}, 1, 'initial', 1200000, '2026-09-12T15:59:59.999Z', '2026-09-12T15:59:59.999Z', 60, '2026-09-12T14:59:59.999Z', 'partially_paid', 'browser-plan-app-current', 'browser-plan-enrollment', 1, ${sql(testRunId)}, ${sql(fixtureNow)}, ${sql(fixtureNow)});
+    INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-plan-receipt', 'browser-plan-request', 650000, '2026-10-04T03:05:00.000Z', 'staff_manual_bank', 'confirmed', '2026-10-04T03:05:00.000Z', 'browser-plan-receipt', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, finalized_at, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-plan-confirmation', 'browser-plan-receipt', 'browser-plan-request', 'finalized', '2026-10-04T03:05:00.000Z', '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
+      VALUES ('browser-plan-allocation', 'browser-plan-receipt', 'browser-plan-first', 650000, '2026-10-04T03:05:00.000Z', ${sql(fixtureNow)}, 1, ${sql(testRunId)});
+    INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, target_enrollment_id, target_application_child_id, source_class_session_id, target_class_session_id, reason, created_by_staff_account_id, idempotency_key, source_payment_plan_code, target_payment_plan_code, source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt, recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, status, version, created_at, updated_at, completed_at, is_test, test_run_id)
+      VALUES ('browser-plan-transfer', 'browser-plan-source-enrollment', 'browser-plan-app-source', 'browser-plan-enrollment', 'browser-plan-app-current', 'browser-class-source', 'browser-class-high', 'Browser completed transfer', 'browser-credit-teacher', 'browser-plan-transfer', 'single', 'single', '{}', '{}', 1200000, 1200000, 650000, 0, 0, 'completed', 1, ${sql(fixtureNow)}, ${sql(fixtureNow)}, ${sql(fixtureNow)}, 1, ${sql(testRunId)});`);
+  await page.goto(`${baseUrl}/staff/payments/?registration=${encodeURIComponent(childId)}`);
+  const row = page.locator(`[data-registration-child="${childId}"]`);
+  const partialGroup = page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ });
+  if (await partialGroup.getAttribute("aria-expanded") !== "true") await partialGroup.click();
+  await row.waitFor({ state: "visible" });
+  const reopened = row.getByRole("button", { name: "Нээх" });
+  if (await reopened.isVisible().catch(() => false)) await reopened.click();
+  await row.locator('[data-payment-open]').click();
+  await row.locator('[data-payment-tool="plan-change"]').click();
+  const editor = row.locator('[data-payment-plan-change-preview]');
+  await editor.waitFor({ state: "visible" });
+  await editor.locator('textarea[name="reason"]').fill("Stage 2 two-payment agreement");
+  const previewResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("payment.plan-change-preview"));
+  await editor.getByRole("button", { name: "Хянах" }).click();
+  const previewResult = await previewResponse;
+  assert.ok(previewResult.ok(), `the rendered plan-change editor reaches its guarded review: ${await previewResult.text()}`);
+  const review = row.locator('[data-payment-plan-change-confirm]');
+  await review.waitFor({ state: "visible" });
+  assert.match(await review.textContent(), /1,200,000 ₮[\s\S]*1,300,000 ₮[\s\S]*650,000 ₮[\s\S]*2027-01-25 23:59/,
+    "the review separates the old total, revised fee, unchanged receipt, and Mongolia-local deadline");
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await capturePaymentElement(row, "payment-plan-change-review-desktop.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await capturePaymentElement(row, "payment-plan-change-review-mobile.png");
+  const saveResponse = page.waitForResponse((response) => response.url().endsWith("/api/staff/payments")
+    && response.request().method() === "POST" && response.request().postData()?.includes("payment.plan-change-save"));
+  await review.getByRole("button", { name: "Өөрчлөлтийг хадгалах" }).click();
+  assert.ok((await saveResponse).ok(), "the reviewed plan change saves through the rendered staff workflow");
+  await page.reload();
+  if (await partialGroup.getAttribute("aria-expanded") !== "true") await partialGroup.click();
+  await row.waitFor({ state: "visible" });
+  const schedule = await dbJson(`SELECT amount_mnt AS amountMnt, effective_due_at AS dueAt, status
+    FROM payment_installment WHERE registration_draft_child_id = ${sql(childId)} AND status != 'released' ORDER BY installment_number`);
+  assert.deepEqual(schedule.map((entry) => [Number(entry.amountMnt), entry.dueAt, entry.status]), [
+    [650000, schedule[0].dueAt, "paid"], [650000, "2027-01-25T15:59:59.999Z", "pending"],
+  ], "reload preserves the transfer, receipt, and reviewed two-payment agreement exactly once");
+  const detail = row.getByRole("button", { name: "Нээх" });
+  if (await detail.isVisible().catch(() => false)) await detail.click();
+  await row.locator('[data-payment-open]').click();
+  await row.locator('.staff-later-payment-form').getByRole("heading", { name: "2-р төлөлт бүртгэх" }).waitFor({ state: "visible" });
+  assert.equal(await row.locator('.staff-later-payment-form input[name="amount"]').inputValue(), "650000", "ordinary later payment targets only the new unpaid installment");
+  console.log("ok browser payment-plan change review, save, reload, and later-payment target");
+}
+
 try {
   if (process.env.NARANERDEM_BROWSER_SKIP_MIGRATIONS !== "1") {
     runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "local migrations");
@@ -1325,7 +1413,7 @@ try {
         first_installment_amount_mnt = 650000, second_installment_amount_mnt = 650000,
         updated_at = ${sql(new Date().toISOString())} WHERE activity_offering_id = 'browser-offering'`);
     }
-    if (!releasedSeatHistoryBrowserOnly && !lateReferralBrowserOnly) {
+    if (!releasedSeatHistoryBrowserOnly && !lateReferralBrowserOnly && !paymentPlanChangeBrowserOnly) {
       publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
         childName: "PublicTwoInstallment",
         email: "browser-public-two@example.test",
@@ -1355,6 +1443,8 @@ try {
     await captureSpecialPaymentStates(page, captureScenario);
   } else if (lateReferralBrowserOnly) {
     await exerciseLateReferralExternalSettlement(browser, page);
+  } else if (paymentPlanChangeBrowserOnly) {
+    await exercisePaymentPlanChange(page);
   } else if (releasedSeatHistoryBrowserOnly) {
     await exerciseInactiveRegistrationHistory(page);
   } else if (receiptCorrectionBrowserOnly) {
