@@ -1134,8 +1134,14 @@ async function refresh(success = "", options = {}) {
     const response = await fetch(`/api/staff/payments${cardQuery}`, { credentials: "same-origin", cache: "no-store" });
     const responseReceivedAt = recordPaymentTiming("payments.headers", requestStartedAt, response);
     if (!response.ok) {
+      const failure = await response.json().catch(() => null);
+      // A disabled entry point is not revoked data access. Keep mounted drafts.
+      if (attendanceCardMode && state.data && response.status === 409 && failure?.error?.code === "configuration_error") {
+        message([success, failure.error.message].filter(Boolean).join(" "));
+        return false;
+      }
       if ([401, 403].includes(response.status)) controllerOptions.onAccessDenied?.();
-      throw new Error([401, 403].includes(response.status) ? "Төлбөрийн дэлгэрэнгүй харах эрхийг дахин шалгана уу." : "Төлбөрийн мэдээллийг авч чадсангүй.");
+      throw new Error(failure?.error?.message || ([401, 403].includes(response.status) ? "Төлбөрийн дэлгэрэнгүй харах эрхийг дахин шалгана уу." : "Төлбөрийн мэдээллийг авч чадсангүй."));
     }
     const nextData = await response.json();
     if (attendanceCardMode) {
@@ -2464,7 +2470,7 @@ return ready.then(() => ({
     const session = state.data?.cardSession;
     const childId = state.attendanceCardTarget?.registrationDraftChildId;
     const hadInfo = Boolean(state.registrationViews[childId]?.detail);
-    await refresh("", { cacheValidation: true });
+    if (await refresh("", { cacheValidation: true }) === false) return false;
     if (session !== state.data?.cardSession || childId !== state.attendanceCardTarget?.registrationDraftChildId) return;
     if (hadInfo && !state.corrections[childId]) {
       state.registrationViews[childId] = { detail: await registrationDetail({ action: "registration-detail.get", childId }) };

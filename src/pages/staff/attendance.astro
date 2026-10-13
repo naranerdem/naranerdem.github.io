@@ -46,7 +46,8 @@ import "../../styles/global.css";
       } from "../../scripts/attendance-optimistic.js";
       import { escape, formatDate, getAttendanceDay, getStaffCapabilities, postAttendanceAction, postCourseMakeupAction } from "../../scripts/staff-setup.js";
       import { createAttendanceCardCache } from "../../scripts/attendance-card-cache.js";
-      const cardCache = createAttendanceCardCache();
+      let cardCache = null;
+      let attendanceStudentCardsEnabled = null;
 
       const params = new URLSearchParams(location.search);
       const safeHomeDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : "";
@@ -87,6 +88,8 @@ import "../../styles/global.css";
         const data = await getAttendanceDay(state.date, requestedSlotId);
         if (version !== state.refreshVersion) return;
         state.data = data;
+        // Page-load preference: do not discard mounted drafts during an attendance refresh.
+        if (attendanceStudentCardsEnabled === null) attendanceStudentCardsEnabled = data.attendanceStudentCardsEnabled === true;
         state.date = data.localDate;
         state.openCard = state.openCard?.slotId === data.selected?.slotId ? state.openCard : null;
         state.invalidOccurrence = Boolean(requestedSlotId && !data.selected);
@@ -160,7 +163,10 @@ import "../../styles/global.css";
           : escape(sourceText);
         const makeup = entry.attendanceKind === "makeup" ? `<p class="staff-attendance-makeup-source"><span class="staff-kind-label">Нөхөх</span>${sourceLink}</p>` : "";
         const cardOpen = attendanceCardOpen(entry);
-        return `<div class="staff-attendance-student"><div class="staff-attendance-identity"><div class="staff-attendance-student-name"><button type="button" class="staff-attendance-card-toggle" data-attendance-card-toggle="${escape(entry.enrollmentId)}" aria-expanded="${cardOpen}" aria-controls="attendance-card-${escape(entry.enrollmentId)}"><strong>${escape(entry.displayName)}</strong></button>${isFuture() ? "" : notice}</div>${makeup}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${outcome}${error}</div>`;
+        const name = attendanceStudentCardsEnabled
+          ? `<button type="button" class="staff-attendance-card-toggle" data-attendance-card-toggle="${escape(entry.enrollmentId)}" aria-expanded="${cardOpen}" aria-controls="attendance-card-${escape(entry.enrollmentId)}"><strong>${escape(entry.displayName)}</strong></button>`
+          : `<strong>${escape(entry.displayName)}</strong>`;
+        return `<div class="staff-attendance-student"><div class="staff-attendance-identity"><div class="staff-attendance-student-name">${name}${isFuture() ? "" : notice}</div>${makeup}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${outcome}${error}</div>`;
       }
 
       function rosterRow(entry) {
@@ -276,6 +282,8 @@ import "../../styles/global.css";
         if (!host) return;
         const version = ++state.cardMountVersion;
         try {
+          if (!attendanceStudentCardsEnabled) return;
+          cardCache ??= createAttendanceCardCache();
           await cardCache.open(host, { enrollmentId: entry.enrollmentId, displayName: entry.displayName });
         } catch (error) {
           if (version !== state.cardMountVersion || state.openCard !== card || !host.isConnected) return;
@@ -284,11 +292,11 @@ import "../../styles/global.css";
       }
 
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) cardCache.invalidate();
+        if (document.hidden) cardCache?.invalidate();
         else if (state.openCard) { renderDetail(); }
       });
       window.addEventListener('beforeunload', event => {
-        if (cardCache.hasDrafts()) { event.preventDefault(); event.returnValue = ''; }
+        if (cardCache?.hasDrafts()) { event.preventDefault(); event.returnValue = ''; }
       });
 
       const makeupSourceKey = (entry) => `${entry.enrollmentId}|${entry.classSessionId}|${entry.curriculumLessonId}`;
@@ -434,6 +442,7 @@ import "../../styles/global.css";
         const target = event.target.closest("button");
         if (!target || target.disabled) return;
         if (target.dataset.attendanceCardToggle) {
+          if (!attendanceStudentCardsEnabled) return;
           const enrollmentId = target.dataset.attendanceCardToggle;
           ++state.cardMountVersion;
           state.openCard = attendanceCardOpen({ enrollmentId }) ? null : { enrollmentId, slotId: state.selectedSlotId, token: crypto.randomUUID() };

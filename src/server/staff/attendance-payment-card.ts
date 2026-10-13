@@ -1,8 +1,9 @@
 import type { WorkerEnv } from "../env";
 import { hasStaffCapability, type StaffPrincipal } from "./authorization";
+import { getTeacherDashboardPreferences } from "./teacher-dashboard-preferences";
 
 export class AttendancePaymentCardError extends Error {
-  constructor(public readonly code: "forbidden" | "not_found" | "invalid") {
+  constructor(public readonly code: "forbidden" | "not_found" | "invalid" | "disabled") {
     super("Attendance payment card lookup failed.");
     this.name = "AttendancePaymentCardError";
   }
@@ -47,6 +48,7 @@ export async function attendancePaymentCardTarget(
 ): Promise<{ registrationDraftChildId: string; currentEnrollmentId: string; transferredSinceOccurrence: boolean }> {
   if (!hasStaffCapability(actor, "payment.view")) throw new AttendancePaymentCardError("forbidden");
   if (!enrollmentIdPattern.test(enrollmentId)) throw new AttendancePaymentCardError("invalid");
+  if (!(await getTeacherDashboardPreferences(env)).attendanceStudentCardsEnabled) throw new AttendancePaymentCardError("disabled");
   const row = await env.DB.prepare(`WITH RECURSIVE lineage(enrollment_id, depth) AS (
     SELECT ? AS enrollment_id, 0 AS depth
     UNION ALL

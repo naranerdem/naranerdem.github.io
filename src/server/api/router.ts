@@ -1459,6 +1459,7 @@ export async function handleApiRequest(
             return json({ ...card, attendanceCardTarget: target, cardSession: `${principal.sessionId}:${principal.capabilities.join(",")}` }, 200, { "Cache-Control": "no-store" });
           } catch (caught) {
             if (caught instanceof AttendancePaymentCardError) {
+              if (caught.code === "disabled") return error("configuration_error", "Ирцээс сурагчийн карт нээхийг админ идэвхгүй болгосон. Төлбөр хэсгээс нээнэ үү.", 409, { "Cache-Control": "no-store" });
               return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", caught.code === "not_found" ? "Одоогийн бүртгэлийн карт олдсонгүй." : "Сурагчийн холбоос эсвэл харах эрхийг шалгана уу.",
                 caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : 400, { "Cache-Control": "no-store" });
             }
@@ -1501,6 +1502,7 @@ export async function handleApiRequest(
           return json({ ok: true, ...await attendancePaymentCardTarget(env, principal, String(payload.enrollmentId ?? "")) }, 200, { "Cache-Control": "no-store" });
         } catch (caught) {
           if (caught instanceof AttendancePaymentCardError) {
+            if (caught.code === "disabled") return error("configuration_error", "Ирцээс сурагчийн карт нээхийг админ идэвхгүй болгосон. Төлбөр хэсгээс нээнэ үү.", 409, { "Cache-Control": "no-store" });
             const status = caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : 400;
             const message = caught.code === "forbidden"
               ? "Төлбөрийн дэлгэрэнгүй харах эрх алга."
@@ -1943,12 +1945,14 @@ export async function handleApiRequest(
       try {
         const principal = await staffPrincipalForRequest(request, env);
         if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
-        return json(await getCourseAttendanceDay(
+        const day = await getCourseAttendanceDay(
           env,
           principal,
           url.searchParams.get("date") || undefined,
           url.searchParams.get("occurrence") || "",
-        ), 200, { "Cache-Control": "no-store" });
+        );
+        const preferences = await getTeacherDashboardPreferences(env);
+        return json({ ...day, attendanceStudentCardsEnabled: preferences.attendanceStudentCardsEnabled }, 200, { "Cache-Control": "no-store" });
       } catch (caught) {
         return courseAttendanceError(caught);
       }

@@ -398,6 +398,91 @@ try {
   assert.equal(await page.locator("[data-attendance-row='transfer-target:enrollment'] [data-attendance-control='present']").isChecked(), true, "transferred attendance survives reload");
   assert.equal(await page.locator("[data-attendance-row='bulk-enrollment'] [data-attendance-control='present']").isChecked(), true, "bulk attendance survives reload");
   assert.deepEqual(browserErrors, [], "attendance interaction produces no uncaught browser errors");
+  const settingsBefore = await (await context.request.get(`${baseUrl}/api/staff/dashboard-preferences`)).json();
+  assert.equal(settingsBefore.attendanceStudentCardsEnabled, true, 'migration defaults to enabled');
+  const deniedSetting = await context.request.post(`${baseUrl}/api/staff/program-calendar`, { headers: { Origin: baseUrl }, data: {
+    action: 'teacher-dashboard-preferences.save', ...settingsBefore,
+    expectedUpdatedAt: settingsBefore.updatedAt, attendanceStudentCardsEnabled: false,
+  } });
+  assert.equal(deniedSetting.status(), 403, 'teacher cannot change admin setting');
+  const adminToken = randomUUID();
+  const adminHash = createHash('sha256').update(adminToken).digest('hex');
+  execute(`INSERT INTO staff_account (id,email_normalized,display_name,status,is_test,test_run_id,created_at,updated_at)
+    VALUES ('card-admin','card-admin@example.test','Card Admin','active',1,'attendance-browser',${sql(now)},${sql(now)});
+    INSERT INTO staff_account_role (staff_account_id,role_code,assigned_at) VALUES ('card-admin','admin',${sql(now)});
+    INSERT INTO staff_session (id,staff_account_id,session_token_hash,created_at,expires_at,last_seen_at,is_test,test_run_id)
+    VALUES ('card-admin-session','card-admin',${sql(adminHash)},${sql(now)},'2027-12-31T00:00:00.000Z',${sql(now)},1,'attendance-browser');`);
+  const adminContext = await browser.newContext();
+  const existingCookies = await context.cookies();
+  const sessionCookie = existingCookies.find(cookie => cookie.value === rawSessionToken);
+  assert.ok(sessionCookie, 'test uses the real staff session cookie');
+  await adminContext.addCookies([{ ...sessionCookie, value: adminToken }]);
+  const settingsPage = await adminContext.newPage();
+  await settingsPage.goto(`${baseUrl}/staff/settings/`);
+  await settingsPage.locator('#tool-app').waitFor({ state: 'visible' });
+  await settingsPage.locator('#attendance-card-setting summary').click();
+  await settingsPage.locator('#attendance-card-setting').scrollIntoViewIfNeeded();
+  await settingsPage.screenshot({ path: path.join(screenshotDir, 'attendance-card-setting-desktop.png') });
+  await settingsPage.setViewportSize({ width: 390, height: 844 });
+  await settingsPage.locator('#attendance-card-setting').scrollIntoViewIfNeeded();
+  await settingsPage.screenshot({ path: path.join(screenshotDir, 'attendance-card-setting-mobile.png') });
+  const saveSetting = async enabled => {
+    await settingsPage.locator('#attendance-card-enabled').setChecked(enabled);
+    const saved = settingsPage.waitForResponse(response => response.url().endsWith('/api/staff/program-calendar') && response.request().method() === 'POST');
+    await settingsPage.locator('#attendance-card-setting-form button[type="submit"]').click();
+    assert.equal((await saved).status(), 200);
+    await settingsPage.getByText('Ирцээс карт нээх тохиргоог хадгаллаа.', { exact: true }).waitFor();
+  };
+  await transferred.locator('[data-attendance-card-toggle]').click();
+  await transferredCard.locator('.staff-payment-item').waitFor();
+  await transferredCard.getByRole('button', { name: 'Мэдээлэл', exact: true }).click();
+  await transferredCard.getByRole('heading', { name: 'Асран хамгаалагч', exact: true }).waitFor();
+  await transferredCard.getByRole('button', { name: 'Мэдээлэл засах', exact: true }).click();
+  await schoolDraft.fill('Draft retained across admin disable');
+  await saveSetting(false);
+  const disabledRefresh = page.waitForResponse(response => response.url().includes('attendanceEnrollment=') && response.status() === 409);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await disabledRefresh;
+  await schoolDraft.waitFor({ state: 'visible' });
+  assert.equal(await schoolDraft.inputValue(), 'Draft retained across admin disable', 'disabling entry point is not permission revocation and retains mounted draft');
+  await transferredCard.locator('[data-registration-correction-cancel]').click();
+  await settingsPage.reload();
+  await settingsPage.locator('#tool-app').waitFor({ state: 'visible' });
+  await settingsPage.locator('#attendance-card-setting summary').click();
+  assert.equal(await settingsPage.locator('#attendance-card-enabled').isChecked(), false, 'disabled persists');
+  assert.equal((await context.request.get(`${baseUrl}/api/staff/payments?attendanceEnrollment=transfer-target:enrollment`)).status(), 409, 'scoped load disabled server-side without claiming permission revocation');
+  assert.equal((await context.request.post(`${baseUrl}/api/staff/payments`, { headers: { Origin: baseUrl }, data: { action: 'attendance-payment-card.resolve', enrollmentId: 'transfer-target:enrollment' } })).status(), 409, 'legacy resolver also disabled');
+  assert.equal((await context.request.get(`${baseUrl}/api/staff/payments`)).status(), 200, 'normal Payments unaffected');
+  const disabledRequests = [];
+  page.on('request', request => { if (request.url().includes('/api/staff/payments')) disabledRequests.push(request.url()); });
+  await page.reload();
+  await page.locator('#tool-app').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('[data-attendance-card-toggle]').count(), 0);
+  await page.getByText('Ердийн Ирцийн Сурагч', { exact: true }).click();
+  assert.equal(await page.locator('[data-attendance-card-host]').count(), 0);
+  assert.equal(disabledRequests.length, 0, 'plain name does not load card data');
+  const disabledSave = postFor('ordinary-enrollment');
+  await ordinary.locator('[data-attendance-control="present"]').click();
+  assert.equal((await disabledSave).status(), 200, 'attendance save still works while cards disabled');
+  await ordinary.getByText('Хадгаллаа', { exact: true }).waitFor();
+  await saveSetting(true);
+  await page.reload();
+  await page.locator('#tool-app').waitFor({ state: 'visible' });
+  const reenabledLoad = page.waitForResponse(response => response.url().includes('attendanceEnrollment=') && response.ok());
+  await transferred.locator('[data-attendance-card-toggle]').click();
+  await reenabledLoad;
+  await page.locator('[data-attendance-card-host] .staff-payment-item').waitFor();
+  const loadedCount = disabledRequests.length;
+  await transferred.locator('[data-attendance-card-toggle]').click();
+  await transferred.locator('[data-attendance-card-toggle]').click();
+  assert.equal(disabledRequests.length, loadedCount, 're-enabled card retains cached reopening');
+  await adminContext.close();
+  console.log('ok admin setting persists, denies teacher writes, gates scoped routes, leaves Payments and attendance enabled');
   console.log(`ok ${browserEngine} attendance browser pending locks, bulk guard, rollback, lost-response reconciliation, and reload (${screenshotDir})`);
   }
 } finally {

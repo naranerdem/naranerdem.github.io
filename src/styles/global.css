@@ -1734,6 +1734,20 @@ textarea:focus {
   font-weight: 800;
 }
 
+#attendance-card-setting label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+#attendance-card-setting input[type="checkbox"] {
+  width: 1.25rem;
+  height: 1.25rem;
+  min-height: 1.25rem;
+  flex: 0 0 1.25rem;
+  margin: 0.1rem 0 0;
+}
+
 .staff-settings-navigation {
   display: grid;
   gap: 0.6rem;
