@@ -2755,6 +2755,9 @@ textarea:focus {
   cursor: pointer;
   font: inherit;
   font-weight: 700;
+  align-items: center;
+  display: inline-flex;
+  gap: 0.5rem;
   min-height: 2.75rem;
   padding: 0.35rem 0;
   text-align: left;
@@ -2763,57 +2766,6 @@ textarea:focus {
 .staff-group-toggle span {
   color: var(--muted);
   font-weight: 500;
-}
-
-.staff-group-toggle small {
-  color: var(--blue-deep);
-  font: inherit;
-  font-size: 0.84rem;
-  font-weight: 500;
-  margin-left: 0.35rem;
-}
-
-.staff-stage-section {
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 0.7rem;
-  padding: 0.85rem 0;
-}
-
-.staff-stage-section:first-of-type {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.staff-stage-capacity-summary {
-  display: grid;
-  gap: 0.45rem;
-}
-
-.staff-stage-capacity {
-  padding: 0.7rem 0.85rem;
-}
-
-.staff-stage-child-group {
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 0.7rem;
-  margin-top: 0.25rem;
-  padding-top: 0.9rem;
-}
-
-.staff-stage-child-group + .staff-stage-child-group {
-  margin-top: 1.1rem;
-}
-
-.staff-stage-child-group h4 {
-  font-size: 1rem;
-  margin: 0;
-}
-
-.staff-stage-child-group h4 span {
-  color: var(--muted);
-  font-weight: 400;
 }
 
 .staff-waitlist-subsection {
@@ -2826,28 +2778,43 @@ textarea:focus {
 }
 
 .staff-waitlist-subsection-toggle {
+  align-items: center;
   appearance: none;
   border: 0;
   background: transparent;
   color: var(--blue-deep);
   cursor: pointer;
+  display: inline-flex;
   font-family: inherit;
   font-size: 0.94rem;
   font-style: italic;
   font-weight: 400;
   line-height: 1.3;
-  padding: 0;
+  gap: 0.45rem;
+  min-height: 2.5rem;
+  padding: 0.25rem 0;
   text-align: left;
 }
 
-.staff-waitlist-subsection-toggle span,
-.staff-waitlist-subsection-toggle small {
+.staff-waitlist-subsection-toggle span {
   color: var(--muted);
   font: inherit;
 }
 
-.staff-waitlist-subsection-toggle small {
-  margin-left: 0.25rem;
+.staff-group-toggle::after,
+.staff-waitlist-subsection-toggle::after {
+  border-bottom: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  content: "";
+  height: 0.42rem;
+  transform: rotate(45deg) translateY(-0.15rem);
+  transition: transform 160ms ease;
+  width: 0.42rem;
+}
+
+.staff-group-toggle[aria-expanded="true"]::after,
+.staff-waitlist-subsection-toggle[aria-expanded="true"]::after {
+  transform: rotate(225deg) translateY(-0.1rem);
 }
 
 .staff-section-heading .eyebrow,

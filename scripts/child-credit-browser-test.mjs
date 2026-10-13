@@ -195,11 +195,13 @@ function fixtureSql() {
     INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
       VALUES
       ('browser-offering-high', 'annual_course', 'Browser higher transfer offering', 'browser-year', 'stage_2', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
-      ('browser-offering-low', 'annual_course', 'Browser lower transfer offering', 'browser-year', 'stage_3', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+      ('browser-offering-low', 'annual_course', 'Browser lower transfer offering', 'browser-year', 'stage_3', 1, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+      ('browser-offering-summer', 'summer_course', 'Browser summer program', 'browser-year', 'stage_3', 0, 'paid', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO class_session (id, activity_offering_id, academic_year_id, stage_code, display_label, weekday, start_time, end_time, capacity, status, is_test_only, is_test, test_run_id, created_at, updated_at)
       VALUES
       ('browser-class-high', 'browser-offering-high', 'browser-year', 'stage_2', 'Browser higher transfer class', 'Wednesday', '09:00', '10:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
       ('browser-class-low', 'browser-offering-low', 'browser-year', 'stage_3', 'Browser lower transfer class', 'Thursday', '09:00', '10:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+      ('browser-class-summer', 'browser-offering-summer', 'browser-year', 'stage_3', 'Browser summer class', 'Thursday', '14:00', '15:20', 8, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
       ('browser-class-waitlist', 'browser-offering', 'browser-year', 'stage_1', 'Browser waitlist class', 'Friday', '09:00', '10:20', 30, 'available', 1, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
     INSERT INTO offering_course_pricing (activity_offering_id, one_time_amount_mnt, two_installment_enabled, first_installment_amount_mnt, second_installment_amount_mnt, second_installment_due_on, created_at, updated_at)
       VALUES
@@ -1482,6 +1484,7 @@ async function exerciseStageAccordion(page) {
   await page.goto(`${baseUrl}/staff/payments/`);
   const stageOneToggle = page.locator('[data-group-toggle="stage:stage_1"]');
   const stageTwoToggle = page.locator('[data-group-toggle="stage:stage_2"]');
+  const summerToggle = page.locator('[data-group-toggle="summer:browser-offering-summer"]');
   const paidToggle = page.getByRole("button", { name: /Бүрэн төлсөн/ });
   const partialToggle = page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ });
   const stageOne = page.locator('[data-stage-section="stage_1"]');
@@ -1490,24 +1493,33 @@ async function exerciseStageAccordion(page) {
   await stageOneToggle.click();
   await stageOne.locator('[data-stage-list="stage_1"]').waitFor({ state: "visible" });
   assert.equal(await stageOneToggle.getAttribute("aria-expanded"), "true", "a stage opens through its shared top-level accordion control");
+  assert.match(await stageOneToggle.textContent(), /^1-р шат \(4, сул \d+\)$/, "the flattened stage caption retains its combined child and available-seat counts");
+  assert.doesNotMatch(await stageOneToggle.textContent(), /Нээх|Хаах/, "the stage caption is the disclosure control without visible open or close words");
+  const confirmedToggle = stageOne.getByRole("button", { name: /Баталгаажсан \(2\)/ });
+  const awaitingToggle = stageOne.getByRole("button", { name: /Төлбөр хүлээж буй \(2\)/ });
+  await confirmedToggle.click();
+  await awaitingToggle.click();
   await stageOne.locator(`[data-registration-child="${settledChildId}"]`).waitFor({ state: "visible" });
   await stageOne.locator(`[data-registration-child="${partialChildId}"]`).waitFor({ state: "visible" });
   await stageOne.locator(`[data-registration-child="${pendingFirstChildId}"]`).waitFor({ state: "visible" });
   await stageOne.locator(`[data-registration-child="${pendingSecondChildId}"]`).waitFor({ state: "visible" });
-  await stageOne.getByText("Баталгаажсан (2)").waitFor({ state: "visible" });
-  await stageOne.getByText("Төлбөр хүлээж буй (2)").waitFor({ state: "visible" });
-  const confirmedNames = await stageOne.locator('.staff-stage-child-group').first().locator('[data-registration-child]').evaluateAll((rows) => rows.map((row) => row.getAttribute("data-registration-child")));
+  const confirmedNames = await confirmedToggle.locator("xpath=../..").locator('[data-registration-child]').evaluateAll((rows) => rows.map((row) => row.getAttribute("data-registration-child")));
   assert.deepEqual(confirmedNames, [settledChildId, partialChildId], "confirmed children sort by Mongolian name and remain ahead of later-installment debt");
-  const pendingNames = await stageOne.locator('.staff-stage-child-group').nth(1).locator('[data-registration-child]').evaluateAll((rows) => rows.map((row) => row.getAttribute("data-registration-child")));
+  const pendingNames = await awaitingToggle.locator("xpath=../..").locator('[data-registration-child]').evaluateAll((rows) => rows.map((row) => row.getAttribute("data-registration-child")));
   assert.deepEqual(pendingNames, [pendingFirstChildId, pendingSecondChildId], "unconfirmed payment-waiting children sort independently after confirmed children");
-  const stageOneSummary = stageOne.locator('.staff-stage-capacity-summary');
-  const capacityText = await stageOneSummary.textContent();
-  assert.ok(capacityText?.trim(), "the stage capacity summary remains visible while its list is open");
+  const capacityText = await stageOneToggle.textContent();
+  assert.ok(capacityText?.includes("сул"), "the stage caption remains the visible seat summary while its child lists are open");
+
+  await summerToggle.click();
+  assert.match(await summerToggle.textContent(), /^Browser summer program \(0, сул 8\)$/, "a current summer offering receives its own top-level caption from program data");
+  assert.equal(await stageOneToggle.getAttribute("aria-expanded"), "false", "opening a summer program closes the prior stage list");
 
   await stageTwoToggle.click();
   await stageTwo.locator('[data-stage-list="stage_2"]').waitFor({ state: "visible" });
   assert.equal(await stageOneToggle.getAttribute("aria-expanded"), "false", "opening another stage closes the first top-level child list");
   assert.equal(await stageTwoToggle.getAttribute("aria-expanded"), "true", "the destination stage opens");
+  const stageTwoConfirmed = stageTwo.getByRole("button", { name: /Баталгаажсан \(1\)/ });
+  await stageTwoConfirmed.click();
   await stageTwo.locator(`[data-registration-child="${transferredChildId}"]`).waitFor({ state: "visible" });
   assert.equal(await stageOne.locator(`[data-registration-child="${transferredChildId}"]`).count(), 0,
     "a completed transfer appears only under its effective destination stage, never its historical source stage");
@@ -1524,7 +1536,7 @@ async function exerciseStageAccordion(page) {
   await transferredRow.waitFor({ state: "visible" });
   assert.equal(await transferredRow.locator('[data-installment-schedule-preview] input[name="dueOn"]').inputValue(), "2027-02-01",
     "switching top-level lists preserves an in-progress child edit");
-  assert.equal(await stageOneSummary.textContent(), capacityText, "the seat summary remains visible after the list is collapsed");
+  assert.equal(await stageOneToggle.textContent(), capacityText, "the seat summary remains visible after the list is collapsed");
 
   await paidToggle.click();
   await page.locator(`[data-registration-child="${settledChildId}"]`).waitFor({ state: "visible" });
@@ -1539,11 +1551,25 @@ async function exerciseStageAccordion(page) {
 
   await page.setViewportSize({ width: 1180, height: 900 });
   await stageOneToggle.click();
-  await capturePaymentElement(stageOne, "stage-accordion-desktop.png");
+  await stageOneToggle.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(50);
+  assert.equal(await page.evaluate(() => {
+    const caption = document.querySelector('[data-group-toggle="stage:stage_1"]')?.getBoundingClientRect();
+    const header = document.querySelector('.site-header')?.getBoundingClientRect();
+    return Boolean(caption && header && caption.top >= header.bottom);
+  }), true, "the desktop stage caption remains reachable below the sticky school header");
+  await capturePaymentPanel(page, "stage-accordion-desktop.png");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
     "the desktop stage list does not introduce horizontal overflow");
   await page.setViewportSize({ width: 390, height: 844 });
-  await capturePaymentElement(stageOne, "stage-accordion-mobile.png");
+  await stageOneToggle.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(50);
+  assert.equal(await page.evaluate(() => {
+    const caption = document.querySelector('[data-group-toggle="stage:stage_1"]')?.getBoundingClientRect();
+    const header = document.querySelector('.site-header')?.getBoundingClientRect();
+    return Boolean(caption && header && caption.top >= header.bottom);
+  }), true, "the mobile stage caption remains reachable below the sticky school header");
+  await capturePaymentPanel(page, "stage-accordion-mobile.png");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
     "the mobile stage list keeps cards and controls inside the viewport");
   console.log("ok browser stage accordion membership, sorting, shared opening, and draft preservation");

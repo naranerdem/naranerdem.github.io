@@ -1009,7 +1009,9 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     COALESCE(guardian_account.secondary_phone, registration_draft.secondary_phone) AS secondaryPhone,
     COALESCE(guardian_account.facebook_name, registration_draft.facebook_name) AS guardianFacebookName,
     registration_draft.email, registration_draft.verified_at AS verifiedAt,
-    class_session.stage_code AS stageCode, class_session.display_label AS classLabel, class_session.weekday AS weekday,
+    class_session.id AS classSessionId, class_session.stage_code AS stageCode, class_session.activity_offering_id AS offeringId,
+    activity_offering.kind AS offeringKind, activity_offering.title AS offeringTitle,
+    class_session.display_label AS classLabel, class_session.weekday AS weekday,
     class_session.start_time AS startTime, class_session.end_time AS endTime,
     (SELECT later.id FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
       AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentId,
@@ -1138,6 +1140,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     LEFT JOIN registration_capacity_hold ON registration_capacity_hold.registration_draft_child_id = registration_draft_child.id
       AND registration_capacity_hold.hold_type = 'initial_payment' AND registration_capacity_hold.status = 'active'
     INNER JOIN class_session ON class_session.id = COALESCE(registration_capacity_hold.class_session_id, registration_draft_child.selected_class_session_id)
+    LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
     LEFT JOIN payment_allocation ON payment_allocation.payment_installment_id = payment_installment.id
     LEFT JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
     LEFT JOIN payment_confirmation ON payment_confirmation.received_payment_id = received_payment.id
@@ -1247,11 +1250,15 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     GROUP BY enrollment_fee_adjustment.id
     ORDER BY enrollment_fee_adjustment.adjusted_at DESC`).all<{ id: string; childId: string; reason: string; adjustedAt: string; amountMnt: number }>();
   const capacityRowsPromise = getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
-  const capacityLabelsPromise = env.DB.prepare(`SELECT id, stage_code AS stageCode, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
-    FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
-    ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
-      CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
-    start_time, id`).all<{ id: string; stageCode: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
+  const capacityLabelsPromise = env.DB.prepare(`SELECT class_session.id, class_session.stage_code AS stageCode,
+      class_session.activity_offering_id AS offeringId, activity_offering.kind AS offeringKind,
+      activity_offering.title AS offeringTitle, class_session.display_label AS classLabel,
+      class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime
+    FROM class_session LEFT JOIN activity_offering ON activity_offering.id = class_session.activity_offering_id
+    WHERE class_session.status IN ('available', 'full')${env.APP_ENV === "production" ? " AND class_session.is_test = 0 AND class_session.is_test_only = 0" : ""}
+    ORDER BY CASE class_session.stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
+      CASE class_session.weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
+    class_session.start_time, class_session.id`).all<{ id: string; stageCode: string; offeringId: string | null; offeringKind: string | null; offeringTitle: string | null; classLabel: string; weekday: string; startTime: string; endTime: string }>();
   const [result, credits, discountCredits, cancelled, releasedSeats, waiverRows, adjustmentRows, capacityRows, capacityLabels] = await Promise.all([
     paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, releasedSeatsPromise, waiverRowsPromise, adjustmentRowsPromise, capacityRowsPromise, capacityLabelsPromise,
   ]);
