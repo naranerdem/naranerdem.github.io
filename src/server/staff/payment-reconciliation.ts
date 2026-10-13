@@ -1009,7 +1009,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     COALESCE(guardian_account.secondary_phone, registration_draft.secondary_phone) AS secondaryPhone,
     COALESCE(guardian_account.facebook_name, registration_draft.facebook_name) AS guardianFacebookName,
     registration_draft.email, registration_draft.verified_at AS verifiedAt,
-    class_session.display_label AS classLabel, class_session.weekday AS weekday,
+    class_session.stage_code AS stageCode, class_session.display_label AS classLabel, class_session.weekday AS weekday,
     class_session.start_time AS startTime, class_session.end_time AS endTime,
     (SELECT later.id FROM payment_installment AS later WHERE later.registration_draft_child_id = registration_draft_child.id
       AND later.installment_kind = 'later' ORDER BY later.installment_number LIMIT 1) AS laterInstallmentId,
@@ -1247,11 +1247,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     GROUP BY enrollment_fee_adjustment.id
     ORDER BY enrollment_fee_adjustment.adjusted_at DESC`).all<{ id: string; childId: string; reason: string; adjustedAt: string; amountMnt: number }>();
   const capacityRowsPromise = getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
-  const capacityLabelsPromise = env.DB.prepare(`SELECT id, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
+  const capacityLabelsPromise = env.DB.prepare(`SELECT id, stage_code AS stageCode, display_label AS classLabel, weekday, start_time AS startTime, end_time AS endTime
     FROM class_session WHERE status IN ('available', 'full')${env.APP_ENV === "production" ? " AND is_test = 0 AND is_test_only = 0" : ""}
     ORDER BY CASE stage_code WHEN 'stage_1' THEN 1 WHEN 'stage_2' THEN 2 WHEN 'stage_3' THEN 3 ELSE 9 END,
       CASE weekday WHEN 'Даваа' THEN 1 WHEN 'Мягмар' THEN 2 WHEN 'Лхагва' THEN 3 WHEN 'Пүрэв' THEN 4 WHEN 'Баасан' THEN 5 WHEN 'Бямба' THEN 6 WHEN 'Ням' THEN 7 ELSE 9 END,
-      start_time, id`).all<{ id: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
+    start_time, id`).all<{ id: string; stageCode: string; classLabel: string; weekday: string; startTime: string; endTime: string }>();
   const [result, credits, discountCredits, cancelled, releasedSeats, waiverRows, adjustmentRows, capacityRows, capacityLabels] = await Promise.all([
     paymentRowsPromise, creditsPromise, discountCreditsPromise, cancelledPromise, releasedSeatsPromise, waiverRowsPromise, adjustmentRowsPromise, capacityRowsPromise, capacityLabelsPromise,
   ]);

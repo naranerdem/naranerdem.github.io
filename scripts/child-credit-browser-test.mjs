@@ -32,12 +32,16 @@ const paymentPanelBrowser = process.env.PAYMENT_PANEL_BROWSER || "chromium";
 const usingWebKit = paymentPanelBrowser === "webkit" || paymentPanelBrowser === "webkit-desktop";
 const paymentLayoutDiagnostics = process.env.PAYMENT_PANEL_UI_DIAGNOSTICS === "1";
 const lateReferralBrowserOnly = process.env.LATE_REFERRAL_BROWSER_ONLY === "1";
+const stageAccordionBrowserOnly = process.env.STAGE_ACCORDION_BROWSER_ONLY === "1";
 const paymentPlanChangeBrowserOnly = process.env.PAYMENT_PLAN_CHANGE_BROWSER_ONLY === "1";
 if (process.env.PAYMENT_RECEIPT_CORRECTION_BROWSER_ONLY === "1") {
   console.log("starting focused receipt-correction browser workflow");
 }
 if (paymentPlanChangeBrowserOnly) {
   console.log("starting focused payment-plan-change browser workflow");
+}
+if (stageAccordionBrowserOnly) {
+  console.log("starting focused stage accordion browser workflow");
 }
 
 async function capturePaymentPanel(page, name) {
@@ -255,12 +259,13 @@ async function waitForDb(query, predicate, label) {
 async function fillIntake(page, childName, paymentPlanCode = "two_installment", options = {}) {
   const stage = options.stage ?? "stage_1";
   const classSessionId = options.classSessionId ?? "browser-class-source";
+  const emailSlug = options.emailSlug ?? childName.toLowerCase();
   await page.goto(`${baseUrl}/staff/registration-intake/`);
   await page.locator("#intake-app").waitFor({ state: "visible" });
   await page.selectOption('select[name="intakeChannel"]', "paper_form");
   await page.fill('input[name="guardianName"]', `Browser guardian ${childName}`);
   await page.selectOption('select[name="guardianRelationship"]', "Ээж");
-  await page.fill('input[name="guardianEmail"]', `${childName.toLowerCase()}@example.test`);
+  await page.fill('input[name="guardianEmail"]', `${emailSlug}@example.test`);
   await page.fill('input[name="guardianPhone"]', "99112233");
   await page.fill('input[name="guardianSecondaryPhone"]', "00112233");
   await page.fill('input[name="guardianFacebook"]', `Browser guardian ${childName}`);
@@ -1423,6 +1428,127 @@ async function exercisePaymentPlanChange(page) {
   console.log("ok browser payment-plan change review, save, reload, and later-payment target");
 }
 
+function seedStageAccordionTransferFixture() {
+  const now = new Date().toISOString();
+  const childId = "browser-stage-transferred-child";
+  execute(`INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-stage-guardian', 'Stage guardian', '99124444', '99124444', 'stage@example.test', 'stage@example.test', 'Address', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO student (id, surname, given_name, gender, date_of_birth, status, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-stage-student', 'Browser', 'Шилжсэн', 'female', '2015-05-10', 'active', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO pre_registration (id, guardian_id, academic_year_id, status, submitted_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-stage-pre-source', 'browser-stage-guardian', 'browser-year', 'completed', ${sql(now)}, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+        ('browser-stage-pre-current', 'browser-stage-guardian', 'browser-year', 'completed', ${sql(now)}, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO application_child (id, pre_registration_id, student_id, current_grade, returning_status, status, selected_payment_plan_code, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-stage-app-source', 'browser-stage-pre-source', 'browser-stage-student', 5, 'new', 'enrolled', 'two_installment', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+        ('browser-stage-app-current', 'browser-stage-pre-current', 'browser-stage-student', 5, 'new', 'enrolled', 'two_installment', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO enrollment (id, application_child_id, student_id, academic_year_id, class_session_id, status, confirmed_at, is_test, test_run_id, created_at, updated_at, transferred_out_at)
+      VALUES ('browser-stage-source-enrollment', 'browser-stage-app-source', 'browser-stage-student', 'browser-year', 'browser-class-source', 'confirmed', ${sql(now)}, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}, ${sql(now)}),
+        ('browser-stage-current-enrollment', 'browser-stage-app-current', 'browser-stage-student', 'browser-year', 'browser-class-high', 'confirmed', ${sql(now)}, 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}, NULL);
+    INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, verified_at, expires_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-stage-draft', ${sql("t".repeat(64))}, 'browser-year', 'Stage guardian', 'Parent', '99124444', 'stage@example.test', 'stage@example.test', 'Address', 'two_installment', 'browser-parent-rules', 'browser-student-rules', 'awaiting_initial_payment', ${sql(now)}, '2027-12-31T00:00:00.000Z', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, is_test, test_run_id, created_at, updated_at, canonical_student_id, canonical_application_child_id, canonical_enrollment_id)
+      VALUES (${sql(childId)}, 'browser-stage-draft', 0, 'Browser', 'Шилжсэн', 'female', '2015-05-10', '5', 'School', 'new', 'stage_2', 'browser-class-high', 'two_installment', 650000, 'awaiting_initial_payment', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}, 'browser-stage-student', 'browser-stage-app-current', 'browser-stage-current-enrollment');
+    INSERT INTO payment_request (id, registration_draft_id, payment_reference, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-stage-request', 'browser-stage-draft', 'NE-STAGE-BROWSER', ${sql(now)}, ${sql(now)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('browser-stage-first', 'browser-stage-request', ${sql(childId)}, 1, 'initial', 650000, '2026-09-12T15:59:59.999Z', '2026-09-12T15:59:59.999Z', 60, '2026-09-12T14:59:59.999Z', 'paid', 'browser-stage-app-current', 'browser-stage-current-enrollment', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)}),
+        ('browser-stage-second', 'browser-stage-request', ${sql(childId)}, 2, 'later', 650000, '2027-01-25T15:59:59.999Z', '2027-01-25T15:59:59.999Z', 60, '2027-01-25T14:59:59.999Z', 'pending', 'browser-stage-app-current', 'browser-stage-current-enrollment', 1, ${sql(testRunId)}, ${sql(now)}, ${sql(now)});
+    INSERT INTO received_payment (id, payment_request_id, received_amount_mnt, received_at, payment_source, reconciliation_status, confirmed_at, idempotency_key, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-stage-receipt', 'browser-stage-request', 650000, '2026-10-04T03:05:00.000Z', 'staff_manual_bank', 'confirmed', '2026-10-04T03:05:00.000Z', 'browser-stage-receipt', ${sql(now)}, ${sql(now)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_confirmation (id, received_payment_id, payment_request_id, status, finalize_after, seat_confirmation_approved, remaining_payment_due_at, finalized_at, created_at, updated_at, is_test, test_run_id)
+      VALUES ('browser-stage-confirmation', 'browser-stage-receipt', 'browser-stage-request', 'finalized', '2026-10-04T03:05:00.000Z', 1, '2027-01-25T15:59:59.999Z', '2026-10-04T03:05:00.000Z', ${sql(now)}, ${sql(now)}, 1, ${sql(testRunId)});
+    INSERT INTO payment_allocation (id, received_payment_id, payment_installment_id, allocated_amount_mnt, allocated_at, created_at, is_test, test_run_id)
+      VALUES ('browser-stage-allocation', 'browser-stage-receipt', 'browser-stage-first', 650000, '2026-10-04T03:05:00.000Z', ${sql(now)}, 1, ${sql(testRunId)});
+    INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, target_enrollment_id, target_application_child_id, source_class_session_id, target_class_session_id, reason, created_by_staff_account_id, idempotency_key, source_payment_plan_code, target_payment_plan_code, source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt, recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, status, version, created_at, updated_at, completed_at, is_test, test_run_id)
+      VALUES ('browser-stage-transfer', 'browser-stage-source-enrollment', 'browser-stage-app-source', 'browser-stage-current-enrollment', 'browser-stage-app-current', 'browser-class-source', 'browser-class-high', 'Browser completed transfer', 'browser-credit-teacher', 'browser-stage-transfer', 'two_installment', 'two_installment', '{}', '{}', 1300000, 1300000, 650000, 0, 0, 'completed', 1, ${sql(now)}, ${sql(now)}, ${sql(now)}, 1, ${sql(testRunId)});`);
+  return childId;
+}
+
+async function exerciseStageAccordion(page) {
+  const transferredChildId = seedStageAccordionTransferFixture();
+  execute("UPDATE payment_confirmation_grace_setting SET grace_minutes = 0 WHERE singleton = 1;");
+
+  const settledChildId = await fillIntake(page, "Амар", "single", { emailSlug: "stage-amar" });
+  await recordCashPayment(page, settledChildId, 1000, { successText: "Төлбөр бүртгэгдэж, суудал баталгаажлаа." });
+  await finalizeCashRegistration(page, settledChildId);
+
+  const partialChildId = await fillIntake(page, "Болд", "two_installment", { emailSlug: "stage-bold" });
+  await recordCashPayment(page, partialChildId, 500, { successText: "Төлбөр бүртгэгдэж, суудал баталгаажлаа." });
+  await finalizeCashRegistration(page, partialChildId);
+
+  const pendingFirstChildId = await fillIntake(page, "Ганаа", "single", { emailSlug: "stage-ganaa" });
+  const pendingSecondChildId = await fillIntake(page, "Дорж", "single", { emailSlug: "stage-dorj" });
+
+  await page.goto(`${baseUrl}/staff/payments/`);
+  const stageOneToggle = page.locator('[data-group-toggle="stage:stage_1"]');
+  const stageTwoToggle = page.locator('[data-group-toggle="stage:stage_2"]');
+  const paidToggle = page.getByRole("button", { name: /Бүрэн төлсөн/ });
+  const partialToggle = page.getByRole("button", { name: /Хэсэгчлэн төлсөн/ });
+  const stageOne = page.locator('[data-stage-section="stage_1"]');
+  const stageTwo = page.locator('[data-stage-section="stage_2"]');
+
+  await stageOneToggle.click();
+  await stageOne.locator('[data-stage-list="stage_1"]').waitFor({ state: "visible" });
+  assert.equal(await stageOneToggle.getAttribute("aria-expanded"), "true", "a stage opens through its shared top-level accordion control");
+  await stageOne.locator(`[data-registration-child="${settledChildId}"]`).waitFor({ state: "visible" });
+  await stageOne.locator(`[data-registration-child="${partialChildId}"]`).waitFor({ state: "visible" });
+  await stageOne.locator(`[data-registration-child="${pendingFirstChildId}"]`).waitFor({ state: "visible" });
+  await stageOne.locator(`[data-registration-child="${pendingSecondChildId}"]`).waitFor({ state: "visible" });
+  await stageOne.getByText("Баталгаажсан (2)").waitFor({ state: "visible" });
+  await stageOne.getByText("Төлбөр хүлээж буй (2)").waitFor({ state: "visible" });
+  const confirmedNames = await stageOne.locator('.staff-stage-child-group').first().locator('[data-registration-child]').evaluateAll((rows) => rows.map((row) => row.getAttribute("data-registration-child")));
+  assert.deepEqual(confirmedNames, [settledChildId, partialChildId], "confirmed children sort by Mongolian name and remain ahead of later-installment debt");
+  const pendingNames = await stageOne.locator('.staff-stage-child-group').nth(1).locator('[data-registration-child]').evaluateAll((rows) => rows.map((row) => row.getAttribute("data-registration-child")));
+  assert.deepEqual(pendingNames, [pendingFirstChildId, pendingSecondChildId], "unconfirmed payment-waiting children sort independently after confirmed children");
+  const stageOneSummary = stageOne.locator('.staff-stage-capacity-summary');
+  const capacityText = await stageOneSummary.textContent();
+  assert.ok(capacityText?.trim(), "the stage capacity summary remains visible while its list is open");
+
+  await stageTwoToggle.click();
+  await stageTwo.locator('[data-stage-list="stage_2"]').waitFor({ state: "visible" });
+  assert.equal(await stageOneToggle.getAttribute("aria-expanded"), "false", "opening another stage closes the first top-level child list");
+  assert.equal(await stageTwoToggle.getAttribute("aria-expanded"), "true", "the destination stage opens");
+  await stageTwo.locator(`[data-registration-child="${transferredChildId}"]`).waitFor({ state: "visible" });
+  assert.equal(await stageOne.locator(`[data-registration-child="${transferredChildId}"]`).count(), 0,
+    "a completed transfer appears only under its effective destination stage, never its historical source stage");
+
+  const transferredRow = stageTwo.locator(`[data-registration-child="${transferredChildId}"]`);
+  const detail = transferredRow.getByRole("button", { name: "Нээх" });
+  if (await detail.isVisible().catch(() => false)) await detail.click();
+  await transferredRow.locator('[data-payment-open]').click();
+  await transferredRow.locator('[data-payment-tool="schedule"]').click();
+  const draftInput = transferredRow.locator('[data-installment-schedule-preview] input[name="dueOn"]');
+  await draftInput.fill("2027-02-01");
+  await stageOneToggle.click();
+  await stageTwoToggle.click();
+  await transferredRow.waitFor({ state: "visible" });
+  assert.equal(await transferredRow.locator('[data-installment-schedule-preview] input[name="dueOn"]').inputValue(), "2027-02-01",
+    "switching top-level lists preserves an in-progress child edit");
+  assert.equal(await stageOneSummary.textContent(), capacityText, "the seat summary remains visible after the list is collapsed");
+
+  await paidToggle.click();
+  await page.locator(`[data-registration-child="${settledChildId}"]`).waitFor({ state: "visible" });
+  assert.equal(await stageTwoToggle.getAttribute("aria-expanded"), "false", "opening a payment category closes an open stage list");
+  assert.equal(await paidToggle.getAttribute("aria-expanded"), "true", "the payment category is now the single open top-level list");
+  await stageTwoToggle.click();
+  await stageTwo.locator('[data-stage-list="stage_2"]').waitFor({ state: "visible" });
+  assert.equal(await paidToggle.getAttribute("aria-expanded"), "false", "opening a stage closes the payment category");
+  await stageTwoToggle.click();
+  assert.equal(await stageTwoToggle.getAttribute("aria-expanded"), "false", "clicking the open stage closes every top-level child list");
+  assert.equal(await partialToggle.getAttribute("aria-expanded"), "false", "all payment categories remain closed after toggling a stage shut");
+
+  await page.setViewportSize({ width: 1180, height: 900 });
+  await stageOneToggle.click();
+  await capturePaymentElement(stageOne, "stage-accordion-desktop.png");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    "the desktop stage list does not introduce horizontal overflow");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await capturePaymentElement(stageOne, "stage-accordion-mobile.png");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    "the mobile stage list keeps cards and controls inside the viewport");
+  console.log("ok browser stage accordion membership, sorting, shared opening, and draft preservation");
+}
+
 try {
   if (process.env.NARANERDEM_BROWSER_SKIP_MIGRATIONS !== "1") {
     runWrangler(["d1", "migrations", "apply", "DB", "--env", "staging", "--local", "--persist-to", persistDir], "local migrations");
@@ -1447,7 +1573,7 @@ try {
         first_installment_amount_mnt = 650000, second_installment_amount_mnt = 650000,
         updated_at = ${sql(new Date().toISOString())} WHERE activity_offering_id = 'browser-offering'`);
     }
-    if (!releasedSeatHistoryBrowserOnly && !lateReferralBrowserOnly && !paymentPlanChangeBrowserOnly) {
+    if (!releasedSeatHistoryBrowserOnly && !lateReferralBrowserOnly && !paymentPlanChangeBrowserOnly && !stageAccordionBrowserOnly) {
       publicTwoInstallmentChildId = await submitPublicRegistration(browser, {
         childName: "PublicTwoInstallment",
         email: "browser-public-two@example.test",
@@ -1477,6 +1603,8 @@ try {
     await captureSpecialPaymentStates(page, captureScenario);
   } else if (lateReferralBrowserOnly) {
     await exerciseLateReferralExternalSettlement(browser, page);
+  } else if (stageAccordionBrowserOnly) {
+    await exerciseStageAccordion(page);
   } else if (paymentPlanChangeBrowserOnly) {
     await exercisePaymentPlanChange(page);
   } else if (releasedSeatHistoryBrowserOnly) {

@@ -369,9 +369,19 @@ assert.match(page, /specialOptions/, "the special panel keeps only the selected 
 assert.match(page, /Төлбөр орсон гэж бүртгэхгүй/, "zero-payment confirmation does not claim a receipt was recorded");
 assert.match(page, /staff-special-payment-actions/, "the selected special action has an explicit full-width owner");
 assert.match(page, /data-special-action-cancel=/, "special-action cancellation preserves its draft without making a financial request");
-assert.match(page, /const groupOpen = \(title\) => state\.openGroups\[title\] \?\? false/, "all top-level sections start collapsed on an ordinary fresh entry");
+assert.match(page, /const groupOpen = \(key\) => state\.openGroups\[key\] \?\? false/, "all top-level sections start collapsed on an ordinary fresh entry");
 assert.match(page, /return state\.openWaitlistSections\[key\] \?\? selected/, "waitlist subsections start collapsed unless an explicit selected-record navigation opens one");
-assert.match(page, /state\.openGroups\["Хүлээлгийн жагсаалт"\] = true/, "explicit waitlist navigation opens only its enclosing group");
+assert.match(page, /const setOpenTopLevelList = \(key, open = true\) => \{ state\.openGroups = open \? \{ \[key\]: true \} : \{\}; \}/,
+  "one helper owns the shared top-level accordion state");
+assert.match(page, /if \(target\.dataset\.groupToggle\) \{ const group = target\.dataset\.groupToggle; setOpenTopLevelList\(group, !groupOpen\(group\)\); render\(\);/,
+  "the shared top-level accordion helper is available to the delegated click handler");
+assert.match(page, /setOpenTopLevelList\("Хүлээлгийн жагсаалт"\)/, "explicit waitlist navigation opens only its enclosing group");
+assert.match(paymentService, /class_session\.stage_code AS stageCode/, "the payment queue exposes the authoritative current class stage");
+assert.match(page, /stageGroupKey\(stageCode\)/, "stage lists use distinct top-level accordion keys");
+assert.match(page, /new Intl\.Collator\("mn"/, "stage children use Mongolian-aware name ordering");
+assert.match(page, /Boolean\(item\.canonicalEnrollmentId\)/, "stage lists distinguish confirmed enrollments from registrations awaiting payment");
+assert.match(page, /data-stage-list=/, "each stage owns an accessible expandable child-list region");
+assert.match(page, /staff-stage-capacity-summary/, "seat summaries remain outside each collapsible stage list");
 assert.match(page, /paymentDetailSelection\.onRefresh\(state\.data\.items\)/, "refresh preserves the explicit record selection state");
 assert.match(page, /class="staff-back-link" href="\/staff\/">Буцах<\//, "back remains an arrow-free text navigation link");
 assert.match(page, /data-payment-detail=.*aria-expanded="false".*Нээх/, "a closed payment summary uses an accessible in-place disclosure toggle");
