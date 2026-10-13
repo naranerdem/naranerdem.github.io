@@ -193,7 +193,7 @@ try {
   paymentsPage.on("pageerror", (error) => browserErrors.push(error.message));
   await paymentsPage.goto(`${baseUrl}/staff/payments/`);
   await paymentsPage.locator("#tool-app").waitFor({ state: "visible" });
-  await paymentsPage.locator('[data-group-toggle="Хэсэгчлэн төлсөн"]').click();
+  await paymentsPage.locator('[data-group-toggle="Төлбөр хүлээж байна"]').click();
   const paymentsItem = paymentsPage.locator(".staff-payment-item").filter({ hasText: "Шилжсэн Ирцийн Сурагч" });
   await paymentsItem.getByRole("button", { name: "Нээх", exact: true }).click();
   await paymentsItem.getByRole("button", { name: "Мэдээлэл", exact: true }).waitFor({ state: "visible" });
