@@ -3727,25 +3727,16 @@ textarea:focus {
   margin: 0 0 0.45rem;
 }
 
-.staff-attendance-payment-card iframe {
-  background: transparent;
-  border: 0;
-  display: block;
-  min-height: 18rem;
-  width: 100%;
+.staff-attendance-card-host {
+  min-width: 0;
 }
 
-body[data-embedded-payment-card="true"] {
-  background: transparent;
+.staff-attendance-card-host .staff-payment-embedded-card {
+  margin: 0;
 }
 
-body[data-embedded-payment-card="true"] .site-header,
-body[data-embedded-payment-card="true"] .staff-payment-heading,
-body[data-embedded-payment-card="true"] .staff-registration-intake-nav,
-body[data-embedded-payment-card="true"] #payment-timing-diagnostics,
-body[data-embedded-payment-card="true"] #datetime-layout-diagnostics,
-body[data-embedded-payment-card="true"] #payment-copy-fallback {
-  display: none !important;
+.staff-attendance-card-host .staff-payment-item {
+  background: transparent;
 }
 
 body[data-embedded-payment-card="true"] .staff-shell {

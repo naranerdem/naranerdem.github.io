@@ -8,7 +8,10 @@ export class AttendancePaymentCardError extends Error {
   }
 }
 
-const enrollmentIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+// Canonical enrollments created by older registrations use a stable
+// `<registration-child-id>:enrollment` identity.  Keep the input bounded and
+// structural, but do not reject that recorded form before lineage resolution.
+const enrollmentIdPattern = /^[A-Za-z0-9][A-Za-z0-9_:-]{0,159}$/;
 
 // An attendance occurrence can legitimately point to a source enrollment that
 // has since transferred. Follow completed transfer lineage to the current

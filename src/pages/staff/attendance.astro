@@ -45,6 +45,7 @@ import "../../styles/global.css";
         markedRosterCount,
       } from "../../scripts/attendance-optimistic.js";
       import { escape, formatDate, getAttendanceDay, getStaffCapabilities, postAttendanceAction, postCourseMakeupAction } from "../../scripts/staff-setup.js";
+      import { mountAttendanceStudentCard } from "../../scripts/staff-payments-page.js";
 
       const params = new URLSearchParams(location.search);
       const safeHomeDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : "";
@@ -56,7 +57,7 @@ import "../../styles/global.css";
       if (homeDate) homeReturn.set("date", homeDate);
       if (homeDay) homeReturn.set("day", homeDay);
       const returnTo = homeReturn.size ? `/staff/?${homeReturn.toString()}` : "/staff/";
-      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrors: new Map(), rowRequestErrors: new Map(), rowSuccessMessages: new Map(), rowSuccessTimers: new Map(), refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0, makeupPickerLoads: new Map(), openCard: null };
+      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrors: new Map(), rowRequestErrors: new Map(), rowSuccessMessages: new Map(), rowSuccessTimers: new Map(), refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0, makeupPickerLoads: new Map(), openCard: null, cardMountVersion: 0 };
       const q = (selector) => document.querySelector(selector);
       q("#attendance-back").href = returnTo;
       q("#attendance-back").addEventListener("click", (event) => {
@@ -142,8 +143,7 @@ import "../../styles/global.css";
         const selected = state.data?.selected;
         const context = `${formatDate(selected.localDate)} · ${selected.startTime}–${selected.endTime}`;
         const source = entry.attendanceKind === "makeup" ? "Энэ нь нөхөх хичээлийн ирц; доорх карт нь хүүхдийн одоогийн бүртгэлийг харуулна." : "Энэ нь сонгосон өдрийн ирц; доорх карт нь хүүхдийн одоогийн бүртгэлийг харуулна.";
-        const query = new URLSearchParams({ embedded: "1", attendanceEnrollment: entry.enrollmentId, attendanceToken: card.token });
-        return `<section id="attendance-card-${escape(entry.enrollmentId)}" class="staff-attendance-payment-card" data-attendance-card="${escape(entry.enrollmentId)}"><p class="staff-muted">${escape(context)} · ${escape(source)}</p><iframe title="${escape(entry.displayName)}-ийн бүртгэл, төлбөрийн карт" src="/staff/payments/?${query.toString()}" data-attendance-card-frame="${escape(entry.enrollmentId)}" data-attendance-card-token="${escape(card.token)}" loading="eager"></iframe></section>`;
+        return `<section id="attendance-card-${escape(entry.enrollmentId)}" class="staff-attendance-payment-card" data-attendance-card="${escape(entry.enrollmentId)}"><p class="staff-muted">${escape(context)} · ${escape(source)}</p><div class="staff-attendance-card-host" data-attendance-card-host="${escape(entry.enrollmentId)}"><p class="staff-muted" role="status">Карт ачаалж байна…</p></div></section>`;
       }
 
       function rosterStudentMarkup(entry) {
@@ -268,6 +268,22 @@ import "../../styles/global.css";
           : `<p class="staff-empty">Бүртгэлтэй сурагч алга.</p>`;
         detail.innerHTML = `<div class="staff-section-heading"><div><p class="eyebrow">${escape(formatDate(selected.localDate))} · ${escape(selected.occurrenceWeekday)} · ${escape(selected.startTime)}–${escape(selected.endTime)}</p><h2>${escape(selected.offeringTitle)}</h2><p>${escape(scheduleContext)} · ${selected.lessonSequence}. ${escape(selected.lessonTitle)}</p>${selected.holidayLabel ? `<p class="staff-calendar-warning">Анхааруулга: ${escape(selected.holidayLabel)} хугацаанд.</p>` : ""}</div>${add}</div><div id="attendance-summary" class="staff-attendance-summary"></div>${makeupPickerMarkup(selected)}${selected.rosterCount ? `<div class="staff-attendance-roster">${selected.roster.map(rosterRow).join("")}</div>` : emptyRoster}`;
         renderSummary();
+        void mountOpenAttendanceCard();
+      }
+
+      async function mountOpenAttendanceCard() {
+        const card = state.openCard;
+        const entry = state.data?.selected?.roster.find((row) => row.enrollmentId === card?.enrollmentId);
+        if (!card || card.slotId !== state.selectedSlotId || !entry) return;
+        const host = q(`[data-attendance-card-host="${CSS.escape(entry.enrollmentId)}"]`);
+        if (!host) return;
+        const version = ++state.cardMountVersion;
+        try {
+          await mountAttendanceStudentCard(host, { enrollmentId: entry.enrollmentId, displayName: entry.displayName });
+        } catch (error) {
+          if (version !== state.cardMountVersion || state.openCard !== card || !host.isConnected) return;
+          host.innerHTML = `<p class="staff-error-inline" role="status">${escape(error.message || "Карт ачаалж чадсангүй.")}</p><button type="button" class="button secondary" data-attendance-card-retry="${escape(entry.enrollmentId)}">Дахин ачаалах</button>`;
+        }
       }
 
       const makeupSourceKey = (entry) => `${entry.enrollmentId}|${entry.classSessionId}|${entry.curriculumLessonId}`;
@@ -414,10 +430,12 @@ import "../../styles/global.css";
         if (!target || target.disabled) return;
         if (target.dataset.attendanceCardToggle) {
           const enrollmentId = target.dataset.attendanceCardToggle;
+          ++state.cardMountVersion;
           state.openCard = attendanceCardOpen({ enrollmentId }) ? null : { enrollmentId, slotId: state.selectedSlotId, token: crypto.randomUUID() };
           renderDetail();
           return;
         }
+        if (target.dataset.attendanceCardRetry) { void mountOpenAttendanceCard(); return; }
         if (target.dataset.openMakeupPicker !== undefined || target.dataset.retryMakeupPicker !== undefined) { loadMakeupPicker(target.dataset.retryMakeupPicker !== undefined); return; }
         if (target.dataset.closeMakeupPicker !== undefined) { ++state.makeupPickerVersion; state.makeupPicker = null; renderDetail(); return; }
         if (target.dataset.editMakeupPicker !== undefined) {
@@ -497,15 +515,6 @@ import "../../styles/global.css";
       q("#attendance-list").addEventListener("click", (event) => {
         const target = event.target.closest("[data-open-occurrence]");
         if (!target || !canChangeOccurrence(event)) return;
-      });
-      window.addEventListener("message", (event) => {
-        const detail = event.data;
-        if (event.origin !== window.location.origin || detail?.type !== "naran-erdem.attendance-payment-card-height") return;
-        const card = state.openCard;
-        if (!card || detail.token !== card.token || !Number.isFinite(detail.height)) return;
-        const frame = q(`[data-attendance-card-frame="${card.enrollmentId}"]`);
-        if (!frame || frame.contentWindow !== event.source || frame.dataset.attendanceCardToken !== card.token) return;
-        frame.style.height = `${Math.max(260, Math.min(4200, Math.ceil(detail.height) + 2))}px`;
       });
       function render() { renderList(); renderDetail(); }
       q("#attendance-date-form").onsubmit = (event) => { event.preventDefault(); if (!canChangeOccurrence(event)) return; ++state.makeupPickerVersion; state.makeupPicker = null; state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };

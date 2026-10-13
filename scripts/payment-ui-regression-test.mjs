@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const page = readFileSync("src/pages/staff/payments.astro", "utf8");
+// The Payments page shell imports its shared card/controller module.  Treat
+// both as the staff surface for these focused structural assertions.
+const page = [
+  readFileSync("src/pages/staff/payments.astro", "utf8"),
+  readFileSync("src/scripts/staff-payments-page.js", "utf8"),
+].join("\n");
 const staffSetup = readFileSync("src/scripts/staff-setup.js", "utf8");
 const styles = readFileSync("src/styles/global.css", "utf8");
 const reports = readFileSync("src/scripts/staff-reports.js", "utf8");
@@ -12,6 +17,7 @@ const transfer = readFileSync("src/server/staff/class-transfer.ts", "utf8");
 const paymentPlanChange = readFileSync("src/server/staff/payment-plan-change.ts", "utf8");
 const waitlistOfferPage = readFileSync("src/pages/waitlist-offer.astro", "utf8");
 const registerPage = readFileSync("src/pages/register.astro", "utf8");
+const attendancePage = readFileSync("src/pages/staff/attendance.astro", "utf8");
 assert.match(page, /timeZone: "Asia\/Ulaanbaatar"/);
 assert.match(page, /button\("referral", "Урилга"/, "teachers with registration permission receive the compact late-referral action in the shared detail strip");
 assert.match(page, /data-late-referral-code=/, "the referral workflow begins with the existing referral code rather than free-text identity matching");
@@ -395,7 +401,9 @@ assert.match(page, /paymentDetailSelection\.onRefresh\(state\.data\.items\)/, "r
 assert.match(page, /class="staff-back-link" href="\/staff\/">Буцах<\//, "back remains an arrow-free text navigation link");
 assert.match(page, /data-payment-detail=.*aria-expanded="false".*Нээх/, "a closed payment summary uses an accessible in-place disclosure toggle");
 assert.match(page, /staff-payment-item \$\{overdue \? "is-overdue" : ""\} \$\{open \? "is-open" : ""\}/, "the open payment record owns summary and detail in one structural container");
-assert.match(page, /attendance-payment-card\.resolve/, "the embedded attendance card resolves a current payment record through a guarded on-demand API request");
+assert.match(page, /mountAttendanceStudentCard/, "the Payments card controller exposes the direct attendance mount path");
+assert.match(attendancePage, /mountAttendanceStudentCard/, "Attendance mounts the shared Payments card controller on demand");
+assert.doesNotMatch(attendancePage, /<iframe/, "Attendance does not embed the Payments page in an iframe");
 assert.match(router, /attendance-payment-card\.resolve/, "the staff API exposes the payment-view-gated attendance card resolver");
 assert.match(page, /class="staff-payment-summary"/, "the row summary is structurally distinct from the owned expanded detail");
 assert.match(page, /class="staff-payment-detail"/, "expanded content has an explicit owned detail container");
