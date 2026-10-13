@@ -3717,26 +3717,15 @@ textarea:focus {
 }
 
 .staff-attendance-payment-card {
-  border-left: 3px solid rgba(7, 58, 175, 0.6);
-  background: #e2f0e6;
   margin: 0.5rem 0 0;
-  padding: 0.65rem;
-}
-
-.staff-attendance-payment-card > p {
-  margin: 0 0 0.45rem;
 }
 
 .staff-attendance-card-host {
   min-width: 0;
 }
 
-.staff-attendance-card-host .staff-payment-embedded-card {
-  margin: 0;
-}
-
 .staff-attendance-card-host .staff-payment-item {
-  background: transparent;
+  margin: 0;
 }
 
 body[data-embedded-payment-card="true"] .staff-shell {

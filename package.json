@@ -36,6 +36,7 @@
     "test:staff-calendar": "node scripts/staff-program-calendar-test.mjs",
     "test:attendance": "npm run build && node scripts/course-attendance-test.mjs",
     "test:attendance-ui": "node scripts/attendance-optimistic-test.mjs",
+    "test:attendance-card": "node scripts/attendance-card-cache-test.mjs && node scripts/attendance-card-permissions-test.mjs && npm run test:attendance-browser",
     "test:attendance-browser": "npm run build && node scripts/attendance-browser-test.mjs",
     "test:makeups": "npm run build && node scripts/course-makeup-test.mjs",
     "test:makeups-browser": "npm run build && node scripts/course-makeup-browser-test.mjs",

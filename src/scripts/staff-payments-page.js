@@ -6,6 +6,7 @@ import { buildRegistrationPaymentReport, copyReportToClipboard, downloadReportTs
 import { createPaymentDetailSelectionState, createStaffPanelState, selectAdditionalClassPlan, selectAdditionalClassTarget, supportedAdditionalClassPlans } from "./staff-panel-state.js";
 
 export function initPaymentsPage(options = {}) {
+const controllerOptions = options;
 const root = options.root || document;
 const attendanceEnrollmentId = String(options.attendanceEnrollmentId || "");
 const attendanceCardMode = Boolean(attendanceEnrollmentId);
@@ -268,7 +269,7 @@ function correctionFormNext(item) {
   const email = d.emailProtected
     ? `<label>И-мэйл<input value="${escape(d.email)}" disabled /></label>`
     : `<label>И-мэйл<input name="email" type="email" value="${escape(d.email)}" required${saving} /></label>`;
-  const replace = d.emailProtected ? `<details class="staff-wide"><summary>Холбоо барих мэдээлэл солих</summary><p class="staff-muted">Хуучин и-мэйлтэй холбоотой идэвхтэй хандалт хүчингүй болно. Шинэ хаяг баталгаажаагүй байна.</p><div data-registration-email-replacement="${escape(item.registrationDraftChildId)}"><label>Шинэ и-мэйл<input name="newEmail" type="email" required${saving} /></label><label>Засварын шалтгаан<textarea name="replacementReason" rows="2" maxlength="300" required${saving}></textarea></label><label class="staff-check"><input name="replacementConfirmed" type="checkbox"${saving} /><span>Хуучин хандалтыг хүчингүй болгож, шинэ хаягийг баталгаажаагүйгээр хадгалахыг зөвшөөрөв.</span></label><button class="button secondary" type="button" data-registration-email-replace="${escape(item.registrationDraftChildId)}"${saving}>${editor.replacing ? "Сольж байна…" : "И-мэйл солих"}</button></div></details>` : "";
+  const replace = d.emailProtected ? `<details class="staff-wide"><summary>Холбоо барих мэдээлэл солих</summary><p class="staff-muted">Хуучин и-мэйлтэй холбоотой идэвхтэй хандалт хүчингүй болно. Шинэ хаяг баталгаажаагүй байна.</p><div data-registration-email-replacement="${escape(item.registrationDraftChildId)}"><label>Шинэ и-мэйл<input name="newEmail" type="email"${saving} /></label><label>Засварын шалтгаан<textarea name="replacementReason" rows="2" maxlength="300"${saving}></textarea></label><label class="staff-check"><input name="replacementConfirmed" type="checkbox"${saving} /><span>Хуучин хандалтыг хүчингүй болгож, шинэ хаягийг баталгаажаагүйгээр хадгалахыг зөвшөөрөв.</span></label><button class="button secondary" type="button" data-registration-email-replace="${escape(item.registrationDraftChildId)}"${saving}>${editor.replacing ? "Сольж байна…" : "И-мэйл солих"}</button></div></details>` : "";
   return `<form class="staff-payment-form staff-registration-correction" data-registration-correction-form="${escape(item.registrationDraftChildId)}" ${editor.saving || editor.replacing ? 'aria-busy="true"' : ""}><h3 class="staff-wide">Мэдээлэл засах</h3>${editor.error ? `<p class="staff-error staff-wide" role="status">${escape(editor.error)}</p>` : ""}${sharedWarning}<label>Асран хамгаалагчийн нэр<input name="guardianName" value="${escape(d.guardianName)}" required${saving} /></label><label>Үндсэн утас<input name="primaryPhone" value="${escape(d.primaryPhone)}" required${saving} /></label>${email}<label>Нэмэлт утас<input name="secondaryPhone" value="${escape(d.secondaryPhone || "")}"${saving} /></label><label>Асран хамгаалагчийн Facebook<input name="facebookName" value="${escape(d.facebookName || "")}"${saving} /></label><label>Хаяг<input name="homeAddress" value="${escape(d.homeAddress)}" required${saving} /></label>${identityLocked ? `<p class="staff-muted staff-wide">Хүүхдийн үндсэн таних мэдээлэл өмнөх бүртгэлтэй холбогдсон тул энд өөрчлөхгүй.</p>` : ""}<label>Овог<input name="surname" value="${escape(d.surname)}" required${identityLocked ? " disabled" : ""}${saving} /></label><label>Нэр<input name="givenName" value="${escape(d.givenName)}" required${identityLocked ? " disabled" : ""}${saving} /></label><label>Төрсөн огноо<input name="dateOfBirth" type="date" value="${escape(d.dateOfBirth)}" required${identityLocked ? " disabled" : ""}${saving} /></label><label>Хүйс<select name="gender"${identityLocked ? " disabled" : ""}${saving}><option value="female" ${d.gender === "female" ? "selected" : ""}>Эмэгтэй</option><option value="male" ${d.gender === "male" ? "selected" : ""}>Эрэгтэй</option><option value="not_specified" ${d.gender === "not_specified" ? "selected" : ""}>Тодруулаагүй</option></select></label><label>Анги<input name="currentGrade" value="${escape(d.currentGrade)}" required${saving} /></label><label>Сургууль<input name="currentSchool" value="${escape(d.currentSchool || "")}"${saving} /></label><label>Хүүхдийн Facebook<input name="childFacebookName" value="${escape(d.childFacebookName || "")}"${saving} /></label><label>Өмнө дүүргэсэн шат<select name="previousStageCode"${saving}><option value="" ${!d.previousStageCode ? "selected" : ""}>—</option><option value="stage_1" ${d.previousStageCode === "stage_1" ? "selected" : ""}>1-р шат</option><option value="stage_2" ${d.previousStageCode === "stage_2" ? "selected" : ""}>2-р шат</option><option value="stage_3" ${d.previousStageCode === "stage_3" ? "selected" : ""}>3-р шат</option><option value="unknown" ${d.previousStageCode === "unknown" ? "selected" : ""}>Тодорхойгүй</option></select></label><label class="staff-wide">Засварын шалтгаан<textarea name="reason" rows="2" maxlength="300" required${saving}></textarea></label><input type="hidden" name="expectedDraftUpdatedAt" value="${escape(d.draftUpdatedAt)}" /><input type="hidden" name="expectedChildUpdatedAt" value="${escape(d.childUpdatedAt)}" /><input type="hidden" name="expectedGuardianUpdatedAt" value="${escape(d.canonicalGuardianUpdatedAt || "")}" /><div class="staff-inline-actions staff-wide"><button class="button primary" type="submit"${saving}>${editor.saving ? "Хадгалж байна…" : "Хадгалах"}</button><button class="text-button" type="button" data-registration-correction-cancel="${escape(item.registrationDraftChildId)}"${saving}>Болих</button></div>${replace}${actionFeedback(item.registrationDraftChildId, ["correction", "email-replacement"])}</form>`;
 }
 correctionForm = correctionFormNext;
@@ -642,7 +643,7 @@ function childCreditMarkup(item) {
   const open = panel.open || "";
   const transferPrefill = panel.transferPrefill || {};
   const targetByStudent = new Map();
-  for (const candidate of state.data?.items || []) {
+  for (const candidate of (attendanceCardMode ? panel.recipientItems || [] : state.data?.items || [])) {
     if (candidate.registrationDraftChildId === item.registrationDraftChildId || !candidate.canonicalEnrollmentId || targetByStudent.has(candidate.canonicalStudentId)) continue;
     targetByStudent.set(candidate.canonicalStudentId, candidate);
   }
@@ -665,8 +666,9 @@ function childCreditMarkup(item) {
   const leaveUnused = reviewNeeded ? `<section class="staff-credit-subpanel" ${open === "leave-unused" ? "" : "hidden"}><h4>Кредит ашиглахгүй үлдээх</h4><form data-child-credit-form="leave-unused" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label><button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит ашиглахгүйг батлах"}</button></form></section>` : "";
   const applyPrefill = panel.applyPrefill || {};
   const apply = applyAvailable ? `<section class="staff-credit-subpanel" ${open === "apply" ? "" : "hidden"}><h4>Энэ ангийн төлбөрт кредит хэрэглэх</h4><form data-child-credit-form="apply" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Энэ ангийн үлдэгдэл<input value="${escape(mnt(outstanding))}" disabled /></label><label>Хэрэглэх дүн<input name="amountMnt" type="number" min="1" max="${escape(Math.min(available, outstanding))}" value="${escape(Math.min(available, outstanding, Number(applyPrefill.amountMnt || Infinity)))}" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label>${proposal}<button class="button primary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит хэрэглэх"}</button></form></section>` : "";
-  const transfer = available && targetRows.length ? `<section class="staff-credit-subpanel" ${open === "transfer" ? "" : "hidden"}><h4>Кредит шилжүүлэх</h4><form data-child-credit-form="transfer" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Хүүхэд сонгох<select name="targetRegistrationDraftChildId" required${disabled}><option value="">Сонгоно уу</option>${targets}</select></label><label>Хүүхдийн нэрээр шүүх<input name="transferFilter" value="${escape(panel.transferFilter || "")}"${disabled} /></label><label>Дүн<input name="amountMnt" type="number" min="1" max="${escape(available)}" value="${escape(Math.min(available, Number(transferPrefill.amountMnt || 0)) || "")}" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label>${proposal}<button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит шилжүүлэх"}</button></form></section>` : "";
-  const controls = state.data?.canManageCredits ? `<div class="staff-panel-actions staff-credit-actions" role="group" aria-label="Кредитийн үйлдэл">${toggle("add", "Нэмэх")}${roots.length ? toggle("correct", "Засах") : ""}${applyAvailable ? toggle("apply", "Кредит хэрэглэх") : ""}${available && targets ? toggle("transfer", "Шилжүүлэх") : ""}${reviewNeeded ? toggle("leave-unused", "Кредит ашиглахгүй үлдээх") : ""}</div>` : "";
+  const recipientSearch = attendanceCardMode ? `<button type="button" class="text-button" data-credit-recipient-search="${escape(item.registrationDraftChildId)}" ${panel.searching ? 'disabled' : ''}>${panel.searching ? 'Хайж байна…' : 'Хайх'}</button><p class="staff-muted" role="status">${escape(panel.searchMessage || 'Нэрийн дор хаяж 2 үсгийг оруулаад хайна уу.')}</p>` : '';
+  const transfer = available && (targetRows.length || attendanceCardMode) ? `<section class="staff-credit-subpanel" ${open === "transfer" ? "" : "hidden"}><h4>Кредит шилжүүлэх</h4><form data-child-credit-form="transfer" data-credit-child="${escape(item.registrationDraftChildId)}"><label>Хүүхэд сонгох<select name="targetRegistrationDraftChildId" required${disabled}><option value="">Сонгоно уу</option>${targets}</select></label><label>Хүүхдийн нэрээр шүүх<input name="transferFilter" value="${escape(panel.transferFilter || "")}"${disabled} /></label>${recipientSearch}<label>Дүн<input name="amountMnt" type="number" min="1" max="${escape(available)}" value="${escape(Math.min(available, Number(transferPrefill.amountMnt || 0)) || "")}" required${disabled} /></label><label>Шалтгаан<textarea name="reason" rows="2" maxlength="500" required${disabled}></textarea></label>${proposal}<button class="button secondary" type="submit"${disabled}>${pending ? "Хадгалж байна…" : "Кредит шилжүүлэх"}</button></form></section>` : "";
+  const controls = state.data?.canManageCredits ? `<div class="staff-panel-actions staff-credit-actions" role="group" aria-label="Кредитийн үйлдэл">${toggle("add", "Нэмэх")}${roots.length ? toggle("correct", "Засах") : ""}${applyAvailable ? toggle("apply", "Кредит хэрэглэх") : ""}${available && (targets || attendanceCardMode) ? toggle("transfer", "Шилжүүлэх") : ""}${reviewNeeded ? toggle("leave-unused", "Кредит ашиглахгүй үлдээх") : ""}</div>` : "";
   return `<section class="staff-credit-summary" aria-label="Хүүхдийн нийт кредит"><div class="staff-payment-open-header"><h3>Кредит</h3><button class="text-button" type="button" data-credit-close="${escape(item.registrationDraftChildId)}"${disabled}>Хаах</button></div><p>Хүүхдийн нийт кредит: <strong>${escape(mnt(available))}</strong></p><p class="staff-muted">Энэ хүүхдийн бүх ангид хамт ашиглагдана.</p>${firstInstallmentCreditBlocked ? `<p class="staff-muted">Хоёр хувааж төлөх гэрээний эхний төлбөрт кредит хэрэглэхгүй. Дараагийн төлбөрт кредитийг тусад нь хянаж болно.</p>` : ""}${available ? `<ul aria-label="Одоогийн кредит">${roots.map((entry) => `<li>${escape(localLabel(entry.createdAt))} · ${escape(mnt(entry.availableAmountMnt))} · ${escape(creditOrigin(entry))}</li>`).join("")}</ul>` : `<p class="staff-muted">Ашиглаагүй кредит алга.</p>`}${controls}${add}${correct}${apply}${transfer}${leaveUnused}${actionFeedback(item.registrationDraftChildId, ["credit"])}</section>`;
 }
 function childCreditReviewNotice(item) {
@@ -999,7 +1001,7 @@ function render() {
       list.innerHTML = `<p class="staff-empty">Энэ ирцийн мөртэй холбоотой төлбөрийн карт олдсонгүй.</p>`;
     } else {
       state.openId = item.installmentId;
-      list.innerHTML = `<section class="staff-payment-embedded-card staff-payment-direct-card">${itemMarkup(item)}</section>`;
+      list.innerHTML = `${state.attendanceCardTarget.transferredSinceOccurrence ? '<p class="staff-muted">Шилжсэн хүүхдийн одоогийн бүртгэл.</p>' : ''}${itemMarkup(item)}`;
     }
     return;
   }
@@ -1103,6 +1105,7 @@ function render() {
 }
 function scheduleGraceRefresh() {
   if (state.refreshTimer) { clearTimeout(state.refreshTimer); state.refreshTimer = null; }
+  if (attendanceCardMode) return;
   const pending = (state.data?.items || []).some((item) => item.tentativePaymentId);
   if (pending) state.refreshTimer = setTimeout(() => refresh("", { preserve: true }).catch((error) => message(error.message)), 10_000);
 }
@@ -1127,10 +1130,23 @@ async function refresh(success = "", options = {}) {
   const scrollY = window.scrollY;
   try {
     const requestStartedAt = performance.now();
-    const response = await fetch("/api/staff/payments", { credentials: "same-origin", cache: "no-store" });
+    const cardQuery = attendanceCardMode ? `?attendanceEnrollment=${encodeURIComponent(attendanceEnrollmentId)}` : "";
+    const response = await fetch(`/api/staff/payments${cardQuery}`, { credentials: "same-origin", cache: "no-store" });
     const responseReceivedAt = recordPaymentTiming("payments.headers", requestStartedAt, response);
-    if (!response.ok) throw new Error("Төлбөрийн жагсаалтыг авч чадсангүй.");
-    state.data = await response.json();
+    if (!response.ok) {
+      if ([401, 403].includes(response.status)) controllerOptions.onAccessDenied?.();
+      throw new Error([401, 403].includes(response.status) ? "Төлбөрийн дэлгэрэнгүй харах эрхийг дахин шалгана уу." : "Төлбөрийн мэдээллийг авч чадсангүй.");
+    }
+    const nextData = await response.json();
+    if (attendanceCardMode) {
+      if (state.data?.cardSession && state.data.cardSession !== nextData.cardSession) {
+        controllerOptions.onAccessDenied?.();
+        throw new Error("Нэвтрэх эрх өөрчлөгдсөн байна. Картыг дахин нээнэ үү.");
+      }
+      state.attendanceCardTarget = nextData.attendanceCardTarget;
+      paymentDetailSelection.launch(state.attendanceCardTarget.registrationDraftChildId);
+    }
+    state.data = nextData;
     state.familyCreditSuggestions = {};
     recordPaymentTiming("payments.body", responseReceivedAt);
     if (options.anchorChildId) {
@@ -1143,6 +1159,7 @@ async function refresh(success = "", options = {}) {
     state.openId = paymentDetailSelection.onRefresh(state.data.items);
     reconcileActionFeedback();
     render();
+    if (attendanceCardMode) controllerOptions.onLoaded?.({ revalidation: options.cacheValidation === true });
     // Prepare the shared TSV outside the eventual clipboard gesture.
     if (!attendanceCardMode) void prepareRegistrationReport();
     if (options.initialTiming) {
@@ -1454,6 +1471,31 @@ q("#payment-list").addEventListener("click", async (event) => {
   if (target.dataset.lateReferralOpen) { const childId = target.dataset.lateReferralOpen; if (!canSwitchPanel(childId, "referral")) return; activatePanel(childId, "referral"); state.lateReferrals[childId] ||= {}; render(); q(`[data-late-referral-code="${childId}"] input`)?.focus(); return; }
   if (target.dataset.lateReferralClose) { const childId = target.dataset.lateReferralClose; if (state.lateReferrals[childId]?.pending) return; delete state.lateReferrals[childId]; closePanel(childId, "referral"); render(); return; }
   if (target.dataset.lateReferralEdit) { const childId = target.dataset.lateReferralEdit; const panel = state.lateReferrals[childId]; if (!panel || panel.pending) return; delete panel.review; render(); q(`[data-late-referral-review="${childId}"] input`)?.focus(); return; }
+  if (target.dataset.creditRecipientSearch && attendanceCardMode) {
+    const childId = target.dataset.creditRecipientSearch;
+    const panel = state.creditSubpanels[childId];
+    if (!panel || panel.searching) return;
+    const query = target.closest('form').elements.transferFilter.value.trim();
+    panel.transferFilter = query;
+    if (query.length < 2) { panel.searchMessage = 'Нэрийн дор хаяж 2 үсгийг оруулна уу.'; render(); return; }
+    const draftFields = [...target.closest('form').elements].filter(node => node.name).map(node => [node.name, node.value]);
+    panel.searching = true; setStaffButtonBusy(target, true, 'Хайж байна…');
+    try {
+      const response = await fetch(`/api/staff/payments?attendanceEnrollment=${encodeURIComponent(attendanceEnrollmentId)}&creditRecipientQuery=${encodeURIComponent(query)}`, { credentials: 'same-origin' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message || 'Хүүхдийн жагсаалтыг авч чадсангүй. Дахин хайна уу.');
+      panel.recipientItems = result.items;
+      panel.searchMessage = result.more ? 'Эхний 30 үр дүн. Нэрээ илүү тодорхой оруулна уу.' : result.items.length ? '' : 'Тохирох хүүхэд олдсонгүй.';
+    } catch (error) { panel.searchMessage = error.message; }
+    finally {
+      panel.searching = false; render();
+      if (state.creditSubpanels[childId] === panel) {
+        const form = q(`[data-child-credit-form="transfer"][data-credit-child="${childId}"]`);
+        for (const [name, value] of draftFields) if (name !== 'targetRegistrationDraftChildId' && form?.elements[name]) form.elements[name].value = value;
+      }
+    }
+    return;
+  }
   if (target.dataset.creditSubpanel) {
     const childId = target.dataset.creditSubpanel;
     if (actionPending(childId, "credit")) return;
@@ -1594,6 +1636,9 @@ q("#payment-list").addEventListener("click", async (event) => {
     const panel = q(`[data-registration-email-replacement="${childId}"]`); if (!editor?.detail || editor.replacing || !panel) return;
     const email = panel.querySelector('[name="newEmail"]').value; const reason = panel.querySelector('[name="replacementReason"]').value;
     const confirmed = Boolean(panel.querySelector('[name="replacementConfirmed"]')?.checked);
+    if (!email.trim() || !panel.querySelector('[name="newEmail"]').checkValidity() || !reason.trim() || !confirmed) {
+      setActionFeedback(childId, "email-replacement", "Шинэ и-мэйл, шалтгаан болон зөвшөөрлийг бүрэн оруулна уу."); render(); return;
+    }
     state.corrections[childId] = { ...editor, replacing: true }; setActionFeedback(childId, "email-replacement", "И-мэйлийг сольж байна…"); render();
     try { await registrationDetail({ action: "registration-detail.replace-email", childId, email, reason, confirmed, expectedDraftUpdatedAt: editor.detail.draftUpdatedAt, expectedChildUpdatedAt: editor.detail.childUpdatedAt, expectedGuardianUpdatedAt: editor.detail.canonicalGuardianUpdatedAt || "" }); delete state.corrections[childId]; setActionFeedback(childId, "email-replacement", "Холбоо барих мэдээлэл шинэчлэгдлээ."); await refresh("", { anchorChildId: childId }); }
     catch (error) { state.corrections[childId] = { ...editor, error: error.message || "И-мэйлийг сольж чадсангүй." }; setActionFeedback(childId, "email-replacement", error.message || "И-мэйлийг сольж чадсангүй."); }
@@ -2074,7 +2119,7 @@ q("#payment-list").addEventListener("submit", async (event) => {
   if (form.matches("[data-registration-correction-form]")) {
     event.preventDefault(); const childId = form.dataset.registrationCorrectionForm; const editor = state.corrections[childId]; if (!editor?.detail || editor.saving) return;
     const values = Object.fromEntries(new FormData(form)); state.corrections[childId] = { ...editor, saving: true }; setActionFeedback(childId, "correction", "Хадгалж байна…"); render();
-    try { await registrationDetail({ action: "registration-detail.save", childId, ...values }); delete state.corrections[childId]; setActionFeedback(childId, "correction", "Мэдээлэл шинэчлэгдлээ."); await refresh("", { anchorChildId: childId }); }
+    try { await registrationDetail({ action: "registration-detail.save", childId, ...values }); delete state.corrections[childId]; delete state.registrationViews[childId]; closePanel(childId, "edit"); setActionFeedback(childId, "correction", "Мэдээлэл шинэчлэгдлээ."); await refresh("Мэдээлэл шинэчлэгдлээ.", { anchorChildId: childId }); }
     catch (error) { state.corrections[childId] = { ...editor, error: error.message || "Мэдээллийг хадгалж чадсангүй." }; setActionFeedback(childId, "correction", error.message || "Мэдээллийг хадгалж чадсангүй."); }
     return;
   }
@@ -2375,6 +2420,10 @@ cancellationDialog.addEventListener("close", () => {
   confirmation.initiator?.focus({ preventScroll: true });
 });
 const ready = (async () => {
+  if (attendanceCardMode) {
+    await refresh("", { cacheValidation: true });
+    return;
+  }
   const sessionStartedAt = performance.now();
   const response = await fetch("/api/staff/session", { credentials: "same-origin" });
   const sessionResponseAt = recordPaymentTiming("session.headers", sessionStartedAt, response);
@@ -2391,10 +2440,6 @@ const ready = (async () => {
   if (copyButton) copyButton.hidden = !state.canRegistrationExport;
   setCopyReady(state.canRegistrationExport); show("tool-app");
   try {
-    if (attendanceCardMode) {
-      state.attendanceCardTarget = await post({ action: "attendance-payment-card.resolve", enrollmentId: attendanceEnrollmentId });
-      paymentDetailSelection.launch(state.attendanceCardTarget.registrationDraftChildId);
-    }
     await refresh(launchCreated ? "Бүртгэл үүсгэгдлээ." : "", {
       ...(launchRegistrationId ? { anchorChildId: launchRegistrationId } : {}),
       initialTiming: paymentTimingDiagnostics,
@@ -2408,14 +2453,38 @@ const ready = (async () => {
   show("tool-denied");
 });
 
-return ready;
+return ready.then(() => ({
+  async revalidate() {
+    if (state.refreshing || state.pendingId || Object.keys(state.pendingActions).length || root.querySelector('[aria-busy="true"]')) return false;
+    // Detached DOM retains tabs and drafts. Revalidation uses the same scoped
+    // projection, while a changed session must never inherit the old draft.
+    const fieldKey = node => JSON.stringify([node.closest('form')?.dataset || {}, node.name, node.type,
+      Object.entries(node.dataset).filter(([key]) => key !== 'cardDraftEdited').sort()]);
+    const saved = [...root.querySelectorAll('input, select, textarea')].flatMap(node => node.dataset.cardDraftEdited === 'true' ? [{ key: fieldKey(node), value: node.value, checked: node.checked }] : []);
+    const session = state.data?.cardSession;
+    const childId = state.attendanceCardTarget?.registrationDraftChildId;
+    const hadInfo = Boolean(state.registrationViews[childId]?.detail);
+    await refresh("", { cacheValidation: true });
+    if (session !== state.data?.cardSession || childId !== state.attendanceCardTarget?.registrationDraftChildId) return;
+    if (hadInfo && !state.corrections[childId]) {
+      state.registrationViews[childId] = { detail: await registrationDetail({ action: "registration-detail.get", childId }) };
+      render();
+    }
+    const fields = new Map([...root.querySelectorAll('input, select, textarea')].map(node => [fieldKey(node), node]));
+    for (const field of saved) {
+      const node = fields.get(field.key);
+      if (node && node.type !== 'hidden') { node.value = field.value; node.dataset.cardDraftEdited = 'true'; if ('checked' in node) node.checked = field.checked; }
+    }
+  },
+  dispose() { if (state.refreshTimer) clearTimeout(state.refreshTimer); root.replaceChildren(); },
+}));
 
 }
 
 // Attendance mounts the exact same card controller as Payments.  The host is
 // deliberately only a card surface: it does not load or embed the Payments
 // page, and no Payments-page URL or bootstrap state is required.
-export function mountAttendanceStudentCard(host, { enrollmentId, displayName }) {
+export function mountAttendanceStudentCard(host, { enrollmentId, displayName, onLoaded, onAccessDenied }) {
   host.innerHTML = `<div class="staff-payment-card-runtime" data-student-card-runtime>
     <p id="tool-message" class="staff-message" hidden></p>
     <div id="payment-list" aria-live="polite"><p class="staff-muted">Карт ачаалж байна…</p></div>
@@ -2429,5 +2498,5 @@ export function mountAttendanceStudentCard(host, { enrollmentId, displayName }) 
       </div>
     </dialog>
   </div>`;
-  return initPaymentsPage({ root: host, attendanceEnrollmentId: String(enrollmentId || ""), displayName: String(displayName || "") });
+  return initPaymentsPage({ root: host, attendanceEnrollmentId: String(enrollmentId || ""), displayName: String(displayName || ""), onLoaded, onAccessDenied });
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -119,7 +119,15 @@ try {
       VALUES ('transfer-payment-installment', 'transfer-payment-request', 'transfer-payment-child', 1, 'initial', 100000, '2027-01-01T15:59:59.999Z', '2027-01-01T15:59:59.999Z', 60, '2027-01-01T14:59:59.999Z', 'partially_paid', 'transfer-target-application', 'transfer-target:enrollment', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
   `);
 
-  worker = spawn(process.execPath, [wranglerCli, "dev", "--env", "staging", "--local", "--persist-to", persistDir,
+  const profile = Boolean(process.env.ATTENDANCE_CARD_PROFILE);
+  {
+    for (let i = 0; i < (profile ? 41 : 1); i++) execute(`
+      INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, canonical_student_id, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
+      SELECT 'profile-child-${i}', registration_draft_id, ${i + 1}, 'Profile', 'Child ${i}', gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, ${i === 0 ? "'ordinary-student', 'ordinary-application', 'ordinary-enrollment'" : "NULL, NULL, NULL"}, is_test, test_run_id, created_at, updated_at FROM registration_draft_child WHERE id='transfer-payment-child';
+      INSERT INTO payment_installment (id,payment_request_id,registration_draft_child_id,installment_number,installment_kind,amount_mnt,original_due_at,effective_due_at,reminder_lead_minutes,reminder_at,status,is_test,test_run_id,created_at,updated_at)
+      SELECT 'profile-installment-${i}',payment_request_id,'profile-child-${i}',installment_number,installment_kind,amount_mnt,original_due_at,effective_due_at,reminder_lead_minutes,reminder_at,status,is_test,test_run_id,created_at,updated_at FROM payment_installment WHERE id='transfer-payment-installment';`);
+  }
+  worker = spawn(process.execPath, [wranglerCli, "dev", ...(profile ? ["scripts/attendance-profile-worker.ts"] : []), "--env", "staging", "--local", "--persist-to", persistDir,
     "--ip", "127.0.0.1", "--port", String(port), "--var", `APP_ORIGIN:${baseUrl}`], { stdio: ["ignore", "pipe", "pipe"] });
   worker.stdout.on("data", (chunk) => { workerOutput += String(chunk); });
   worker.stderr.on("data", (chunk) => { workerOutput += String(chunk); });
@@ -128,11 +136,48 @@ try {
   context = await browser.newContext();
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   const page = await context.newPage();
+  if (profile) {
+    const samples = [];
+    let phase = 'attendance';
+    const pending = [];
+    page.on('response', response => {
+      if (!response.url().includes('/api/')) return;
+      const label = phase;
+      pending.push((async () => {
+        const body = await response.body();
+        const h = response.headers();
+        samples.push({ phase: label, path: new URL(response.url()).pathname, bytes: body.length,
+          queries: Number(h['x-test-d1-queries']), rowsRead: Number(h['x-test-d1-rows-read']),
+          dbMs: Number(h['x-test-d1-ms']), serverElapsedMs: Number(h['x-test-elapsed-ms']) });
+      })());
+    });
+    const measures = [];
+    await page.goto(`${baseUrl}/staff/attendance/?date=${date}&occurrence=attendance-slot`);
+    await page.locator("[data-attendance-row='transfer-target:enrollment']").waitFor();
+    for (const [label, id] of [['first','transfer-target:enrollment'], ['reopen','transfer-target:enrollment'], ['different','ordinary-enrollment']]) {
+      phase = label;
+      const started = performance.now();
+      const row = page.locator(`[data-attendance-row='${id}']`);
+      await row.locator('[data-attendance-card-toggle]').click();
+      await row.locator('[data-student-card-runtime] .staff-payment-item').waitFor();
+      measures.push({ phase: label, visibleMs: performance.now() - started });
+      await Promise.all(pending);
+      await row.locator('[data-attendance-card-toggle]').click();
+    }
+    await Promise.all(pending);
+    const output = { implementation: process.env.ATTENDANCE_CARD_PROFILE, fixturePaymentChildren: 42, samples, measures };
+    writeFileSync(path.join(screenshotDir, `profile-${process.env.ATTENDANCE_CARD_PROFILE}.json`), JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(output));
+  } else {
   page.setDefaultTimeout(10_000);
   const browserErrors = [];
   const attendancePosts = [];
+  const cardRequests = [];
+  const replacementRequests = [];
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("request", (request) => {
+    if (request.url().includes('/api/staff/payments') && request.method() === 'GET') cardRequests.push(request.url());
+    if (request.postData()?.includes('registration-detail.replace-email')) replacementRequests.push(request.postData());
     if (request.url().endsWith("/api/staff/attendance") && request.method() === "POST") attendancePosts.push(request.postData() || "");
   });
   await page.goto(`${baseUrl}/staff/attendance/?date=${date}&occurrence=attendance-slot`);
@@ -171,16 +216,47 @@ try {
   assert.equal(await ordinary.getByText("Ирсэн", { exact: true }).locator("input").isDisabled(), true, "the pending row disables repeated present taps");
   assert.equal(await ordinary.getByText("Хоцорсон", { exact: true }).locator("input").isDisabled(), true, "the pending row disables conflicting late taps");
   const attendancePostsBeforeCard = attendancePosts.length;
+  let releaseCard;
+  const delayedCard = new Promise(resolve => { releaseCard = resolve; });
+  await page.route('**/api/staff/payments?attendanceEnrollment=*', async route => {
+    const response = await route.fetch();
+    await delayedCard;
+    await route.fulfill({ response });
+  });
+  const cardRequestStarted = page.waitForRequest(request => request.url().includes('attendanceEnrollment='));
   await transferred.getByRole("button", { name: "Шилжсэн Ирцийн Сурагч" }).click();
+  await cardRequestStarted;
+  await transferred.getByRole("button", { name: "Шилжсэн Ирцийн Сурагч" }).click();
+  await transferred.getByRole("button", { name: "Шилжсэн Ирцийн Сурагч" }).click();
+  releaseCard();
   const transferredCard = transferred.locator(".staff-attendance-payment-card");
   await transferredCard.waitFor({ state: "visible" });
   await transferredCard.locator("[data-student-card-runtime]").waitFor({ state: "visible" });
   assert.equal(attendancePosts.length, attendancePostsBeforeCard, "opening a student card does not write attendance");
   await transferredCard.locator("[data-student-card-runtime] .staff-payment-item").waitFor({ state: "visible" });
+  await page.unroute('**/api/staff/payments?attendanceEnrollment=*');
+  assert.equal(cardRequests.length, 1, 'rapid toggles deduplicate the real scoped request');
+  assert.ok(cardRequests.every(url => url.includes('attendanceEnrollment=')), 'card never loads the full Payments queue');
   const transferredCardText = await transferredCard.innerText();
   assert.match(transferredCardText, /Шилжсэн Ирцийн Сурагч/, "the card resolves the current payment record by stable enrollment identity");
   await transferredCard.getByRole("button", { name: "Мэдээлэл", exact: true }).click();
   await transferredCard.getByRole("heading", { name: "Асран хамгаалагч", exact: true }).waitFor({ state: "visible" });
+  const cardNode = await transferredCard.locator('[data-student-card-runtime]').evaluate(node => { node.dataset.testRetained = 'yes'; return node.dataset.testRetained; });
+  await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
+  await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
+  await transferredCard.getByRole('heading', { name: 'Асран хамгаалагч', exact: true }).waitFor();
+  assert.equal(await transferredCard.locator('[data-student-card-runtime]').getAttribute('data-test-retained'), cardNode, 'reopen retains the original controller/DOM and tab');
+  assert.equal(cardRequests.length, 1, 'immediate reopening performs no data request');
+  await transferredCard.getByRole('button', { name: 'Мэдээлэл засах', exact: true }).click();
+  const schoolDraft = transferredCard.locator('input[name="currentSchool"]');
+  await schoolDraft.fill('Disposable unsaved school');
+  await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
+  await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
+  assert.equal(await schoolDraft.inputValue(), 'Disposable unsaved school', 'unsaved card fields survive close/reopen');
+  // Cancelling the supported draft is not a business mutation.
+  await transferredCard.locator('[data-registration-correction-cancel]').click();
+  await transferredCard.getByRole('button', { name: 'Мэдээлэл', exact: true }).click();
+  await transferredCard.getByRole('heading', { name: 'Асран хамгаалагч', exact: true }).waitFor();
   assert.equal(attendancePosts.length, attendancePostsBeforeCard, "shared card tabs and read-only details do not write attendance");
   const sourceResolution = await page.evaluate(async () => {
     const response = await fetch("/api/staff/payments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "attendance-payment-card.resolve", enrollmentId: "transfer-source-enrollment" }) });
@@ -189,6 +265,27 @@ try {
   assert.equal(sourceResolution.status, 200, "historical source attendance can resolve a completed transfer");
   assert.equal(sourceResolution.body.currentEnrollmentId, "transfer-target:enrollment", "historical source attendance resolves to the current enrollment");
   assert.equal(sourceResolution.body.registrationDraftChildId, "transfer-payment-child", "historical source attendance resolves the current registration child");
+  const projections = await page.evaluate(async () => {
+    const scoped = await (await fetch('/api/staff/payments?attendanceEnrollment=transfer-target%3Aenrollment')).json();
+    const full = await (await fetch('/api/staff/payments')).json();
+    const historical = await (await fetch('/api/staff/payments?attendanceEnrollment=transfer-source-enrollment')).json();
+    const malformed = await fetch('/api/staff/payments?attendanceEnrollment=%3Cbad%3E');
+    return { scoped, full, historical, malformed: malformed.status };
+  });
+  assert.equal(projections.scoped.items.length, 1);
+  assert.deepEqual(projections.scoped.items[0], projections.full.items.find(item => item.registrationDraftChildId === 'transfer-payment-child'), 'selected-card financial projection equals Payments');
+  assert.equal(projections.scoped.capacity.length, 0, 'scoped card omits unrelated capacity roster');
+  assert.deepEqual(projections.historical.items, projections.scoped.items, 'historical source resolves the same current card');
+  assert.equal(projections.malformed, 400);
+  const unauthorized = await fetch(`${baseUrl}/api/staff/payments?attendanceEnrollment=transfer-target%3Aenrollment`);
+  assert.equal(unauthorized.status, 401, 'scoped data requires an authenticated authorized session');
+  const recipients = await page.evaluate(async () => {
+    const response = await fetch('/api/staff/payments?attendanceEnrollment=transfer-target%3Aenrollment&creditRecipientQuery=Profile');
+    return { status: response.status, body: await response.json() };
+  });
+  assert.equal(recipients.status, 200);
+  assert.equal(recipients.body.items[0].registrationDraftChildId, 'profile-child-0', 'explicit recipient search preserves the credit-transfer target by identity');
+  assert.equal(recipients.body.items[0].installments, undefined, 'recipient search does not load another financial card');
   const paymentsPage = await context.newPage();
   paymentsPage.on("pageerror", (error) => browserErrors.push(error.message));
   await paymentsPage.goto(`${baseUrl}/staff/payments/`);
@@ -201,9 +298,40 @@ try {
   assert.equal(await transferredCard.locator("iframe").count(), 0, "attendance mounts the shared card directly without a Payments-page iframe");
   assert.equal(await transferredCard.locator("[data-student-card-runtime]").count(), 1, "an attendance-row save leaves an open child card intact");
   await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "pending-desktop.png") });
+  await transferred.evaluate(node => window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - 100));
+  await page.screenshot({ path: path.join(screenshotDir, 'card-desktop-viewport.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "pending-mobile.png") });
+  await transferred.evaluate(node => window.scrollTo(0, window.scrollY + node.getBoundingClientRect().top - 100));
+  await page.screenshot({ path: path.join(screenshotDir, 'card-mobile-viewport.png') });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'phone card has no horizontal document overflow');
   await page.setViewportSize({ width: 1280, height: 900 });
+  await transferredCard.getByRole('button', { name: 'Мэдээлэл засах', exact: true }).click();
+  await transferredCard.locator('summary').filter({ hasText: 'Холбоо барих мэдээлэл солих' }).click();
+  await transferredCard.locator('[data-registration-email-replace]').click();
+  await transferredCard.getByText('Шинэ и-мэйл, шалтгаан болон зөвшөөрлийг бүрэн оруулна уу.', { exact: true }).waitFor();
+  assert.equal(replacementRequests.length, 0, 'incomplete optional email replacement cannot be submitted');
+  await transferredCard.locator('input[name="currentSchool"]').fill('Saved disposable school');
+  await transferredCard.locator('textarea[name="reason"]').fill('Disposable card cache validation');
+  assert.deepEqual(await transferredCard.locator('[data-registration-correction-form]').evaluate(form => [...form.elements].filter(node => node.willValidate && !node.validity.valid).map(node => ({ name: node.name, value: node.value, message: node.validationMessage }))), [], 'disposable Info edit supplies all required fields');
+  const infoSaved = page.waitForResponse(response => response.request().postData()?.includes('registration-detail.save') && response.request().method() === 'POST');
+  const infoRefreshed = page.waitForResponse(response => response.url().includes('/api/staff/payments?attendanceEnrollment=') && response.request().method() === 'GET');
+  await transferredCard.locator('[data-registration-correction-form]').getByRole('button', { name: 'Хадгалах', exact: true }).click();
+  assert.equal((await infoSaved).status(), 200, 'an authorized card edit saves through the existing service');
+  await infoRefreshed;
+  await transferredCard.getByText('Мэдээлэл шинэчлэгдлээ.', { exact: true }).waitFor();
+  const infoReloaded = page.waitForResponse(response => response.request().postData()?.includes('registration-detail.get') && response.request().method() === 'POST');
+  await transferredCard.getByRole('button', { name: 'Мэдээлэл', exact: true }).click();
+  const infoReloadedResponse = await infoReloaded;
+  const infoReloadedData = await infoReloadedResponse.json();
+  assert.equal(infoReloadedData.currentSchool, 'Saved disposable school', JSON.stringify({ status: infoReloadedResponse.status(), school: infoReloadedData.currentSchool }));
+  await transferredCard.locator('.staff-registration-view').getByText(/Saved disposable school/).waitFor();
+  const afterEditRequests = cardRequests.length;
+  await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
+  await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
+  await transferredCard.locator('.staff-registration-view').getByText(/Saved disposable school/).waitFor();
+  assert.equal(cardRequests.length, afterEditRequests, 'confirmed edit refreshes the cached data; immediate reopen remains local');
+  assert.equal(attendancePosts.length, attendancePostsBeforeCard, 'card edits do not submit attendance or replace its pending state');
   const postsBeforeRepeatedTap = attendancePosts.length;
   await ordinary.getByText("Ирсэн", { exact: true }).click({ force: true });
   await ordinary.getByText("Хоцорсон", { exact: true }).click({ force: true });
@@ -271,6 +399,7 @@ try {
   assert.equal(await page.locator("[data-attendance-row='bulk-enrollment'] [data-attendance-control='present']").isChecked(), true, "bulk attendance survives reload");
   assert.deepEqual(browserErrors, [], "attendance interaction produces no uncaught browser errors");
   console.log(`ok ${browserEngine} attendance browser pending locks, bulk guard, rollback, lost-response reconciliation, and reload (${screenshotDir})`);
+  }
 } finally {
   if (context) await context.close().catch(() => undefined);
   if (browser) await browser.close().catch(() => undefined);

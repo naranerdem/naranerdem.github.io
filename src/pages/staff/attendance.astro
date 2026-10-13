@@ -45,7 +45,8 @@ import "../../styles/global.css";
         markedRosterCount,
       } from "../../scripts/attendance-optimistic.js";
       import { escape, formatDate, getAttendanceDay, getStaffCapabilities, postAttendanceAction, postCourseMakeupAction } from "../../scripts/staff-setup.js";
-      import { mountAttendanceStudentCard } from "../../scripts/staff-payments-page.js";
+      import { createAttendanceCardCache } from "../../scripts/attendance-card-cache.js";
+      const cardCache = createAttendanceCardCache();
 
       const params = new URLSearchParams(location.search);
       const safeHomeDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value : "";
@@ -139,11 +140,7 @@ import "../../styles/global.css";
 
       function attendanceCardMarkup(entry) {
         if (!attendanceCardOpen(entry)) return "";
-        const card = state.openCard;
-        const selected = state.data?.selected;
-        const context = `${formatDate(selected.localDate)} · ${selected.startTime}–${selected.endTime}`;
-        const source = entry.attendanceKind === "makeup" ? "Энэ нь нөхөх хичээлийн ирц; доорх карт нь хүүхдийн одоогийн бүртгэлийг харуулна." : "Энэ нь сонгосон өдрийн ирц; доорх карт нь хүүхдийн одоогийн бүртгэлийг харуулна.";
-        return `<section id="attendance-card-${escape(entry.enrollmentId)}" class="staff-attendance-payment-card" data-attendance-card="${escape(entry.enrollmentId)}"><p class="staff-muted">${escape(context)} · ${escape(source)}</p><div class="staff-attendance-card-host" data-attendance-card-host="${escape(entry.enrollmentId)}"><p class="staff-muted" role="status">Карт ачаалж байна…</p></div></section>`;
+        return `<section id="attendance-card-${escape(entry.enrollmentId)}" class="staff-attendance-payment-card" data-attendance-card="${escape(entry.enrollmentId)}">${entry.attendanceKind === "makeup" ? '<p class="staff-muted">Нөхөх хичээлийн ирц. Карт нь хүүхдийн үндсэн бүртгэлийг харуулна.</p>' : ''}<div class="staff-attendance-card-host" data-attendance-card-host="${escape(entry.enrollmentId)}"><p class="staff-muted" role="status">Карт ачаалж байна…</p></div></section>`;
       }
 
       function rosterStudentMarkup(entry) {
@@ -279,12 +276,20 @@ import "../../styles/global.css";
         if (!host) return;
         const version = ++state.cardMountVersion;
         try {
-          await mountAttendanceStudentCard(host, { enrollmentId: entry.enrollmentId, displayName: entry.displayName });
+          await cardCache.open(host, { enrollmentId: entry.enrollmentId, displayName: entry.displayName });
         } catch (error) {
           if (version !== state.cardMountVersion || state.openCard !== card || !host.isConnected) return;
           host.innerHTML = `<p class="staff-error-inline" role="status">${escape(error.message || "Карт ачаалж чадсангүй.")}</p><button type="button" class="button secondary" data-attendance-card-retry="${escape(entry.enrollmentId)}">Дахин ачаалах</button>`;
         }
       }
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) cardCache.invalidate();
+        else if (state.openCard) { renderDetail(); }
+      });
+      window.addEventListener('beforeunload', event => {
+        if (cardCache.hasDrafts()) { event.preventDefault(); event.returnValue = ''; }
+      });
 
       const makeupSourceKey = (entry) => `${entry.enrollmentId}|${entry.classSessionId}|${entry.curriculumLessonId}`;
       const makeupSourcePayload = (entry) => ({ enrollmentId: entry.enrollmentId, classSessionId: entry.classSessionId, curriculumLessonId: entry.curriculumLessonId });

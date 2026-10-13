@@ -982,7 +982,7 @@ async function refreshInstallmentsForChild(env: WorkerEnv, request: PaymentReque
   return { installments, initialPaid };
 }
 
-export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincipal, nowDate = new Date()) {
+export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincipal, nowDate = new Date(), selectedChildId?: string) {
   if (!hasStaffCapability(actor, "payment.view")) throw new PaymentReconciliationError("forbidden");
   const queueStartedAt = performance.now();
   const now = nowDate.toISOString();
@@ -1148,10 +1148,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       AND payment_installment.status IN ('pending', 'partially_paid', 'paid')
       AND registration_draft.status != 'cancelled'
       AND registration_draft_child.status != 'cancelled'
+      ${selectedChildId ? "AND registration_draft_child.id = ?" : ""}
     GROUP BY payment_installment.id
     ORDER BY parentClaimed DESC, payment_installment.effective_due_at < ? DESC,
-      payment_installment.effective_due_at ASC, payment_request.created_at ASC`).bind(now).all<Record<string, unknown>>();
-  const creditsPromise = env.DB.prepare(`SELECT payment_credit.id,
+      payment_installment.effective_due_at ASC, payment_request.created_at ASC`).bind(...(selectedChildId ? [selectedChildId, now] : [now])).all<Record<string, unknown>>();
+  const creditsPromise = selectedChildId ? Promise.resolve({ results: [] as Record<string, unknown>[] }) : env.DB.prepare(`SELECT payment_credit.id,
     COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) AS availableAmountMnt,
     registration_draft.guardian_full_name AS guardianName, payment_request.payment_reference AS paymentReference,
     GROUP_CONCAT(DISTINCT registration_draft_child.surname || ' ' || registration_draft_child.given_name) AS childNames,
@@ -1168,7 +1169,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       AND COALESCE(payment_credit.remaining_amount_mnt, payment_credit.available_amount_mnt) > 0
     GROUP BY payment_credit.id
     ORDER BY payment_credit.created_at`).all<Record<string, unknown>>();
-  const discountCreditsPromise = env.DB.prepare(`SELECT root.id,
+  const discountCreditsPromise = selectedChildId ? Promise.resolve({ results: [] as Record<string, unknown>[] }) : env.DB.prepare(`SELECT root.id,
     root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt AS availableAmountMnt,
     registration_draft.guardian_full_name AS guardianName,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childNames,
@@ -1181,7 +1182,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     WHERE discount_award.status = 'active' AND root.entry_kind = 'discount_award_credit'
     GROUP BY root.id HAVING root.amount_mnt + COALESCE(SUM(debit.amount_mnt), 0) - root.reserved_amount_mnt > 0
     ORDER BY root.created_at`).all<Record<string, unknown>>();
-  const cancelledPromise = env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
+  const cancelledPromise = selectedChildId ? Promise.resolve({ results: [] as Record<string, unknown>[] }) : env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, class_session.display_label AS classLabel,
     class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
@@ -1201,7 +1202,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     LEFT JOIN staff_account AS cancellation_actor ON cancellation_actor.id = cancellation_event.actor_ref
     WHERE registration_draft_child.status = 'cancelled'
     ORDER BY COALESCE(enrollment.cancelled_at, cancellation_event.occurred_at, registration_draft_child.updated_at) DESC LIMIT 50`).all<Record<string, unknown>>();
-  const releasedSeatsPromise = env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
+  const releasedSeatsPromise = selectedChildId ? Promise.resolve({ results: [] as Record<string, unknown>[] }) : env.DB.prepare(`SELECT registration_draft_child.id AS registrationDraftChildId,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, class_session.display_label AS classLabel,
     class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime,
@@ -1238,8 +1239,9 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN registration_draft_child ON registration_draft_child.id = payment_fee_waiver.registration_draft_child_id
     LEFT JOIN payment_fee_waiver_installment ON payment_fee_waiver_installment.payment_fee_waiver_id = payment_fee_waiver.id
     WHERE registration_draft_child.status != 'cancelled'
+      ${selectedChildId ? "AND registration_draft_child.id = ?" : ""}
     GROUP BY payment_fee_waiver.id
-    ORDER BY payment_fee_waiver.waived_at DESC`).all<{ id: string; childId: string; reason: string; waivedAt: string; amountMnt: number }>();
+    ORDER BY payment_fee_waiver.waived_at DESC`).bind(...(selectedChildId ? [selectedChildId] : [])).all<{ id: string; childId: string; reason: string; waivedAt: string; amountMnt: number }>();
   const adjustmentRowsPromise = env.DB.prepare(`SELECT enrollment_fee_adjustment.id,
       enrollment_fee_adjustment.registration_draft_child_id AS childId, enrollment_fee_adjustment.reason,
       enrollment_fee_adjustment.adjusted_at AS adjustedAt,
@@ -1247,10 +1249,11 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     FROM enrollment_fee_adjustment
     INNER JOIN enrollment_fee_adjustment_installment
       ON enrollment_fee_adjustment_installment.enrollment_fee_adjustment_id = enrollment_fee_adjustment.id
+    ${selectedChildId ? "WHERE enrollment_fee_adjustment.registration_draft_child_id = ?" : ""}
     GROUP BY enrollment_fee_adjustment.id
-    ORDER BY enrollment_fee_adjustment.adjusted_at DESC`).all<{ id: string; childId: string; reason: string; adjustedAt: string; amountMnt: number }>();
-  const capacityRowsPromise = getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
-  const capacityLabelsPromise = env.DB.prepare(`SELECT class_session.id, class_session.stage_code AS stageCode,
+    ORDER BY enrollment_fee_adjustment.adjusted_at DESC`).bind(...(selectedChildId ? [selectedChildId] : [])).all<{ id: string; childId: string; reason: string; adjustedAt: string; amountMnt: number }>();
+  const capacityRowsPromise = selectedChildId ? Promise.resolve([]) : getClassCapacityProjections(env.DB, env.APP_ENV, nowDate);
+  const capacityLabelsPromise = selectedChildId ? Promise.resolve({ results: [] as Array<{ id: string; stageCode: string; offeringId: string | null; offeringKind: string | null; offeringTitle: string | null; classLabel: string; weekday: string; startTime: string; endTime: string }> }) : env.DB.prepare(`SELECT class_session.id, class_session.stage_code AS stageCode,
       class_session.activity_offering_id AS offeringId, activity_offering.kind AS offeringKind,
       activity_offering.title AS offeringTitle, class_session.display_label AS classLabel,
       class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime
@@ -1446,6 +1449,10 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
       FROM conditional_family_discount_quote AS quote
       INNER JOIN registration_draft_child AS child ON child.id = quote.registration_draft_child_id
       WHERE quote.state = 'quoted_pending' AND child.canonical_student_id IS NOT NULL
+        ${selectedChildId ? `AND EXISTS (SELECT 1 FROM conditional_family_discount_quote AS selected_quote
+          WHERE selected_quote.registration_draft_child_id = ?
+            AND selected_quote.relationship_basis = quote.relationship_basis
+            AND selected_quote.relationship_key = quote.relationship_key)` : ""}
         AND child.payment_plan_code != 'two_installment'
         AND COALESCE((SELECT SUM(payment_allocation.allocated_amount_mnt) FROM payment_allocation
           INNER JOIN received_payment ON received_payment.id = payment_allocation.received_payment_id
@@ -1453,7 +1460,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
           INNER JOIN payment_installment ON payment_installment.id = payment_allocation.payment_installment_id
           WHERE payment_installment.registration_draft_child_id = child.id
             AND (payment_confirmation.status IS NULL OR payment_confirmation.status != 'undone')), 0) >= quote.base_amount_mnt`)
-      .all<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }>()
+      .bind(...(selectedChildId ? [selectedChildId] : [])).all<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }>()
     : { results: [] as Array<{ quoteId: string; relationshipBasis: string; relationshipKey: string; revision: number; awardAmountMnt: number; childId: string; childName: string }> };
   const conditionalMs = performance.now() - conditionalStartedAt;
   // A family-credit proposal is only actionable inside an opened payment
@@ -1559,7 +1566,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     ...discountCredits.results.map((item) => ({ ...item, availableAmountMnt: Number(item.availableAmountMnt), creditKind: "discount" })),
   ],
   capacity, cancelledItems, releasedSeatItems: releasedSeats.results,
-  waitlistItems: (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
+  waitlistItems: selectedChildId ? [] : (await env.DB.prepare(`SELECT registration_draft_waitlist_entry.id, registration_draft_waitlist_entry.created_at AS createdAt,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone, registration_draft.email, registration_draft.facebook_name AS guardianFacebookName,
     registration_draft_child.facebook_name AS childFacebookName, class_session.display_label AS classLabel,
@@ -1582,7 +1589,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     LEFT JOIN staff_account AS release_actor ON release_actor.id = release_event.actor_ref
     WHERE registration_draft_waitlist_entry.status = 'active'
     ORDER BY registration_draft_waitlist_entry.created_at ASC LIMIT 100`).all<Record<string, unknown>>()).results,
-  waitlistOffers: (await env.DB.prepare(`SELECT waitlist_seat_offer.id, waitlist_seat_offer.status,
+  waitlistOffers: selectedChildId ? [] : (await env.DB.prepare(`SELECT waitlist_seat_offer.id, waitlist_seat_offer.status,
     waitlist_seat_offer.offered_at AS offeredAt, waitlist_seat_offer.respond_by_at AS respondByAt,
     waitlist_seat_offer.contact_last_at AS contactLastAt, waitlist_seat_offer.contact_last_channel AS contactLastChannel,
     registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
@@ -1596,7 +1603,7 @@ export async function getInitialPaymentQueue(env: WorkerEnv, actor: StaffPrincip
     INNER JOIN class_session ON class_session.id = waitlist_seat_offer.class_session_id
     WHERE waitlist_seat_offer.status IN ('active', 'awaiting_transfer')
     ORDER BY waitlist_seat_offer.respond_by_at, waitlist_seat_offer.offered_at LIMIT 100`).all<Record<string, unknown>>()).results,
-  recentWaitlistResponses: (await env.DB.prepare(`SELECT waitlist_seat_offer.id, waitlist_seat_offer.status,
+  recentWaitlistResponses: selectedChildId ? [] : (await env.DB.prepare(`SELECT waitlist_seat_offer.id, waitlist_seat_offer.status,
     waitlist_seat_offer.resolved_at AS resolvedAt, registration_draft_child.surname || ' ' || registration_draft_child.given_name AS childName,
     registration_draft.guardian_full_name AS guardianName, registration_draft.primary_phone AS primaryPhone,
     class_session.display_label AS classLabel, class_session.weekday, class_session.start_time AS startTime, class_session.end_time AS endTime

@@ -137,7 +137,7 @@ import { PublicSeatCountThresholdError, updatePublicSeatCountThreshold } from ".
 import { UsageProtectionError, getUsageProtectionOverview, updateUsageProtectionPolicy } from "../staff/usage-protection";
 import { DiscountPolicyError, reverseDiscountAward, updateDiscountPolicySetting } from "../services/discounts";
 import { LateReferralExternalSettlementError, previewLateReferralExternalSettlement, recordLateReferralExternalSettlement } from "../staff/late-referral-external-settlement";
-import { AttendancePaymentCardError, attendancePaymentCardTarget } from "../staff/attendance-payment-card";
+import { AttendancePaymentCardError, attendancePaymentCardTarget, attendanceCreditRecipients } from "../staff/attendance-payment-card";
 import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
 import { RegistrationCorrectionError, registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } from "../staff/registration-corrections";
 import {
@@ -1449,6 +1449,22 @@ export async function handleApiRequest(
       if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
       try {
         const authDurationMs = performance.now() - authStartedAt;
+        const attendanceEnrollmentId = new URL(request.url).searchParams.get("attendanceEnrollment");
+        if (attendanceEnrollmentId !== null) {
+          try {
+            const recipientQuery = new URL(request.url).searchParams.get("creditRecipientQuery");
+            if (recipientQuery !== null) return json(await attendanceCreditRecipients(env, principal, attendanceEnrollmentId, recipientQuery), 200, { "Cache-Control": "no-store" });
+            const target = await attendancePaymentCardTarget(env, principal, attendanceEnrollmentId);
+            const { timing, ...card } = await getInitialPaymentQueue(env, principal, new Date(), target.registrationDraftChildId);
+            return json({ ...card, attendanceCardTarget: target, cardSession: `${principal.sessionId}:${principal.capabilities.join(",")}` }, 200, { "Cache-Control": "no-store" });
+          } catch (caught) {
+            if (caught instanceof AttendancePaymentCardError) {
+              return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", caught.code === "not_found" ? "Одоогийн бүртгэлийн карт олдсонгүй." : "Сурагчийн холбоос эсвэл харах эрхийг шалгана уу.",
+                caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : 400, { "Cache-Control": "no-store" });
+            }
+            throw caught;
+          }
+        }
         const startedAt = performance.now();
         const timed = async <T,>(work: () => Promise<T>) => {
           const phaseStartedAt = performance.now();

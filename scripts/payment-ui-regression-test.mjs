@@ -402,7 +402,7 @@ assert.match(page, /class="staff-back-link" href="\/staff\/">Буцах<\//, "ba
 assert.match(page, /data-payment-detail=.*aria-expanded="false".*Нээх/, "a closed payment summary uses an accessible in-place disclosure toggle");
 assert.match(page, /staff-payment-item \$\{overdue \? "is-overdue" : ""\} \$\{open \? "is-open" : ""\}/, "the open payment record owns summary and detail in one structural container");
 assert.match(page, /mountAttendanceStudentCard/, "the Payments card controller exposes the direct attendance mount path");
-assert.match(attendancePage, /mountAttendanceStudentCard/, "Attendance mounts the shared Payments card controller on demand");
+assert.match(attendancePage, /createAttendanceCardCache/, "Attendance retains the shared card controller in a bounded page-session cache");
 assert.doesNotMatch(attendancePage, /<iframe/, "Attendance does not embed the Payments page in an iframe");
 assert.match(router, /attendance-payment-card\.resolve/, "the staff API exposes the payment-view-gated attendance card resolver");
 assert.match(page, /class="staff-payment-summary"/, "the row summary is structurally distinct from the owned expanded detail");
