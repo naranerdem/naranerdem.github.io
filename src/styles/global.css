@@ -3692,6 +3692,71 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.staff-attendance-card-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  margin: -0.35rem;
+  min-height: 2.5rem;
+  padding: 0.35rem;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+.staff-attendance-card-toggle:hover {
+  color: var(--blue-deep);
+  text-decoration: underline;
+}
+
+.staff-attendance-card-toggle:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.staff-attendance-payment-card {
+  border-left: 3px solid rgba(7, 58, 175, 0.6);
+  background: #e2f0e6;
+  margin: 0.5rem 0 0;
+  padding: 0.65rem;
+}
+
+.staff-attendance-payment-card > p {
+  margin: 0 0 0.45rem;
+}
+
+.staff-attendance-payment-card iframe {
+  background: transparent;
+  border: 0;
+  display: block;
+  min-height: 18rem;
+  width: 100%;
+}
+
+body[data-embedded-payment-card="true"] {
+  background: transparent;
+}
+
+body[data-embedded-payment-card="true"] .site-header,
+body[data-embedded-payment-card="true"] .staff-payment-heading,
+body[data-embedded-payment-card="true"] .staff-registration-intake-nav,
+body[data-embedded-payment-card="true"] #payment-timing-diagnostics,
+body[data-embedded-payment-card="true"] #datetime-layout-diagnostics,
+body[data-embedded-payment-card="true"] #payment-copy-fallback {
+  display: none !important;
+}
+
+body[data-embedded-payment-card="true"] .staff-shell {
+  max-width: none;
+  padding: 0;
+}
+
+body[data-embedded-payment-card="true"] .staff-payment-embedded-card > .staff-payment-item {
+  margin: 0;
+}
+
 .staff-attendance-makeup-source {
   align-items: center;
   color: var(--muted);

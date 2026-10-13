@@ -56,7 +56,7 @@ import "../../styles/global.css";
       if (homeDate) homeReturn.set("date", homeDate);
       if (homeDay) homeReturn.set("day", homeDay);
       const returnTo = homeReturn.size ? `/staff/?${homeReturn.toString()}` : "/staff/";
-      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrors: new Map(), rowRequestErrors: new Map(), rowSuccessMessages: new Map(), rowSuccessTimers: new Map(), refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0, makeupPickerLoads: new Map() };
+      const state = { data: null, date: params.get("date") || "", selectedSlotId: params.get("occurrence") || "", invalidOccurrence: false, bulkConfirm: false, bulkPending: false, rowErrors: new Map(), rowRequestErrors: new Map(), rowSuccessMessages: new Map(), rowSuccessTimers: new Map(), refreshVersion: 0, canManageAttendance: false, canManageMakeups: false, makeupPicker: null, makeupPickerVersion: 0, makeupPickerLoads: new Map(), openCard: null };
       const q = (selector) => document.querySelector(selector);
       q("#attendance-back").href = returnTo;
       q("#attendance-back").addEventListener("click", (event) => {
@@ -86,6 +86,7 @@ import "../../styles/global.css";
         if (version !== state.refreshVersion) return;
         state.data = data;
         state.date = data.localDate;
+        state.openCard = state.openCard?.slotId === data.selected?.slotId ? state.openCard : null;
         state.invalidOccurrence = Boolean(requestedSlotId && !data.selected);
         if (data.selected) state.selectedSlotId = data.selected.slotId;
         q("#attendance-date").value = state.date;
@@ -131,7 +132,21 @@ import "../../styles/global.css";
         return `<label class="staff-attendance-notice-toggle"><input type="checkbox" data-toggle-notice="${escape(entry.enrollmentId)}" ${entry.hasAbsenceNotice ? "checked" : ""} ${pending ? "disabled" : ""} />Ирэхгүй (мэдэгдсэн)</label>`;
       }
 
-      function rosterRow(entry) {
+      function attendanceCardOpen(entry) {
+        return state.openCard?.slotId === state.selectedSlotId && state.openCard?.enrollmentId === entry.enrollmentId;
+      }
+
+      function attendanceCardMarkup(entry) {
+        if (!attendanceCardOpen(entry)) return "";
+        const card = state.openCard;
+        const selected = state.data?.selected;
+        const context = `${formatDate(selected.localDate)} · ${selected.startTime}–${selected.endTime}`;
+        const source = entry.attendanceKind === "makeup" ? "Энэ нь нөхөх хичээлийн ирц; доорх карт нь хүүхдийн одоогийн бүртгэлийг харуулна." : "Энэ нь сонгосон өдрийн ирц; доорх карт нь хүүхдийн одоогийн бүртгэлийг харуулна.";
+        const query = new URLSearchParams({ embedded: "1", attendanceEnrollment: entry.enrollmentId, attendanceToken: card.token });
+        return `<section id="attendance-card-${escape(entry.enrollmentId)}" class="staff-attendance-payment-card" data-attendance-card="${escape(entry.enrollmentId)}"><p class="staff-muted">${escape(context)} · ${escape(source)}</p><iframe title="${escape(entry.displayName)}-ийн бүртгэл, төлбөрийн карт" src="/staff/payments/?${query.toString()}" data-attendance-card-frame="${escape(entry.enrollmentId)}" data-attendance-card-token="${escape(card.token)}" loading="eager"></iframe></section>`;
+      }
+
+      function rosterStudentMarkup(entry) {
         const pending = optimistic.isPending(entry.enrollmentId);
         const errorMessage = state.rowErrors.get(entry.enrollmentId);
         const error = errorMessage ? `<p class="staff-attendance-row-error" role="status">${escape(errorMessage)}</p>` : "";
@@ -147,7 +162,13 @@ import "../../styles/global.css";
           ? `<a class="staff-text-action" href="/staff/attendance/?date=${encodeURIComponent(source.localDate)}&occurrence=${encodeURIComponent(source.slotId)}">${escape(sourceText)}</a>`
           : escape(sourceText);
         const makeup = entry.attendanceKind === "makeup" ? `<p class="staff-attendance-makeup-source"><span class="staff-kind-label">Нөхөх</span>${sourceLink}</p>` : "";
-        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}" aria-busy="${pending}"><div class="staff-attendance-student"><div class="staff-attendance-identity"><div class="staff-attendance-student-name"><strong>${escape(entry.displayName)}</strong>${isFuture() ? "" : notice}</div>${makeup}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${outcome}${error}</div></article>`;
+        const cardOpen = attendanceCardOpen(entry);
+        return `<div class="staff-attendance-student"><div class="staff-attendance-identity"><div class="staff-attendance-student-name"><button type="button" class="staff-attendance-card-toggle" data-attendance-card-toggle="${escape(entry.enrollmentId)}" aria-expanded="${cardOpen}" aria-controls="attendance-card-${escape(entry.enrollmentId)}"><strong>${escape(entry.displayName)}</strong></button>${isFuture() ? "" : notice}</div>${makeup}</div><div class="staff-attendance-checklist">${attendanceControls(entry)}${isFuture() ? notice : ""}</div>${outcome}${error}</div>`;
+      }
+
+      function rosterRow(entry) {
+        const pending = optimistic.isPending(entry.enrollmentId);
+        return `<article data-attendance-row="${escape(entry.enrollmentId)}" class="${pending ? "staff-attendance-row-pending" : ""}" aria-busy="${pending}">${rosterStudentMarkup(entry)}${attendanceCardMarkup(entry)}</article>`;
       }
 
       function bulkMarkup(selected) {
@@ -183,7 +204,12 @@ import "../../styles/global.css";
         const detail = q("#attendance-detail");
         const entry = selected?.roster.find((row) => row.enrollmentId === enrollmentId);
         const row = [...detail.querySelectorAll("[data-attendance-row]")].find((node) => node.dataset.attendanceRow === enrollmentId);
-        if (entry && row) row.outerHTML = rosterRow(entry);
+        if (entry && row) {
+          const template = document.createElement("template"); template.innerHTML = rosterRow(entry);
+          const next = template.content.firstElementChild;
+          row.className = next.className; row.setAttribute("aria-busy", next.getAttribute("aria-busy") || "false");
+          row.querySelector(".staff-attendance-student")?.replaceWith(next.querySelector(".staff-attendance-student"));
+        }
         renderSummary();
         renderList();
       }
@@ -386,6 +412,12 @@ import "../../styles/global.css";
       q("#attendance-detail").addEventListener("click", async (event) => {
         const target = event.target.closest("button");
         if (!target || target.disabled) return;
+        if (target.dataset.attendanceCardToggle) {
+          const enrollmentId = target.dataset.attendanceCardToggle;
+          state.openCard = attendanceCardOpen({ enrollmentId }) ? null : { enrollmentId, slotId: state.selectedSlotId, token: crypto.randomUUID() };
+          renderDetail();
+          return;
+        }
         if (target.dataset.openMakeupPicker !== undefined || target.dataset.retryMakeupPicker !== undefined) { loadMakeupPicker(target.dataset.retryMakeupPicker !== undefined); return; }
         if (target.dataset.closeMakeupPicker !== undefined) { ++state.makeupPickerVersion; state.makeupPicker = null; renderDetail(); return; }
         if (target.dataset.editMakeupPicker !== undefined) {
@@ -465,6 +497,15 @@ import "../../styles/global.css";
       q("#attendance-list").addEventListener("click", (event) => {
         const target = event.target.closest("[data-open-occurrence]");
         if (!target || !canChangeOccurrence(event)) return;
+      });
+      window.addEventListener("message", (event) => {
+        const detail = event.data;
+        if (event.origin !== window.location.origin || detail?.type !== "naran-erdem.attendance-payment-card-height") return;
+        const card = state.openCard;
+        if (!card || detail.token !== card.token || !Number.isFinite(detail.height)) return;
+        const frame = q(`[data-attendance-card-frame="${card.enrollmentId}"]`);
+        if (!frame || frame.contentWindow !== event.source || frame.dataset.attendanceCardToken !== card.token) return;
+        frame.style.height = `${Math.max(260, Math.min(4200, Math.ceil(detail.height) + 2))}px`;
       });
       function render() { renderList(); renderDetail(); }
       q("#attendance-date-form").onsubmit = (event) => { event.preventDefault(); if (!canChangeOccurrence(event)) return; ++state.makeupPickerVersion; state.makeupPicker = null; state.date = q("#attendance-date").value; state.selectedSlotId = ""; state.invalidOccurrence = false; state.bulkConfirm = false; refresh(); };

@@ -387,12 +387,16 @@ assert.match(page, /programSubsection\(key, bucket, "confirmed"/, "each represen
 assert.match(page, /itemMarkup\(item, \{ compact: true \}\)/, "stage/class disclosures use compact child rows without changing payment-category rows");
 assert.match(page, /staff-stage-compact-summary/, "the compact stage row deliberately contains only the child identity before its detail is opened");
 assert.match(page, /data-program-section-toggle=/, "class/status children use independent nested disclosures");
+assert.match(page, /if \(!entries\.length\) return ""/, "stage lists omit empty class/status disclosures instead of presenting zero-count toggles");
+assert.match(page, /sections \|\| "<p class=\\\"staff-empty\\\">Одоогоор сурагч алга\.<\/p>"/, "an expanded stage with no roster records retains a compact empty state");
 assert.doesNotMatch(page.slice(page.indexOf("const topLevelLabel"), page.indexOf("const offers")), /Нээх|Хаах/, "top-level captions use chevrons rather than visible open or close words");
 assert.doesNotMatch(page.slice(page.indexOf("const waitlistSubsection"), page.indexOf("const waitlistSection =")), /Нээх|Хаах/, "waitlist subcaptions use chevrons rather than visible open or close words");
 assert.match(page, /paymentDetailSelection\.onRefresh\(state\.data\.items\)/, "refresh preserves the explicit record selection state");
 assert.match(page, /class="staff-back-link" href="\/staff\/">Буцах<\//, "back remains an arrow-free text navigation link");
 assert.match(page, /data-payment-detail=.*aria-expanded="false".*Нээх/, "a closed payment summary uses an accessible in-place disclosure toggle");
 assert.match(page, /staff-payment-item \$\{overdue \? "is-overdue" : ""\} \$\{open \? "is-open" : ""\}/, "the open payment record owns summary and detail in one structural container");
+assert.match(page, /attendance-payment-card\.resolve/, "the embedded attendance card resolves a current payment record through a guarded on-demand API request");
+assert.match(router, /attendance-payment-card\.resolve/, "the staff API exposes the payment-view-gated attendance card resolver");
 assert.match(page, /class="staff-payment-summary"/, "the row summary is structurally distinct from the owned expanded detail");
 assert.match(page, /class="staff-payment-detail"/, "expanded content has an explicit owned detail container");
 assert.match(page, /staff-payment-open-header[\s\S]*staff-payment-detail-identity[\s\S]*Хаах/, "the one owned expanded record has a single identity header with an in-place close control");

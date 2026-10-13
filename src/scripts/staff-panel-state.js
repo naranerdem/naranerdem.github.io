@@ -67,7 +67,8 @@ export function selectAdditionalClassPlan(draft, target, paymentPlanCode) {
 }
 
 export function createPaymentDetailSelectionState(launchRegistrationId = "") {
-  let launchPending = Boolean(launchRegistrationId);
+  let launchChildId = launchRegistrationId;
+  let launchPending = Boolean(launchChildId);
   let selectedInstallmentId = "";
 
   return {
@@ -77,10 +78,15 @@ export function createPaymentDetailSelectionState(launchRegistrationId = "") {
     close(installmentId) {
       if (selectedInstallmentId === installmentId) selectedInstallmentId = "";
     },
+    launch(childId) {
+      launchChildId = childId;
+      launchPending = Boolean(childId);
+      selectedInstallmentId = "";
+    },
     onRefresh(items) {
       if (launchPending) {
         launchPending = false;
-        const launched = (items ?? []).find((item) => item.registrationDraftChildId === launchRegistrationId);
+        const launched = (items ?? []).find((item) => item.registrationDraftChildId === launchChildId);
         if (launched?.installmentId) selectedInstallmentId = launched.installmentId;
       }
       return selectedInstallmentId;

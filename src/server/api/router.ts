@@ -137,6 +137,7 @@ import { PublicSeatCountThresholdError, updatePublicSeatCountThreshold } from ".
 import { UsageProtectionError, getUsageProtectionOverview, updateUsageProtectionPolicy } from "../staff/usage-protection";
 import { DiscountPolicyError, reverseDiscountAward, updateDiscountPolicySetting } from "../services/discounts";
 import { LateReferralExternalSettlementError, previewLateReferralExternalSettlement, recordLateReferralExternalSettlement } from "../staff/late-referral-external-settlement";
+import { AttendancePaymentCardError, attendancePaymentCardTarget } from "../staff/attendance-payment-card";
 import { EmailOutboxError, getEmailOutboxEntry, listEmailOutbox } from "../staff/email-outbox";
 import { RegistrationCorrectionError, registrationCorrectionDetail, replaceRegistrationEmail, saveRegistrationCorrection } from "../staff/registration-corrections";
 import {
@@ -1479,6 +1480,22 @@ export async function handleApiRequest(
     if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
     try {
       const payload = await request.json() as Record<string, unknown>;
+      if (payload.action === "attendance-payment-card.resolve") {
+        try {
+          return json({ ok: true, ...await attendancePaymentCardTarget(env, principal, String(payload.enrollmentId ?? "")) }, 200, { "Cache-Control": "no-store" });
+        } catch (caught) {
+          if (caught instanceof AttendancePaymentCardError) {
+            const status = caught.code === "forbidden" ? 403 : caught.code === "not_found" ? 404 : 400;
+            const message = caught.code === "forbidden"
+              ? "Төлбөрийн дэлгэрэнгүй харах эрх алга."
+              : caught.code === "not_found"
+                ? "Энэ ирцийн мөртэй холбоотой одоогийн бүртгэлийн карт олдсонгүй."
+                : "Сонгосон сурагчийн холбоосыг шалгана уу.";
+            return error(caught.code === "forbidden" ? "forbidden" : "invalid_request", message, status, { "Cache-Control": "no-store" });
+          }
+          throw caught;
+        }
+      }
       if (payload.action === "registration.cancel") {
         if (!hasStaffCapability(principal, "registration.manage")) {
           return error("forbidden", "Энэ үйлдлийг хийх эрх алга.", 403, { "Cache-Control": "no-store" });

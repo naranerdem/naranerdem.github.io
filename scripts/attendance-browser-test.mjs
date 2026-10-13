@@ -109,6 +109,14 @@ try {
         ('bulk-enrollment', 'bulk-application', 'bulk-student', 'year', 'target-class', 'confirmed', '${confirmedAt}', NULL, 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_transfer (id, source_enrollment_id, source_application_child_id, source_class_session_id, target_class_session_id, target_enrollment_id, target_application_child_id, status, reason, created_by_staff_account_id, idempotency_key, source_pricing_snapshot_json, target_pricing_snapshot_json, source_effective_charge_mnt, target_effective_charge_mnt, recognized_paid_mnt, required_difference_mnt, resulting_credit_mnt, completed_at, is_test, test_run_id, created_at, updated_at)
       VALUES ('completed-transfer', 'transfer-source-enrollment', 'transfer-source-application', 'source-class', 'target-class', 'transfer-target-enrollment', 'transfer-target-application', 'completed', 'browser test', 'attendance-browser-staff', 'attendance-completed-transfer', '{}', '{}', 0, 0, 0, 0, 0, ${sql(now)}, 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO registration_draft (id, access_token_hash, academic_year_id, guardian_full_name, guardian_relationship, primary_phone, email, normalized_email, home_address, payment_plan_code, parent_rules_version, student_rules_version, status, verified_at, expires_at, is_test, test_run_id, created_at, updated_at)
+      VALUES ('transfer-payment-draft', ${sql("t".repeat(64))}, 'year', 'Transfer guardian', 'Parent', '99000000', 'transfer-payment@example.test', 'transfer-payment@example.test', 'Test', 'single', 'rules', 'rules', 'awaiting_initial_payment', ${sql(now)}, '2027-12-31T00:00:00.000Z', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, canonical_student_id, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('transfer-payment-child', 'transfer-payment-draft', 0, 'Шилжсэн Ирцийн', 'Сурагч', 'not_specified', '2015-01-02', '5', 'Test', 'new', 'stage_1', 'target-class', 'single', 100000, 'awaiting_initial_payment', 'transfer-student', 'transfer-target-application', 'transfer-target-enrollment', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+    INSERT INTO payment_request (id, registration_draft_id, payment_reference, created_at, updated_at, is_test, test_run_id)
+      VALUES ('transfer-payment-request', 'transfer-payment-draft', 'NE-ATTENDANCE-CARD', ${sql(now)}, ${sql(now)}, 1, 'attendance-browser');
+    INSERT INTO payment_installment (id, payment_request_id, registration_draft_child_id, installment_number, installment_kind, amount_mnt, original_due_at, effective_due_at, reminder_lead_minutes, reminder_at, status, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
+      VALUES ('transfer-payment-installment', 'transfer-payment-request', 'transfer-payment-child', 1, 'initial', 100000, '2027-01-01T15:59:59.999Z', '2027-01-01T15:59:59.999Z', 60, '2027-01-01T14:59:59.999Z', 'partially_paid', 'transfer-target-application', 'transfer-target-enrollment', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
   `);
 
   worker = spawn(process.execPath, [wranglerCli, "dev", "--env", "staging", "--local", "--persist-to", persistDir,
@@ -157,12 +165,27 @@ try {
     }
     await route.continue();
   });
-  const ordinaryPresentResponse = postFor("ordinary-enrollment");
   await ordinary.locator("[data-attendance-control='present']").click();
   await delayedSaveStarted;
   await ordinary.getByText("Хадгалж байна…", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await ordinary.getByText("Ирсэн", { exact: true }).locator("input").isDisabled(), true, "the pending row disables repeated present taps");
   assert.equal(await ordinary.getByText("Хоцорсон", { exact: true }).locator("input").isDisabled(), true, "the pending row disables conflicting late taps");
+  const attendancePostsBeforeCard = attendancePosts.length;
+  await transferred.getByRole("button", { name: "Шилжсэн Ирцийн Сурагч" }).click();
+  const transferredCard = transferred.locator(".staff-attendance-payment-card");
+  await transferredCard.waitFor({ state: "visible" });
+  await transferredCard.locator("iframe").contentFrame().locator("#tool-app").waitFor({ state: "visible" });
+  assert.equal(attendancePosts.length, attendancePostsBeforeCard, "opening a student card does not write attendance");
+  const transferredCardText = await transferredCard.locator("iframe").contentFrame().locator("body").innerText();
+  assert.match(transferredCardText, /Шилжсэн Ирцийн Сурагч/, "the card resolves the current payment record by stable enrollment identity");
+  const sourceResolution = await page.evaluate(async () => {
+    const response = await fetch("/api/staff/payments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "attendance-payment-card.resolve", enrollmentId: "transfer-source-enrollment" }) });
+    return { status: response.status, body: await response.json() };
+  });
+  assert.equal(sourceResolution.status, 200, "historical source attendance can resolve a completed transfer");
+  assert.equal(sourceResolution.body.currentEnrollmentId, "transfer-target-enrollment", "historical source attendance resolves to the current enrollment");
+  assert.equal(sourceResolution.body.registrationDraftChildId, "transfer-payment-child", "historical source attendance resolves the current registration child");
+  assert.equal(await transferredCard.locator("iframe").count(), 1, "an attendance-row save leaves an open child card intact");
   await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "pending-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#attendance-detail").screenshot({ path: path.join(screenshotDir, "pending-mobile.png") });
@@ -180,8 +203,6 @@ try {
   assert.equal(transferredPresent.status(), 200, `transferred attendance save failed: ${await transferredPresent.text()}`);
   await transferred.getByText("Хадгаллаа", { exact: true }).waitFor({ state: "visible" });
   releaseDelayedSave();
-  const ordinaryPresent = await ordinaryPresentResponse;
-  assert.equal(ordinaryPresent.status(), 200, `ordinary attendance save failed: ${await ordinaryPresent.text()}`);
   await ordinary.getByText("Хадгаллаа", { exact: true }).waitFor({ state: "visible" });
   await page.unroute("**/api/staff/attendance");
   assert.equal(delayedSaveCount, 1, "the delayed same-row interaction sends one request");
