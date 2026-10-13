@@ -223,8 +223,8 @@ assert.match(creditLedger, /correctionOfEntryId/, "corrections retain a link to 
 assert.match(paymentService, /usedReferralCode/, "payment queue separately projects a referral used by the current registration");
 assert.match(paymentService, /resolution\.evidence_type IN \('staff_manual_bank', 'staff_manual_cash'/, "the compact attention marker hides a parent payment claim after staff resolves it while preserving evidence history");
 assert.match(page, /item\.identityResolutionStatus === "needs_identity_review"/, "only a durable identity-review state is flagged for staff");
-assert.match(page, /const topLevelLabel = \(title, count, freeSeats = null\)/, "top-level captions own their compact count and available-seat presentation");
-assert.match(page, /сул \$\{freeSeats\}/, "program captions show the authoritative available-seat count without a separate summary layer");
+assert.match(page, /const topLevelLabel = \(title, count\) =>/, "top-level captions own only the count shown by their current roster groups");
+assert.doesNotMatch(page.slice(page.indexOf("const classesByProgram"), page.indexOf("list.innerHTML")), /freeSeats/, "stage and program captions do not combine roster counts with a narrower capacity projection");
 assert.doesNotMatch(page, /Суудлын байдал/, "stage lists have no redundant wrapper caption");
 assert.doesNotMatch(page, /staff-stage-capacity-summary/, "the separate stage occupancy-summary layer is removed");
 assert.match(page, /Бүртгэлийг цуцлах/, "an authorized staff member gets a separated destructive cancellation action in the payment detail");
@@ -381,7 +381,12 @@ assert.match(page, /item\.offeringKind === "summer_course"/, "summer programs re
 assert.match(page, /new Intl\.Collator\("mn"/, "stage children use Mongolian-aware name ordering");
 assert.match(page, /Boolean\(item\.canonicalEnrollmentId\)/, "stage lists distinguish confirmed enrollments from registrations awaiting payment");
 assert.match(page, /data-stage-list=/, "each stage owns an accessible expandable child-list region");
-assert.match(page, /data-program-section-toggle=/, "confirmed and payment-waiting children use independent nested disclosures");
+assert.match(page, /const classBucketFor = \(entry\)/, "stage and program lists group current rosters by stable class identity");
+assert.match(page, /const classCaption = \(bucket, siblings\)/, "class/status captions use short weekday and start-time labels, adding a class label only when needed");
+assert.match(page, /programSubsection\(key, bucket, "confirmed"/, "each represented class keeps confirmed and payment-waiting disclosures independent");
+assert.match(page, /itemMarkup\(item, \{ compact: true \}\)/, "stage/class disclosures use compact child rows without changing payment-category rows");
+assert.match(page, /staff-stage-compact-summary/, "the compact stage row deliberately contains only the child identity before its detail is opened");
+assert.match(page, /data-program-section-toggle=/, "class/status children use independent nested disclosures");
 assert.doesNotMatch(page.slice(page.indexOf("const topLevelLabel"), page.indexOf("const offers")), /Нээх|Хаах/, "top-level captions use chevrons rather than visible open or close words");
 assert.doesNotMatch(page.slice(page.indexOf("const waitlistSubsection"), page.indexOf("const waitlistSection =")), /Нээх|Хаах/, "waitlist subcaptions use chevrons rather than visible open or close words");
 assert.match(page, /paymentDetailSelection\.onRefresh\(state\.data\.items\)/, "refresh preserves the explicit record selection state");

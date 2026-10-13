@@ -739,7 +739,7 @@ import "../../styles/global.css";
         const name = childNameCollator.compare(String(left.childName || ""), String(right.childName || ""));
         return name || String(left.registrationDraftChildId || "").localeCompare(String(right.registrationDraftChildId || ""));
       });
-      function itemMarkup(item) {
+      function itemMarkup(item, { compact = false } = {}) {
         const primaryPhone = String(item.primaryPhone || "").trim();
         const secondaryPhone = String(item.secondaryPhone || "").trim();
         const guardianFacebook = String(item.guardianFacebookName || "").trim();
@@ -947,11 +947,13 @@ import "../../styles/global.css";
           : "";
         const identityReview = item.identityResolutionStatus === "needs_identity_review"
           ? `<p class="staff-muted">Хүүхдийн бүртгэлийг баталгаажуулах шаардлагатай</p>` : "";
-        const summary = `<div class="staff-payment-summary" data-payment-detail="${escape(item.installmentId)}" role="button" tabindex="0" aria-expanded="false" aria-controls="payment-detail-${escape(item.installmentId)}"><strong>${escape(item.childName)}</strong><p>${escape(classSchedule(item))}</p>
-          ${remaining > 0 ? `<p><strong>${escape(mnt(remaining))}</strong> үлдсэн</p>` : ""}
-          ${item.tentativePaymentId ? `<p class="staff-muted">Төлбөр бүртгэгдлээ. Суудал удахгүй баталгаажна.</p>` : ""}
-          ${item.parentClaimed ? `<p><strong>Эцэг эх төлсөн гэж мэдэгдсэн</strong></p>` : overdue ? `<p><strong>${escape(dueText(effectiveDue))}</strong></p>` : item.canonicalEnrollmentId && remaining > 0 && effectiveDue ? `<p class="staff-muted">Дараагийн төлөлтийн хугацаа: ${escape(localLabel(effectiveDue))}</p>` : identityReview}${actionFeedback(item.registrationDraftChildId, ["payment-checked"])}</div>`;
-        return `<article class="staff-payment-item ${overdue ? "is-overdue" : ""} ${open ? "is-open" : ""}" data-registration-child="${escape(item.registrationDraftChildId)}" data-payment-item="${escape(item.installmentId)}">
+        const summary = compact
+          ? `<div class="staff-payment-summary staff-stage-compact-summary" data-payment-detail="${escape(item.installmentId)}" role="button" tabindex="0" aria-expanded="false" aria-controls="payment-detail-${escape(item.installmentId)}"><strong>${escape(item.childName)}</strong></div>`
+          : `<div class="staff-payment-summary" data-payment-detail="${escape(item.installmentId)}" role="button" tabindex="0" aria-expanded="false" aria-controls="payment-detail-${escape(item.installmentId)}"><strong>${escape(item.childName)}</strong><p>${escape(classSchedule(item))}</p>
+            ${remaining > 0 ? `<p><strong>${escape(mnt(remaining))}</strong> үлдсэн</p>` : ""}
+            ${item.tentativePaymentId ? `<p class="staff-muted">Төлбөр бүртгэгдлээ. Суудал удахгүй баталгаажна.</p>` : ""}
+            ${item.parentClaimed ? `<p><strong>Эцэг эх төлсөн гэж мэдэгдсэн</strong></p>` : overdue ? `<p><strong>${escape(dueText(effectiveDue))}</strong></p>` : item.canonicalEnrollmentId && remaining > 0 && effectiveDue ? `<p class="staff-muted">Дараагийн төлөлтийн хугацаа: ${escape(localLabel(effectiveDue))}</p>` : identityReview}${actionFeedback(item.registrationDraftChildId, ["payment-checked"])}</div>`;
+        return `<article class="staff-payment-item ${compact ? "staff-stage-compact-item" : ""} ${overdue ? "is-overdue" : ""} ${open ? "is-open" : ""}" data-registration-child="${escape(item.registrationDraftChildId)}" data-payment-item="${escape(item.installmentId)}">
           ${open ? "" : summary}
           ${open ? "" : `<div class="staff-payment-actions"><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="false" aria-controls="payment-detail-${escape(item.installmentId)}">Нээх</button></div>`}
           ${open ? `<div id="payment-detail-${escape(item.installmentId)}" class="staff-payment-detail"><div class="staff-payment-open-header"><p class="staff-payment-detail-identity"><strong>${escape(item.childName)}</strong><span>${escape(classSchedule(item))}</span></p><button class="text-button" type="button" data-payment-detail="${escape(item.installmentId)}" aria-expanded="true" aria-controls="payment-detail-${escape(item.installmentId)}">Хаах</button></div>${pendingAdditionalAdmissionNotice(item)}${conditionalFailureDeadline}${contingentCreditAuthorization}${remaining > 0 && !initialSettled && !awaitingReservedSettlement ? `<form class="staff-payment-form" data-payment-form="${escape(item.installmentId)}" data-payment-required="${escape(cashRequired)}" ${collectionPending ? 'aria-busy="true"' : ""}><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p>${collectionTerms}${collectionMaximum > cashRequired && !familyQualificationEstablished ? `<p class="staff-muted staff-wide">Нөхцөлт тооцооллоор авах санал: ${escape(mnt(cashRequired))}. Бодит орсон дүн анхны төлбөрийн дүнд хүрч болно.</p>` : ""}${familyCreditDecision}<p class="staff-wide">${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p>${ownReferral}${usedReferral}<label>Орсон дүн<input name="amount" type="number" min="1" max="${escape(collectionMaximum)}" step="1" value="${escape(cashRequired)}" required ${collectionPending ? "disabled" : ""} /></label><label>Төрөл<select name="source" ${collectionPending ? "disabled" : ""}><option value="staff_manual_bank">Дансаар</option><option value="staff_manual_cash">Бэлнээр</option></select></label>${item.transferDescription || item.paymentReference ? `<p class="staff-payment-reference staff-wide"><span>Гүйлгээний утга</span><strong>${escape(item.transferDescription || item.paymentReference)}</strong></p>` : ""}<label class="staff-wide">Орсон хугацаа<input name="receivedAt" type="datetime-local" value="${localDateTime(new Date())}" required ${collectionPending ? "disabled" : ""} /></label>${seatApprovalControl}${remainingDeadlineControls}<div class="staff-inline-actions staff-wide"><button class="button primary" type="submit" ${collectionPending ? "disabled" : ""}>${pending ? "Бүртгэж байна…" : "Төлбөр орсон"}</button><button class="text-button" type="button" data-payment-checked="${escape(item.paymentRequestId)}" ${checkedNotFoundPending ? 'disabled aria-busy="true"' : ""}>${checkedNotFoundPending ? "Тэмдэглэж байна…" : "Төлбөр олдоогүйг тэмдэглэх"}</button></div>${actionFeedback(item.registrationDraftChildId, ["payment", "payment-checked"])}</form>` : `<div class="staff-payment-form"><p>Асран хамгаалагч: ${escape(item.guardianName || "")}</p><p>Утас: ${escape(item.primaryPhone || "")}</p>${settledCollectionTerms}${awaitingReservedSettlement ? `<p class="staff-muted staff-wide">Бэлэн мөнгөний төлбөр бүртгэгдсэн. Нөөцөлсөн кредитийг хамгаалсан баталгаажуулалт хүлээгдэж байна.</p>` : ""}${ownReferral}${usedReferral}<p class="staff-wide">${item.parentClaimed ? "Эцэг эх төлсөн гэж мэдэгдсэн" : ""}</p>${historicalSettlementReview}${seatCorrection}${actionFeedback(item.registrationDraftChildId, ["payment", "seat-confirm"])}</div>`}${childCreditReviewNotice(item)}${familyCreditSuggestionNotice(item)}${familyCreditApplicationMarkup(item)}${contact}${panelActionStrip(item)}${lateReferralHistoryMarkup(item)}${actionFeedback(item.registrationDraftChildId, ["transfer", "additional-class"])}<div class="staff-panel-region">${special}${laterPaymentForm}${paymentTools}${transferMarkup(item)}${additionalClassMarkup(item)}${childCreditMarkup(item)}${activePanel(item.registrationDraftChildId) === "edit" ? correctionForm(item) : registrationView(item)}</div>${tentative}${cancellation}${cancellationPermissionNotice}</div>` : ""}
@@ -1028,7 +1030,7 @@ import "../../styles/global.css";
         for (const item of state.data?.waitlistItems || []) groups["Хүлээлгийн жагсаалт"].push({ ...item, waitlist: true });
         for (const item of state.data?.waitlistOffers || []) groups["Хүлээлгийн жагсаалт"].push({ ...item, offer: true });
         const itemHtml = (item) => item.credit ? creditMarkup(item) : item.offer ? offerMarkup(item) : item.waitlist ? waitlistMarkup(item) : item.installmentId ? itemMarkup(item) : promotionMarkup(item);
-        const topLevelLabel = (title, count, freeSeats = null) => `${escape(title)} <span>(${count}${freeSeats == null ? "" : `, сул ${freeSeats}`})</span>`;
+        const topLevelLabel = (title, count) => `${escape(title)} <span>(${count})</span>`;
         const ordinarySection = (title) => { const open = groupOpen(title); const count = groups[title].length; return `<section class="staff-operation-section staff-payment-group ${open ? "is-open" : ""}"><h2><button class="staff-group-toggle" type="button" data-group-toggle="${escape(title)}" aria-expanded="${open}" aria-controls="group-${escape(title)}">${topLevelLabel(title, count)}</button></h2><div id="group-${escape(title)}" ${open ? "" : "hidden"}>${open ? (count ? groups[title].map(itemHtml).join("") : "<p class=\"staff-empty\">Одоогоор байхгүй</p>") : ""}</div></section>`; };
         const offers = groups["Хүлээлгийн жагсаалт"].filter((item) => item.offer); const waiting = groups["Хүлээлгийн жагсаалт"].filter((item) => item.waitlist);
         const overdueOffers = offers.filter((item) => item.status === "active" && new Date(item.respondByAt) < new Date(state.data.now));
@@ -1050,31 +1052,54 @@ import "../../styles/global.css";
         const cancelled = state.data?.cancelledItems || []; const releasedSeats = state.data?.releasedSeatItems || [];
         const inactiveOpen = state.openGroups["Идэвхгүй бүртгэл"] ?? false;
         const inactiveSection = `<section class="staff-operation-section staff-payment-group ${inactiveOpen ? "is-open" : ""}"><h2><button class="staff-group-toggle" type="button" data-group-toggle="Идэвхгүй бүртгэл" aria-expanded="${inactiveOpen}" aria-controls="group-inactive">${topLevelLabel("Идэвхгүй бүртгэл", releasedSeats.length + cancelled.length)}</button></h2><div id="group-inactive" ${inactiveOpen ? "" : "hidden"}>${inactiveOpen ? `<section class="staff-waitlist-subsection"><h3>Суудал чөлөөлсөн <span>(${releasedSeats.length})</span></h3>${releasedSeats.length ? releasedSeats.map(releasedSeatMarkup).join("") : "<p class=\"staff-empty\">Одоогоор байхгүй</p>"}</section><section class="staff-waitlist-subsection"><h3>Цуцалсан бүртгэл <span>(${cancelled.length})</span></h3>${cancelled.length ? cancelled.map(cancelledMarkup).join("") : "<p class=\"staff-empty\">Одоогоор байхгүй</p>"}</section>` : ""}</div></section>`;
-        const capacityByProgram = new Map();
-        for (const entry of state.data?.capacity || []) {
-          const group = programGroupFor(entry);
-          capacityByProgram.set(group.key, { group, entries: [...(capacityByProgram.get(group.key)?.entries || []), entry] });
-        }
-        const itemsByProgram = new Map();
-        for (const item of items) {
-          const group = programGroupFor(item);
-          itemsByProgram.set(group.key, { group, entries: [...(itemsByProgram.get(group.key)?.entries || []), item] });
-        }
+        const classesByProgram = new Map();
+        const weekdayRank = new Map([["Даваа", 1], ["Мягмар", 2], ["Лхагва", 3], ["Пүрэв", 4], ["Баасан", 5], ["Бямба", 6], ["Ням", 7]]);
+        let nextClassOrder = 0;
+        const classBucketFor = (entry) => {
+          const group = programGroupFor(entry); const classSessionId = String(entry.classSessionId || entry.id || "");
+          if (!classSessionId) return null;
+          let program = classesByProgram.get(group.key);
+          if (!program) { program = { group, classes: new Map() }; classesByProgram.set(group.key, program); }
+          let bucket = program.classes.get(classSessionId);
+          if (!bucket) {
+            bucket = { id: classSessionId, classLabel: entry.classLabel || "", weekday: entry.weekday || "", startTime: entry.startTime || "", endTime: entry.endTime || "", items: [], order: nextClassOrder++ };
+            program.classes.set(classSessionId, bucket);
+          }
+          bucket.classLabel ||= entry.classLabel || ""; bucket.weekday ||= entry.weekday || ""; bucket.startTime ||= entry.startTime || ""; bucket.endTime ||= entry.endTime || "";
+          return bucket;
+        };
+        for (const entry of state.data?.capacity || []) classBucketFor(entry);
+        for (const item of items) classBucketFor(item)?.items.push(item);
         const programKeys = [
-          ...stageOrder.map(stageGroupKey).filter((key) => capacityByProgram.has(key) || itemsByProgram.has(key)),
-          ...[...new Set([...capacityByProgram.keys(), ...itemsByProgram.keys()])].filter((key) => key.startsWith("summer:")).sort((left, right) => childNameCollator.compare(capacityByProgram.get(left)?.group.label || itemsByProgram.get(left)?.group.label || "", capacityByProgram.get(right)?.group.label || itemsByProgram.get(right)?.group.label || "")),
+          ...stageOrder.map(stageGroupKey).filter((key) => classesByProgram.has(key)),
+          ...[...classesByProgram.keys()].filter((key) => key.startsWith("summer:")).sort((left, right) => childNameCollator.compare(classesByProgram.get(left)?.group.label || "", classesByProgram.get(right)?.group.label || "")),
         ];
-        const programSubsection = (programKey, status, title, entries) => {
-          const key = `${programKey}:${status}`; const selected = entries.some((item) => state.openId === item.installmentId); const open = state.openProgramSections[key] ?? selected; const id = `program-section-${key}`;
-          return `<section class="staff-waitlist-subsection ${open ? "is-open" : ""}"><h3><button class="staff-waitlist-subsection-toggle" type="button" data-program-section-toggle="${escape(key)}" aria-expanded="${open}" aria-controls="${escape(id)}">${escape(title)} <span>(${entries.length})</span></button></h3><div id="${escape(id)}" ${open ? "" : "hidden"}>${entries.length ? entries.map(itemHtml).join("") : "<p class=\"staff-empty\">Одоогоор бүртгэл байхгүй</p>"}</div></section>`;
+        const sortClassBuckets = (buckets) => [...buckets].sort((left, right) => {
+          const weekday = (weekdayRank.get(left.weekday) || 99) - (weekdayRank.get(right.weekday) || 99);
+          return weekday || String(left.weekday).localeCompare(String(right.weekday), "mn") || String(left.startTime).localeCompare(String(right.startTime)) || String(left.classLabel).localeCompare(String(right.classLabel), "mn") || left.order - right.order || left.id.localeCompare(right.id);
+        });
+        const classCaption = (bucket, siblings) => {
+          const base = [bucket.weekday, bucket.startTime].filter(Boolean).join(" ") || bucket.classLabel || "Анги";
+          const matches = siblings.filter((candidate) => [candidate.weekday, candidate.startTime].filter(Boolean).join(" ") === [bucket.weekday, bucket.startTime].filter(Boolean).join(" "));
+          if (matches.length < 2) return base;
+          const sameLabel = matches.filter((candidate) => candidate.classLabel === bucket.classLabel);
+          if (bucket.classLabel && sameLabel.length === 1) return `${base} · ${bucket.classLabel}`;
+          return [base, bucket.endTime].filter(Boolean).join("–");
+        };
+        const programSubsection = (programKey, bucket, status, title, entries, siblings) => {
+          const key = `${programKey}:${bucket.id}:${status}`; const selected = entries.some((item) => state.openId === item.installmentId); const open = state.openProgramSections[key] ?? selected; const id = `program-section-${key}`;
+          const caption = `${classCaption(bucket, siblings)} · ${title}`;
+          return `<section class="staff-waitlist-subsection ${open ? "is-open" : ""}"><h3><button class="staff-waitlist-subsection-toggle" type="button" data-program-section-toggle="${escape(key)}" aria-expanded="${open}" aria-controls="${escape(id)}">${escape(caption)} <span>(${entries.length})</span></button></h3><div id="${escape(id)}" ${open ? "" : "hidden"}>${entries.length ? entries.map((item) => itemMarkup(item, { compact: true })).join("") : "<p class=\"staff-empty\">Одоогоор бүртгэл байхгүй</p>"}</div></section>`;
         };
         const programSections = programKeys.map((key) => {
-          const group = capacityByProgram.get(key)?.group || itemsByProgram.get(key)?.group; const programItems = itemsByProgram.get(key)?.entries || [];
-          const confirmed = sortChildrenByName(programItems.filter((item) => Boolean(item.canonicalEnrollmentId)));
-          const awaiting = sortChildrenByName(programItems.filter((item) => !item.canonicalEnrollmentId));
-          const freeSeats = (capacityByProgram.get(key)?.entries || []).reduce((sum, entry) => sum + Number(entry.freeSeats || 0), 0);
+          const program = classesByProgram.get(key); const group = program.group; const classes = sortClassBuckets(program.classes.values());
+          const confirmed = classes.flatMap((bucket) => bucket.items.filter((item) => Boolean(item.canonicalEnrollmentId)));
           const open = groupOpen(key); const contentId = `program-${key}`; const stageCode = group.summer ? null : key.slice("stage:".length);
-          return `<section class="staff-operation-section staff-payment-group ${open ? "is-open" : ""}" data-program-section="${escape(key)}"${stageCode ? ` data-stage-section="${escape(stageCode)}"` : ""}><h2><button class="staff-group-toggle" type="button" data-group-toggle="${escape(key)}" aria-expanded="${open}" aria-controls="${escape(contentId)}">${topLevelLabel(group.label, confirmed.length + awaiting.length, freeSeats)}</button></h2><div id="${escape(contentId)}"${stageCode ? ` data-stage-list="${escape(stageCode)}"` : ""} ${open ? "" : "hidden"}>${open ? `${programSubsection(key, "confirmed", "Баталгаажсан", confirmed)}${programSubsection(key, "awaiting", "Төлбөр хүлээж буй", awaiting)}` : ""}</div></section>`;
+          return `<section class="staff-operation-section staff-payment-group ${open ? "is-open" : ""}" data-program-section="${escape(key)}"${stageCode ? ` data-stage-section="${escape(stageCode)}"` : ""}><h2><button class="staff-group-toggle" type="button" data-group-toggle="${escape(key)}" aria-expanded="${open}" aria-controls="${escape(contentId)}">${topLevelLabel(group.label, confirmed.length)}</button></h2><div id="${escape(contentId)}"${stageCode ? ` data-stage-list="${escape(stageCode)}"` : ""} ${open ? "" : "hidden"}>${open ? classes.map((bucket) => {
+            const classConfirmed = sortChildrenByName(bucket.items.filter((item) => Boolean(item.canonicalEnrollmentId)));
+            const classAwaiting = sortChildrenByName(bucket.items.filter((item) => !item.canonicalEnrollmentId));
+            return `${programSubsection(key, bucket, "confirmed", "Баталгаажсан", classConfirmed, classes)}${programSubsection(key, bucket, "awaiting", "Төлбөр хүлээж буй", classAwaiting, classes)}`;
+          }).join("") : ""}</div></section>`;
         }).join("") || "<p class=\"staff-empty\">Одоогоор анги байхгүй</p>";
         list.innerHTML = programSections + sections.map((title) => title === "Хүлээлгийн жагсаалт" ? waitlistSection : ordinarySection(title)).join("") + inactiveSection;
         list.querySelectorAll(".staff-payment-summary").forEach((summary) => {
