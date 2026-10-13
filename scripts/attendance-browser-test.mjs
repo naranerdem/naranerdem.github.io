@@ -250,9 +250,19 @@ try {
   await transferredCard.getByRole('button', { name: 'Мэдээлэл засах', exact: true }).click();
   const schoolDraft = transferredCard.locator('input[name="currentSchool"]');
   await schoolDraft.fill('Disposable unsaved school');
-  await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
+  const cardClose = transferredCard.getByRole('button', { name: 'Хаах', exact: true });
+  assert.equal(await cardClose.getAttribute('type'), 'button', 'card close cannot submit a form');
+  const requestsBeforeClose = cardRequests.length;
+  await cardClose.click();
+  await transferredCard.waitFor({ state: 'detached' });
+  const nameToggle = transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' });
+  assert.equal(await nameToggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(await nameToggle.evaluate(node => node === document.activeElement), true, 'close returns focus to student name');
   await transferred.getByRole('button', { name: 'Шилжсэн Ирцийн Сурагч' }).click();
   assert.equal(await schoolDraft.inputValue(), 'Disposable unsaved school', 'unsaved card fields survive close/reopen');
+  assert.equal(await nameToggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(cardRequests.length, requestsBeforeClose, 'card close/reopen retains cached draft without a data request');
+  assert.equal(attendancePosts.length, attendancePostsBeforeCard, 'card close does not write attendance');
   // Cancelling the supported draft is not a business mutation.
   await transferredCard.locator('[data-registration-correction-cancel]').click();
   await transferredCard.getByRole('button', { name: 'Мэдээлэл', exact: true }).click();
@@ -294,6 +304,11 @@ try {
   const paymentsItem = paymentsPage.locator(".staff-payment-item").filter({ hasText: "Шилжсэн Ирцийн Сурагч" });
   await paymentsItem.getByRole("button", { name: "Нээх", exact: true }).click();
   await paymentsItem.getByRole("button", { name: "Мэдээлэл", exact: true }).waitFor({ state: "visible" });
+  await paymentsItem.getByRole('button', { name: 'Хаах', exact: true }).click();
+  await paymentsItem.getByRole('button', { name: 'Нээх', exact: true }).waitFor({ state: 'visible' });
+  assert.equal(await paymentsItem.locator('.staff-payment-detail').count(), 0, 'normal Payments close still collapses details');
+  await paymentsItem.getByRole('button', { name: 'Нээх', exact: true }).click();
+  await paymentsItem.getByRole('button', { name: 'Мэдээлэл', exact: true }).waitFor({ state: 'visible' });
   await paymentsPage.close();
   assert.equal(await transferredCard.locator("iframe").count(), 0, "attendance mounts the shared card directly without a Payments-page iframe");
   assert.equal(await transferredCard.locator("[data-student-card-runtime]").count(), 1, "an attendance-row save leaves an open child card intact");

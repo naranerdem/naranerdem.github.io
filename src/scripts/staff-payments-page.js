@@ -1281,6 +1281,8 @@ async function copyMessengerOffer(offerId) {
 }
 q("#payment-list").addEventListener("click", async (event) => {
   const target = event.target.closest("button, [data-payment-detail][role=button], [data-summary-toggle][role=button]"); if (!target || target.disabled) return;
+  // Attendance owns disclosure; leave the cached controller, tabs and drafts intact.
+  if (target.dataset.paymentDetail && attendanceCardMode) { controllerOptions.onClose?.(); return; }
   if (target.dataset.summaryToggle !== undefined) { target.parentElement?.querySelector(".staff-payment-actions button[aria-expanded]")?.click(); return; }
   if (target.dataset.groupToggle) { const group = target.dataset.groupToggle; setOpenTopLevelList(group, !groupOpen(group)); render(); q(`[data-group-toggle="${group}"]`)?.focus(); return; }
   if (target.dataset.waitlistSectionToggle) { const key = target.dataset.waitlistSectionToggle; state.openWaitlistSections[key] = !(state.openWaitlistSections[key] ?? false); render(); q(`[data-waitlist-section-toggle="${key}"]`)?.focus(); return; }
@@ -2490,7 +2492,7 @@ return ready.then(() => ({
 // Attendance mounts the exact same card controller as Payments.  The host is
 // deliberately only a card surface: it does not load or embed the Payments
 // page, and no Payments-page URL or bootstrap state is required.
-export function mountAttendanceStudentCard(host, { enrollmentId, displayName, onLoaded, onAccessDenied }) {
+export function mountAttendanceStudentCard(host, { enrollmentId, displayName, onLoaded, onAccessDenied, onClose }) {
   host.innerHTML = `<div class="staff-payment-card-runtime" data-student-card-runtime>
     <p id="tool-message" class="staff-message" hidden></p>
     <div id="payment-list" aria-live="polite"><p class="staff-muted">Карт ачаалж байна…</p></div>
@@ -2504,5 +2506,5 @@ export function mountAttendanceStudentCard(host, { enrollmentId, displayName, on
       </div>
     </dialog>
   </div>`;
-  return initPaymentsPage({ root: host, attendanceEnrollmentId: String(enrollmentId || ""), displayName: String(displayName || ""), onLoaded, onAccessDenied });
+  return initPaymentsPage({ root: host, attendanceEnrollmentId: String(enrollmentId || ""), displayName: String(displayName || ""), onLoaded, onAccessDenied, onClose });
 }

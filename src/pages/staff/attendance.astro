@@ -284,7 +284,8 @@ import "../../styles/global.css";
         try {
           if (!attendanceStudentCardsEnabled) return;
           cardCache ??= createAttendanceCardCache();
-          await cardCache.open(host, { enrollmentId: entry.enrollmentId, displayName: entry.displayName });
+          await cardCache.open(host, { enrollmentId: entry.enrollmentId, displayName: entry.displayName,
+            onClose: () => closeAttendanceCard(entry.enrollmentId, true) });
         } catch (error) {
           if (version !== state.cardMountVersion || state.openCard !== card || !host.isConnected) return;
           host.innerHTML = `<p class="staff-error-inline" role="status">${escape(error.message || "Карт ачаалж чадсангүй.")}</p><button type="button" class="button secondary" data-attendance-card-retry="${escape(entry.enrollmentId)}">Дахин ачаалах</button>`;
@@ -438,14 +439,23 @@ import "../../styles/global.css";
         }
       }
 
+      function closeAttendanceCard(enrollmentId, returnFocus = false) {
+        if (!attendanceCardOpen({ enrollmentId })) return;
+        ++state.cardMountVersion;
+        state.openCard = null;
+        renderDetail();
+        if (returnFocus) q(`[data-attendance-card-toggle="${CSS.escape(enrollmentId)}"]`)?.focus();
+      }
+
       q("#attendance-detail").addEventListener("click", async (event) => {
         const target = event.target.closest("button");
         if (!target || target.disabled) return;
         if (target.dataset.attendanceCardToggle) {
           if (!attendanceStudentCardsEnabled) return;
           const enrollmentId = target.dataset.attendanceCardToggle;
+          if (attendanceCardOpen({ enrollmentId })) { closeAttendanceCard(enrollmentId); return; }
           ++state.cardMountVersion;
-          state.openCard = attendanceCardOpen({ enrollmentId }) ? null : { enrollmentId, slotId: state.selectedSlotId, token: crypto.randomUUID() };
+          state.openCard = { enrollmentId, slotId: state.selectedSlotId, token: crypto.randomUUID() };
           renderDetail();
           return;
         }
