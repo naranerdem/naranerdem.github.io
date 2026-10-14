@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, webkit } from "@playwright/test";
 import { assertDisposableLocalWrangler, failWithoutQuotaRetry } from "./local-disposable-test-target.mjs";
-import { checkWeeklyAttendance } from './weekly-attendance-browser-check.mjs';
+import { checkWeeklyAttendance, profileWeeklyAttendance } from './weekly-attendance-browser-check.mjs';
 
 const persistDir = mkdtempSync(path.join(tmpdir(), "naranerdem-attendance-browser-"));
 const screenshotDir = process.env.ATTENDANCE_BROWSER_SCREENSHOT_DIR || path.join(tmpdir(), "naranerdem-attendance-browser-screens");
@@ -73,6 +73,8 @@ try {
       VALUES ('program', 'family', 'year', 'stage_1', 1, 'Attendance browser program', 'annual_course', 'draft', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO curriculum_lesson (id, curriculum_program_id, sequence_number, title, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('lesson', 'program', 1, 'Attendance browser lesson', 'active', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+    ${process.env.WEEKLY_PROFILE || process.env.ATTENDANCE_CARD_PROFILE ? '' : `INSERT INTO curriculum_lesson (id,curriculum_program_id,sequence_number,title,is_test,test_run_id,created_at,updated_at)
+      VALUES ('weekly-second-lesson','program',2,'Weekly second',1,'attendance-browser',${sql(now)},${sql(now)});`}
     UPDATE curriculum_program SET status = 'published', published_at = ${sql(now)} WHERE id = 'program';
     UPDATE curriculum_program_family SET current_published_program_id = 'program' WHERE id = 'family';
     INSERT INTO activity_offering (id, kind, title, academic_year_id, stage_code, starts_on, curriculum_program_id, use_academic_year_breaks, charge_mode, status, is_test, test_run_id, created_at, updated_at)
@@ -86,6 +88,8 @@ try {
       VALUES ('target-revision', 'target-calendar', 'program', 1, 'draft', '${date}', 0, 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
     INSERT INTO class_calendar_slot (id, class_calendar_revision_id, local_date, start_time, end_time, slot_source, status, curriculum_lesson_id, is_test, test_run_id, created_at, updated_at)
       VALUES ('attendance-slot', 'target-revision', '${date}', '14:00', '15:20', 'generated', 'scheduled', 'lesson', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
+    ${process.env.WEEKLY_PROFILE || process.env.ATTENDANCE_CARD_PROFILE ? '' : `INSERT INTO class_calendar_slot (id,class_calendar_revision_id,local_date,start_time,end_time,slot_source,status,curriculum_lesson_id,is_test,test_run_id,created_at,updated_at)
+      VALUES ('weekly-occupied','target-revision','${addDays(date, (7-new Date(date+'T00:00:00Z').getUTCDay())%7)}','16:00','17:20','generated','scheduled','weekly-second-lesson',1,'attendance-browser',${sql(now)},${sql(now)});`}
     UPDATE class_calendar_revision SET status = 'published', published_at = ${sql(now)} WHERE id = 'target-revision';
     INSERT INTO guardian_account (id, full_name, primary_phone, primary_phone_normalized, email, email_normalized, home_address, status, is_test, test_run_id, created_at, updated_at)
       VALUES ('guardian', 'Attendance Guardian', '99000000', '99000000', 'attendance@example.test', 'attendance@example.test', 'Test', 'active', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
@@ -120,7 +124,7 @@ try {
       VALUES ('transfer-payment-installment', 'transfer-payment-request', 'transfer-payment-child', 1, 'initial', 100000, '2027-01-01T15:59:59.999Z', '2027-01-01T15:59:59.999Z', 60, '2027-01-01T14:59:59.999Z', 'partially_paid', 'transfer-target-application', 'transfer-target:enrollment', 1, 'attendance-browser', ${sql(now)}, ${sql(now)});
   `);
 
-  const profile = Boolean(process.env.ATTENDANCE_CARD_PROFILE);
+  const profile = Boolean(process.env.ATTENDANCE_CARD_PROFILE || process.env.WEEKLY_PROFILE);
   {
     for (let i = 0; i < (profile ? 41 : 1); i++) execute(`
       INSERT INTO registration_draft_child (id, registration_draft_id, position, surname, given_name, gender, date_of_birth, current_grade, current_school, returning_status, selected_stage_code, selected_class_session_id, payment_plan_code, initial_payment_amount_mnt, status, canonical_student_id, canonical_application_child_id, canonical_enrollment_id, is_test, test_run_id, created_at, updated_at)
@@ -137,7 +141,13 @@ try {
   context = await browser.newContext();
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   const page = await context.newPage();
-  if (profile) {
+  if (process.env.WEEKLY_PROFILE) {
+    const result = await profileWeeklyAttendance({ context, baseUrl, date });
+    writeFileSync(path.join(screenshotDir, `weekly-profile-${process.env.WEEKLY_PROFILE}.json`), JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(result));
+  } else if (process.env.WEEKLY_ONLY) {
+    await checkWeeklyAttendance({ context, baseUrl, date, execute, screenshotDir, engine: browserEngine });
+  } else if (profile) {
     const samples = [];
     let phase = 'attendance';
     const pending = [];

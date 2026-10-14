@@ -8,10 +8,18 @@ import {
   effectiveAttendanceStatus,
   markedRosterCount,
 } from "./attendance-optimistic.js";
-import { escape, formatDate, getAttendanceDay, getStaffCapabilities, postAttendanceAction, postCourseMakeupAction } from "./staff-setup.js";
+import { escape, formatDate, getAttendanceDay, getStaffCapabilities, postAttendanceAction as sendAttendanceAction, postCourseMakeupAction as sendCourseMakeupAction } from "./staff-setup.js";
 
 export function createAttendanceController(root = document, options = {}) {
 const compact = options.compact === true;
+const postAttendanceAction = async (...args) => {
+  try { return await sendAttendanceAction(...args); }
+  finally { options.onMutation?.(); }
+};
+const postCourseMakeupAction = async (...args) => {
+  try { return await sendCourseMakeupAction(...args); }
+  finally { options.onMutation?.(); }
+};
 let activeSaves = 0;
 let bulkError = false;
 let disposed = false;

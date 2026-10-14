@@ -280,12 +280,12 @@ try {
   const initialWeekRange = await page.locator('[data-week-range]').innerText();
   await page.locator('[data-week-step="7"]').click();
   await page.waitForFunction(previous => document.querySelector('[data-week-range]').textContent !== previous, initialWeekRange);
-  if (targetDate <= initialWeekRange.split(' – ')[1]) {
-    await page.locator('[data-week-step="-7"]').click();
-    await page.waitForFunction(expected => document.querySelector('[data-week-range]').textContent === expected, initialWeekRange);
-  }
-  await page.locator('[data-week-class="target-slot"] > summary').click();
-  await page.locator('[data-week-class="target-slot"] .staff-empty').waitFor();
+  await page.locator('[data-week-step="-7"]').click();
+  await page.waitForFunction(expected => document.querySelector('[data-week-range]').textContent === expected, initialWeekRange);
+  assert.equal(await page.locator('[data-week-class="target-slot"]').count(), 0, 'empty target roster is not shown');
+  const occupiedWeeklyClass = page.locator('[data-week-class]').first();
+  await occupiedWeeklyClass.locator('summary').click();
+  await occupiedWeeklyClass.locator('[data-attendance-row]').first().waitFor();
   assert.equal(overviewGets, 1, 'weekly navigation works without automatic make-up retries');
   await page.locator('[data-retry-overview]').click();
   await page.waitForFunction(() => document.querySelector('[data-retry-overview]').disabled);
@@ -294,7 +294,7 @@ try {
   await page.locator('#makeup-overview-error').waitFor({ state: 'hidden' });
   assert.equal(overviewGets, 2, 'one manual retry is deduplicated while pending');
   assert.ok(Number(await page.locator('[data-section="open"] .staff-makeup-section-count').innerText()) > 0, 'real nonempty overview rendered after retry');
-  assert.equal(await page.locator('[data-week-class="target-slot"]').getAttribute('open'), '', 'overview retry preserves the weekly expanded class');
+  assert.equal(await occupiedWeeklyClass.getAttribute('open'), '', 'overview retry preserves the weekly expanded class');
   await page.locator('[data-section="open"] > summary').click();
   assert.equal(await page.locator('[data-section][open]').count(), 1);
   assert.equal(await page.locator('[data-week-class][open]').count(), 0);

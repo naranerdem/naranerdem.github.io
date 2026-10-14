@@ -287,7 +287,7 @@ import "../../styles/global.css";
       function setBusy(button, label) { button.dataset.label ||= button.textContent; button.textContent = label; button.disabled = true; }
       async function mutate(button, action, payload, success) {
         if (state.pending) return; state.pending = true; setBusy(button, `${button.textContent.trim()}...`); message("");
-        try { const result = await postCourseMakeupAction(action, payload); state.panel = null; await refresh(); message(success, true); return result; }
+        try { const result = await postCourseMakeupAction(action, payload); weekly?.invalidate(); state.panel = null; await refresh(); message(success, true); return result; }
         catch (error) { message(error.message || "Хадгалж чадсангүй."); button.disabled = false; button.textContent = button.dataset.label || button.textContent; throw error; }
         finally { state.pending = false; }
       }
@@ -351,6 +351,7 @@ import "../../styles/global.css";
           state.openSection = opening ? key : null;
           state.openGroup = null;
           render();
+          if (opening && key === 'attendance') weekly?.refreshIfStale();
           requestAnimationFrame(() => q(`[data-section="${CSS.escape(key)}"] > summary`)?.focus());
           return;
         }
