@@ -24,7 +24,7 @@ import "../../styles/global.css";
       <section id="tool-app" hidden>
         <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Ирц, нөхөлт</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <div class="staff-makeup-sections"><details id="weekly-attendance" class="staff-makeup-section" data-section="attendance" open hidden><summary><span class="staff-makeup-section-title">Ирц</span></summary><div id="weekly-attendance-body" class="staff-makeup-section-body"></div></details><section id="makeup-groups" class="staff-makeup-sections"></section></div>
+        <div class="staff-makeup-sections"><details id="weekly-attendance" class="staff-makeup-section" data-section="attendance" open hidden><summary><span class="staff-makeup-section-title">Ирц</span></summary><div id="weekly-attendance-body" class="staff-makeup-section-body"></div></details><div id="makeup-overview-error" hidden><p role="status">Нөхөх хичээлийн жагсаалтыг ачаалж чадсангүй. Ирцээ үргэлжлүүлэн ашиглаж болно.</p><button type="button" class="text-button" data-retry-overview>Дахин ачаалах</button></div><section id="makeup-groups" class="staff-makeup-sections"></section></div>
       </section>
     </main>
     <script>
@@ -32,6 +32,8 @@ import "../../styles/global.css";
       import { escape, formatDate, getCourseMakeups, getStaffCapabilities, postCourseMakeupAction } from "../../scripts/staff-setup.js";
       import { createWeeklyAttendance } from "../../scripts/weekly-attendance.js";
       let weekly = null;
+      let overviewRequest = null;
+      let overviewFailed = false;
 
       const state = { data: {}, selected: new Map(), panel: null, pending: false, refreshVersion: 0, previewVersion: 0, availabilityVersion: new Map(), normalAvailability: new Map(), openGroup: null, openSection: 'attendance', canMakeups: false };
       const q = (selector) => document.querySelector(selector);
@@ -54,11 +56,27 @@ import "../../styles/global.css";
         return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
       };
 
-      async function refresh() {
+      function refresh() {
+        if (overviewRequest) return overviewRequest;
+        const retry = q('[data-retry-overview]');
+        retry.disabled = true;
+        overviewRequest = loadOverview().catch(error => {
+          overviewFailed = true;
+          q('#makeup-overview-error').hidden = false;
+          q('#makeup-groups').hidden = true;
+          throw error;
+        }).finally(() => { overviewRequest = null; retry.disabled = false; });
+        return overviewRequest;
+      }
+
+      async function loadOverview() {
         const version = ++state.refreshVersion;
         const data = await getCourseMakeups();
         if (version !== state.refreshVersion) return;
         state.data = data;
+        overviewFailed = false;
+        q('#makeup-overview-error').hidden = true;
+        q('#makeup-groups').hidden = false;
         state.normalAvailability.clear();
         state.availabilityVersion.clear();
         for (const group of data.groups || []) {
@@ -154,6 +172,7 @@ import "../../styles/global.css";
         q('#weekly-attendance').open = state.openSection === 'attendance';
         if (state.openSection !== 'attendance') weekly?.closeBranch();
         if (!state.canMakeups) return;
+        if (overviewFailed) return;
         const scheduled = (state.data.scheduled || []).filter((entry) => entry.state !== "reconciliation");
         q("#makeup-groups").innerHTML = [
           section("Шийдэх зүйл", (state.data.groups || []).reduce((sum, group) => sum + group.entries.length, 0), activeGroups(), "open"),
@@ -299,6 +318,10 @@ import "../../styles/global.css";
       });
       q("#tool-app").addEventListener("click", async (event) => {
         if (event.target.closest('#weekly-attendance-body')) return;
+        if (event.target.closest('[data-retry-overview]')) {
+          if (!state.pending) await refresh().catch(() => {});
+          return;
+        }
         const summary = event.target.closest("summary");
         if (summary?.parentElement?.matches("[data-makeup-group]")) {
           event.preventDefault();
@@ -397,7 +420,7 @@ import "../../styles/global.css";
         show('tool-app');
         if (canAttendance) { q('#weekly-attendance').hidden = false; weekly = createWeeklyAttendance(q('#weekly-attendance-body'), capabilities); }
         else state.openSection = null;
-        if (state.canMakeups) await refresh();
+        if (state.canMakeups) await refresh().catch(() => {});
         if (weekly) await weekly.ready;
       })().catch(() => message('Мэдээллийг ачаалж чадсангүй. Хуудсыг дахин ачаална уу.'));
     </script>

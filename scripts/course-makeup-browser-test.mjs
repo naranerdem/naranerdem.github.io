@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { chromium } from "@playwright/test";
+import { chromium, webkit } from "@playwright/test";
 import { assertDisposableLocalWrangler, failWithoutQuotaRetry } from "./local-disposable-test-target.mjs";
 
 // Disposable Worker/D1 coverage for the rendered teacher make-up workflow.
@@ -221,7 +221,7 @@ try {
   await waitForWorker();
 
   console.log("make-up browser fixture: exercising rendered staff workflow");
-  browser = await chromium.launch({ headless: true });
+  browser = await (process.env.MAKEUP_BROWSER_ENGINE === 'webkit' ? webkit : chromium).launch({ headless: true });
   context = await browser.newContext();
   await context.addCookies([{ name: "naran_staff_session", value: rawSessionToken, url: baseUrl, httpOnly: true, sameSite: "Lax" }]);
   const page = await context.newPage();
@@ -262,8 +262,52 @@ try {
 
   console.log("make-up browser fixture: checking make-up availability");
   execute(`UPDATE class_session SET capacity = 1 WHERE id = 'day-change-class';`);
+  let overviewGets = 0;
+  let releaseOverview;
+  const overviewHeld = new Promise(resolve => { releaseOverview = resolve; });
+  await page.route('**/api/staff/makeups', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    overviewGets += 1;
+    if (overviewGets === 1) return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal_error', message: 'Нөхөх хичээлийг ачаалж чадсангүй.' } }) });
+    await overviewHeld;
+    await route.continue();
+  });
   await page.goto(`${baseUrl}/staff/makeups/`);
   await page.locator("#tool-app").waitFor({ state: "visible" });
+  await page.locator('#makeup-overview-error').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#makeup-groups').isHidden(), true, 'failure is not an empty overview');
+  await page.waitForFunction(() => document.querySelector('[data-week-range]')?.textContent.includes(' – '));
+  const initialWeekRange = await page.locator('[data-week-range]').innerText();
+  await page.locator('[data-week-step="7"]').click();
+  await page.waitForFunction(previous => document.querySelector('[data-week-range]').textContent !== previous, initialWeekRange);
+  if (targetDate <= initialWeekRange.split(' – ')[1]) {
+    await page.locator('[data-week-step="-7"]').click();
+    await page.waitForFunction(expected => document.querySelector('[data-week-range]').textContent === expected, initialWeekRange);
+  }
+  await page.locator('[data-week-class="target-slot"] > summary').click();
+  await page.locator('[data-week-class="target-slot"] .staff-empty').waitFor();
+  assert.equal(overviewGets, 1, 'weekly navigation works without automatic make-up retries');
+  await page.locator('[data-retry-overview]').click();
+  await page.waitForFunction(() => document.querySelector('[data-retry-overview]').disabled);
+  await page.locator('[data-retry-overview]').evaluate(button => button.click());
+  releaseOverview();
+  await page.locator('#makeup-overview-error').waitFor({ state: 'hidden' });
+  assert.equal(overviewGets, 2, 'one manual retry is deduplicated while pending');
+  assert.ok(Number(await page.locator('[data-section="open"] .staff-makeup-section-count').innerText()) > 0, 'real nonempty overview rendered after retry');
+  assert.equal(await page.locator('[data-week-class="target-slot"]').getAttribute('open'), '', 'overview retry preserves the weekly expanded class');
+  await page.locator('[data-section="open"] > summary').click();
+  assert.equal(await page.locator('[data-section][open]').count(), 1);
+  assert.equal(await page.locator('[data-week-class][open]').count(), 0);
+  await page.locator('#weekly-attendance > summary').click();
+  assert.equal(await page.locator('[data-section][open]').count(), 1);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  await page.screenshot({ path: path.join(screenshotDir, `combined-${process.env.MAKEUP_BROWSER_ENGINE || 'chromium'}-desktop.png`) });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(screenshotDir, `combined-${process.env.MAKEUP_BROWSER_ENGINE || 'chromium'}-mobile.png`) });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.unroute('**/api/staff/makeups');
   console.log("make-up browser fixture: checking selection and accordion responsiveness");
   let releaseAvailability;
   const availabilityHeld = new Promise((resolve) => { releaseAvailability = resolve; });

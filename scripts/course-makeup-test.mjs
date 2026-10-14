@@ -35,7 +35,10 @@ function sqlite(sql, json = false, bail = false) {
 
 class Statement {
   constructor(database, sql) { this.database = database; this.sql = sql; this.values = []; }
-  bind(...values) { this.values = values; return this; }
+  bind(...values) {
+    assert.ok(values.length <= 100, `D1 bound-parameter limit exceeded: ${values.length} > 100`);
+    this.values = values; return this;
+  }
   async first() { return this.database.query(this.sql, this.values)[0] ?? null; }
   async all() { return { success: true, results: this.database.query(this.sql, this.values) }; }
   async run() {
@@ -876,7 +879,8 @@ try {
   const caseBatchQueries = database.executedQueries.filter((entry) => entry.sql.includes("FROM course_makeup_case")
     && entry.sql.includes("source_enrollment_id = ? AND source_class_session_id = ?"));
   assert.equal(attemptBatchQueries.length, 3, "170 current attempts use three bounded resolution batches rather than one query per source");
-  assert.equal(caseBatchQueries.length, 3, "170 source identities use three bounded case batches rather than an all-case read");
+  assert.equal(caseBatchQueries.length, 6, "170 source identities use six batches of at most 33 three-value keys");
+  assert.ok(caseBatchQueries.every(entry => entry.values.length <= 99), "case batches respect D1's 100 bound-parameter limit");
   assert.ok(batchedOverview.unresolved.filter((entry) => entry.enrollmentId.startsWith('overview-enrollment-')).length === 170,
     "batched overview retains every unresolved source");
   assert.deepEqual({
@@ -891,6 +895,20 @@ try {
   assert.match(attemptPlan, /SEARCH resolution/, "attempt batches seek current resolution identities");
   console.log(`make-up overview batches: 170 sources, previous 170 current-attempt queries, now ${attemptBatchQueries.length}; ${database.prepareCount} prepared queries, ${overviewElapsedMs.toFixed(1)} ms local`);
   console.log(`make-up overview plans: cases use source identity index; attempts ${attemptPlan.replaceAll("\n", " | ")}`);
+
+  for (const limit of [33, 34]) {
+    let first = true;
+    const start = database.executedQueries.length;
+    const boundedFixture = { ...runtime, DB: { prepare(sql) {
+      const query = first ? `${sql} LIMIT ${limit}` : sql;
+      first = false;
+      return database.prepare(query);
+    } } };
+    await makeups.getCourseMakeupOverview(boundedFixture, actor(), undefined, afterSourceEnd);
+    const lookups = database.executedQueries.slice(start).filter(entry => entry.sql.includes('source_enrollment_id = ? AND source_class_session_id = ?'));
+    assert.deepEqual(lookups.map(entry => entry.values.length), limit === 33 ? [99] : [99, 3],
+      'the first failing boundary (34 three-part identities) is split without dropping the last source');
+  }
 
   const page = readFileSync("src/pages/staff/makeups.astro", "utf8");
   const built = readFileSync("dist/staff/makeups/index.html", "utf8");

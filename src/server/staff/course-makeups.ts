@@ -292,7 +292,8 @@ async function caseRowsForSources(env: WorkerEnv, sources: SourceRow[]): Promise
   if (!sources.length) return new Map();
   const unique = [...new Map(sources.map((source) => [sourceKey(source), source])).values()];
   const rows: Array<CaseRow & SourceIdentity> = [];
-  for (const group of batches(unique)) {
+  // Each source key binds three values; D1 permits at most 100 per statement.
+  for (const group of batches(unique, 33)) {
     const result = await env.DB.prepare(`SELECT id, source_enrollment_id AS enrollmentId,
         source_class_session_id AS classSessionId, source_curriculum_lesson_id AS curriculumLessonId,
         current_resolution_id AS currentResolutionId, state, updated_at AS updatedAt,
