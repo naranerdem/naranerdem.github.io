@@ -145,6 +145,8 @@ import {
   cancelCourseAbsenceNotice,
   clearCourseAttendance,
   getCourseAttendanceDay,
+  getCourseAttendanceWeek,
+  getCourseAttendanceRoster,
   markUnmarkedRosterPresent,
   recordCourseAttendance,
   saveCourseAbsenceNotice,
@@ -1945,6 +1947,8 @@ export async function handleApiRequest(
       try {
         const principal = await staffPrincipalForRequest(request, env);
         if (!principal) return error("unauthorized", "Нэвтрэх шаардлагатай.", 401, { "Cache-Control": "no-store" });
+        if (url.searchParams.has('week')) return json(await getCourseAttendanceWeek(env, principal, url.searchParams.get('week') || undefined), 200, { 'Cache-Control': 'no-store' });
+        if (url.searchParams.get('rosterOnly') === '1') return json(await getCourseAttendanceRoster(env, principal, url.searchParams.get('date') || '', url.searchParams.get('occurrence') || ''), 200, { 'Cache-Control': 'no-store' });
         const day = await getCourseAttendanceDay(
           env,
           principal,

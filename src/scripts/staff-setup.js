@@ -44,9 +44,10 @@ export async function postOverviewAction(action, payload = {}) {
   }
 }
 
-export async function getAttendanceDay(date, occurrence = "") {
+export async function getAttendanceDay(date, occurrence = "", rosterOnly = false) {
   const params = new URLSearchParams({ date });
   if (occurrence) params.set("occurrence", occurrence);
+  if (rosterOnly) params.set("rosterOnly", "1");
   const response = await fetch(`/api/staff/attendance?${params.toString()}`, {
     credentials: "same-origin",
     headers: { Accept: "application/json" },

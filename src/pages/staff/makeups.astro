@@ -9,29 +9,31 @@ import "../../styles/global.css";
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex" />
     <meta name="theme-color" content="#073aaf" />
-    <title>Нөхөх хичээл | {siteIdentity.name}</title>
+    <title>Ирц, нөхөлт | {siteIdentity.name}</title>
   </head>
   <body class="staff-page" data-staff-tool-surface="booting">
     <header class="site-header">
       <a class="brand-link" href="/staff/" aria-label="Ажилтны хэсэг">
         <img class="brand-logo" src={siteIdentity.logo.src} alt={siteIdentity.logo.alt} />
-        <span><strong>{siteIdentity.name}</strong><span>Нөхөх хичээл</span></span>
+        <span><strong>{siteIdentity.name}</strong><span>Ирц, нөхөлт</span></span>
       </a>
     </header>
     <main class="staff-shell" aria-live="polite">
       <section id="tool-booting" class="staff-state"><p class="eyebrow">Өдөр тутмын ажил</p><h1>Түр хүлээнэ үү</h1><p class="staff-muted">Нэвтрэх эрхийг шалгаж байна.</p></section>
-      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Нөхөх хичээл</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
+      <section id="tool-denied" class="staff-state" hidden><p class="eyebrow">Ирц, нөхөлт</p><h1>Энэ хэсгийг нээх эрх алга</h1><a class="button secondary" href="/staff/">Ажилтны хэсэг рүү буцах</a></section>
       <section id="tool-app" hidden>
-        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Нөхөх хичээл</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
+        <div class="staff-page-heading"><div><p class="eyebrow">Өдөр тутмын ажил</p><h1>Ирц, нөхөлт</h1></div><a class="staff-back-link" href="/staff/">Буцах</a></div>
         <p id="tool-message" class="staff-error" role="status" hidden></p>
-        <section id="makeup-groups" class="staff-makeup-sections"></section>
+        <div class="staff-makeup-sections"><details id="weekly-attendance" class="staff-makeup-section" data-section="attendance" open hidden><summary><span class="staff-makeup-section-title">Ирц</span></summary><div id="weekly-attendance-body" class="staff-makeup-section-body"></div></details><section id="makeup-groups" class="staff-makeup-sections"></section></div>
       </section>
     </main>
     <script>
       // @ts-nocheck
-      import { escape, formatDate, getCourseMakeups, hasMakeupAccess, postCourseMakeupAction } from "../../scripts/staff-setup.js";
+      import { escape, formatDate, getCourseMakeups, getStaffCapabilities, postCourseMakeupAction } from "../../scripts/staff-setup.js";
+      import { createWeeklyAttendance } from "../../scripts/weekly-attendance.js";
+      let weekly = null;
 
-      const state = { data: null, selected: new Map(), panel: null, pending: false, refreshVersion: 0, previewVersion: 0, availabilityVersion: new Map(), normalAvailability: new Map(), openGroup: null, openSection: null };
+      const state = { data: {}, selected: new Map(), panel: null, pending: false, refreshVersion: 0, previewVersion: 0, availabilityVersion: new Map(), normalAvailability: new Map(), openGroup: null, openSection: 'attendance', canMakeups: false };
       const q = (selector) => document.querySelector(selector);
       const show = (id) => { for (const node of document.querySelectorAll(".staff-state, #tool-app")) node.hidden = node.id !== id; document.body.dataset.staffToolSurface = id.replace("tool-", ""); };
       const message = (value = "", success = false) => { const node = q("#tool-message"); node.textContent = value; node.classList.toggle("staff-success", success); node.hidden = !value; };
@@ -149,6 +151,9 @@ import "../../styles/global.css";
       }
 
       function renderSections() {
+        q('#weekly-attendance').open = state.openSection === 'attendance';
+        if (state.openSection !== 'attendance') weekly?.closeBranch();
+        if (!state.canMakeups) return;
         const scheduled = (state.data.scheduled || []).filter((entry) => entry.state !== "reconciliation");
         q("#makeup-groups").innerHTML = [
           section("Шийдэх зүйл", (state.data.groups || []).reduce((sum, group) => sum + group.entries.length, 0), activeGroups(), "open"),
@@ -293,10 +298,11 @@ import "../../styles/global.css";
         ++state.previewVersion; render();
       });
       q("#tool-app").addEventListener("click", async (event) => {
+        if (event.target.closest('#weekly-attendance-body')) return;
         const summary = event.target.closest("summary");
         if (summary?.parentElement?.matches("[data-makeup-group]")) {
           event.preventDefault();
-          if (state.pending) return;
+          if (state.pending || (weekly && !weekly.canLeave())) return;
           const details = summary.parentElement;
           const key = details.dataset.makeupGroup;
           const opening = state.openGroup !== key;
@@ -314,7 +320,7 @@ import "../../styles/global.css";
         }
         if (summary?.parentElement?.matches("[data-section]")) {
           event.preventDefault();
-          if (state.pending) return;
+          if (state.pending || (weekly && !weekly.canLeave())) return;
           const key = summary.parentElement.dataset.section;
           const opening = state.openSection !== key;
           ++state.previewVersion;
@@ -383,7 +389,17 @@ import "../../styles/global.css";
         const [hour, minute] = input.value.split(":").map(Number); const total = hour * 60 + minute + minutes;
         output.textContent = `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
       });
-      (async () => { if (!(await hasMakeupAccess())) { show("tool-denied"); return; } await refresh(); show("tool-app"); })().catch(() => show("tool-denied"));
+      (async () => {
+        const capabilities = await getStaffCapabilities();
+        state.canMakeups = capabilities.includes('makeup.view') && capabilities.includes('makeup.manage');
+        const canAttendance = capabilities.includes('attendance.view');
+        if (!canAttendance && !state.canMakeups) { show('tool-denied'); return; }
+        show('tool-app');
+        if (canAttendance) { q('#weekly-attendance').hidden = false; weekly = createWeeklyAttendance(q('#weekly-attendance-body'), capabilities); }
+        else state.openSection = null;
+        if (state.canMakeups) await refresh();
+        if (weekly) await weekly.ready;
+      })().catch(() => message('Мэдээллийг ачаалж чадсангүй. Хуудсыг дахин ачаална уу.'));
     </script>
   </body>
 </html>

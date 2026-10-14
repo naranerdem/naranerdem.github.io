@@ -153,6 +153,160 @@ function requireCapability(actor: StaffPrincipal, capability: "attendance.view" 
   if (!hasStaffCapability(actor, capability)) throw new CourseAttendanceError("forbidden");
 }
 
+function completedRosterQuery(occurrence: OccurrenceRow) {
+  return { sql: `SELECT enrollment.id
+    FROM enrollment
+    INNER JOIN class_calendar AS calendar ON calendar.class_session_id = enrollment.class_session_id
+    INNER JOIN class_calendar_revision AS revision ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
+    INNER JOIN class_calendar_slot AS slot ON slot.class_calendar_revision_id = revision.id AND slot.id = ?
+    INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
+    INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
+    WHERE enrollment.class_session_id = ?
+      AND enrollment.confirmed_at IS NOT NULL
+      AND enrollment.confirmed_at <= ?
+      AND (enrollment.cancelled_at IS NULL OR enrollment.cancelled_at >= ?)
+      AND (enrollment.transferred_out_at IS NULL OR enrollment.transferred_out_at >= ?)
+      AND enrollment.status IN ('confirmed', 'completed', 'cancelled')
+      AND ${completedTransferredLessonSql({
+        enrollmentAlias: "enrollment", lessonAlias: "lesson", programAlias: "program", slotAlias: "slot",
+      })}`, params: [
+    occurrence.slotId, occurrence.classSessionId,
+    `${occurrence.localDate}T15:59:59.999Z`, `${occurrence.localDate}T16:00:00.000Z`, `${occurrence.localDate}T16:00:00.000Z`,
+  ] };
+}
+
+function makeupRosterQuery(occurrence: OccurrenceRow) {
+  return { sql: `
+    SELECT source_enrollment.id AS enrollmentId, student.id AS studentId,
+      student.surname AS surname, student.given_name AS givenName,
+      'makeup' AS rosterKind, assignment.id AS makeupAssignmentId,
+      makeup_attendance.id AS attendanceId,
+      makeup_attendance.attendance_status AS attendanceStatus,
+      NULL AS absenceNoticeId, NULL AS absenceNoticeNote,
+      source_slot.id AS sourceSlotId,
+      source_slot.local_date AS sourceLocalDate,
+      source_slot.start_time AS sourceStartTime, source_slot.end_time AS sourceEndTime,
+      source_lesson.sequence_number AS sourceLessonSequence,
+      source_lesson.title AS sourceLessonTitle,
+      source_class.stage_code AS sourceStageCode,
+      COALESCE(source_meeting.weekly_weekday, source_class.weekday) AS sourceWeekday
+    FROM course_makeup_assignment AS assignment
+    INNER JOIN course_makeup_resolution AS resolution
+      ON resolution.id = assignment.resolution_id
+      AND resolution.decision = 'assigned'
+    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = resolution.source_enrollment_id
+    INNER JOIN student ON student.id = source_enrollment.student_id
+    INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
+    INNER JOIN curriculum_lesson AS source_lesson ON source_lesson.id = resolution.source_curriculum_lesson_id
+    LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
+    LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
+    LEFT JOIN class_calendar_revision AS source_revision
+      ON source_revision.class_calendar_id = source_calendar.id AND source_revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS source_slot
+      ON source_slot.class_calendar_revision_id = source_revision.id
+      AND source_slot.curriculum_lesson_id = resolution.source_curriculum_lesson_id
+      AND source_slot.status = 'scheduled'
+    LEFT JOIN course_makeup_attendance AS makeup_attendance
+      ON makeup_attendance.course_makeup_assignment_id = assignment.id
+    WHERE assignment.target_kind = 'normal_class'
+      AND assignment.target_class_session_id = ?
+      AND assignment.target_curriculum_lesson_id = ?
+      AND (
+        (assignment.status = 'active' AND resolution.status = 'active')
+        OR makeup_attendance.attendance_status IS NOT NULL
+      )
+    ORDER BY assignment.status = 'active' DESC, student.surname COLLATE NOCASE,
+      student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
+  `, params: [occurrence.classSessionId, occurrence.curriculumLessonId] };
+}
+
+function ordinaryRosterQuery(occurrence: OccurrenceRow) {
+  const { startsAt, endsAt } = localDateBounds(occurrence.localDate);
+  return { sql: `
+    SELECT enrollment.id AS enrollmentId, student.id AS studentId,
+      student.surname AS surname, student.given_name AS givenName,
+      'ordinary' AS rosterKind, NULL AS makeupAssignmentId,
+      attendance.id AS attendanceId, attendance.attendance_status AS attendanceStatus,
+      absence_notice.id AS absenceNoticeId, absence_notice.note AS absenceNoticeNote,
+      NULL AS sourceSlotId,
+      NULL AS sourceLocalDate, NULL AS sourceStartTime, NULL AS sourceEndTime,
+      NULL AS sourceLessonSequence, NULL AS sourceLessonTitle,
+      NULL AS sourceStageCode, NULL AS sourceWeekday
+    FROM enrollment
+    INNER JOIN student ON student.id = enrollment.student_id
+    LEFT JOIN course_attendance AS attendance
+      ON attendance.enrollment_id = enrollment.id
+      AND attendance.class_session_id = ?
+      AND attendance.curriculum_lesson_id = ?
+    LEFT JOIN course_absence_notice AS absence_notice
+      ON absence_notice.enrollment_id = enrollment.id
+      AND absence_notice.class_session_id = ?
+      AND absence_notice.curriculum_lesson_id = ?
+      AND absence_notice.status = 'active'
+    WHERE enrollment.class_session_id = ?
+      AND (
+        (
+          enrollment.confirmed_at IS NOT NULL
+          AND enrollment.confirmed_at <= ?
+          AND (enrollment.cancelled_at IS NULL OR enrollment.cancelled_at >= ?)
+          AND (enrollment.transferred_out_at IS NULL OR enrollment.transferred_out_at >= ?)
+          AND enrollment.status IN ('confirmed', 'completed', 'cancelled')
+        )
+        OR attendance.id IS NOT NULL
+        OR absence_notice.id IS NOT NULL
+      )
+    ORDER BY student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE, enrollment.id
+  `, params: [
+    occurrence.classSessionId, occurrence.curriculumLessonId,
+    occurrence.classSessionId, occurrence.curriculumLessonId,
+    occurrence.classSessionId, endsAt, startsAt, startsAt,
+  ] };
+}
+
+function specialRosterQuery(occurrence: OccurrenceRow) {
+  return { sql: `
+    SELECT source_enrollment.id AS enrollmentId, student.id AS studentId,
+      student.surname AS surname, student.given_name AS givenName,
+      'makeup' AS rosterKind, assignment.id AS makeupAssignmentId,
+      special_attendance.id AS attendanceId,
+      special_attendance.attendance_status AS attendanceStatus,
+      NULL AS absenceNoticeId, NULL AS absenceNoticeNote,
+      source_slot.id AS sourceSlotId,
+      source_slot.local_date AS sourceLocalDate,
+      source_slot.start_time AS sourceStartTime, source_slot.end_time AS sourceEndTime,
+      source_lesson.sequence_number AS sourceLessonSequence,
+      source_lesson.title AS sourceLessonTitle,
+      source_class.stage_code AS sourceStageCode,
+      COALESCE(source_meeting.weekly_weekday, source_class.weekday) AS sourceWeekday
+    FROM course_makeup_assignment AS assignment
+    INNER JOIN course_makeup_resolution AS resolution
+      ON resolution.id = assignment.resolution_id
+      AND resolution.decision = 'assigned'
+    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = resolution.source_enrollment_id
+    INNER JOIN student ON student.id = source_enrollment.student_id
+    INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
+    INNER JOIN curriculum_lesson AS source_lesson ON source_lesson.id = resolution.source_curriculum_lesson_id
+    LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
+    LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
+    LEFT JOIN class_calendar_revision AS source_revision
+      ON source_revision.class_calendar_id = source_calendar.id AND source_revision.status = 'published'
+    LEFT JOIN class_calendar_slot AS source_slot
+      ON source_slot.class_calendar_revision_id = source_revision.id
+      AND source_slot.curriculum_lesson_id = resolution.source_curriculum_lesson_id
+      AND source_slot.status = 'scheduled'
+    LEFT JOIN course_makeup_special_attendance AS special_attendance
+      ON special_attendance.course_makeup_assignment_id = assignment.id
+    WHERE assignment.target_kind = 'special'
+      AND assignment.target_special_occurrence_id = ?
+      AND (
+        (assignment.status = 'active' AND resolution.status = 'active')
+        OR special_attendance.attendance_status IS NOT NULL
+      )
+    ORDER BY assignment.status = 'active' DESC, student.surname COLLATE NOCASE,
+      student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
+  `, params: [occurrence.specialOccurrenceId] };
+}
+
 function audit(
   env: WorkerEnv,
   actor: StaffPrincipal,
@@ -248,47 +402,8 @@ async function occurrenceForSlot(env: WorkerEnv, slotId: string): Promise<Occurr
 
 async function rosterForSpecialOccurrence(env: WorkerEnv, occurrence: OccurrenceRow): Promise<RosterRow[]> {
   if (!occurrence.specialOccurrenceId) throw new CourseAttendanceError("not_found");
-  const rows = await env.DB.prepare(`
-    SELECT source_enrollment.id AS enrollmentId, student.id AS studentId,
-      student.surname AS surname, student.given_name AS givenName,
-      'makeup' AS rosterKind, assignment.id AS makeupAssignmentId,
-      special_attendance.id AS attendanceId,
-      special_attendance.attendance_status AS attendanceStatus,
-      NULL AS absenceNoticeId, NULL AS absenceNoticeNote,
-      source_slot.id AS sourceSlotId,
-      source_slot.local_date AS sourceLocalDate,
-      source_slot.start_time AS sourceStartTime, source_slot.end_time AS sourceEndTime,
-      source_lesson.sequence_number AS sourceLessonSequence,
-      source_lesson.title AS sourceLessonTitle,
-      source_class.stage_code AS sourceStageCode,
-      COALESCE(source_meeting.weekly_weekday, source_class.weekday) AS sourceWeekday
-    FROM course_makeup_assignment AS assignment
-    INNER JOIN course_makeup_resolution AS resolution
-      ON resolution.id = assignment.resolution_id
-      AND resolution.decision = 'assigned'
-    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = resolution.source_enrollment_id
-    INNER JOIN student ON student.id = source_enrollment.student_id
-    INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
-    INNER JOIN curriculum_lesson AS source_lesson ON source_lesson.id = resolution.source_curriculum_lesson_id
-    LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
-    LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
-    LEFT JOIN class_calendar_revision AS source_revision
-      ON source_revision.class_calendar_id = source_calendar.id AND source_revision.status = 'published'
-    LEFT JOIN class_calendar_slot AS source_slot
-      ON source_slot.class_calendar_revision_id = source_revision.id
-      AND source_slot.curriculum_lesson_id = resolution.source_curriculum_lesson_id
-      AND source_slot.status = 'scheduled'
-    LEFT JOIN course_makeup_special_attendance AS special_attendance
-      ON special_attendance.course_makeup_assignment_id = assignment.id
-    WHERE assignment.target_kind = 'special'
-      AND assignment.target_special_occurrence_id = ?
-      AND (
-        (assignment.status = 'active' AND resolution.status = 'active')
-        OR special_attendance.attendance_status IS NOT NULL
-      )
-    ORDER BY assignment.status = 'active' DESC, student.surname COLLATE NOCASE,
-      student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
-  `).bind(occurrence.specialOccurrenceId).all<RosterRow>();
+  const rowsQuery = specialRosterQuery(occurrence);
+  const rows = await env.DB.prepare(rowsQuery.sql).bind(...rowsQuery.params).all<RosterRow>();
   const seenStudents = new Set<string>();
   return rows.results.filter((entry) => {
     if (seenStudents.has(entry.studentId)) return false;
@@ -300,88 +415,10 @@ async function rosterForSpecialOccurrence(env: WorkerEnv, occurrence: Occurrence
 async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow, knownCompletedEnrollmentIds?: Set<string>): Promise<RosterRow[]> {
   if (occurrence.occurrenceKind === "special") return rosterForSpecialOccurrence(env, occurrence);
   if (!occurrence.classSessionId) throw new CourseAttendanceError("not_found");
-  const { startsAt, endsAt } = localDateBounds(occurrence.localDate);
-  const ordinary = await env.DB.prepare(`
-    SELECT enrollment.id AS enrollmentId, student.id AS studentId,
-      student.surname AS surname, student.given_name AS givenName,
-      'ordinary' AS rosterKind, NULL AS makeupAssignmentId,
-      attendance.id AS attendanceId, attendance.attendance_status AS attendanceStatus,
-      absence_notice.id AS absenceNoticeId, absence_notice.note AS absenceNoticeNote,
-      NULL AS sourceSlotId,
-      NULL AS sourceLocalDate, NULL AS sourceStartTime, NULL AS sourceEndTime,
-      NULL AS sourceLessonSequence, NULL AS sourceLessonTitle,
-      NULL AS sourceStageCode, NULL AS sourceWeekday
-    FROM enrollment
-    INNER JOIN student ON student.id = enrollment.student_id
-    LEFT JOIN course_attendance AS attendance
-      ON attendance.enrollment_id = enrollment.id
-      AND attendance.class_session_id = ?
-      AND attendance.curriculum_lesson_id = ?
-    LEFT JOIN course_absence_notice AS absence_notice
-      ON absence_notice.enrollment_id = enrollment.id
-      AND absence_notice.class_session_id = ?
-      AND absence_notice.curriculum_lesson_id = ?
-      AND absence_notice.status = 'active'
-    WHERE enrollment.class_session_id = ?
-      AND (
-        (
-          enrollment.confirmed_at IS NOT NULL
-          AND enrollment.confirmed_at <= ?
-          AND (enrollment.cancelled_at IS NULL OR enrollment.cancelled_at >= ?)
-          AND (enrollment.transferred_out_at IS NULL OR enrollment.transferred_out_at >= ?)
-          AND enrollment.status IN ('confirmed', 'completed', 'cancelled')
-        )
-        OR attendance.id IS NOT NULL
-        OR absence_notice.id IS NOT NULL
-      )
-    ORDER BY student.surname COLLATE NOCASE, student.given_name COLLATE NOCASE, enrollment.id
-  `).bind(
-    occurrence.classSessionId, occurrence.curriculumLessonId,
-    occurrence.classSessionId, occurrence.curriculumLessonId,
-    occurrence.classSessionId, endsAt, startsAt, startsAt,
-  ).all<RosterRow>();
-  const makeup = await env.DB.prepare(`
-    SELECT source_enrollment.id AS enrollmentId, student.id AS studentId,
-      student.surname AS surname, student.given_name AS givenName,
-      'makeup' AS rosterKind, assignment.id AS makeupAssignmentId,
-      makeup_attendance.id AS attendanceId,
-      makeup_attendance.attendance_status AS attendanceStatus,
-      NULL AS absenceNoticeId, NULL AS absenceNoticeNote,
-      source_slot.id AS sourceSlotId,
-      source_slot.local_date AS sourceLocalDate,
-      source_slot.start_time AS sourceStartTime, source_slot.end_time AS sourceEndTime,
-      source_lesson.sequence_number AS sourceLessonSequence,
-      source_lesson.title AS sourceLessonTitle,
-      source_class.stage_code AS sourceStageCode,
-      COALESCE(source_meeting.weekly_weekday, source_class.weekday) AS sourceWeekday
-    FROM course_makeup_assignment AS assignment
-    INNER JOIN course_makeup_resolution AS resolution
-      ON resolution.id = assignment.resolution_id
-      AND resolution.decision = 'assigned'
-    INNER JOIN enrollment AS source_enrollment ON source_enrollment.id = resolution.source_enrollment_id
-    INNER JOIN student ON student.id = source_enrollment.student_id
-    INNER JOIN class_session AS source_class ON source_class.id = resolution.source_class_session_id
-    INNER JOIN curriculum_lesson AS source_lesson ON source_lesson.id = resolution.source_curriculum_lesson_id
-    LEFT JOIN class_meeting_rule AS source_meeting ON source_meeting.class_session_id = source_class.id
-    LEFT JOIN class_calendar AS source_calendar ON source_calendar.class_session_id = source_class.id
-    LEFT JOIN class_calendar_revision AS source_revision
-      ON source_revision.class_calendar_id = source_calendar.id AND source_revision.status = 'published'
-    LEFT JOIN class_calendar_slot AS source_slot
-      ON source_slot.class_calendar_revision_id = source_revision.id
-      AND source_slot.curriculum_lesson_id = resolution.source_curriculum_lesson_id
-      AND source_slot.status = 'scheduled'
-    LEFT JOIN course_makeup_attendance AS makeup_attendance
-      ON makeup_attendance.course_makeup_assignment_id = assignment.id
-    WHERE assignment.target_kind = 'normal_class'
-      AND assignment.target_class_session_id = ?
-      AND assignment.target_curriculum_lesson_id = ?
-      AND (
-        (assignment.status = 'active' AND resolution.status = 'active')
-        OR makeup_attendance.attendance_status IS NOT NULL
-      )
-    ORDER BY assignment.status = 'active' DESC, student.surname COLLATE NOCASE,
-      student.given_name COLLATE NOCASE, source_enrollment.id, assignment.id
-  `).bind(occurrence.classSessionId, occurrence.curriculumLessonId).all<RosterRow>();
+  const ordinaryQuery = ordinaryRosterQuery(occurrence);
+  const ordinary = await env.DB.prepare(ordinaryQuery.sql).bind(...ordinaryQuery.params).all<RosterRow>();
+  const makeupQuery = makeupRosterQuery(occurrence);
+  const makeup = await env.DB.prepare(makeupQuery.sql).bind(...makeupQuery.params).all<RosterRow>();
   const completedEnrollmentIds = knownCompletedEnrollmentIds ?? await completedEquivalentEnrollmentIds(env, occurrence);
   const currentOrdinary = ordinary.results.filter((entry) => !completedEnrollmentIds.has(entry.enrollmentId));
   const ordinaryStudentIds = new Set(currentOrdinary.map((entry) => entry.studentId));
@@ -391,31 +428,16 @@ async function rosterForOccurrence(env: WorkerEnv, occurrence: OccurrenceRow, kn
 
 async function completedEquivalentEnrollmentIds(env: WorkerEnv, occurrence: OccurrenceRow): Promise<Set<string>> {
   if (occurrence.occurrenceKind !== "normal" || !occurrence.classSessionId) return new Set();
-  const rows = await env.DB.prepare(`SELECT enrollment.id
-    FROM enrollment
-    INNER JOIN class_calendar AS calendar ON calendar.class_session_id = enrollment.class_session_id
-    INNER JOIN class_calendar_revision AS revision ON revision.class_calendar_id = calendar.id AND revision.status = 'published'
-    INNER JOIN class_calendar_slot AS slot ON slot.class_calendar_revision_id = revision.id AND slot.id = ?
-    INNER JOIN curriculum_lesson AS lesson ON lesson.id = slot.curriculum_lesson_id
-    INNER JOIN curriculum_program AS program ON program.id = lesson.curriculum_program_id
-    WHERE enrollment.class_session_id = ?
-      AND enrollment.confirmed_at IS NOT NULL
-      AND enrollment.confirmed_at <= ?
-      AND (enrollment.cancelled_at IS NULL OR enrollment.cancelled_at >= ?)
-      AND (enrollment.transferred_out_at IS NULL OR enrollment.transferred_out_at >= ?)
-      AND enrollment.status IN ('confirmed', 'completed', 'cancelled')
-      AND ${completedTransferredLessonSql({
-        enrollmentAlias: "enrollment", lessonAlias: "lesson", programAlias: "program", slotAlias: "slot",
-      })}`).bind(
-    occurrence.slotId, occurrence.classSessionId,
-    `${occurrence.localDate}T15:59:59.999Z`, `${occurrence.localDate}T16:00:00.000Z`, `${occurrence.localDate}T16:00:00.000Z`,
-  ).all<{ id: string }>();
+  const rowsQuery = completedRosterQuery(occurrence);
+  const rows = await env.DB.prepare(rowsQuery.sql).bind(...rowsQuery.params).all<{ id: string }>();
   return new Set(rows.results.map((row) => row.id));
 }
 
 function serializeOccurrence(occurrence: AttendanceOccurrence, at: Date) {
   const occurrenceEnded = courseOccurrenceHasEnded(occurrence.localDate, occurrence.endTime, at);
-  const roster = occurrence.roster.map((entry) => ({
+  const roster = [...occurrence.roster].sort((a, b) =>
+    `${a.surname} ${a.givenName}`.localeCompare(`${b.surname} ${b.givenName}`, 'mn') || a.enrollmentId.localeCompare(b.enrollmentId)
+  ).map((entry) => ({
     enrollmentId: entry.enrollmentId,
     studentId: entry.studentId,
     displayName: `${entry.surname} ${entry.givenName}`.trim(),
@@ -522,6 +544,63 @@ export async function getCourseAttendanceDay(
     occurrences,
     selected: selected ? serializeOccurrence(selected, at) : null,
   };
+}
+
+// Counts use the same eligibility, transfer deduplication and make-up SQL as
+// the actual roster, but return no learner rows to the Worker or browser.
+function rosterCountQuery(occurrence: OccurrenceRow) {
+  if (occurrence.occurrenceKind === 'special') {
+    const query = specialRosterQuery(occurrence);
+    return { sql: `SELECT COUNT(DISTINCT studentId) FROM (${query.sql})`, params: query.params };
+  }
+  const ordinary = ordinaryRosterQuery(occurrence);
+  const makeup = makeupRosterQuery(occurrence);
+  const completed = completedRosterQuery(occurrence);
+  return { sql: `WITH completed AS (${completed.sql}),
+    ordinary AS (SELECT * FROM (${ordinary.sql}) WHERE enrollmentId NOT IN (SELECT id FROM completed)),
+    makeup AS (${makeup.sql})
+    SELECT (SELECT COUNT(*) FROM ordinary) +
+      (SELECT COUNT(*) FROM makeup WHERE studentId NOT IN (SELECT studentId FROM ordinary)) AS rosterCount
+  `, params: [...completed.params, ...ordinary.params, ...makeup.params] };
+}
+
+export async function getCourseAttendanceWeek(env: WorkerEnv, actor: StaffPrincipal, date = localToday()) {
+  requireCapability(actor, 'attendance.view');
+  if (!validDate(date)) throw new CourseAttendanceError('invalid');
+  const monday = new Date(`${date}T00:00:00Z`);
+  monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
+  const weekStart = monday.toISOString().slice(0, 10);
+  monday.setUTCDate(monday.getUTCDate() + 6);
+  const weekEnd = monday.toISOString().slice(0, 10);
+  const normal = await env.DB.prepare(`${OCCURRENCE_SELECT} AND slot.local_date BETWEEN ? AND ? GROUP BY slot.id LIMIT 129`).bind(weekStart, weekEnd).all<OccurrenceRow>();
+  const special = await env.DB.prepare(`${SPECIAL_OCCURRENCE_SELECT} AND special.local_date BETWEEN ? AND ? LIMIT 129`).bind(weekStart, weekEnd).all<OccurrenceRow>();
+  const rows = [...normal.results, ...special.results].sort((a, b) =>
+    `${a.localDate}|${a.startTime}|${a.slotId}`.localeCompare(`${b.localDate}|${b.startTime}|${b.slotId}`));
+  if (rows.length > 128) throw new CourseAttendanceError('invalid');
+  const counts: number[] = [];
+  // Four scalar counts per query stay below D1's bind/SQL-size limits and
+  // keep the bounded 128-session request within the Free query allowance.
+  for (let offset = 0; offset < rows.length; offset += 4) {
+    const queries = rows.slice(offset, offset + 4).map(rosterCountQuery);
+    const results = await env.DB.prepare(queries.map(query => `SELECT (${query.sql}) AS rosterCount`).join(' UNION ALL '))
+      .bind(...queries.flatMap(query => query.params)).all<{ rosterCount: number }>();
+    counts.push(...results.results.map(result => Number(result.rosterCount)));
+  }
+  return { weekStart, weekEnd, today: localToday(), occurrences: rows.map((row, index) => ({
+    slotId: row.slotId, localDate: row.localDate, weekday: occurrenceWeekday(row.localDate),
+    startTime: row.startTime, endTime: row.endTime, offeringTitle: row.offeringTitle,
+    programLabel: row.offeringKind === 'annual_course' ? stageLabel(row.stageCode) : row.offeringTitle,
+    stageCode: row.stageCode, rosterCount: counts[index],
+  })) };
+}
+
+export async function getCourseAttendanceRoster(env: WorkerEnv, actor: StaffPrincipal, date: string, slotId: string) {
+  requireCapability(actor, 'attendance.view');
+  if (!validDate(date) || !slotId) throw new CourseAttendanceError('invalid');
+  const occurrence = await selectedOccurrenceWithRoster(env, slotId);
+  if (occurrence.localDate !== date) throw new CourseAttendanceError('not_found');
+  const selected = serializeOccurrence(occurrence, new Date());
+  return { localDate: date, today: localToday(), occurrences: [], selected };
 }
 
 function assertAttendanceStatus(value: unknown): asserts value is CourseAttendanceStatus {

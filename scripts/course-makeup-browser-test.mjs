@@ -237,7 +237,7 @@ try {
   await page.goto(`${baseUrl}/staff/`);
   await page.locator("#staff-home").waitFor({ state: "visible" });
   await page.getByRole("link", { name: "Бүртгэл, төлбөр" }).waitFor({ state: "visible" });
-  await page.getByRole("link", { name: "Нөхөх хичээл" }).waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Ирц, нөхөлт" }).waitFor({ state: "visible" });
   assert.equal(await page.locator("#staff-agenda [data-agenda-occurrence='target-slot']").count(), 0, "an empty future lesson stays out of the default teacher agenda");
   await page.goto(`${baseUrl}/staff/attendance/?date=${targetDate}&occurrence=target-slot`);
   await page.getByText("Бүртгэлтэй сурагч алга.", { exact: true }).waitFor({ state: "visible" });

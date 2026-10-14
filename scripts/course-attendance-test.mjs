@@ -511,7 +511,19 @@ try {
   assert.equal(count(database, "class_calendar_slot", `class_calendar_revision_id = ${quote(changeDraft.id)} AND local_date = ${quote(today)} AND start_time = '09:00'`), 1, "clearing attendance removes only its dynamic reflow protection");
   assert.equal(count(database, "class_calendar_revision"), beforeDrafts + 1, "calendar drafting remains separate from attendance");
 
-  const source = readFileSync("src/pages/staff/attendance.astro", "utf8");
+  const beforeWeeklyReads = count(database, "course_attendance");
+  for (const selectedDate of [past, today, future, specialDate]) {
+    const week = await attendance.getCourseAttendanceWeek(runtime, actor(), selectedDate);
+    for (const occurrence of week.occurrences) {
+      const scoped = await attendance.getCourseAttendanceRoster(runtime, actor(), occurrence.localDate, occurrence.slotId);
+      const original = await attendance.getCourseAttendanceDay(runtime, actor(), occurrence.localDate, occurrence.slotId);
+      assert.equal(occurrence.rosterCount, scoped.selected.roster.length, "weekly counts use the same historical/transfer/make-up eligibility");
+      assert.deepEqual(scoped.selected.roster, original.selected.roster, "weekly roster matches the original Attendance page");
+    }
+  }
+  assert.equal(count(database, "course_attendance"), beforeWeeklyReads, "weekly browsing creates no attendance marks");
+
+  const source = readFileSync("src/scripts/attendance-controller.js", "utf8");
   const styles = readFileSync("src/styles/global.css", "utf8");
   const staffHome = readFileSync("src/pages/staff.astro", "utf8");
   const renderedAttendance = readFileSync("dist/staff/attendance/index.html", "utf8");
@@ -534,7 +546,7 @@ try {
   assert.doesNotMatch(source, /window\.confirm/, "bulk attendance uses an in-page Mongolian confirmation");
   assert.match(staffHome, /href="\/staff\/attendance\/\?date=\$\{encodeURIComponent\(entry\.localDate\)\}&occurrence=\$\{encodeURIComponent\(entry\.occurrenceId\)\}&homeWeek=/, "the home agenda uses direct exact-occurrence attendance links with a scoped return state");
   assert.doesNotMatch(staffHome, /staff-agenda-detail|data-home-attendance|Ирцийн хуудас нээх/, "home keeps roster actions on the attendance page");
-  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Бүртгэл, төлбөр[\s\S]*?Нөхөх хичээл[\s\S]*?Хичээлийн хуваарь[\s\S]*?СУРГАЛТЫН ТОХИРГОО/, "staff home keeps daily work, the agenda, and existing setup tools in order");
+  assert.match(staffHome, /Өдөр тутмын ажил[\s\S]*?Бүртгэл, төлбөр[\s\S]*?Ирц, нөхөлт[\s\S]*?Хичээлийн хуваарь[\s\S]*?СУРГАЛТЫН ТОХИРГОО/, "staff home keeps daily work, the agenda, and existing setup tools in order");
   assert.match(source, /role="tab"[\s\S]*?\$\{escape\(entry\.startTime\)\}–\$\{escape\(entry\.endTime\)\}/, "attendance selection uses time-only tabs while retaining slot identity in the link");
   assert.match(source, /Тасалсан хичээл/, "make-up attendees retain a compact missed-lesson link");
   assert.match(source, /staff-attendance-identity/, "roster identity and attendance controls use separate layout regions");

@@ -5328,3 +5328,23 @@ html[data-public-font="serif"] .program-page { font-family: "Times New Roman", T
   html[data-public-font="serif"] .register-page,
   html[data-public-font="serif"] .program-page { font-size: 17px; }
 }
+.staff-week-navigation {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  text-align: center;
+}
+.staff-week-navigation button {
+  min-height: 44px;
+  font-size: 22px;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.staff-week-navigation strong { font-size: 14px; overflow-wrap: anywhere; }
+#weekly-attendance .staff-attendance-detail { margin: 0; }
+#weekly-attendance .staff-makeup-group-heading strong { min-width: 0; overflow-wrap: anywhere; }
+#weekly-attendance summary { min-height: 44px; }

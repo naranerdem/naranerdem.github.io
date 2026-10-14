@@ -17,7 +17,7 @@ const transfer = readFileSync("src/server/staff/class-transfer.ts", "utf8");
 const paymentPlanChange = readFileSync("src/server/staff/payment-plan-change.ts", "utf8");
 const waitlistOfferPage = readFileSync("src/pages/waitlist-offer.astro", "utf8");
 const registerPage = readFileSync("src/pages/register.astro", "utf8");
-const attendancePage = readFileSync("src/pages/staff/attendance.astro", "utf8");
+const attendancePage = readFileSync("src/scripts/attendance-controller.js", "utf8");
 assert.match(page, /timeZone: "Asia\/Ulaanbaatar"/);
 assert.match(page, /button\("referral", "Урилга"/, "teachers with registration permission receive the compact late-referral action in the shared detail strip");
 assert.match(page, /data-late-referral-code=/, "the referral workflow begins with the existing referral code rather than free-text identity matching");

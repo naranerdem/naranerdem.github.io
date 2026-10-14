@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium, webkit } from "@playwright/test";
 import { assertDisposableLocalWrangler, failWithoutQuotaRetry } from "./local-disposable-test-target.mjs";
+import { checkWeeklyAttendance } from './weekly-attendance-browser-check.mjs';
 
 const persistDir = mkdtempSync(path.join(tmpdir(), "naranerdem-attendance-browser-"));
 const screenshotDir = process.env.ATTENDANCE_BROWSER_SCREENSHOT_DIR || path.join(tmpdir(), "naranerdem-attendance-browser-screens");
@@ -497,6 +498,7 @@ try {
   await transferred.locator('[data-attendance-card-toggle]').click();
   assert.equal(disabledRequests.length, loadedCount, 're-enabled card retains cached reopening');
   await adminContext.close();
+  await checkWeeklyAttendance({ context, baseUrl, date, execute, screenshotDir, engine: browserEngine });
   console.log('ok admin setting persists, denies teacher writes, gates scoped routes, leaves Payments and attendance enabled');
   console.log(`ok ${browserEngine} attendance browser pending locks, bulk guard, rollback, lost-response reconciliation, and reload (${screenshotDir})`);
   }

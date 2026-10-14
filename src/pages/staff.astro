@@ -84,7 +84,7 @@ import "../styles/global.css";
             <p class="eyebrow">Өдөр тутмын ажил</p>
             <div class="staff-tool-grid staff-tool-grid-daily">
               <a class="staff-tool-link staff-tool-primary" data-capability="payment.view" href="/staff/payments/"><strong>Бүртгэл, төлбөр</strong><span id="staff-payment-summary">Бүртгэл, эхний төлбөр, хүлээлгийн жагсаалт</span></a>
-              <a class="staff-tool-link" data-capability="makeup.view" href="/staff/makeups/"><strong>Нөхөх хичээл</strong><span>Тасалсан хичээлийг шийдэх, товлох</span></a>
+              <a class="staff-tool-link" data-capability="makeup.view" data-alternative-capability="attendance.view" href="/staff/makeups/"><strong>Ирц, нөхөлт</strong><span>Ирц тэмдэглэх, нөхөх хичээл товлох</span></a>
             </div>
           </section>
           <section id="staff-agenda-section" class="staff-tool-section staff-home-agenda" data-tool-section aria-labelledby="staff-agenda-title">
@@ -317,7 +317,7 @@ import "../styles/global.css";
         welcome.textContent = `${session.displayName}, таны нэвтрэх эрх баталгаажлаа.`;
         const capabilities = session.capabilities || [];
         for (const link of toolLinks.querySelectorAll("[data-capability]")) {
-          link.hidden = !capabilities.includes(link.dataset.capability);
+          link.hidden = !capabilities.includes(link.dataset.capability) && !capabilities.includes(link.dataset.alternativeCapability);
         }
         let teacherPreferences = null;
         if ((session.roles || []).includes("teacher")) {
