@@ -7,7 +7,7 @@ This repository is intentionally named `naranerdem.github.io` so one canonical c
 - primary deployment through Cloudflare Workers Static Assets
 - a simple static fallback at `https://naranerdem.github.io`
 
-The project remains deliberately small. It contains a static Astro site, a D1-backed catalog, a staging-only test registration flow with email confirmation, and a separate staff passwordless-authentication foundation. Production still does not submit registrations, create parent accounts, process payments, send email, or integrate with a bank.
+The project remains deliberately small. It contains a static Astro site, a D1-backed catalog and registration application, transactional parent email, and separate staff passwordless authentication. The checked-in production configuration enables registration writes, transactional parent email, and staff login email; the explicit parent-authentication email flow remains disabled. These settings describe source configuration, not verified live service or enrollment state.
 
 ## Tech Stack
 
@@ -66,9 +66,9 @@ or production data, and removes its temporary Worker/D1 state on completion.
 
 GitHub Pages remains a fallback. Because this is a GitHub user site repository named `naranerdem.github.io`, the static site is configured for the root path instead of a project subpath.
 
-GitHub Pages deployment is handled by GitHub Actions on every push to `main`, with a manual workflow option also available. In the GitHub repository UI, Settings → Pages must use `GitHub Actions` as the source. Cloudflare remains the intended future host for backend-dependent functionality.
+GitHub Pages deployment is handled by GitHub Actions on every push to `main`, with a manual workflow option also available. In the GitHub repository UI, Settings → Pages must use `GitHub Actions` as the source. This workflow deploys only the static fallback; it does not deploy the Cloudflare Worker API or its D1-backed application.
 
-Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare:staging` for the separate staging Worker at `https://naran-erdem-staging.naranerdem-github-io.workers.dev`. For a schema-dependent staging release, use `npm run release:cloudflare:staging`; it migrates first and deploys only if migration succeeds. Production commands deliberately require explicit confirmation: `npm run deploy:cloudflare -- --confirm-production` and `npm run migrate:cloudflare -- --confirm-production`. Static assets remain asset-first. Staging enables explicitly test-marked registration drafts, Turnstile test validation, safe-recipient email confirmation, and staff-login testing. Production keeps registration writes and parent email/auth disabled with `REGISTRATION_WRITE_ENABLED=false`, `EMAIL_ENABLED=false`, and `AUTH_EMAIL_ENABLED=false`; staff magic-link login is independently enabled through `STAFF_AUTH_EMAIL_ENABLED=true` after its own Turnstile, provider, rate-limit, and identity rehearsal.
+Cloudflare deployment is configured in `wrangler.jsonc`. Use `npm run deploy:cloudflare:staging` for the separate staging Worker at `https://naran-erdem-staging.naranerdem-github-io.workers.dev`. For a schema-dependent staging release, use `npm run release:cloudflare:staging`; it migrates first and deploys only if migration succeeds. Production commands deliberately require explicit confirmation: `npm run deploy:cloudflare -- --confirm-production` and `npm run migrate:cloudflare -- --confirm-production`. Static assets remain asset-first. Staging enables explicitly test-marked registration drafts, Turnstile test validation, safe-recipient email confirmation, and staff-login testing. The root production variables in `wrangler.jsonc` set `REGISTRATION_WRITE_ENABLED=true`, `EMAIL_ENABLED=true`, `AUTH_EMAIL_ENABLED=false`, and `STAFF_AUTH_EMAIL_ENABLED=true`. Registration writes and staff login still require their separate Turnstile configuration, staff login requires its rate-limit binding, and email delivery requires provider configuration. Transactional enrollment-confirmation email can carry a parent-access link independently of the disabled explicit parent-authentication email flow. Each gate retains its separate release and rehearsal requirements; checked-in values do not verify live readiness.
 
 Use [docs/production-release.md](docs/production-release.md) for the production release and rollback procedure.
 
@@ -115,9 +115,11 @@ The protected staff setup starts with `Сургалт, арга хэмжээ`, t
 `Хөтөлбөр`, `Хуваарь`, `Амралтын хуваарь`, and a small typed `Тохиргоо` screen.
 It supports annual courses, summer intensives, and one-off events while keeping
 published course calendars as explicit dated records. Facebook groups and
-school-break policy belong to the concrete Offering. Real curricula are private
-staging D1 data; automated fixtures remain explicitly fake. Production has no
-curriculum, Offering, class, event, or calendar configuration. See
+school-break policy belong to the concrete Offering. Real curricula and
+operational configuration belong in private D1 data or controlled private
+bundles; automated fixtures remain explicitly fake. The
+public repository does not establish the current production curriculum,
+Offering, class, event, or calendar configuration. See
 [docs/program-calendar-model.md](docs/program-calendar-model.md).
 
 The checked-in `src/config/operational-defaults.mjs` contains only public
